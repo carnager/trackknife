@@ -31,11 +31,30 @@ namespace {
 
 [[nodiscard]] std::string native_bytes(const std::filesystem::path& path) { return path.native(); }
 
+[[nodiscard]] bool matches_extension(const std::string& path_bytes,
+                                     const std::span<const std::string_view> extensions) {
+    const auto dot = path_bytes.find_last_of('.');
+    const auto slash = path_bytes.find_last_of('/');
+    if (dot == std::string::npos || dot + 1U >= path_bytes.size() ||
+        (slash != std::string::npos && dot < slash)) {
+        return false;
+    }
+    const std::string_view tail{path_bytes.data() + dot + 1U, path_bytes.size() - dot - 1U};
+    return std::ranges::any_of(extensions, [tail](const std::string_view extension) {
+        return std::ranges::equal(tail, extension, [](const char left, const char right) {
+            const auto lowered =
+                left >= 'A' && left <= 'Z' ? static_cast<char>(left - 'A' + 'a') : left;
+            return lowered == right;
+        });
+    });
+}
+
 } // namespace
 
-LocalSourceDiscovery discover_local_sources(const std::span<const std::string> raw_paths,
-                                            const CancellationToken& cancellation,
-                                            const std::size_t file_limit) {
+LocalSourceDiscovery
+discover_local_sources(const std::span<const std::string> raw_paths,
+                       const CancellationToken& cancellation, const std::size_t file_limit,
+                       const std::span<const std::string_view> directory_file_extensions) {
     LocalSourceDiscovery result;
     if (file_limit == 0U) {
         result.truncated = true;
@@ -55,13 +74,17 @@ LocalSourceDiscovery discover_local_sources(const std::span<const std::string> r
             continue;
         }
 
-        std::vector<std::filesystem::path> pending{std::filesystem::path{raw_path}};
+        struct PendingEntry {
+            std::filesystem::path path;
+            bool from_directory{false};
+        };
+        std::vector<PendingEntry> pending{{std::filesystem::path{raw_path}, false}};
         while (!pending.empty()) {
             if (cancellation.is_cancellation_requested()) {
                 result.cancelled = true;
                 break;
             }
-            auto path = std::move(pending.back());
+            auto [path, from_directory] = std::move(pending.back());
             pending.pop_back();
             const auto path_bytes = native_bytes(path);
             std::error_code error;
@@ -87,6 +110,13 @@ LocalSourceDiscovery discover_local_sources(const std::span<const std::string> r
             }
 
             if (std::filesystem::is_regular_file(status)) {
+                // Explicitly listed files always pass; expansion respects the
+                // caller's extension allowlist so folder opens skip artwork,
+                // cue sheets, and other non-audio residents silently.
+                if (from_directory && !directory_file_extensions.empty() &&
+                    !matches_extension(path_bytes, directory_file_extensions)) {
+                    continue;
+                }
                 if (result.raw_files.size() == file_limit) {
                     result.truncated = true;
                     result.issues.push_back(issue(raw_path, ErrorCode::limit_exceeded,
@@ -121,8 +151,10 @@ LocalSourceDiscovery discover_local_sources(const std::span<const std::string> r
             std::ranges::sort(children, [](const auto& left, const auto& right) {
                 return raw_less(native_bytes(left), native_bytes(right));
             });
-            pending.insert(pending.end(), std::make_move_iterator(children.rbegin()),
-                           std::make_move_iterator(children.rend()));
+            pending.reserve(pending.size() + children.size());
+            for (auto it = children.rbegin(); it != children.rend(); ++it) {
+                pending.push_back({std::move(*it), true});
+            }
         }
         if (result.cancelled) {
             break;

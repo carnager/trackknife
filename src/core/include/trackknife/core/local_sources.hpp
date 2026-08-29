@@ -32,10 +32,14 @@ struct LocalSourceDiscovery {
 // Expands regular files and directories without interpreting raw Linux path
 // bytes as UTF-8. Directory traversal is recursive, deterministic, and does
 // not follow directory symlinks. Input order and duplicate occurrences are
-// preserved.
-[[nodiscard]] LocalSourceDiscovery discover_local_sources(std::span<const std::string> raw_paths,
-                                                          const CancellationToken& cancellation,
-                                                          std::size_t file_limit = 100'000U);
+// preserved. When directory_file_extensions is non-empty, files found by
+// directory expansion must match one of the extensions (ASCII
+// case-insensitive, given without the dot); explicitly listed files always
+// pass so a user-chosen file is never silently dropped.
+[[nodiscard]] LocalSourceDiscovery
+discover_local_sources(std::span<const std::string> raw_paths,
+                       const CancellationToken& cancellation, std::size_t file_limit = 100'000U,
+                       std::span<const std::string_view> directory_file_extensions = {});
 
 // Produces valid UTF-8 ASCII for presentation while retaining every raw byte.
 [[nodiscard]] std::string escape_raw_path(std::string_view raw_path);

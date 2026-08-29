@@ -497,6 +497,25 @@ struct LocalAuditionService::Impl {
             return;
         }
         const auto before = source->snapshot().state;
+        // The real-time renderer can finish the stream between producer
+        // ticks; the terminal snapshot must still be published and the
+        // output drained exactly once, or the UI keeps seeing a stale
+        // "draining" forever.
+        if (before == LocalPlaybackState::ended && output_active) {
+            auto drained = output->drain();
+            if (!drained) {
+                fail(std::move(drained.error()));
+                return;
+            }
+            auto quiet = output->quiesce();
+            if (!quiet) {
+                fail(std::move(quiet.error()));
+                return;
+            }
+            output_active = false;
+            publish();
+            return;
+        }
         if (before != LocalPlaybackState::buffering && before != LocalPlaybackState::playing &&
             before != LocalPlaybackState::draining) {
             return;

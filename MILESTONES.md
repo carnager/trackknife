@@ -363,12 +363,37 @@ migration sources.
   fields. A `--screenshot` QA flag (test-mode settings) renders the
   workspace headlessly; an offscreen render of a two-album fixture set
   verified header grouping, totals, and numbering.
-- Remaining: local cover art in group headers (embedded art or folder
-  images through a Trackbench artwork loader), gapless verification in
-  the shipped player, pin/duplicate and dirty-indicator parity, the rest
-  of the shipped format matrix (AIFF, WAV/RF64 edge cases, cue/subsong),
-  PipeWire buffer presets and hotplug, and the shared UI budget
-  measurements on large folders.
+- Done: album covers render in Trackbench group headers. The Qt-free
+  `formats::load_embedded_artwork` surfaces the container's attached
+  picture bytes (fixture-proven, including typed not-found and
+  cancellation), and a bounded serial loader falls back to conventional
+  folder images (cover/folder/front.jpg|jpeg|png), decodes and scales off
+  the UI thread, caches per album group (negative results included), and
+  applies images across tabs. Offscreen renders verified an embedded PNG
+  and a folder cover in the same list.
+- Done: folder expansion now ingests only plausible audio. Core discovery
+  gained an ASCII case-insensitive extension allowlist that applies to
+  directory expansion while explicitly listed files always pass; tests
+  cover both sides, and Trackbench passes its audio extension list, so a
+  `cover.png` in an album folder no longer becomes a track row.
+- Done: natural end-of-track auto-advance — never machine-verified in the
+  single-app era — is now covered by an offscreen Trackbench test playing
+  a three-track list through live PipeWire (skips without a server). It
+  exposed and fixed two real engine bugs: the playback worker's produce
+  loop returned early when the real-time renderer finished the stream
+  between producer ticks, so the terminal snapshot was never published
+  and the output never drained (the UI froze on a stale "draining"); and
+  the core's end-of-source state loop could regress the renderer's
+  "ended" back to "draining" by reusing a stale ring measurement. The UI
+  guard now also stays latched from dispatch until the player leaves
+  "ended", so an advance fires exactly once per finished track, and the
+  window exposes player state/position/buffer/callback properties for
+  offscreen diagnostics. A tab-ownership leak found by ASan in the same
+  run is fixed.
+- Remaining: hands-on gapless listening verification, pin/duplicate and
+  dirty-indicator parity, the rest of the shipped format matrix (AIFF,
+  WAV/RF64 edge cases, cue/subsong), PipeWire buffer presets and hotplug,
+  and the shared UI budget measurements on large folders.
 
 ### Exit criteria
 

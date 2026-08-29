@@ -3,6 +3,8 @@
 #pragma once
 
 #include <QAbstractTableModel>
+#include <QHash>
+#include <QImage>
 
 #include <cstdint>
 #include <optional>
@@ -53,6 +55,11 @@ class LocalListModel final : public QAbstractTableModel {
     // Marks the playing occurrence rendered by the shared delegate; an empty
     // path clears it.
     void setCurrentPath(std::string raw_path, int hint_row);
+    // The delegate's album-grouping identity for a row; artwork is keyed and
+    // painted per group.
+    [[nodiscard]] QString groupKey(int row) const;
+    [[nodiscard]] bool hasArtwork(const QString& key) const { return artwork_.contains(key); }
+    void setArtwork(const QString& key, QImage image);
     [[nodiscard]] const std::vector<LocalTrackRow>& rows() const noexcept { return rows_; }
     [[nodiscard]] std::string rawPath(int row) const;
     // Finds the row holding raw_path, preferring the hint row so duplicate
@@ -72,6 +79,7 @@ class LocalListModel final : public QAbstractTableModel {
     void emitRowChanged(int row);
 
     std::vector<LocalTrackRow> rows_;
+    QHash<QString, QImage> artwork_;
     std::string current_path_;
     int current_row_{-1};
 };

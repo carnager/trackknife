@@ -492,12 +492,18 @@ core::Result<void> LocalPlayback::fill_buffer() {
 
     auto current = playback.state.load(std::memory_order_acquire);
     if (playback.source_ended.load(std::memory_order_acquire)) {
-        const auto next_state = playback.ring.size_frames() == 0U ? LocalPlaybackState::ended
-                                                                  : LocalPlaybackState::draining;
+        // Recompute the target inside the loop and never regress "ended":
+        // the real-time renderer may drain the final frames and finish the
+        // stream between the ring read and the exchange.
         while (current != LocalPlaybackState::paused && current != LocalPlaybackState::stopped &&
-               current != LocalPlaybackState::failed &&
-               !playback.state.compare_exchange_weak(current, next_state, std::memory_order_release,
+               current != LocalPlaybackState::failed && current != LocalPlaybackState::ended) {
+            const auto next_state = playback.ring.size_frames() == 0U
+                                        ? LocalPlaybackState::ended
+                                        : LocalPlaybackState::draining;
+            if (playback.state.compare_exchange_weak(current, next_state, std::memory_order_release,
                                                      std::memory_order_acquire)) {
+                break;
+            }
         }
     } else if (playback.ring.size_frames() >= playback.config.start_threshold_frames) {
         current = LocalPlaybackState::buffering;

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-only
 
-add_library(trackknife_formats STATIC src/decoder.cpp src/probe.cpp)
+add_library(trackknife_formats STATIC src/artwork.cpp src/decoder.cpp src/probe.cpp)
 add_library(Trackknife::Formats ALIAS trackknife_formats)
 
 target_include_directories(

@@ -168,6 +168,24 @@ void localSourceDiscoveryPreservesRawPathsAndOrder() {
     const auto limited = trackknife::core::discover_local_sources(inputs, {}, 2U);
     CHECK(limited.truncated);
     CHECK(limited.raw_files.size() == 2U);
+
+    // Extension filtering applies to directory expansion only; explicitly
+    // listed files always pass, and matching is ASCII case-insensitive.
+    const auto cover = root / "cover.png";
+    const auto upper = root / "LOUD.FLAC";
+    std::ofstream{cover}.put('\0');
+    std::ofstream{upper}.put('\0');
+    constexpr std::array<std::string_view, 2> audio_only{"flac", "opus"};
+    const std::array filtered_inputs{root.native(), cover.native()};
+    const auto filtered =
+        trackknife::core::discover_local_sources(filtered_inputs, {}, 100U, std::span{audio_only});
+    CHECK(filtered.issues.empty());
+    CHECK(std::ranges::count(filtered.raw_files, cover.native()) == 1);
+    CHECK(std::ranges::count(filtered.raw_files, upper.native()) == 1);
+    CHECK(std::ranges::count(filtered.raw_files, second.native()) == 1);
+    CHECK(std::ranges::count(filtered.raw_files, invalid.native()) == 0);
+    CHECK(std::ranges::count(filtered.raw_files, first.native()) == 1);
+
     std::filesystem::remove_all(root, error);
     CHECK(!error);
 }

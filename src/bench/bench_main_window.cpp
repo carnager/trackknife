@@ -5,6 +5,7 @@
 #include "bench/local_list_model.hpp"
 #include "trackknife/audio/local_audition.hpp"
 #include "trackknife/core/stable_id.hpp"
+#include "trackknife/formats/artwork.hpp"
 #include "trackknife/formats/probe.hpp"
 #include "uicommon/list_persistence_service.hpp"
 #include "uicommon/local_folder_tree_model.hpp"
@@ -43,6 +44,10 @@
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <limits>
 #include <span>
@@ -98,6 +103,77 @@ constexpr std::size_t probe_batch_size = 8U;
         }
     }
     return {};
+}
+
+constexpr int artwork_cache_extent = 128;
+constexpr std::uintmax_t artwork_file_limit = 16U * 1024U * 1024U;
+
+// Folder expansion only ingests plausible audio; explicitly opened files
+// always pass regardless (core discovery contract). The probe still gates
+// everything this list lets through.
+constexpr std::array<std::string_view, 22> audio_extensions{
+    "flac", "mp3", "ogg",  "oga", "opus", "m4a", "mp4", "aac", "wv",  "wav", "rf64",
+    "aiff", "aif", "aifc", "ape", "mpc",  "tta", "spx", "mka", "wma", "dsf", "dff"};
+
+// Folder fallback for albums without an attached picture: the first regular
+// file in the track's directory whose lowercased name is a conventional
+// cover image.
+[[nodiscard]] std::vector<unsigned char> folder_artwork_bytes(const std::string& raw_path) {
+    const auto slash = raw_path.find_last_of('/');
+    if (slash == std::string::npos) {
+        return {};
+    }
+    const std::filesystem::path directory{raw_path.substr(0, slash)};
+    static constexpr std::array names{"cover.jpg",  "cover.jpeg",  "cover.png",
+                                      "folder.jpg", "folder.jpeg", "folder.png",
+                                      "front.jpg",  "front.jpeg",  "front.png"};
+    std::error_code error;
+    std::filesystem::directory_iterator iterator{
+        directory, std::filesystem::directory_options::skip_permission_denied, error};
+    const std::filesystem::directory_iterator end;
+    if (error) {
+        return {};
+    }
+    for (; iterator != end; iterator.increment(error)) {
+        if (error) {
+            return {};
+        }
+        if (!iterator->is_regular_file(error) || error) {
+            error.clear();
+            continue;
+        }
+        const auto name = lowercased_ascii(iterator->path().filename().native());
+        if (std::ranges::find(names, name) == names.end()) {
+            continue;
+        }
+        const auto size = iterator->file_size(error);
+        if (error || size == 0U || size > artwork_file_limit) {
+            return {};
+        }
+        std::ifstream input{iterator->path(), std::ios::binary};
+        std::vector<unsigned char> bytes(static_cast<std::size_t>(size));
+        input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size));
+        if (!input.good() && !input.eof()) {
+            return {};
+        }
+        return bytes;
+    }
+    return {};
+}
+
+[[nodiscard]] QImage decoded_artwork(const std::vector<unsigned char>& bytes) {
+    if (bytes.empty()) {
+        return {};
+    }
+    auto image = QImage::fromData(bytes.data(), static_cast<int>(bytes.size()));
+    if (image.isNull()) {
+        return {};
+    }
+    if (image.width() > artwork_cache_extent || image.height() > artwork_cache_extent) {
+        image = image.scaled(artwork_cache_extent, artwork_cache_extent, Qt::KeepAspectRatio,
+                             Qt::SmoothTransformation);
+    }
+    return image;
 }
 
 } // namespace
@@ -514,13 +590,15 @@ BenchMainWindow::ListTab* BenchMainWindow::addListTab(persistence::ListDocument 
     tab->document = std::move(document);
     tab->model = model;
     tab->view = view;
-    auto* raw_tab = tab.release();
+    auto* raw_tab = tab.get();
+    list_tabs_.push_back(std::move(tab));
     view->setProperty("bench-tab-pointer", QVariant::fromValue<void*>(raw_tab));
     if (select) {
         tabs_->setCurrentIndex(index);
         view->setFocus(Qt::ShortcutFocusReason);
     }
     enqueueUnprobedRows(*raw_tab);
+    syncArtwork(*raw_tab);
     return raw_tab;
 }
 
@@ -583,19 +661,97 @@ void BenchMainWindow::finishProbeBatch() {
     probe_running_ = false;
     auto outcomes = probe_watcher_.result();
     bool applied = false;
+    QSet<QString> touched_documents;
     for (auto& outcome : outcomes) {
         auto* tab = tabForDocument(outcome.job.document_id);
         if (tab == nullptr) {
             continue;
         }
-        applied = tab->model->applyMetadata(outcome.job.raw_path, outcome.job.hint_row,
-                                            std::move(outcome.metadata)) ||
-                  applied;
+        if (tab->model->applyMetadata(outcome.job.raw_path, outcome.job.hint_row,
+                                      std::move(outcome.metadata))) {
+            applied = true;
+            touched_documents.insert(outcome.job.document_id);
+        }
     }
     if (applied) {
         schedulePersist();
     }
+    for (const auto& document_id : touched_documents) {
+        if (auto* tab = tabForDocument(document_id); tab != nullptr) {
+            syncArtwork(*tab);
+        }
+    }
     pumpProbeQueue();
+}
+
+void BenchMainWindow::syncArtwork(ListTab& tab) {
+    const auto& rows = tab.model->rows();
+    for (int row = 0; row < static_cast<int>(rows.size()); ++row) {
+        const auto& track = rows[static_cast<std::size_t>(row)];
+        if (track.album.empty() && track.artist.empty() && track.album_artist.empty()) {
+            continue;
+        }
+        const auto key = tab.model->groupKey(row);
+        if (const auto cached = artwork_cache_.constFind(key);
+            cached != artwork_cache_.constEnd()) {
+            if (!cached->isNull() && !tab.model->hasArtwork(key)) {
+                tab.model->setArtwork(key, *cached);
+            }
+            continue;
+        }
+        if (!artwork_pending_.contains(key)) {
+            artwork_pending_.insert(key);
+            artwork_queue_.push_back(ArtworkJob{.key = key, .raw_path = track.raw_path});
+        }
+    }
+    pumpArtworkQueue();
+}
+
+void BenchMainWindow::pumpArtworkQueue() {
+    if (artwork_running_ || artwork_queue_.empty()) {
+        return;
+    }
+    auto job = std::move(artwork_queue_.front());
+    artwork_queue_.pop_front();
+    artwork_running_ = true;
+    connect(&artwork_watcher_, &QFutureWatcher<ArtworkOutcome>::finished, this,
+            &BenchMainWindow::finishArtworkLoad, Qt::SingleShotConnection);
+    artwork_watcher_.setFuture(QtConcurrent::run(
+        [job = std::move(job), cancellation = probe_cancellation_.token()]() mutable {
+            ArtworkOutcome outcome{.key = std::move(job.key), .image = {}};
+            if (cancellation.is_cancellation_requested()) {
+                return outcome;
+            }
+            if (auto embedded = formats::load_embedded_artwork(job.raw_path, cancellation);
+                embedded) {
+                outcome.image = decoded_artwork(*embedded);
+            }
+            if (outcome.image.isNull() && !cancellation.is_cancellation_requested()) {
+                outcome.image = decoded_artwork(folder_artwork_bytes(job.raw_path));
+            }
+            return outcome;
+        }));
+}
+
+void BenchMainWindow::finishArtworkLoad() {
+    artwork_running_ = false;
+    auto outcome = artwork_watcher_.result();
+    // Failed lookups are cached as null so a missing cover is asked once, not
+    // on every metadata refresh.
+    artwork_cache_.insert(outcome.key, outcome.image);
+    if (!outcome.image.isNull()) {
+        for (int index = 0; index < tabs_->count(); ++index) {
+            auto* view = qobject_cast<QTableView*>(tabs_->widget(index));
+            if (view == nullptr) {
+                continue;
+            }
+            auto* tab = static_cast<ListTab*>(view->property("bench-tab-pointer").value<void*>());
+            if (tab != nullptr && !tab->model->hasArtwork(outcome.key)) {
+                tab->model->setArtwork(outcome.key, outcome.image);
+            }
+        }
+    }
+    pumpArtworkQueue();
 }
 
 BenchMainWindow::ListTab* BenchMainWindow::currentListTab() {
@@ -644,6 +800,7 @@ bool BenchMainWindow::transferRows(QTableView* source, const QVariantList& rows,
     }
     target->model->appendRows(std::move(transferred), insertion_row);
     markTabDirty(*target);
+    syncArtwork(*target);
     if (move) {
         source_tab->model->removeRowIndexes(std::move(source_rows));
         markTabDirty(*source_tab);
@@ -668,7 +825,8 @@ void BenchMainWindow::closeTabAt(const int index) {
     auto* tab = static_cast<ListTab*>(view->property("bench-tab-pointer").value<void*>());
     tabs_->removeTab(index);
     view->deleteLater();
-    delete tab;
+    std::erase_if(list_tabs_,
+                  [tab](const std::unique_ptr<ListTab>& owned) { return owned.get() == tab; });
     if (tabs_->count() == 0) {
         addListTab(
             persistence::ListDocument{
@@ -786,10 +944,11 @@ void BenchMainWindow::startDiscovery(std::vector<std::string> raw_paths, QString
     discovery_insertion_row_ = insertion_row;
     connect(&discovery_watcher_, &QFutureWatcher<core::LocalSourceDiscovery>::finished, this,
             &BenchMainWindow::finishDiscovery, Qt::SingleShotConnection);
-    discovery_watcher_.setFuture(QtConcurrent::run([paths = std::move(raw_paths),
-                                                    cancellation = probe_cancellation_.token()] {
-        return core::discover_local_sources(std::span{paths.data(), paths.size()}, cancellation);
-    }));
+    discovery_watcher_.setFuture(QtConcurrent::run(
+        [paths = std::move(raw_paths), cancellation = probe_cancellation_.token()] {
+            return core::discover_local_sources(std::span{paths.data(), paths.size()}, cancellation,
+                                                100'000U, std::span{audio_extensions});
+        }));
 }
 
 void BenchMainWindow::finishDiscovery() {
@@ -841,7 +1000,9 @@ void BenchMainWindow::playRow(ListTab& tab, const int row) {
     playback_document_id_ = id;
     playback_row_ = row;
     playback_path_ = raw;
-    advance_pending_ = false;
+    // A load was just dispatched; block auto-advance until the player state
+    // leaves "ended" so the previous track's end cannot skip this one.
+    advance_pending_ = true;
     tab.model->setCurrentPath(raw, row);
 }
 
@@ -871,7 +1032,7 @@ void BenchMainWindow::playAdjacent(const int direction) {
     if (auto result = player_->load_and_play(next->second); result) {
         playback_row_ = next->first;
         playback_path_ = next->second;
-        advance_pending_ = false;
+        advance_pending_ = true;
         tab->model->setCurrentPath(next->second, next->first);
     } else {
         statusBar()->showMessage(
@@ -913,17 +1074,26 @@ void BenchMainWindow::refreshTransport() {
         return;
     }
     const auto snapshot = player_->snapshot();
+    // Observable for offscreen tests and diagnostics.
+    setProperty("trackbench-player-state", static_cast<int>(snapshot.state));
+    setProperty("trackbench-player-position", static_cast<qlonglong>(snapshot.position_sample));
+    setProperty("trackbench-player-buffered", static_cast<qlonglong>(snapshot.buffered_frames));
+    setProperty("trackbench-player-callbacks",
+                static_cast<qlonglong>(snapshot.output.callback_count));
+    setProperty("trackbench-player-outputstate", static_cast<int>(snapshot.output.state));
 
     // List progression (ADR-0023): a finished track advances once to the next
     // row of its originating list; the end of the list stays "Ended".
     if (snapshot.state == audio::LocalAuditionState::ended) {
+        // The guard stays set until the worker actually leaves "ended";
+        // resetting it on dispatch would re-fire every timer tick while the
+        // next source is still loading and race through the list.
         if (!advance_pending_) {
             advance_pending_ = true;
             if (const auto next = adjacentPlaybackRow(1)) {
                 if (auto result = player_->load_and_play(next->second); result) {
                     playback_row_ = next->first;
                     playback_path_ = next->second;
-                    advance_pending_ = false;
                     if (auto* tab = tabForDocument(playback_document_id_); tab != nullptr) {
                         tab->model->setCurrentPath(next->second, next->first);
                     }
@@ -1030,8 +1200,12 @@ void BenchMainWindow::refreshTransport() {
 void BenchMainWindow::closeEvent(QCloseEvent* event) {
     probe_cancellation_.request_cancellation();
     probe_queue_.clear();
+    artwork_queue_.clear();
     if (probe_running_) {
         probe_watcher_.waitForFinished();
+    }
+    if (artwork_running_) {
+        artwork_watcher_.waitForFinished();
     }
     if (discovery_running_) {
         discovery_watcher_.waitForFinished();

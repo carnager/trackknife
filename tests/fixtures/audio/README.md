@@ -49,6 +49,24 @@ The probe test requires the five tags to survive projection through
 `formats::MediaProbe` and the complete decode to publish exactly 4,410
 contiguous frames from sample zero with non-silent first and last windows.
 
+## Embedded-artwork FLAC fixture
+
+`art-tone-flac.b64` is the tagged FLAC tone with a 64×64 orange PNG attached
+as its cover picture, generated with FFmpeg n9.0.1 / libavcodec 63.1.101:
+
+```sh
+ffmpeg -f lavfi -i "color=c=orange:size=64x64:duration=0.04:rate=25" \
+  -frames:v 1 cover-orange.png
+ffmpeg -i tagged-tone.flac -i cover-orange.png -map 0:a -map 1:v \
+  -c:a copy -c:v png -disposition:v:0 attached_pic -bitexact art-tone.flac
+```
+
+The binary SHA-256 is
+`402d86b052891ee6d76c04357215087b5d457f13983afffab656195bbf4ef611`.
+The artwork test requires the attached picture to surface as its exact PNG
+bytes and the tagless lookup on `tagged-tone-flac.b64` to report a typed
+not-found instead of inventing artwork.
+
 ## Tagged WavPack fixture
 
 `tagged-tone-wavpack.b64` is the same 4,410-sample 44.1 kHz mono tone in a

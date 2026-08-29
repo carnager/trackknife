@@ -171,6 +171,21 @@ if(TRACKKNIFE_BUILD_UI)
     add_test(NAME server-library-tree-model COMMAND trackknife_server_library_tree_model_tests)
     set_tests_properties(server-library-tree-model PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+    qt_add_executable(trackknife_bench_main_window_tests bench_main_window_test.cpp)
+    target_link_libraries(
+        trackknife_bench_main_window_tests
+        PRIVATE Trackknife::BenchUi Qt6::Test trackknife_project_options
+                trackknife_project_warnings
+    )
+    add_test(NAME bench-main-window COMMAND trackknife_bench_main_window_tests)
+    set_tests_properties(
+        bench-main-window
+        PROPERTIES
+            TIMEOUT 60
+            ENVIRONMENT
+                "QT_QPA_PLATFORM=offscreen;LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp"
+    )
+
     add_test(NAME ui-smoke COMMAND trackknife --smoke-test --rows 1000000)
     set_tests_properties(
         ui-smoke

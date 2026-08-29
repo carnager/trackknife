@@ -187,9 +187,9 @@ QVariant LocalListModel::data(const QModelIndex& index, const int role) const {
     case ui::track_priority_role:
         return {};
     case ui::track_album_artwork_role:
-        return QVariant::fromValue(QImage{});
+        return QVariant::fromValue(artwork_.value(groupKey(index.row())));
     case ui::track_album_artwork_key_role:
-        return {};
+        return groupKey(index.row());
     default:
         break;
     }
@@ -254,6 +254,27 @@ Qt::DropActions LocalListModel::supportedDropActions() const {
     // but Qt only tracks and paints the drop indicator for actions the target
     // model advertises.
     return Qt::MoveAction | Qt::CopyAction;
+}
+
+QString LocalListModel::groupKey(const int row) const {
+    if (row < 0 || row >= static_cast<int>(rows_.size())) {
+        return {};
+    }
+    // Must mirror the shared delegate's grouping: album artist (with artist
+    // fallback), album, and date, null-separated.
+    const auto& track = rows_[static_cast<std::size_t>(row)];
+    const auto& artist = track.album_artist.empty() ? track.artist : track.album_artist;
+    return display_utf8(artist) + QChar::Null + display_utf8(track.album) + QChar::Null +
+           display_utf8(track.date);
+}
+
+void LocalListModel::setArtwork(const QString& key, QImage image) {
+    artwork_.insert(key, std::move(image));
+    for (int row = 0; row < static_cast<int>(rows_.size()); ++row) {
+        if (groupKey(row) == key) {
+            emitRowChanged(row);
+        }
+    }
 }
 
 void LocalListModel::refreshCurrentRow() {

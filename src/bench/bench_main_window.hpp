@@ -8,7 +8,10 @@
 #include "trackknife/persistence/list_repository.hpp"
 
 #include <QFutureWatcher>
+#include <QHash>
+#include <QImage>
 #include <QMainWindow>
+#include <QSet>
 
 #include <deque>
 #include <memory>
@@ -100,6 +103,18 @@ class BenchMainWindow final : public QMainWindow {
     void pumpProbeQueue();
     void finishProbeBatch();
 
+    struct ArtworkJob {
+        QString key;
+        std::string raw_path;
+    };
+    struct ArtworkOutcome {
+        QString key;
+        QImage image;
+    };
+    void syncArtwork(ListTab& tab);
+    void pumpArtworkQueue();
+    void finishArtworkLoad();
+
     void playRow(ListTab& tab, int row);
     void playAdjacent(int direction);
     [[nodiscard]] std::optional<std::pair<int, std::string>> adjacentPlaybackRow(int direction);
@@ -113,6 +128,7 @@ class BenchMainWindow final : public QMainWindow {
     ui::LocalFolderTreeModel* folder_model_{nullptr};
     QTreeView* folder_view_{nullptr};
     QTabWidget* tabs_{nullptr};
+    std::vector<std::unique_ptr<ListTab>> list_tabs_;
 
     QAction* previous_action_{nullptr};
     QAction* play_pause_action_{nullptr};
@@ -138,6 +154,12 @@ class BenchMainWindow final : public QMainWindow {
     std::deque<ProbeJob> probe_queue_;
     bool probe_running_{false};
     core::CancellationSource probe_cancellation_;
+
+    QFutureWatcher<ArtworkOutcome> artwork_watcher_;
+    std::deque<ArtworkJob> artwork_queue_;
+    QHash<QString, QImage> artwork_cache_;
+    QSet<QString> artwork_pending_;
+    bool artwork_running_{false};
 
     // Paths opened before the asynchronous list restore finishes are queued
     // and flushed into the initial tab once it exists.

@@ -2,6 +2,7 @@
 
 #include "trackknife/core/cancellation.hpp"
 #include "trackknife/core/stable_id.hpp"
+#include "trackknife/formats/artwork.hpp"
 #include "trackknife/formats/decoder.hpp"
 #include "trackknife/formats/probe.hpp"
 
@@ -538,6 +539,52 @@ void probesTaggedWavPackFixture(const std::filesystem::path& fixture_directory) 
     CHECK(!error);
 }
 
+void loadsEmbeddedArtworkExactly(const std::filesystem::path& fixture_directory) {
+    const auto with_art = decode_base64_file(fixture_directory / "art-tone-flac.b64");
+    const auto without_art = decode_base64_file(fixture_directory / "tagged-tone-flac.b64");
+    CHECK(with_art.has_value());
+    CHECK(without_art.has_value());
+    if (!with_art || !without_art) {
+        return;
+    }
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("trackknife-artwork-" + trackknife::core::StableId::random().to_string());
+    std::error_code error;
+    CHECK(std::filesystem::create_directories(root, error));
+    const auto art_path = root / "art-tone.flac";
+    const auto plain_path = root / "tagged-tone.flac";
+    for (const auto& [path, binary] :
+         {std::pair{art_path, *with_art}, std::pair{plain_path, *without_art}}) {
+        std::ofstream output{path, std::ios::binary};
+        output.write(reinterpret_cast<const char*>(binary.data()),
+                     static_cast<std::streamsize>(binary.size()));
+        output.close();
+        CHECK(output.good());
+    }
+
+    const auto artwork = trackknife::formats::load_embedded_artwork(art_path.native());
+    CHECK(artwork.has_value());
+    if (artwork) {
+        constexpr std::array<unsigned char, 4> png_magic{0x89U, 'P', 'N', 'G'};
+        CHECK(artwork->size() > png_magic.size());
+        CHECK(std::equal(png_magic.begin(), png_magic.end(), artwork->begin()));
+    }
+
+    const auto absent = trackknife::formats::load_embedded_artwork(plain_path.native());
+    CHECK(!absent.has_value());
+    CHECK(!absent && absent.error().code == trackknife::core::ErrorCode::not_found);
+
+    trackknife::core::CancellationSource cancellation;
+    cancellation.request_cancellation();
+    const auto cancelled =
+        trackknife::formats::load_embedded_artwork(art_path.native(), cancellation.token());
+    CHECK(!cancelled.has_value());
+    CHECK(!cancelled && cancelled.error().code == trackknife::core::ErrorCode::cancelled);
+
+    std::filesystem::remove_all(root, error);
+    CHECK(!error);
+}
+
 } // namespace
 
 int main(const int argc, char** argv) {
@@ -549,6 +596,7 @@ int main(const int argc, char** argv) {
         normalizesVorbisFrameTimeline(argv[1]);
         probesTaggedFlacFixture(argv[1]);
         probesTaggedWavPackFixture(argv[1]);
+        loadsEmbeddedArtworkExactly(argv[1]);
     }
     return failures == 0 ? 0 : 1;
 }
