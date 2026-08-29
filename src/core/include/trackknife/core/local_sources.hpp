@@ -4,6 +4,7 @@
 
 #include "trackknife/core/cancellation.hpp"
 #include "trackknife/core/error.hpp"
+#include "trackknife/core/result.hpp"
 
 #include <cstddef>
 #include <span>
@@ -38,5 +39,24 @@ struct LocalSourceDiscovery {
 
 // Produces valid UTF-8 ASCII for presentation while retaining every raw byte.
 [[nodiscard]] std::string escape_raw_path(std::string_view raw_path);
+
+struct ContainedLocalSource {
+    std::string raw_root;
+    std::string raw_path;
+    // The fully resolved final target after following every symlink.
+    std::string resolved_path;
+
+    friend bool operator==(const ContainedLocalSource&, const ContainedLocalSource&) = default;
+};
+
+// Filesystem revalidation for file operations: resolves the configured root
+// and the referenced path to their final targets and requires the result to
+// be a regular file strictly inside the resolved root. This is the
+// symlink/mount complement to the lexical mapping guards; callers revalidate
+// immediately before offering or executing a file operation, and a stale
+// success never survives a later filesystem change because every operation
+// revalidates again.
+[[nodiscard]] Result<ContainedLocalSource> revalidate_contained_source(const std::string& raw_root,
+                                                                       const std::string& raw_path);
 
 } // namespace trackknife::core

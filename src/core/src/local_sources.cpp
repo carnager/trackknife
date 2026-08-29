@@ -153,4 +153,64 @@ std::string escape_raw_path(const std::string_view raw_path) {
     return escaped;
 }
 
+Result<ContainedLocalSource> revalidate_contained_source(const std::string& raw_root,
+                                                         const std::string& raw_path) {
+    const auto reject = [&raw_root, &raw_path](const ErrorCode code, std::string message,
+                                               std::string resolved = {}) {
+        Error error{.code = code, .message = std::move(message), .context = {}};
+        error.context.push_back({.key = "root", .value = escape_raw_path(raw_root)});
+        error.context.push_back({.key = "path", .value = escape_raw_path(raw_path)});
+        if (!resolved.empty()) {
+            error.context.push_back({.key = "resolved", .value = escape_raw_path(resolved)});
+        }
+        return std::unexpected(std::move(error));
+    };
+    if (raw_root.empty()) {
+        return reject(ErrorCode::invalid_argument, "local music root is empty");
+    }
+    if (raw_path.empty()) {
+        return reject(ErrorCode::invalid_argument, "local source path is empty");
+    }
+
+    std::error_code error;
+    const auto resolved_root = std::filesystem::canonical(std::filesystem::path{raw_root}, error);
+    if (error) {
+        return reject(error == std::errc::no_such_file_or_directory ? ErrorCode::not_found
+                                                                    : ErrorCode::io,
+                      "local music root could not be resolved: " + error.message());
+    }
+    if (!std::filesystem::is_directory(resolved_root, error) || error) {
+        return reject(ErrorCode::invalid_argument, "local music root is not a directory",
+                      resolved_root.native());
+    }
+
+    const auto resolved = std::filesystem::canonical(std::filesystem::path{raw_path}, error);
+    if (error) {
+        return reject(error == std::errc::no_such_file_or_directory ? ErrorCode::not_found
+                                                                    : ErrorCode::io,
+                      "local source could not be resolved: " + error.message());
+    }
+    if (!std::filesystem::is_regular_file(resolved, error) || error) {
+        return reject(ErrorCode::unsupported, "local source is not a regular file",
+                      resolved.native());
+    }
+
+    const auto& root_bytes = resolved_root.native();
+    const auto& path_bytes = resolved.native();
+    const bool root_has_separator = !root_bytes.empty() && root_bytes.back() == '/';
+    const bool contained = path_bytes.size() > root_bytes.size() + (root_has_separator ? 0U : 1U) &&
+                           path_bytes.starts_with(root_bytes) &&
+                           (root_has_separator || path_bytes[root_bytes.size()] == '/');
+    if (!contained) {
+        return reject(ErrorCode::invalid_argument,
+                      "local source resolves outside the configured music root", resolved.native());
+    }
+
+    return ContainedLocalSource{
+        .raw_root = raw_root,
+        .raw_path = raw_path,
+        .resolved_path = path_bytes,
+    };
+}
+
 } // namespace trackknife::core

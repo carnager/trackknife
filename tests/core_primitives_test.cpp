@@ -172,6 +172,77 @@ void localSourceDiscoveryPreservesRawPathsAndOrder() {
     CHECK(!error);
 }
 
+void containedSourceRevalidationFollowsSymlinksAndRejectsEscapes() {
+    const auto base =
+        std::filesystem::temp_directory_path() /
+        ("trackknife-containment-" + trackknife::core::StableId::random().to_string());
+    const auto root = base / "root";
+    const auto outside = base / "outside";
+    std::error_code error;
+    CHECK(std::filesystem::create_directories(root / "sub", error));
+    CHECK(std::filesystem::create_directories(outside, error));
+    const auto inner = root / "sub" / "inner.flac";
+    const auto secret = outside / "secret.flac";
+    std::ofstream{inner}.put('\0');
+    std::ofstream{secret}.put('\0');
+    std::filesystem::create_symlink(inner, root / "link-in.flac", error);
+    CHECK(!error);
+    std::filesystem::create_symlink(secret, root / "escape.flac", error);
+    CHECK(!error);
+
+    const auto direct =
+        trackknife::core::revalidate_contained_source(root.native(), inner.native());
+    CHECK(direct.has_value());
+    CHECK(direct && direct->resolved_path == std::filesystem::canonical(inner).native());
+
+    // A symlink whose final target stays inside the root is acceptable and
+    // reports the resolved target, never the link.
+    const auto linked = trackknife::core::revalidate_contained_source(
+        root.native(), (root / "link-in.flac").native());
+    CHECK(linked.has_value());
+    CHECK(linked && linked->resolved_path == std::filesystem::canonical(inner).native());
+
+    // A symlink escaping the root is rejected even though the referenced path
+    // is lexically inside it.
+    const auto escaped = trackknife::core::revalidate_contained_source(
+        root.native(), (root / "escape.flac").native());
+    CHECK(!escaped.has_value());
+    CHECK(!escaped && escaped.error().code == trackknife::core::ErrorCode::invalid_argument);
+
+    // Dot-dot traversal resolves outside and is rejected.
+    const auto traversal = trackknife::core::revalidate_contained_source(
+        root.native(), (root / ".." / "outside" / "secret.flac").native());
+    CHECK(!traversal.has_value());
+
+    // A sibling directory sharing the root's byte prefix is not contained.
+    const auto sibling = base / "root-evil";
+    CHECK(std::filesystem::create_directories(sibling, error));
+    const auto sibling_file = sibling / "song.flac";
+    std::ofstream{sibling_file}.put('\0');
+    const auto prefixed =
+        trackknife::core::revalidate_contained_source(root.native(), sibling_file.native());
+    CHECK(!prefixed.has_value());
+
+    const auto missing = trackknife::core::revalidate_contained_source(
+        root.native(), (root / "missing.flac").native());
+    CHECK(!missing.has_value());
+    CHECK(!missing && missing.error().code == trackknife::core::ErrorCode::not_found);
+
+    const auto directory =
+        trackknife::core::revalidate_contained_source(root.native(), (root / "sub").native());
+    CHECK(!directory.has_value());
+    CHECK(!directory && directory.error().code == trackknife::core::ErrorCode::unsupported);
+
+    CHECK(!trackknife::core::revalidate_contained_source({}, inner.native()).has_value());
+    CHECK(!trackknife::core::revalidate_contained_source(root.native(), {}).has_value());
+    const auto missing_root =
+        trackknife::core::revalidate_contained_source((base / "no-root").native(), inner.native());
+    CHECK(!missing_root.has_value());
+
+    std::filesystem::remove_all(base, error);
+    CHECK(!error);
+}
+
 } // namespace
 
 int main() {
@@ -183,5 +254,6 @@ int main() {
     unicodeCodePointIndexingUsesDecodedCharacters();
     unicodeCaseTransformsAndEncodingAreValidated();
     localSourceDiscoveryPreservesRawPathsAndOrder();
+    containedSourceRevalidationFollowsSymlinksAndRejectsEscapes();
     return failures == 0 ? 0 : 1;
 }

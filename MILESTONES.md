@@ -327,12 +327,20 @@ migration sources.
   queue until the asynchronous list restore finishes instead of being
   dropped. An offscreen end-to-end run verified the FLAC's tags and
   duration surviving into the SQLite document.
+- Done: `core::revalidate_contained_source` performs the filesystem
+  complement to the lexical mapping guards: it resolves the configured root
+  and the referenced path to their final targets and accepts only a regular
+  file strictly inside the resolved root. Tests cover in-root symlinks,
+  escaping symlinks, dot-dot traversal, byte-prefix sibling directories,
+  missing paths, directories, and empty inputs. File-operation call sites
+  arrive with the M5 planner, which revalidates immediately before offering
+  or executing every operation.
 - Remaining: Trackbench album-grouped presentation with covers, gapless
   verification in the shipped player, per-tab view polish (drag reorder,
-  pin/duplicate, dirty indicators at parity with the client), local-path
-  containment/symlink revalidation, WavPack coverage and the rest of the
-  shipped format matrix, PipeWire buffer presets and hotplug, and the
-  shared UI budget measurements on large folders.
+  pin/duplicate, dirty indicators at parity with the client), WavPack
+  coverage and the rest of the shipped format matrix, PipeWire buffer
+  presets and hotplug, and the shared UI budget measurements on large
+  folders.
 
 ### Exit criteria
 
