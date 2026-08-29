@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "reference": {
+    "product": "foobar2000 Title Formatting Syntax Reference",
+    "version": "2.25.10",
+    "platform": "installed Windows x86-64 package documentation on Linux"
+  },
+  "cases": [
+    {
+      "id": "fb2k-2.25.10.docs.strcmp-equal",
+      "script": "$strcmp(Same,Same)",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "1", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "The bundled syntax reference explicitly specifies text 1 for identical strings and empty text otherwise."
+      }
+    },
+    {
+      "id": "fb2k-2.25.10.docs.strcmp-different",
+      "script": "$strcmp(Same,same)",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "", "truth": false },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "The bundled syntax reference describes strcmp as case-sensitive and specifies empty text for unequal strings."
+      }
+    },
+    {
+      "id": "fb2k-2.25.10.docs.stricmp-ascii-equal",
+      "script": "$stricmp(Same,sAME)",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "1", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "The bundled syntax reference defines stricmp as the case-insensitive form of strcmp."
+      }
+    },
+    {
+      "id": "fb2k-2.25.10.docs.len-ascii-characters",
+      "script": "$len(Trackknife)",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "10", "truth": false },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "The bundled syntax reference defines len as the number of characters in its argument."
+      }
+    },
+    {
+      "id": "fb2k-2.25.10.docs.cut-characters",
+      "script": "$cut(Trackknife,5)",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "Track", "truth": false },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "The bundled syntax reference defines cut as truncating to the requested character count."
+      }
+    },
+    {
+      "id": "fb2k-2.25.10.docs.iflonger-branch",
+      "script": "$iflonger(abc,2,yes,no)",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "yes", "truth": false },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "The bundled syntax reference defines iflonger as branching when the first string exceeds the numeric character limit."
+      }
+    },
+    {
+      "id": "fb2k-2.25.10.docs.longest",
+      "script": "$longest(a,longest,mid)",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "longest", "truth": false },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "The bundled syntax reference defines longest as returning the argument with greatest character length."
+      }
+    },
+    {
+      "id": "fb2k-2.25.10.docs.lower-upper-ascii",
+      "script": "$lower(MiXeD)|$upper(MiXeD)",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "mixed|MIXED", "truth": false },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "The bundled syntax reference defines lower and upper as case conversions of their argument."
+      }
+    },
+    {
+      "id": "fb2k-2.25.10.docs.char-unicode-scalar",
+      "script": "$char(9674)",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "◊", "truth": false },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "The bundled syntax reference uses decimal Unicode character number 9674 as its char example."
+      }
+    },
+    {
+      "id": "fb2k-2.25.10.docs.fix-eol-custom-indicator",
+      "script": "$fix_eol(%lyrics%,' <more>')",
+      "context": { "kind": "track", "fields": { "LYRICS": "first\nsecond" } },
+      "expected": { "text": "first <more>", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "The bundled syntax reference defines the two-argument overload as truncating multiline input and appending the supplied indicator."
+      }
+    }
+  ]
+}

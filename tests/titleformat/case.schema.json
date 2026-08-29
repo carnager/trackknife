@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trackknife.local/schema/tkfmt-case-v2.json",
+  "title": "Trackknife formatting-expression cases",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "dialect", "cases"],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "dialect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "const": "tkfmt" },
+        "version": { "const": 1 }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "host", "source", "fields", "expected", "rationale"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$" },
+          "host": {
+            "enum": ["track", "list", "queue", "now_playing", "path", "tree", "group", "copy", "sort"]
+          },
+          "source": { "type": "string" },
+          "fields": {
+            "type": "object",
+            "additionalProperties": {
+              "oneOf": [
+                { "type": "string" },
+                { "type": "array", "items": { "type": "string" } }
+              ]
+            }
+          },
+          "information": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "expected": { "type": "string" },
+          "rationale": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

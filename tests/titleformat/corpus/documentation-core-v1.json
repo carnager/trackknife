@@ -1,0 +1,340 @@
+{
+  "schema_version": 1,
+  "reference": {
+    "product": "Hydrogenaudio Title Formatting Reference",
+    "version": "retrieved-2026-08-23",
+    "platform": "public documentation"
+  },
+  "cases": [
+    {
+      "id": "docs.literal-zero-is-false",
+      "script": "$if(0,yes,no)",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "no", "truth": false },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented example plus the documented rule that literal branches do not introduce truth."
+      }
+    },
+    {
+      "id": "docs.quoted-zero-is-false",
+      "script": "$if('0',yes,no)",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "no", "truth": false },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented example showing that quoting does not make literal text truthy."
+      }
+    },
+    {
+      "id": "docs.present-field-is-true",
+      "script": "[%artist%]",
+      "context": { "kind": "track", "fields": { "ARTIST": "Trackknife" } },
+      "expected": { "text": "Trackknife", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented ordinary-field and optional-section behavior."
+      }
+    },
+    {
+      "id": "docs.missing-field-marker",
+      "script": "%artist%",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "?", "truth": false },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented missing ordinary-field display marker and false truth flag."
+      }
+    },
+    {
+      "id": "docs.optional-suppresses-missing-marker",
+      "script": "[%artist%]",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "", "truth": false },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented optional-section suppression of a false missing field."
+      }
+    },
+    {
+      "id": "docs.double-apostrophe",
+      "script": "''",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "'", "truth": false },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented escaping rule: two apostrophes emit one literal apostrophe."
+      }
+    },
+    {
+      "id": "docs.physical-lines-and-comments",
+      "script": "a\n// independently authored comment\nb",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "ab", "truth": false },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Physical line breaks and a comment beginning at line start do not emit text."
+      }
+    },
+    {
+      "id": "docs.integer-prefix-conversion",
+      "script": "$add( 4.8,c3po,-12)",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "-8", "truth": false },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Combines the documented leading-whitespace, decimal-prefix, malformed-prefix, and negative integer examples."
+      }
+    },
+    {
+      "id": "docs.arithmetic-preserves-field-truth",
+      "script": "[$add(%rating%,1)]",
+      "context": { "kind": "track", "fields": { "RATING": "4" } },
+      "expected": { "text": "5", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "The reference uses this expression to explain that arithmetic preserves truth introduced by a present field."
+      }
+    },
+    {
+      "id": "docs.variables-are-case-insensitive",
+      "script": "$puts(foo,bar)$get(FOO)",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "bar", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented variable-name case folding and non-empty defined-variable truth behavior."
+      }
+    },
+    {
+      "id": "docs.boolean-and",
+      "script": "$and(%first%,%second%)",
+      "context": { "kind": "track", "fields": { "FIRST": "one", "SECOND": "two" } },
+      "expected": { "text": "", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented boolean conjunction of two true field expressions."
+      }
+    },
+    {
+      "id": "docs.boolean-or",
+      "script": "$or(%missing%,%present%)",
+      "context": { "kind": "track", "fields": { "PRESENT": "yes" } },
+      "expected": { "text": "", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented boolean disjunction with one true field expression."
+      }
+    },
+    {
+      "id": "docs.boolean-not",
+      "script": "$not(literal)",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented inversion of the false truth flag carried by literal text."
+      }
+    },
+    {
+      "id": "docs.boolean-xor",
+      "script": "$xor(%present%,%missing%,literal)",
+      "context": { "kind": "track", "fields": { "PRESENT": "yes" } },
+      "expected": { "text": "", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented odd-parity exclusive-or behavior."
+      }
+    },
+    {
+      "id": "docs.meta-default-separator",
+      "script": "$meta(artist)",
+      "context": { "kind": "track", "fields": { "ARTIST": ["He", "She", "They"] } },
+      "expected": { "text": "He, She, They", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented ordered multi-value join with the default comma-space separator."
+      }
+    },
+    {
+      "id": "docs.meta-zero-based-index",
+      "script": "$meta(artist,1)",
+      "context": { "kind": "track", "fields": { "ARTIST": ["He", "She", "They"] } },
+      "expected": { "text": "She", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented zero-based raw metadata indexing."
+      }
+    },
+    {
+      "id": "docs.meta-custom-separator",
+      "script": "$meta_sep(artist,' + ')",
+      "context": { "kind": "track", "fields": { "ARTIST": ["He", "She", "They"] } },
+      "expected": { "text": "He + She + They", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented custom separator overload."
+      }
+    },
+    {
+      "id": "docs.meta-final-separator",
+      "script": "$meta_sep(artist,', ',', and ')",
+      "context": { "kind": "track", "fields": { "ARTIST": ["He", "She", "They"] } },
+      "expected": { "text": "He, She, and They", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented final-separator overload."
+      }
+    },
+    {
+      "id": "docs.meta-value-count",
+      "script": "$meta_num(artist)",
+      "context": { "kind": "track", "fields": { "ARTIST": ["He", "She", "They"] } },
+      "expected": { "text": "3", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented raw metadata value count."
+      }
+    },
+    {
+      "id": "docs.meta-test-all-present",
+      "script": "$meta_test(artist,title)",
+      "context": { "kind": "track", "fields": { "ARTIST": "He", "TITLE": "Song" } },
+      "expected": { "text": "", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented all-fields-present metadata test."
+      }
+    },
+    {
+      "id": "docs.meta-present-empty-value",
+      "script": "$meta(empty,0)",
+      "context": { "kind": "track", "fields": { "EMPTY": "" } },
+      "expected": { "text": "", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Applies the documented present-field truth rule to an indexed present empty raw value."
+      }
+    },
+    {
+      "id": "docs.technical-info",
+      "script": "$info(channels)",
+      "context": { "kind": "track", "fields": {}, "technical": { "CHANNELS": "2" } },
+      "expected": { "text": "2", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented raw technical information lookup example."
+      }
+    },
+    {
+      "id": "docs.remap-album-artist",
+      "script": "%album artist%",
+      "context": { "kind": "track", "fields": { "COMPOSER": "Composer" } },
+      "expected": { "text": "Composer", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented album-artist fallback order reaches COMPOSER after absent ALBUM ARTIST and ARTIST."
+      }
+    },
+    {
+      "id": "docs.remap-album-venue",
+      "script": "%album%",
+      "context": { "kind": "track", "fields": { "VENUE": "The Venue" } },
+      "expected": { "text": "The Venue", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented ALBUM to VENUE fallback."
+      }
+    },
+    {
+      "id": "docs.remap-artist",
+      "script": "%artist%",
+      "context": { "kind": "track", "fields": { "ALBUM ARTIST": "Album Artist" } },
+      "expected": { "text": "Album Artist", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented ARTIST to ALBUM ARTIST fallback."
+      }
+    },
+    {
+      "id": "docs.remap-track-artist",
+      "script": "%track artist%",
+      "context": { "kind": "track", "fields": { "ALBUM ARTIST": "Album Artist", "ARTIST": "Track Artist" } },
+      "expected": { "text": "Track Artist", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented track-artist presence when remapped album artist and artist differ."
+      }
+    },
+    {
+      "id": "docs.remap-title-filename",
+      "script": "%title%",
+      "context": { "kind": "track", "fields": { "FILENAME": "fallback-title" } },
+      "expected": { "text": "fallback-title", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented missing TITLE fallback to filename."
+      }
+    },
+    {
+      "id": "docs.remap-track-number-padding",
+      "script": "%tracknumber%|%track number%",
+      "context": { "kind": "track", "fields": { "TRACKNUMBER": "5" } },
+      "expected": { "text": "05|5", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented distinction between padded tracknumber and unpadded track number."
+      }
+    },
+    {
+      "id": "docs.remap-disc-alias",
+      "script": "%discnumber%",
+      "context": { "kind": "track", "fields": { "DISC": "2" } },
+      "expected": { "text": "2", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented DISC alias for disc number."
+      }
+    },
+    {
+      "id": "docs.technical-info-alias",
+      "script": "%__codec%",
+      "context": { "kind": "track", "fields": {}, "technical": { "CODEC": "FLAC" } },
+      "expected": { "text": "FLAC", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Documented percent-field alias for raw technical information."
+      }
+    }
+  ]
+}

@@ -1,0 +1,156 @@
+{
+  "schema_version": 2,
+  "dialect": { "name": "tkfmt", "version": 1 },
+  "cases": [
+    {
+      "id": "field.scalar",
+      "host": "track",
+      "source": "%artist% - %title%",
+      "fields": { "artist": "Björk", "title": "Jóga" },
+      "expected": "Björk - Jóga",
+      "rationale": "Fields are interpolated without implicit remapping."
+    },
+    {
+      "id": "field.missing",
+      "host": "track",
+      "source": "[%missing%]",
+      "fields": {},
+      "expected": "[]",
+      "rationale": "Missing fields are empty and square brackets are ordinary text."
+    },
+    {
+      "id": "field.multi-default",
+      "host": "track",
+      "source": "%artist%",
+      "fields": { "artist": ["One", "Two"] },
+      "expected": "One; Two",
+      "rationale": "Scalar field rendering has one documented multi-value joiner."
+    },
+    {
+      "id": "escape.syntax",
+      "host": "copy",
+      "source": "\\$100 \\% \\(x\\) a\\,b \\\\",
+      "fields": {},
+      "expected": "$100 % (x) a,b \\",
+      "rationale": "Backslash escaping is explicit and source text otherwise remains literal."
+    },
+    {
+      "id": "condition.zero-is-true",
+      "host": "track",
+      "source": "$if(0,yes,no)",
+      "fields": {},
+      "expected": "yes",
+      "rationale": "All non-empty strings are true."
+    },
+    {
+      "id": "condition.missing-is-false",
+      "host": "track",
+      "source": "$if(%missing%,yes,no)",
+      "fields": {},
+      "expected": "no",
+      "rationale": "A missing field evaluates to the false empty string."
+    },
+    {
+      "id": "condition.fallback",
+      "host": "track",
+      "source": "$if2(%albumartist%,%artist%,Unknown)",
+      "fields": { "artist": "Nina Simone" },
+      "expected": "Nina Simone",
+      "rationale": "Fallback is visible in the preset instead of implicit remapping."
+    },
+    {
+      "id": "boolean.values",
+      "host": "sort",
+      "source": "$and(1,x)|$or(,x)|$not(x)|$eq(a,a)|$ne(a,b)",
+      "fields": {},
+      "expected": "1|1||1|1",
+      "rationale": "Boolean functions return 1 or empty text."
+    },
+    {
+      "id": "integer.arithmetic",
+      "host": "track",
+      "source": "$add(2,3,-1)|$sub(10,3,2)|$mul(3,4)|$div(-7,2)|$mod(-7,3)",
+      "fields": {},
+      "expected": "4|5|12|-3|-1",
+      "rationale": "Signed arithmetic is deterministic and division truncates toward zero."
+    },
+    {
+      "id": "integer.invalid-is-zero",
+      "host": "track",
+      "source": "$add(4.8,c3po,+2)",
+      "fields": {},
+      "expected": "2",
+      "rationale": "A non-integer argument converts to zero while a signed integer is accepted."
+    },
+    {
+      "id": "path.visible-fallback-padding",
+      "host": "path",
+      "source": "$if2(%albumartist%,%artist%)/%album%/$num(%tracknumber%,2) - %title%.flac",
+      "fields": {
+        "artist": "Talk Talk",
+        "album": "Spirit of Eden",
+        "tracknumber": "2",
+        "title": "Eden"
+      },
+      "expected": "Talk Talk/Spirit of Eden/02 - Eden.flac",
+      "rationale": "A conversion preset explicitly expresses fallback and padding."
+    },
+    {
+      "id": "text.unicode",
+      "host": "track",
+      "source": "$lower(ÄBC)|$upper(äbc)|$len(A😀é)|$left(A😀é,2)|$right(A😀é,2)",
+      "fields": {},
+      "expected": "äbc|ÄBC|3|A😀|😀é",
+      "rationale": "Text length and slicing count Unicode scalar values."
+    },
+    {
+      "id": "text.replace-pad",
+      "host": "track",
+      "source": "$replace(abba,b,x,a,y)|$pad(é,3,·)",
+      "fields": {},
+      "expected": "yxxy|é··",
+      "rationale": "Replacement pairs run left to right and padding never truncates."
+    },
+    {
+      "id": "metadata.explicit-multi",
+      "host": "tree",
+      "source": "$getmulti(genre,1)|$join(genre, + )|$lenmulti(genre)",
+      "fields": { "genre": ["Ambient", "Drone"] },
+      "expected": "Drone|Ambient + Drone|2",
+      "rationale": "Ordered multi-value access is explicit and independent of tree expansion."
+    },
+    {
+      "id": "tree.explicit-each-scalar-fallback",
+      "host": "tree",
+      "source": "$join(genre, + )",
+      "fields": { "genre": ["Ambient", "Drone"] },
+      "expected": "Ambient + Drone",
+      "rationale": "The scalar corpus runner proves tree hosts remain scalar unless each is requested; expanded cases live in the evaluator integration test."
+    },
+    {
+      "id": "metadata.present-empty",
+      "host": "track",
+      "source": "$lenmulti(comment):[$get(comment)]",
+      "fields": { "comment": [""] },
+      "expected": "1:[]",
+      "rationale": "Present-empty metadata remains distinguishable through its value count."
+    },
+    {
+      "id": "queue.virtual-fields",
+      "host": "queue",
+      "source": "$num(%queue_position%,2). %artist% - %title%",
+      "fields": { "queue_position": "3", "artist": "Low", "title": "Sunflower" },
+      "expected": "03. Low - Sunflower",
+      "rationale": "Queue presentation uses the same language with host-provided fields."
+    },
+    {
+      "id": "info.separate-namespace",
+      "host": "track",
+      "source": "$info(codec) $info(sample_rate) Hz",
+      "fields": { "codec": "tag value" },
+      "information": { "codec": "FLAC", "sample_rate": "96000" },
+      "expected": "FLAC 96000 Hz",
+      "rationale": "Technical information is explicit and separate from raw metadata."
+    }
+  ]
+}

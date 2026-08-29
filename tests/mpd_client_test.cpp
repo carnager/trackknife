@@ -1,0 +1,428 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+#include "trackknife/core/cancellation.hpp"
+#include "trackknife/core/stable_id.hpp"
+#include "trackknife/mpd/client.hpp"
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <ranges>
+#include <string>
+#include <string_view>
+#include <thread>
+
+namespace {
+
+void require(bool condition, std::string_view message) {
+    if (!condition) {
+        std::cerr << "FAILED: " << message << '\n';
+        std::abort();
+    }
+}
+
+void write_all(int socket, std::string_view text) {
+    std::size_t offset = 0U;
+    while (offset < text.size()) {
+        const auto written =
+            ::send(socket, text.data() + offset, text.size() - offset, MSG_NOSIGNAL);
+        if (written <= 0) {
+            return;
+        }
+        offset += static_cast<std::size_t>(written);
+    }
+}
+
+class FakeMpdServer final {
+  public:
+    FakeMpdServer() {
+        listen_socket_ = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        require(listen_socket_ >= 0, "fake server socket must open");
+
+        const int reuse = 1;
+        require(::setsockopt(listen_socket_, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) == 0,
+                "fake server must set SO_REUSEADDR");
+
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = 0;
+        require(::bind(listen_socket_, reinterpret_cast<const sockaddr*>(&address),
+                       sizeof(address)) == 0,
+                "fake server must bind");
+        require(::listen(listen_socket_, 1) == 0, "fake server must listen");
+
+        socklen_t size = sizeof(address);
+        require(::getsockname(listen_socket_, reinterpret_cast<sockaddr*>(&address), &size) == 0,
+                "fake server must report its port");
+        port_ = ntohs(address.sin_port);
+        worker_ = std::thread([this] { serve(); });
+    }
+
+    FakeMpdServer(const FakeMpdServer&) = delete;
+    FakeMpdServer& operator=(const FakeMpdServer&) = delete;
+
+    ~FakeMpdServer() {
+        if (client_socket_.load() >= 0) {
+            static_cast<void>(::shutdown(client_socket_.load(), SHUT_RDWR));
+        }
+        static_cast<void>(::shutdown(listen_socket_, SHUT_RDWR));
+        static_cast<void>(::close(listen_socket_));
+        if (worker_.joinable()) {
+            worker_.join();
+        }
+    }
+
+    [[nodiscard]] unsigned port() const noexcept { return port_; }
+
+  private:
+    void serve() {
+        const int client = ::accept4(listen_socket_, nullptr, nullptr, SOCK_CLOEXEC);
+        if (client < 0) {
+            return;
+        }
+        client_socket_.store(client);
+        write_all(client, "OK MPD 0.24.2\n");
+
+        std::string pending;
+        bool command_list = false;
+        std::array<char, 256> buffer{};
+        while (true) {
+            const auto count = ::recv(client, buffer.data(), buffer.size(), 0);
+            if (count <= 0) {
+                break;
+            }
+            pending.append(buffer.data(), static_cast<std::size_t>(count));
+            auto newline = pending.find('\n');
+            while (newline != std::string::npos) {
+                const auto command = pending.substr(0, newline);
+                pending.erase(0, newline + 1U);
+                respond(client, command, command_list);
+                newline = pending.find('\n');
+            }
+        }
+        static_cast<void>(::close(client));
+        client_socket_.store(-1);
+    }
+
+    static void respond(int client, std::string_view command, bool& command_list) {
+        if (command == "command_list_begin") {
+            command_list = true;
+        } else if (command == "command_list_end") {
+            command_list = false;
+            write_all(client, "OK\n");
+        } else if (command == "commands") {
+            write_all(client, "command: status\ncommand: currentsong\ncommand: playlistinfo\n"
+                              "command: plchanges\ncommand: outputs\ncommand: switchoutput\n"
+                              "command: prioid\n"
+                              "command: lsinfo\ncommand: search\ncommand: listplaylists\n"
+                              "command: listplaylistinfo\ncommand: replay_gain_status\n"
+                              "command: replay_gain_mode\ncommand: ping\nOK\n");
+        } else if (command == "tagtypes") {
+            write_all(client, "tagtype: Artist\ntagtype: MusicBrainzTrackId\n"
+                              "tagtype: MusicBrainzReleaseGroupId\nOK\n");
+        } else if (command == "status") {
+            write_all(client, "volume: 72\nrepeat: 0\nrandom: 0\nsingle: 0\nconsume: 0\n"
+                              "playlist: 43\nplaylistlength: 2\nstate: play\nsongid: 7\n"
+                              "elapsed: 12.5\nduration: 123.5\nOK\n");
+        } else if (command == "currentsong") {
+            write_all(client,
+                      "file: Artist/Release/01.flac\nArtist: Credited Artist\n"
+                      "MusicBrainzTrackId: recording-id\nPos: 0\nId: 7\nduration: 123.5\nOK\n");
+        } else if (command == "playlistinfo") {
+            write_all(client, "file: Artist/Release/01.flac\nTitle: One\nPos: 0\nId: 7\nPrio: 192\n"
+                              "file: Artist/Release/02.flac\nTitle: Two\nPos: 1\nId: 9\nOK\n");
+        } else if (command == "plchanges \"43\"") {
+            write_all(client, "file: Artist/Release/02.flac\nTitle: Two\nPos: 0\nId: 9\nOK\n");
+        } else if (command == "outputs") {
+            write_all(client, "outputid: 0\noutputname: local\noutputenabled: 1\n"
+                              "outputprimary: 1\noutputonline: 1\nplugin: server\n"
+                              "outputformat: flac\nOK\n");
+        } else if (command == "lsinfo") {
+            write_all(client, "directory: Artist\nLast-Modified: 2026-08-24T10:00:00Z\n"
+                              "file: loose.flac\nArtist: Loose Artist\nTitle: Loose track\n"
+                              "playlist: Road mix\nLast-Modified: 2026-08-24T11:00:00Z\nOK\n");
+        } else if (command.starts_with("list ")) {
+            write_all(client, "AlbumArtist: Credited Artist\nAlbumArtist: Various Artists\nOK\n");
+        } else if (command.starts_with("search ")) {
+            if (command.find("window") != std::string_view::npos) {
+                write_all(client, "file: Artist/Release/01.flac\nArtist: Credited Artist\n"
+                                  "Title: Search one\nMusicBrainzTrackId: recording-id\n"
+                                  "file: Artist/Release/02.flac\nArtist: Credited Artist\n"
+                                  "Title: Search two\nOK\n");
+            } else {
+                write_all(client, "file: Artist/Early/01.flac\nAlbumArtist: Credited Artist\n"
+                                  "Album: Early Release\nDate: 1998\n"
+                                  "MusicBrainzAlbumId: release-early\nTitle: First\n"
+                                  "file: Artist/Early/02.flac\nAlbumArtist: Credited Artist\n"
+                                  "Album: Early Release\nDate: 1998\n"
+                                  "MusicBrainzAlbumId: release-early\nTitle: Second\n"
+                                  "file: Artist/Later/01.flac\nAlbumArtist: Credited Artist\n"
+                                  "Album: Later Release\nDate: 2001\n"
+                                  "MusicBrainzAlbumId: release-later\nTitle: Third\nOK\n");
+            }
+        } else if (command.starts_with("find ")) {
+            write_all(client, "file: Artist/Release/01.flac\nAlbumArtist: Credited Artist\n"
+                              "Album: Complete Release\nTrack: 1\nTitle: First\n"
+                              "file: Artist/Release/02.flac\nAlbumArtist: Credited Artist\n"
+                              "Album: Complete Release\nTrack: 2\nTitle: Second\nOK\n");
+        } else if (command == "listplaylists") {
+            write_all(client, "playlist: Road mix\nLast-Modified: 2026-08-24T11:00:00Z\n"
+                              "playlist: Quiet mix\nOK\n");
+        } else if (command == "listplaylistinfo \"Road mix\"") {
+            write_all(client, "file: Artist/Release/02.flac\nArtist: Credited Artist\n"
+                              "Title: Search two\nOK\n");
+        } else if (command == "replay_gain_status") {
+            write_all(client, "replay_gain_mode: track\nOK\n");
+        } else if (command.starts_with("addid ")) {
+            if (!command_list) {
+                write_all(client, "Id: 11\nOK\n");
+            }
+        } else if (command == "deleteid \"999\"") {
+            write_all(client, "ACK [50@0] {deleteid} No such song\n");
+        } else if (command.starts_with("deleteid ") && command_list) {
+            return;
+        } else if (command.starts_with("moveid ") && command_list) {
+            return;
+        } else if (command.starts_with("prioid ") && command_list) {
+            return;
+        } else if (command.starts_with("playlistdelete ") && command_list) {
+            return;
+        } else if (command.starts_with("playid ") || command.starts_with("deleteid ") ||
+                   command.starts_with("moveid ") || command.starts_with("seekid ") ||
+                   command.starts_with("prioid ") || command.starts_with("setvol ") ||
+                   command.starts_with("enableoutput ") || command.starts_with("switchoutput ") ||
+                   command.starts_with("repeat ") || command.starts_with("random ") ||
+                   command.starts_with("single ") || command.starts_with("consume ") ||
+                   command.starts_with("replay_gain_mode ") || command.starts_with("save ") ||
+                   command.starts_with("load ") || command.starts_with("playlistadd ") ||
+                   command.starts_with("playlistdelete ") || command.starts_with("playlistmove ") ||
+                   command.starts_with("playlistclear ") || command.starts_with("rename ") ||
+                   command.starts_with("rm ") || command == "clear") {
+            write_all(client, "OK\n");
+        } else if (command == "ping") {
+            write_all(client, "OK\n");
+        } else if (command == "idle") {
+            write_all(client, "changed: playlist\nchanged: output\nOK\n");
+        } else {
+            write_all(client, "ACK [5@0] {} unknown command\n");
+        }
+    }
+
+    int listen_socket_{-1};
+    std::atomic_int client_socket_{-1};
+    unsigned port_{0};
+    std::thread worker_;
+};
+
+void client_negotiates_and_preserves_extensions() {
+    FakeMpdServer server;
+    trackknife::mpd::Profile profile{
+        .id = trackknife::core::StableId::random(),
+        .name = "fixture",
+        .host = "127.0.0.1",
+        .port = server.port(),
+        .password = std::nullopt,
+        .local_music_root = std::filesystem::path{"/srv/music"},
+        .connect_timeout = std::chrono::milliseconds{1'000},
+        .command_timeout = std::chrono::milliseconds{1'000},
+    };
+
+    auto connected = trackknife::mpd::Client::connect(profile);
+    require(connected.has_value(), "client must connect to a valid MPD greeting");
+    auto client = std::move(*connected);
+    require(client.protocol_version() == trackknife::mpd::ProtocolVersion{0, 24, 2},
+            "server protocol version must project");
+
+    const auto capabilities = client.capabilities();
+    require(capabilities.has_value(), "capability discovery must succeed");
+    require(capabilities->supports_command("SWITCHOUTPUT"),
+            "advertised Melody command must be case-insensitively discoverable");
+    require(capabilities->exposes_tag("musicbrainzreleasegroupid"),
+            "newer/unknown tag types must survive capability discovery");
+
+    const auto status = client.status();
+    require(status.has_value() && status->state == trackknife::mpd::PlaybackState::playing &&
+                status->song_id == 7U && status->volume == 72U,
+            "typed playback status must cross the adapter boundary");
+
+    const auto current = client.current_song();
+    require(current.has_value() && current->size() == 1U,
+            "current song must project from generic pairs");
+    require(current->front().queue_id == 7U && current->front().musicbrainz.recording_ids ==
+                                                   std::vector<std::string>{"recording-id"},
+            "queue and MusicBrainz identity must survive adapter boundary");
+
+    const auto queue = client.queue_snapshot();
+    require(queue.has_value() && queue->size() == 2U && queue->front().priority == 192U &&
+                queue->at(1).queue_id == 9U,
+            "queue duplicates/occurrences must retain server IDs");
+    const auto changes = client.queue_changes(43U);
+    require(changes && changes->size() == 1U && changes->front().queue_id == 9U &&
+                changes->front().queue_position == 0U,
+            "versioned queue changes must preserve their stable ID and new position");
+
+    const auto outputs = client.outputs();
+    require(outputs.has_value() && outputs->size() == 1U,
+            "outputs must project from generic pairs");
+    require(outputs->front().primary == true && outputs->front().online == true &&
+                outputs->front().stream_format == "flac",
+            "Melody output extensions must survive libmpdclient transport");
+    const auto database = client.browse();
+    require(database && database->size() == 3U &&
+                std::holds_alternative<trackknife::mpd::DatabaseDirectory>(database->at(0)) &&
+                std::holds_alternative<trackknife::mpd::Track>(database->at(1)) &&
+                std::holds_alternative<trackknife::mpd::StoredPlaylist>(database->at(2)),
+            "non-recursive database browse must preserve heterogeneous entry order");
+    const auto artists = client.list_tag("AlbumArtist");
+    require(artists && *artists == std::vector<std::string>{"Credited Artist", "Various Artists"},
+            "server-side tag browse must preserve typed values");
+    const auto artist_tracks = client.find_tag_tracks("AlbumArtist", "Credited Artist", 10'000U);
+    require(artist_tracks && artist_tracks->size() == 2U &&
+                artist_tracks->back().uri == "Artist/Release/02.flac",
+            "a lazy library-tree branch must use one bounded exact tag lookup");
+    require(!client.find_tag_tracks("AlbumArtist", "Credited Artist", 20'001U),
+            "a library-tree branch cannot exceed the adapter bound");
+    require(!client.list_tag("not a real tag") && !client.artwork("", false),
+            "invalid tag and artwork requests must fail before protocol I/O");
+    const auto searched = client.search_any("Credited Artist", 0U, 2U);
+    require(searched && searched->size() == 2U &&
+                searched->front().musicbrainz.recording_ids ==
+                    std::vector<std::string>{"recording-id"},
+            "bounded any-tag search must return typed metadata-rich tracks");
+    require(!client.search_any("", 0U, 2U) && !client.search_any("too broad", 0U, 501U),
+            "unbounded or empty searches must fail before protocol I/O");
+    const auto library_search = client.search_library("Credited Artist", 2U, 100U);
+    require(library_search && library_search->tracks.size() == 2U &&
+                library_search->albums.size() == 2U &&
+                library_search->albums.back().filter.release_id == "release-later" &&
+                std::ranges::all_of(library_search->albums,
+                                    [](const auto& album) { return !album.artwork_uri.empty(); }),
+            "library search must derive real albums before bounding the displayed track page");
+    const auto next_page = client.search_library("Credited Artist", 2U, 100U, 2U);
+    require(next_page && next_page->albums.empty() && next_page->tracks.size() == 2U,
+            "continued search must use a bounded server-side window without rebuilding albums");
+    const auto album = client.find_album(trackknife::mpd::AlbumFilter{
+        .release_id = std::string{"release-id"},
+        .artist = "Credited Artist",
+        .album = "Complete Release",
+        .date = std::string{"2000"},
+        .artist_is_album_artist = true,
+    });
+    require(album && album->size() == 2U && album->back().uri == "Artist/Release/02.flac",
+            "exact album lookup must return every track in the release");
+    const auto playlists = client.stored_playlists();
+    require(playlists && playlists->size() == 2U && playlists->front().name == "Road mix",
+            "stored playlist discovery must retain server order and identity");
+    const auto playlist = client.stored_playlist("Road mix");
+    require(playlist && playlist->size() == 1U &&
+                playlist->front().metadata.first("Title") == "Search two",
+            "stored playlist contents must retain full track metadata");
+    require(
+        client.save_queue_as_playlist("New mix").has_value() &&
+            client.load_stored_playlist_into_queue("Road mix").has_value() &&
+            client.add_to_stored_playlist("Road mix", "Artist/Release/03.flac").has_value() &&
+            client.add_to_stored_playlist("Road mix", "Artist/Release/04.flac", 1U).has_value() &&
+            client.delete_from_stored_playlist("Road mix", 1U).has_value() &&
+            client.delete_from_stored_playlist("Road mix", std::array{4U, 2U}).has_value() &&
+            client.move_in_stored_playlist("Road mix", 0U, 1U).has_value() &&
+            client.clear_stored_playlist("Quiet mix").has_value() &&
+            client.rename_stored_playlist("New mix", "Renamed mix").has_value() &&
+            client.delete_stored_playlist("Renamed mix").has_value(),
+        "stored-playlist mutations must cross the adapter boundary");
+    require(!client.save_queue_as_playlist("") && !client.add_to_stored_playlist("Road mix", "") &&
+                !client.delete_from_stored_playlist("Road mix", std::array{1U, 1U}) &&
+                !client.move_in_stored_playlist("Road mix", 1U, 1U) &&
+                !client.rename_stored_playlist("same", "same"),
+            "invalid stored-playlist mutations must fail before protocol I/O");
+    require(client.seek_id(7U, std::chrono::milliseconds{12'500}).has_value(),
+            "ID-based fractional seek must use the command connection");
+    require(client.set_volume(31U).has_value(), "absolute volume must use the command connection");
+    require(client.set_repeat(true).has_value() && client.set_random(true).has_value(),
+            "repeat and random modes must use typed command methods");
+    require(client.set_single(trackknife::mpd::PlaybackModeState::oneshot).has_value() &&
+                client.set_consume(trackknife::mpd::PlaybackModeState::on).has_value(),
+            "single and consume must preserve extended mode states");
+    require(!client.set_single(trackknife::mpd::PlaybackModeState::unknown),
+            "an unknown playback mode must fail before protocol I/O");
+    require(client.replay_gain_mode() == trackknife::mpd::ReplayGainMode::track &&
+                client.set_replay_gain_mode(trackknife::mpd::ReplayGainMode::album).has_value(),
+            "ReplayGain status and changes must stay typed across the adapter boundary");
+    require(client.set_output_enabled(0U, true).has_value(),
+            "additive MPD output enable must use the command connection");
+    require(client.switch_output(0U).has_value(),
+            "advertised Melody exclusive switching must use the command connection");
+    require(client.play_id(9U).has_value(), "queue playback must address the stable song ID");
+    const auto appended = client.add_id("Artist/Release/03.flac");
+    require(appended == 11U, "queue append must return the server-assigned stable song ID");
+    const auto inserted = client.add_id("Artist/Release/03.flac", 1U);
+    require(inserted == 11U, "queue insertion must retain the server-assigned song ID");
+    const std::array additions{
+        trackknife::mpd::QueueAddition{.uri = "Artist/Release/04.flac", .position = 1U},
+        trackknife::mpd::QueueAddition{.uri = "Artist/Release/05.flac", .position = 2U},
+    };
+    require(client.add_ids(additions).has_value(),
+            "multi-selection addition must use one ordered command list");
+    const std::array invalid_additions{
+        trackknife::mpd::QueueAddition{.uri = "", .position = std::nullopt},
+        trackknife::mpd::QueueAddition{.uri = "valid.flac", .position = std::nullopt},
+    };
+    require(!client.add_ids(invalid_additions),
+            "an invalid URI must reject the whole addition batch before protocol I/O");
+    require(client.delete_id(9U).has_value(), "queue deletion must address the stable song ID");
+    const std::array delete_batch{7U, 9U};
+    require(client.delete_ids(delete_batch).has_value(),
+            "multi-selection deletion must use one stable-ID command list");
+    const std::array duplicate_delete_batch{7U, 7U};
+    require(!client.delete_ids(duplicate_delete_batch),
+            "duplicate IDs must fail before a deletion command list is sent");
+    const auto missing_delete = client.delete_id(999U);
+    require(!missing_delete &&
+                missing_delete.error().code == trackknife::core::ErrorCode::not_found,
+            "MPD no-exist ACKs must retain a recoverable typed error");
+    require(client.clear_queue().has_value(), "queue clear must use the command connection");
+    require(client.move_id(9U, 0U).has_value(), "queue move must address the stable song ID");
+    const std::array moves{
+        trackknife::mpd::QueueMove{.song_id = 7U, .position = 1U},
+        trackknife::mpd::QueueMove{.song_id = 9U, .position = 0U},
+    };
+    require(client.move_ids(moves).has_value(),
+            "multi-selection queue reorder must use one stable-ID command list");
+    const std::array duplicate_moves{
+        trackknife::mpd::QueueMove{.song_id = 7U, .position = 1U},
+        trackknife::mpd::QueueMove{.song_id = 7U, .position = 0U},
+    };
+    require(!client.move_ids(duplicate_moves),
+            "queue reorder batches must reject duplicate stable IDs before protocol I/O");
+    require(client.set_priority_id(7U, 192U).has_value(),
+            "queue priority must address the stable song ID");
+    require(client.set_priority_ids(std::array{7U, 9U}, 255U).has_value(),
+            "multi-selection priority must use one stable-ID command list");
+    require(!client.set_priority_ids(std::array{7U, 7U}, 128U) && !client.set_priority_id(7U, 256U),
+            "invalid queue priority requests must fail before protocol I/O");
+    require(!client.add_id(""), "an empty queue URI must fail before protocol I/O");
+    require(!client.set_volume(101U), "out-of-range volume must fail before protocol I/O");
+    require(client.ping().has_value(), "connection must remain usable after all responses");
+
+    const trackknife::core::CancellationSource idle_cancellation;
+    const auto idle = client.wait_for_idle(idle_cancellation.token());
+    require(idle.has_value() && idle->contains(trackknife::mpd::IdleEvent::queue) &&
+                idle->contains(trackknife::mpd::IdleEvent::output),
+            "idle subsystem changes must project without polling the whole server");
+}
+
+} // namespace
+
+int main() {
+    client_negotiates_and_preserves_extensions();
+    return EXIT_SUCCESS;
+}

@@ -1,0 +1,1294 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+#include "trackknife/mpd/client.hpp"
+
+#include "trackknife/mpd/projection.hpp"
+
+#include <mpd/client.h>
+
+#include <poll.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <functional>
+#include <limits>
+#include <memory>
+#include <string>
+#include <unordered_set>
+#include <utility>
+
+namespace trackknife::mpd {
+namespace {
+
+struct ConnectionDeleter {
+    void operator()(mpd_connection* connection) const noexcept {
+        if (connection != nullptr) {
+            mpd_connection_free(connection);
+        }
+    }
+};
+
+using ConnectionPtr = std::unique_ptr<mpd_connection, ConnectionDeleter>;
+
+[[nodiscard]] core::ErrorCode map_error_code(enum mpd_error error) noexcept {
+    switch (error) {
+    case MPD_ERROR_ARGUMENT:
+    case MPD_ERROR_STATE:
+        return core::ErrorCode::invalid_argument;
+    case MPD_ERROR_TIMEOUT:
+    case MPD_ERROR_SYSTEM:
+    case MPD_ERROR_RESOLVER:
+    case MPD_ERROR_CLOSED:
+        return core::ErrorCode::io;
+    case MPD_ERROR_OOM:
+    case MPD_ERROR_MALFORMED:
+    case MPD_ERROR_SERVER:
+    case MPD_ERROR_SUCCESS:
+        return core::ErrorCode::backend;
+    }
+    return core::ErrorCode::backend;
+}
+
+[[nodiscard]] core::ErrorCode map_server_error_code(enum mpd_server_error error) noexcept {
+    switch (error) {
+    case MPD_SERVER_ERROR_ARG:
+        return core::ErrorCode::invalid_argument;
+    case MPD_SERVER_ERROR_NO_EXIST:
+        return core::ErrorCode::not_found;
+    case MPD_SERVER_ERROR_EXIST:
+        return core::ErrorCode::conflict;
+    case MPD_SERVER_ERROR_UNKNOWN_CMD:
+        return core::ErrorCode::unsupported;
+    case MPD_SERVER_ERROR_UNK:
+    case MPD_SERVER_ERROR_NOT_LIST:
+    case MPD_SERVER_ERROR_PASSWORD:
+    case MPD_SERVER_ERROR_PERMISSION:
+    case MPD_SERVER_ERROR_PLAYLIST_MAX:
+    case MPD_SERVER_ERROR_SYSTEM:
+    case MPD_SERVER_ERROR_PLAYLIST_LOAD:
+    case MPD_SERVER_ERROR_UPDATE_ALREADY:
+    case MPD_SERVER_ERROR_PLAYER_SYNC:
+        return core::ErrorCode::backend;
+    }
+    return core::ErrorCode::backend;
+}
+
+[[nodiscard]] unsigned bounded_timeout(std::chrono::milliseconds timeout) noexcept {
+    if (timeout.count() <= 0) {
+        return 1U;
+    }
+    const auto maximum =
+        static_cast<std::chrono::milliseconds::rep>(std::numeric_limits<unsigned>::max());
+    return static_cast<unsigned>(std::min(timeout.count(), maximum));
+}
+
+[[nodiscard]] IdleEvents project_idle_events(enum mpd_idle events) noexcept {
+    IdleEvents result;
+    const auto add = [&result, events](enum mpd_idle backend, IdleEvent domain) {
+        if ((events & backend) != 0) {
+            result.mask |= static_cast<std::uint32_t>(domain);
+        }
+    };
+    add(MPD_IDLE_DATABASE, IdleEvent::database);
+    add(MPD_IDLE_STORED_PLAYLIST, IdleEvent::stored_playlist);
+    add(MPD_IDLE_QUEUE, IdleEvent::queue);
+    add(MPD_IDLE_PLAYER, IdleEvent::player);
+    add(MPD_IDLE_MIXER, IdleEvent::mixer);
+    add(MPD_IDLE_OUTPUT, IdleEvent::output);
+    add(MPD_IDLE_OPTIONS, IdleEvent::options);
+    add(MPD_IDLE_UPDATE, IdleEvent::update);
+    add(MPD_IDLE_STICKER, IdleEvent::sticker);
+    add(MPD_IDLE_PARTITION, IdleEvent::partition);
+    return result;
+}
+
+[[nodiscard]] std::optional<enum mpd_single_state>
+to_mpd_single_state(const PlaybackModeState state) noexcept {
+    switch (state) {
+    case PlaybackModeState::off:
+        return MPD_SINGLE_OFF;
+    case PlaybackModeState::on:
+        return MPD_SINGLE_ON;
+    case PlaybackModeState::oneshot:
+        return MPD_SINGLE_ONESHOT;
+    case PlaybackModeState::unknown:
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::optional<enum mpd_consume_state>
+to_mpd_consume_state(const PlaybackModeState state) noexcept {
+    switch (state) {
+    case PlaybackModeState::off:
+        return MPD_CONSUME_OFF;
+    case PlaybackModeState::on:
+        return MPD_CONSUME_ON;
+    case PlaybackModeState::oneshot:
+        return MPD_CONSUME_ONESHOT;
+    case PlaybackModeState::unknown:
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::optional<enum mpd_replay_gain_mode>
+to_mpd_replay_gain_mode(const ReplayGainMode mode) noexcept {
+    switch (mode) {
+    case ReplayGainMode::off:
+        return MPD_REPLAY_OFF;
+    case ReplayGainMode::track:
+        return MPD_REPLAY_TRACK;
+    case ReplayGainMode::album:
+        return MPD_REPLAY_ALBUM;
+    case ReplayGainMode::automatic:
+        return MPD_REPLAY_AUTO;
+    case ReplayGainMode::unknown:
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
+struct Client::Impl {
+    ConnectionPtr connection;
+
+    [[nodiscard]] core::Error take_error(std::string_view stage) {
+        const auto backend_error = mpd_connection_get_error(connection.get());
+        const auto server_error = backend_error == MPD_ERROR_SERVER
+                                      ? mpd_connection_get_server_error(connection.get())
+                                      : MPD_SERVER_ERROR_UNK;
+        const char* backend_message = backend_error == MPD_ERROR_SUCCESS
+                                          ? nullptr
+                                          : mpd_connection_get_error_message(connection.get());
+        core::Error error{
+            .code = backend_error == MPD_ERROR_SERVER ? map_server_error_code(server_error)
+                                                      : map_error_code(backend_error),
+            .message =
+                backend_message == nullptr ? "MPD operation failed" : std::string{backend_message},
+            .context = {{"stage", std::string{stage}},
+                        {"libmpdclient_error", std::to_string(backend_error)}},
+        };
+        if (backend_error == MPD_ERROR_SERVER) {
+            error.context.push_back({"mpd_server_error", std::to_string(server_error)});
+        }
+        // Server ACK/argument failures do not necessarily poison the socket.
+        // Expose libmpdclient's recovery verdict so the session does not turn a
+        // definitive command rejection into a needless reconnect.
+        const auto recoverable = mpd_connection_clear_error(connection.get());
+        error.context.push_back({"connection_recoverable", recoverable ? "true" : "false"});
+        return error;
+    }
+
+    [[nodiscard]] core::Result<std::vector<Pair>> receive_pairs(std::string_view stage) {
+        std::vector<Pair> result;
+        while (auto* pair = mpd_recv_pair(connection.get())) {
+            result.push_back({pair->name == nullptr ? std::string{} : std::string{pair->name},
+                              pair->value == nullptr ? std::string{} : std::string{pair->value}});
+            mpd_return_pair(connection.get(), pair);
+        }
+        if (!mpd_response_finish(connection.get())) {
+            return std::unexpected(take_error(stage));
+        }
+        return result;
+    }
+};
+
+Client::Client(std::unique_ptr<Impl> implementation) : implementation_(std::move(implementation)) {}
+
+Client::Client(Client&&) noexcept = default;
+Client& Client::operator=(Client&&) noexcept = default;
+Client::~Client() = default;
+
+core::Result<Client> Client::connect(const Profile& profile) {
+    auto implementation = std::make_unique<Impl>();
+    implementation->connection.reset(
+        mpd_connection_new(profile.host.empty() ? nullptr : profile.host.c_str(), profile.port,
+                           bounded_timeout(profile.connect_timeout)));
+    if (!implementation->connection) {
+        return std::unexpected(
+            core::Error{.code = core::ErrorCode::backend,
+                        .message = "libmpdclient could not allocate a connection",
+                        .context = {}});
+    }
+    if (mpd_connection_get_error(implementation->connection.get()) != MPD_ERROR_SUCCESS) {
+        return std::unexpected(implementation->take_error("connect"));
+    }
+
+    static_cast<void>(mpd_connection_set_keepalive(implementation->connection.get(), true));
+    mpd_connection_set_timeout(implementation->connection.get(),
+                               bounded_timeout(profile.command_timeout));
+
+    if (profile.password &&
+        !mpd_run_password(implementation->connection.get(), profile.password->c_str())) {
+        return std::unexpected(implementation->take_error("authenticate"));
+    }
+    return Client{std::move(implementation)};
+}
+
+ProtocolVersion Client::protocol_version() const noexcept {
+    const auto* version = mpd_connection_get_server_version(implementation_->connection.get());
+    if (version == nullptr) {
+        return {};
+    }
+    return {.major = version[0], .minor = version[1], .patch = version[2]};
+}
+
+core::Result<Capabilities> Client::capabilities() {
+    Capabilities result;
+    result.protocol = protocol_version();
+
+    if (!mpd_send_allowed_commands(implementation_->connection.get())) {
+        return std::unexpected(implementation_->take_error("send commands"));
+    }
+    auto command_pairs = implementation_->receive_pairs("receive commands");
+    if (!command_pairs) {
+        return std::unexpected(std::move(command_pairs.error()));
+    }
+    for (auto& pair : *command_pairs) {
+        if (ascii_case_equal(pair.name, "command")) {
+            result.commands.push_back(std::move(pair.value));
+        }
+    }
+
+    if (!mpd_send_list_tag_types(implementation_->connection.get())) {
+        return std::unexpected(implementation_->take_error("send tagtypes"));
+    }
+    auto tag_pairs = implementation_->receive_pairs("receive tagtypes");
+    if (!tag_pairs) {
+        return std::unexpected(std::move(tag_pairs.error()));
+    }
+    for (auto& pair : *tag_pairs) {
+        if (ascii_case_equal(pair.name, "tagtype")) {
+            result.tag_types.push_back(std::move(pair.value));
+        }
+    }
+    return result;
+}
+
+core::Result<std::vector<Pair>> Client::command_pairs(std::string_view command) {
+    const std::string command_text{command};
+    if (command_text.empty()) {
+        return std::unexpected(core::Error{.code = core::ErrorCode::invalid_argument,
+                                           .message = "MPD command name cannot be empty",
+                                           .context = {}});
+    }
+    if (!mpd_send_command(implementation_->connection.get(), command_text.c_str(), nullptr)) {
+        return std::unexpected(implementation_->take_error("send command"));
+    }
+    return implementation_->receive_pairs(command_text);
+}
+
+core::Result<PlaybackStatus> Client::status() {
+    auto pairs = command_pairs("status");
+    if (!pairs) {
+        return std::unexpected(std::move(pairs.error()));
+    }
+    return project_status(*pairs);
+}
+
+core::Result<std::vector<Track>> Client::current_song() {
+    auto pairs = command_pairs("currentsong");
+    if (!pairs) {
+        return std::unexpected(std::move(pairs.error()));
+    }
+    return project_tracks(*pairs);
+}
+
+core::Result<std::vector<Track>> Client::queue_snapshot() {
+    auto pairs = command_pairs("playlistinfo");
+    if (!pairs) {
+        return std::unexpected(std::move(pairs.error()));
+    }
+    return project_tracks(*pairs);
+}
+
+core::Result<std::vector<Track>> Client::queue_changes(const std::uint32_t from_version) {
+    const auto version = std::to_string(from_version);
+    if (!mpd_send_command(implementation_->connection.get(), "plchanges", version.c_str(),
+                          nullptr)) {
+        return std::unexpected(implementation_->take_error("send plchanges"));
+    }
+    auto pairs = implementation_->receive_pairs("receive plchanges");
+    if (!pairs) {
+        return std::unexpected(std::move(pairs.error()));
+    }
+    return project_tracks(*pairs);
+}
+
+core::Result<std::vector<DatabaseEntry>> Client::browse(const std::string_view uri) {
+    if (uri.contains('\0')) {
+        return std::unexpected(core::Error{.code = core::ErrorCode::invalid_argument,
+                                           .message = "MPD browse URI cannot contain NUL",
+                                           .context = {}});
+    }
+    const std::string uri_text{uri};
+    if (!mpd_send_list_meta(implementation_->connection.get(),
+                            uri_text.empty() ? nullptr : uri_text.c_str())) {
+        return std::unexpected(implementation_->take_error("send lsinfo"));
+    }
+    auto pairs = implementation_->receive_pairs("receive lsinfo");
+    if (!pairs) {
+        return std::unexpected(std::move(pairs.error()));
+    }
+    return project_database_entries(*pairs);
+}
+
+core::Result<std::vector<std::string>> Client::list_tag(const std::string_view tag) {
+    if (tag.empty() || tag.contains('\0')) {
+        return std::unexpected(core::Error{.code = core::ErrorCode::invalid_argument,
+                                           .message = "MPD tag name is invalid",
+                                           .context = {}});
+    }
+    const std::string tag_name{tag};
+    const auto type = mpd_tag_name_iparse(tag_name.c_str());
+    if (type == MPD_TAG_UNKNOWN) {
+        return std::unexpected(core::Error{.code = core::ErrorCode::invalid_argument,
+                                           .message = "MPD tag name is unknown",
+                                           .context = {{"tag", tag_name}}});
+    }
+    auto* connection = implementation_->connection.get();
+    if (!mpd_search_db_tags(connection, type) || !mpd_search_commit(connection)) {
+        mpd_search_cancel(connection);
+        return std::unexpected(implementation_->take_error("send list tag"));
+    }
+    auto pairs = implementation_->receive_pairs("receive list tag");
+    if (!pairs) {
+        return std::unexpected(std::move(pairs.error()));
+    }
+    std::vector<std::string> values;
+    values.reserve(pairs->size());
+    for (auto& pair : *pairs) {
+        if (ascii_case_equal(pair.name, tag_name) && !pair.value.empty()) {
+            values.push_back(std::move(pair.value));
+        }
+    }
+    return values;
+}
+
+core::Result<std::vector<Track>> Client::find_tag_tracks(const std::string_view tag,
+                                                         const std::string_view value,
+                                                         const unsigned limit) {
+    constexpr unsigned maximum_tracks = 20'000U;
+    if (tag.empty() || tag.contains('\0') || value.contains('\0') || limit == 0U ||
+        limit > maximum_tracks) {
+        return std::unexpected(core::Error{.code = core::ErrorCode::invalid_argument,
+                                           .message = "MPD tag-track lookup is invalid",
+                                           .context = {}});
+    }
+    const std::string tag_name{tag};
+    const std::string tag_value{value};
+    const auto type = mpd_tag_name_iparse(tag_name.c_str());
+    if (type == MPD_TAG_UNKNOWN) {
+        return std::unexpected(core::Error{.code = core::ErrorCode::invalid_argument,
+                                           .message = "MPD tag name is unknown",
+                                           .context = {{"tag", tag_name}}});
+    }
+
+    auto* connection = implementation_->connection.get();
+    if (!mpd_search_db_songs(connection, true)) {
+        return std::unexpected(implementation_->take_error("begin tag-track lookup"));
+    }
+    if (!mpd_search_add_tag_constraint(connection, MPD_OPERATOR_DEFAULT, type, tag_value.c_str()) ||
+        !mpd_search_add_window(connection, 0U, limit)) {
+        mpd_search_cancel(connection);
+        return std::unexpected(implementation_->take_error("build tag-track lookup"));
+    }
+    if (!mpd_search_commit(connection)) {
+        return std::unexpected(implementation_->take_error("send tag-track lookup"));
+    }
+    auto pairs = implementation_->receive_pairs("receive tag-track lookup");
+    if (!pairs) {
+        return std::unexpected(std::move(pairs.error()));
+    }
+    return project_tracks(*pairs);
+}
+
+core::Result<std::vector<std::byte>> Client::artwork(const std::string_view uri,
+                                                     const bool embedded) {
+    constexpr std::size_t chunk_size = 1024U * 1024U;
+    constexpr std::size_t maximum_artwork_size = 16U * 1024U * 1024U;
+    if (uri.empty() || uri.contains('\0')) {
+        return std::unexpected(core::Error{.code = core::ErrorCode::invalid_argument,
+                                           .message = "MPD artwork URI is invalid",
+                                           .context = {}});
+    }
+    const std::string uri_text{uri};
+    std::vector<std::byte> result;
+    std::vector<std::byte> chunk(chunk_size);
+    while (result.size() < maximum_artwork_size) {
+        const auto offset = static_cast<unsigned>(result.size());
+        const auto received =
+            embedded ? mpd_run_readpicture(implementation_->connection.get(), uri_text.c_str(),
+                                           offset, chunk.data(), chunk.size())
+                     : mpd_run_albumart(implementation_->connection.get(), uri_text.c_str(), offset,
+                                        chunk.data(), chunk.size());
+        if (received < 0) {
+            return std::unexpected(
+                implementation_->take_error(embedded ? "receive readpicture" : "receive albumart"));
+        }
+        if (received == 0) {
+            break;
+        }
+        const auto count = static_cast<std::size_t>(received);
+        if (count > chunk.size() || count > maximum_artwork_size - result.size()) {
+            return std::unexpected(core::Error{.code = core::ErrorCode::limit_exceeded,
+                                               .message = "MPD artwork exceeds 16 MiB",
+                                               .context = {}});
+        }
+        result.insert(result.end(), chunk.begin(), chunk.begin() + received);
+        if (count < chunk.size()) {
+            break;
+        }
+    }
+    return result;
+}
+
+core::Result<std::vector<Track>> Client::search_any(const std::string_view query,
+                                                    const unsigned offset, const unsigned limit) {
+    constexpr unsigned maximum_page_size = 500U;
+    if (query.empty() || query.contains('\0') || limit == 0U || limit > maximum_page_size ||
+        offset > std::numeric_limits<unsigned>::max() - limit) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invalid_argument,
+            .message = "MPD search needs non-empty text and a page size between 1 and 500",
+            .context = {},
+        });
+    }
+    const std::string query_text{query};
+    auto* connection = implementation_->connection.get();
+    if (!mpd_search_db_songs(connection, false)) {
+        return std::unexpected(implementation_->take_error("begin search"));
+    }
+    if (!mpd_search_add_any_tag_constraint(connection, MPD_OPERATOR_DEFAULT, query_text.c_str()) ||
+        !mpd_search_add_window(connection, offset, offset + limit)) {
+        mpd_search_cancel(connection);
+        return std::unexpected(implementation_->take_error("build search"));
+    }
+    if (!mpd_search_commit(connection)) {
+        return std::unexpected(implementation_->take_error("send search"));
+    }
+    auto pairs = implementation_->receive_pairs("receive search");
+    if (!pairs) {
+        return std::unexpected(std::move(pairs.error()));
+    }
+    return project_tracks(*pairs);
+}
+
+core::Result<LibrarySearchResult> Client::search_library(const std::string_view query,
+                                                         const unsigned track_limit,
+                                                         const unsigned album_limit,
+                                                         const unsigned offset) {
+    constexpr unsigned maximum_track_results = 500U;
+    constexpr unsigned maximum_album_results = 2'000U;
+    if (query.empty() || query.contains('\0') || track_limit == 0U ||
+        track_limit > maximum_track_results || album_limit == 0U ||
+        album_limit > maximum_album_results ||
+        offset > std::numeric_limits<unsigned>::max() - track_limit) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invalid_argument,
+            .message = "MPD library search has invalid text or result limits",
+            .context = {},
+        });
+    }
+
+    if (offset > 0U) {
+        auto tracks = search_any(query, offset, track_limit);
+        if (!tracks) {
+            return std::unexpected(std::move(tracks.error()));
+        }
+        return LibrarySearchResult{.albums = {}, .tracks = std::move(*tracks)};
+    }
+
+    const std::string query_text{query};
+    auto* connection = implementation_->connection.get();
+    if (!mpd_search_db_songs(connection, false)) {
+        return std::unexpected(implementation_->take_error("begin library search"));
+    }
+    if (!mpd_search_add_any_tag_constraint(connection, MPD_OPERATOR_DEFAULT, query_text.c_str())) {
+        mpd_search_cancel(connection);
+        return std::unexpected(implementation_->take_error("build library search"));
+    }
+    if (!mpd_search_commit(connection)) {
+        return std::unexpected(implementation_->take_error("send library search"));
+    }
+    auto pairs = implementation_->receive_pairs("receive library search");
+    if (!pairs) {
+        return std::unexpected(std::move(pairs.error()));
+    }
+    auto tracks = project_tracks(*pairs);
+    if (!tracks) {
+        return std::unexpected(std::move(tracks.error()));
+    }
+
+    std::vector<AlbumSummary> albums;
+    albums.reserve(std::min<std::size_t>(tracks->size(), album_limit));
+    std::unordered_set<std::string> album_keys;
+    for (const auto& track : *tracks) {
+        const auto album_value = track.metadata.first("Album");
+        if (!album_value || album_value->empty()) {
+            continue;
+        }
+
+        const auto album_artist_value = track.metadata.first("AlbumArtist");
+        const auto track_artist_value = track.metadata.first("Artist");
+        const bool has_album_artist = album_artist_value && !album_artist_value->empty();
+        const std::string artist = has_album_artist     ? std::string{*album_artist_value}
+                                   : track_artist_value ? std::string{*track_artist_value}
+                                                        : std::string{};
+        const std::string album{*album_value};
+        const auto date_value = track.metadata.first("Date");
+        const std::string date = date_value ? std::string{*date_value} : std::string{};
+        const auto release_id =
+            track.musicbrainz.release_ids.empty()
+                ? std::optional<std::string>{}
+                : std::optional<std::string>{track.musicbrainz.release_ids.front()};
+
+        std::string key;
+        if (release_id) {
+            key = "mbid:" + *release_id;
+        } else {
+            key.reserve(artist.size() + album.size() + date.size() + 2U);
+            key.append(artist).push_back('\0');
+            key.append(album).push_back('\0');
+            key.append(date);
+        }
+        if (!album_keys.insert(std::move(key)).second || albums.size() >= album_limit) {
+            continue;
+        }
+
+        albums.push_back(AlbumSummary{
+            .filter =
+                AlbumFilter{
+                    .release_id = release_id,
+                    .artist = artist,
+                    .album = album,
+                    .date = date.empty() ? std::nullopt : std::optional<std::string>{date},
+                    .artist_is_album_artist = has_album_artist,
+                },
+            .artist = artist,
+            .album = album,
+            .date = date,
+            .artwork_uri = track.uri,
+        });
+    }
+
+    if (tracks->size() > static_cast<std::size_t>(track_limit)) {
+        tracks->resize(static_cast<std::size_t>(track_limit));
+    }
+    return LibrarySearchResult{.albums = std::move(albums), .tracks = std::move(*tracks)};
+}
+
+core::Result<std::vector<Track>> Client::find_album(const AlbumFilter& album) {
+    constexpr unsigned maximum_album_tracks = 4'096U;
+    const auto invalid = [](const std::string& value) { return value.contains('\0'); };
+    if ((!album.release_id && album.album.empty()) ||
+        (album.release_id && (album.release_id->empty() || invalid(*album.release_id))) ||
+        invalid(album.artist) || invalid(album.album) || (album.date && invalid(*album.date))) {
+        return std::unexpected(core::Error{.code = core::ErrorCode::invalid_argument,
+                                           .message = "MPD album lookup has invalid identity",
+                                           .context = {}});
+    }
+
+    auto* connection = implementation_->connection.get();
+    if (!mpd_search_db_songs(connection, true)) {
+        return std::unexpected(implementation_->take_error("begin album lookup"));
+    }
+    const auto add_constraint = [connection](const mpd_tag_type tag, const std::string& value) {
+        return value.empty() ||
+               mpd_search_add_tag_constraint(connection, MPD_OPERATOR_DEFAULT, tag, value.c_str());
+    };
+    auto valid = true;
+    if (album.release_id) {
+        valid = add_constraint(MPD_TAG_MUSICBRAINZ_ALBUMID, *album.release_id);
+    } else {
+        valid = add_constraint(MPD_TAG_ALBUM, album.album) &&
+                add_constraint(album.artist_is_album_artist ? MPD_TAG_ALBUM_ARTIST : MPD_TAG_ARTIST,
+                               album.artist) &&
+                (!album.date || add_constraint(MPD_TAG_DATE, *album.date));
+    }
+    if (!valid || !mpd_search_add_window(connection, 0U, maximum_album_tracks)) {
+        mpd_search_cancel(connection);
+        return std::unexpected(implementation_->take_error("build album lookup"));
+    }
+    if (!mpd_search_commit(connection)) {
+        return std::unexpected(implementation_->take_error("send album lookup"));
+    }
+    auto pairs = implementation_->receive_pairs("receive album lookup");
+    if (!pairs) {
+        return std::unexpected(std::move(pairs.error()));
+    }
+    return project_tracks(*pairs);
+}
+
+core::Result<std::vector<StoredPlaylist>> Client::stored_playlists() {
+    if (!mpd_send_list_playlists(implementation_->connection.get())) {
+        return std::unexpected(implementation_->take_error("send listplaylists"));
+    }
+    auto pairs = implementation_->receive_pairs("receive listplaylists");
+    if (!pairs) {
+        return std::unexpected(std::move(pairs.error()));
+    }
+    auto entries = project_database_entries(*pairs);
+    if (!entries) {
+        return std::unexpected(std::move(entries.error()));
+    }
+    std::vector<StoredPlaylist> playlists;
+    playlists.reserve(entries->size());
+    for (auto& entry : *entries) {
+        auto* playlist = std::get_if<StoredPlaylist>(&entry);
+        if (playlist == nullptr) {
+            return std::unexpected(
+                core::Error{.code = core::ErrorCode::backend,
+                            .message = "MPD listplaylists returned a non-playlist entry",
+                            .context = {}});
+        }
+        playlists.push_back(std::move(*playlist));
+    }
+    return playlists;
+}
+
+core::Result<std::vector<Track>> Client::stored_playlist(const std::string_view name) {
+    if (name.empty() || name.contains('\0')) {
+        return std::unexpected(
+            core::Error{.code = core::ErrorCode::invalid_argument,
+                        .message = "MPD stored playlist name cannot be empty or contain NUL",
+                        .context = {}});
+    }
+    const std::string name_text{name};
+    if (!mpd_send_list_playlist_meta(implementation_->connection.get(), name_text.c_str())) {
+        return std::unexpected(implementation_->take_error("send listplaylistinfo"));
+    }
+    auto pairs = implementation_->receive_pairs("receive listplaylistinfo");
+    if (!pairs) {
+        return std::unexpected(std::move(pairs.error()));
+    }
+    return project_tracks(*pairs);
+}
+
+core::Result<void> Client::save_queue_as_playlist(const std::string_view name) {
+    if (name.empty() || name.contains('\0')) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invalid_argument,
+            .message = "MPD stored playlist name cannot be empty or contain NUL",
+            .context = {},
+        });
+    }
+    const std::string name_text{name};
+    if (!mpd_run_save(implementation_->connection.get(), name_text.c_str())) {
+        return std::unexpected(implementation_->take_error("save stored playlist"));
+    }
+    return {};
+}
+
+core::Result<void> Client::load_stored_playlist_into_queue(const std::string_view name) {
+    if (name.empty() || name.contains('\0')) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invalid_argument,
+            .message = "MPD stored playlist name cannot be empty or contain NUL",
+            .context = {},
+        });
+    }
+    const std::string name_text{name};
+    if (!mpd_run_load(implementation_->connection.get(), name_text.c_str())) {
+        return std::unexpected(implementation_->take_error("load stored playlist"));
+    }
+    return {};
+}
+
+core::Result<void> Client::add_to_stored_playlist(const std::string_view name,
+                                                  const std::string_view uri,
+                                                  const std::optional<unsigned> position) {
+    if (name.empty() || name.contains('\0') || uri.empty() || uri.contains('\0')) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invalid_argument,
+            .message = "MPD stored playlist name and URI cannot be empty or contain NUL",
+            .context = {},
+        });
+    }
+    const std::string name_text{name};
+    const std::string uri_text{uri};
+    const auto succeeded =
+        position ? mpd_run_playlist_add_to(implementation_->connection.get(), name_text.c_str(),
+                                           uri_text.c_str(), *position)
+                 : mpd_run_playlist_add(implementation_->connection.get(), name_text.c_str(),
+                                        uri_text.c_str());
+    if (!succeeded) {
+        return std::unexpected(implementation_->take_error("add to stored playlist"));
+    }
+    return {};
+}
+
+core::Result<void> Client::delete_from_stored_playlist(const std::string_view name,
+                                                       const unsigned position) {
+    if (name.empty() || name.contains('\0')) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invalid_argument,
+            .message = "MPD stored playlist name cannot be empty or contain NUL",
+            .context = {},
+        });
+    }
+    const std::string name_text{name};
+    if (!mpd_run_playlist_delete(implementation_->connection.get(), name_text.c_str(), position)) {
+        return std::unexpected(implementation_->take_error("delete from stored playlist"));
+    }
+    return {};
+}
+
+core::Result<void> Client::delete_from_stored_playlist(const std::string_view name,
+                                                       const std::span<const unsigned> positions) {
+    constexpr std::size_t maximum_batch_size = 4'096U;
+    if (name.empty() || name.contains('\0') || positions.empty() ||
+        positions.size() > maximum_batch_size) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invalid_argument,
+            .message = "MPD stored playlist deletion requires a valid name and 1 to 4096 rows",
+            .context = {},
+        });
+    }
+    std::vector<unsigned> descending{positions.begin(), positions.end()};
+    std::ranges::sort(descending, std::greater{});
+    if (std::ranges::adjacent_find(descending) != descending.end()) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invalid_argument,
+            .message = "MPD stored playlist deletion positions must be unique",
+            .context = {},
+        });
+    }
+    if (descending.size() == 1U) {
+        return delete_from_stored_playlist(name, descending.front());
+    }
+
+    const std::string name_text{name};
+    auto* connection = implementation_->connection.get();
+    if (!mpd_command_list_begin(connection, false)) {
+        return std::unexpected(
+            implementation_->take_error("begin stored playlist delete command list"));
+    }
+    for (const auto position : descending) {
+        if (!mpd_send_playlist_delete(connection, name_text.c_str(), position)) {
+            return std::unexpected(
+                implementation_->take_error("send stored playlist delete command list"));
+        }
+    }
+    if (!mpd_command_list_end(connection) || !mpd_response_finish(connection)) {
+        return std::unexpected(
+            implementation_->take_error("finish stored playlist delete command list"));
+    }
+    return {};
+}
+
+core::Result<void> Client::move_in_stored_playlist(const std::string_view name, const unsigned from,
+                                                   const unsigned to) {
+    if (name.empty() || name.contains('\0') || from == to) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invalid_argument,
+            .message = "MPD stored playlist move requires a valid name and distinct positions",
+            .context = {},
+        });
+    }
+    const std::string name_text{name};
+    if (!mpd_run_playlist_move(implementation_->connection.get(), name_text.c_str(), from, to)) {
+        return std::unexpected(implementation_->take_error("move in stored playlist"));
+    }
+    return {};
+}
+
+core::Result<void> Client::clear_stored_playlist(const std::string_view name) {
+    if (name.empty() || name.contains('\0')) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invalid_argument,
+            .message = "MPD stored playlist name cannot be empty or contain NUL",
+            .context = {},
+        });
+    }
+    const std::string name_text{name};
+    if (!mpd_run_playlist_clear(implementation_->connection.get(), name_text.c_str())) {
+        return std::unexpected(implementation_->take_error("clear stored playlist"));
+    }
+    return {};
+}
+
+core::Result<void> Client::rename_stored_playlist(const std::string_view from,
+                                                  const std::string_view to) {
+    if (from.empty() || from.contains('\0') || to.empty() || to.contains('\0') || from == to) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invalid_argument,
+            .message = "MPD stored playlist rename requires distinct valid names",
+            .context = {},
+        });
+    }
+    const std::string from_text{from};
+    const std::string to_text{to};
+    if (!mpd_run_rename(implementation_->connection.get(), from_text.c_str(), to_text.c_str())) {
+        return std::unexpected(implementation_->take_error("rename stored playlist"));
+    }
+    return {};
+}
+
+core::Result<void> Client::delete_stored_playlist(const std::string_view name) {
+    if (name.empty() || name.contains('\0')) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invalid_argument,
+            .message = "MPD stored playlist name cannot be empty or contain NUL",
+            .context = {},
+        });
+    }
+    const std::string name_text{name};
+    if (!mpd_run_rm(implementation_->connection.get(), name_text.c_str())) {
+        return std::unexpected(implementation_->take_error("delete stored playlist"));
+    }
+    return {};
+}
+
+core::Result<std::vector<Output>> Client::outputs() {
+    auto pairs = command_pairs("outputs");
+    if (!pairs) {
+        return std::unexpected(std::move(pairs.error()));
+    }
+    return project_outputs(*pairs);
+}
+
+core::Result<void> Client::run_transport(const TransportAction action) {
+    bool succeeded = false;
+    std::string_view stage;
+    switch (action) {
+    case TransportAction::play:
+        stage = "play";
+        succeeded = mpd_run_play(implementation_->connection.get());
+        break;
+    case TransportAction::pause:
+        stage = "pause";
+        succeeded = mpd_run_pause(implementation_->connection.get(), true);
+        break;
+    case TransportAction::resume:
+        stage = "resume";
+        succeeded = mpd_run_pause(implementation_->connection.get(), false);
+        break;
+    case TransportAction::stop:
+        stage = "stop";
+        succeeded = mpd_run_stop(implementation_->connection.get());
+        break;
+    case TransportAction::next:
+        stage = "next";
+        succeeded = mpd_run_next(implementation_->connection.get());
+        break;
+    case TransportAction::previous:
+        stage = "previous";
+        succeeded = mpd_run_previous(implementation_->connection.get());
+        break;
+    }
+    if (!succeeded) {
+        return std::unexpected(implementation_->take_error(stage));
+    }
+    return {};
+}
+
+core::Result<void> Client::play_id(const std::uint32_t song_id) {
+    if (!mpd_run_play_id(implementation_->connection.get(), song_id)) {
+        return std::unexpected(implementation_->take_error("playid"));
+    }
+    return {};
+}
+
+core::Result<std::uint32_t> Client::add_id(const std::string_view uri,
+                                           const std::optional<unsigned> position) {
+    if (uri.empty() || uri.contains('\0')) {
+        return std::unexpected(
+            core::Error{.code = core::ErrorCode::invalid_argument,
+                        .message = "MPD queue URI cannot be empty or contain NUL",
+                        .context = {}});
+    }
+    const std::string uri_text{uri};
+    const auto song_id =
+        position ? mpd_run_add_id_to(implementation_->connection.get(), uri_text.c_str(), *position)
+                 : mpd_run_add_id(implementation_->connection.get(), uri_text.c_str());
+    if (song_id < 0) {
+        return std::unexpected(implementation_->take_error("addid"));
+    }
+    return static_cast<std::uint32_t>(song_id);
+}
+
+core::Result<void> Client::add_ids(const std::span<const QueueAddition> additions) {
+    constexpr std::size_t maximum_batch_size = 4'096U;
+    if (additions.empty() || additions.size() > maximum_batch_size) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::limit_exceeded,
+            .message = "MPD queue addition batches must contain between 1 and 4096 items",
+            .context = {},
+        });
+    }
+    for (const auto& addition : additions) {
+        if (addition.uri.empty() || addition.uri.contains('\0')) {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::invalid_argument,
+                .message = "MPD queue addition URI cannot be empty or contain NUL",
+                .context = {},
+            });
+        }
+    }
+    if (additions.size() == 1U) {
+        auto added = add_id(additions.front().uri, additions.front().position);
+        if (!added) {
+            return std::unexpected(std::move(added.error()));
+        }
+        return {};
+    }
+
+    auto* connection = implementation_->connection.get();
+    if (!mpd_command_list_begin(connection, false)) {
+        return std::unexpected(implementation_->take_error("begin addid command list"));
+    }
+    for (const auto& addition : additions) {
+        const auto sent = addition.position ? mpd_send_add_id_to(connection, addition.uri.c_str(),
+                                                                 *addition.position)
+                                            : mpd_send_add_id(connection, addition.uri.c_str());
+        if (!sent) {
+            return std::unexpected(implementation_->take_error("send addid command list"));
+        }
+    }
+    if (!mpd_command_list_end(connection) || !mpd_response_finish(connection)) {
+        return std::unexpected(implementation_->take_error("finish addid command list"));
+    }
+    return {};
+}
+
+core::Result<void> Client::delete_id(const std::uint32_t song_id) {
+    if (!mpd_run_delete_id(implementation_->connection.get(), song_id)) {
+        return std::unexpected(implementation_->take_error("deleteid"));
+    }
+    return {};
+}
+
+core::Result<void> Client::delete_ids(const std::span<const std::uint32_t> song_ids) {
+    constexpr std::size_t maximum_batch_size = 4'096U;
+    if (song_ids.empty() || song_ids.size() > maximum_batch_size) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::limit_exceeded,
+            .message = "MPD queue deletion batches must contain between 1 and 4096 items",
+            .context = {},
+        });
+    }
+    std::unordered_set<std::uint32_t> unique_ids;
+    unique_ids.reserve(song_ids.size());
+    for (const auto song_id : song_ids) {
+        if (!unique_ids.insert(song_id).second) {
+            return std::unexpected(core::Error{.code = core::ErrorCode::invalid_argument,
+                                               .message = "MPD queue deletion IDs must be unique",
+                                               .context = {}});
+        }
+    }
+    if (song_ids.size() == 1U) {
+        return delete_id(song_ids.front());
+    }
+
+    auto* connection = implementation_->connection.get();
+    if (!mpd_command_list_begin(connection, false)) {
+        return std::unexpected(implementation_->take_error("begin deleteid command list"));
+    }
+    for (const auto song_id : song_ids) {
+        if (!mpd_send_delete_id(connection, song_id)) {
+            return std::unexpected(implementation_->take_error("send deleteid command list"));
+        }
+    }
+    if (!mpd_command_list_end(connection) || !mpd_response_finish(connection)) {
+        return std::unexpected(implementation_->take_error("finish deleteid command list"));
+    }
+    return {};
+}
+
+core::Result<void> Client::clear_queue() {
+    if (!mpd_run_clear(implementation_->connection.get())) {
+        return std::unexpected(implementation_->take_error("clear"));
+    }
+    return {};
+}
+
+core::Result<void> Client::move_id(const std::uint32_t song_id, const unsigned position) {
+    if (!mpd_run_move_id(implementation_->connection.get(), song_id, position)) {
+        return std::unexpected(implementation_->take_error("moveid"));
+    }
+    return {};
+}
+
+core::Result<void> Client::move_ids(const std::span<const QueueMove> moves) {
+    constexpr std::size_t maximum_batch_size = 4'096U;
+    if (moves.empty() || moves.size() > maximum_batch_size) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::limit_exceeded,
+            .message = "MPD queue move batches must contain between 1 and 4096 moves",
+            .context = {},
+        });
+    }
+    std::unordered_set<std::uint32_t> unique_ids;
+    unique_ids.reserve(moves.size());
+    for (const auto& move : moves) {
+        if (!unique_ids.insert(move.song_id).second) {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::invalid_argument,
+                .message = "MPD queue move batches must address each song ID at most once",
+                .context = {},
+            });
+        }
+    }
+    if (moves.size() == 1U) {
+        return move_id(moves.front().song_id, moves.front().position);
+    }
+
+    auto* connection = implementation_->connection.get();
+    if (!mpd_command_list_begin(connection, false)) {
+        return std::unexpected(implementation_->take_error("begin moveid command list"));
+    }
+    for (const auto& move : moves) {
+        if (!mpd_send_move_id(connection, move.song_id, move.position)) {
+            return std::unexpected(implementation_->take_error("send moveid command list"));
+        }
+    }
+    if (!mpd_command_list_end(connection) || !mpd_response_finish(connection)) {
+        return std::unexpected(implementation_->take_error("finish moveid command list"));
+    }
+    return {};
+}
+
+core::Result<void> Client::set_priority_id(const std::uint32_t song_id, const unsigned priority) {
+    if (priority > 255U) {
+        return std::unexpected(
+            core::Error{.code = core::ErrorCode::invalid_argument,
+                        .message = "MPD queue priority must be between 0 and 255",
+                        .context = {}});
+    }
+    if (!mpd_run_prio_id(implementation_->connection.get(), priority, song_id)) {
+        return std::unexpected(implementation_->take_error("prioid"));
+    }
+    return {};
+}
+
+core::Result<void> Client::set_priority_ids(const std::span<const std::uint32_t> song_ids,
+                                            const unsigned priority) {
+    constexpr std::size_t maximum_batch_size = 4'096U;
+    if (song_ids.empty() || song_ids.size() > maximum_batch_size) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::limit_exceeded,
+            .message = "MPD queue priority batches must contain between 1 and 4096 items",
+            .context = {},
+        });
+    }
+    if (priority > 255U) {
+        return std::unexpected(
+            core::Error{.code = core::ErrorCode::invalid_argument,
+                        .message = "MPD queue priority must be between 0 and 255",
+                        .context = {}});
+    }
+    std::unordered_set<std::uint32_t> unique_ids;
+    unique_ids.reserve(song_ids.size());
+    for (const auto song_id : song_ids) {
+        if (!unique_ids.insert(song_id).second) {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::invalid_argument,
+                .message = "MPD queue priority batches must address each song ID at most once",
+                .context = {},
+            });
+        }
+    }
+    if (song_ids.size() == 1U) {
+        return set_priority_id(song_ids.front(), priority);
+    }
+
+    auto* connection = implementation_->connection.get();
+    if (!mpd_command_list_begin(connection, false)) {
+        return std::unexpected(implementation_->take_error("begin prioid command list"));
+    }
+    for (const auto song_id : song_ids) {
+        if (!mpd_send_prio_id(connection, priority, song_id)) {
+            return std::unexpected(implementation_->take_error("send prioid command list"));
+        }
+    }
+    if (!mpd_command_list_end(connection) || !mpd_response_finish(connection)) {
+        return std::unexpected(implementation_->take_error("finish prioid command list"));
+    }
+    return {};
+}
+
+core::Result<void> Client::seek_id(const std::uint32_t song_id,
+                                   const std::chrono::milliseconds position) {
+    if (position.count() < 0) {
+        return std::unexpected(core::Error{.code = core::ErrorCode::invalid_argument,
+                                           .message = "MPD seek position cannot be negative",
+                                           .context = {}});
+    }
+    const auto seconds = std::chrono::duration<float>(position).count();
+    if (!std::isfinite(seconds) ||
+        !mpd_run_seek_id_float(implementation_->connection.get(), song_id, seconds)) {
+        return std::unexpected(implementation_->take_error("seekid"));
+    }
+    return {};
+}
+
+core::Result<void> Client::set_volume(const unsigned volume) {
+    if (volume > 100U) {
+        return std::unexpected(core::Error{.code = core::ErrorCode::invalid_argument,
+                                           .message = "MPD volume must be between 0 and 100",
+                                           .context = {}});
+    }
+    if (!mpd_run_set_volume(implementation_->connection.get(), volume)) {
+        return std::unexpected(implementation_->take_error("setvol"));
+    }
+    return {};
+}
+
+core::Result<void> Client::set_repeat(const bool enabled) {
+    if (!mpd_run_repeat(implementation_->connection.get(), enabled)) {
+        return std::unexpected(implementation_->take_error("repeat"));
+    }
+    return {};
+}
+
+core::Result<void> Client::set_random(const bool enabled) {
+    if (!mpd_run_random(implementation_->connection.get(), enabled)) {
+        return std::unexpected(implementation_->take_error("random"));
+    }
+    return {};
+}
+
+core::Result<void> Client::set_single(const PlaybackModeState state) {
+    const auto backend_state = to_mpd_single_state(state);
+    if (!backend_state) {
+        return std::unexpected(core::Error{.code = core::ErrorCode::invalid_argument,
+                                           .message = "MPD single mode cannot be unknown",
+                                           .context = {}});
+    }
+    if (!mpd_run_single_state(implementation_->connection.get(), *backend_state)) {
+        return std::unexpected(implementation_->take_error("single"));
+    }
+    return {};
+}
+
+core::Result<void> Client::set_consume(const PlaybackModeState state) {
+    const auto backend_state = to_mpd_consume_state(state);
+    if (!backend_state) {
+        return std::unexpected(core::Error{.code = core::ErrorCode::invalid_argument,
+                                           .message = "MPD consume mode cannot be unknown",
+                                           .context = {}});
+    }
+    if (!mpd_run_consume_state(implementation_->connection.get(), *backend_state)) {
+        return std::unexpected(implementation_->take_error("consume"));
+    }
+    return {};
+}
+
+core::Result<ReplayGainMode> Client::replay_gain_mode() {
+    auto pairs = command_pairs("replay_gain_status");
+    if (!pairs) {
+        return std::unexpected(std::move(pairs.error()));
+    }
+    for (const auto& pair : *pairs) {
+        if (!ascii_case_equal(pair.name, "replay_gain_mode")) {
+            continue;
+        }
+        if (pair.value == "off") {
+            return ReplayGainMode::off;
+        }
+        if (pair.value == "track") {
+            return ReplayGainMode::track;
+        }
+        if (pair.value == "album") {
+            return ReplayGainMode::album;
+        }
+        if (pair.value == "auto") {
+            return ReplayGainMode::automatic;
+        }
+    }
+    return std::unexpected(core::Error{.code = core::ErrorCode::backend,
+                                       .message = "MPD returned an invalid ReplayGain mode",
+                                       .context = {}});
+}
+
+core::Result<void> Client::set_replay_gain_mode(const ReplayGainMode mode) {
+    const auto backend_mode = to_mpd_replay_gain_mode(mode);
+    if (!backend_mode) {
+        return std::unexpected(core::Error{.code = core::ErrorCode::invalid_argument,
+                                           .message = "MPD ReplayGain mode cannot be unknown",
+                                           .context = {}});
+    }
+    if (!mpd_run_replay_gain_mode(implementation_->connection.get(), *backend_mode)) {
+        return std::unexpected(implementation_->take_error("replay_gain_mode"));
+    }
+    return {};
+}
+
+core::Result<void> Client::set_output_enabled(const std::uint32_t output_id, const bool enabled) {
+    const auto succeeded =
+        enabled ? mpd_run_enable_output(implementation_->connection.get(), output_id)
+                : mpd_run_disable_output(implementation_->connection.get(), output_id);
+    if (!succeeded) {
+        return std::unexpected(
+            implementation_->take_error(enabled ? "enableoutput" : "disableoutput"));
+    }
+    return {};
+}
+
+core::Result<void> Client::switch_output(const std::uint32_t output_id) {
+    const auto id = std::to_string(output_id);
+    if (!mpd_send_command(implementation_->connection.get(), "switchoutput", id.c_str(), nullptr)) {
+        return std::unexpected(implementation_->take_error("send switchoutput"));
+    }
+    auto response = implementation_->receive_pairs("switchoutput");
+    if (!response) {
+        return std::unexpected(std::move(response.error()));
+    }
+    return {};
+}
+
+core::Result<void> Client::ping() {
+    auto response = command_pairs("ping");
+    if (!response) {
+        return std::unexpected(std::move(response.error()));
+    }
+    return {};
+}
+
+core::Result<IdleEvents> Client::wait_for_idle(const core::CancellationToken& cancellation) {
+    if (!mpd_send_idle(implementation_->connection.get())) {
+        return std::unexpected(implementation_->take_error("send idle"));
+    }
+
+    pollfd descriptor{
+        .fd = mpd_connection_get_fd(implementation_->connection.get()),
+        .events = POLLIN,
+        .revents = 0,
+    };
+    while (!cancellation.is_cancellation_requested()) {
+        const auto result = ::poll(&descriptor, 1, 100);
+        if (result > 0) {
+            const auto events = mpd_recv_idle(implementation_->connection.get(), false);
+            if (events == 0 &&
+                mpd_connection_get_error(implementation_->connection.get()) != MPD_ERROR_SUCCESS) {
+                return std::unexpected(implementation_->take_error("receive idle"));
+            }
+            return project_idle_events(events);
+        }
+        if (result < 0 && errno != EINTR) {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::io,
+                .message = "polling the MPD idle connection failed",
+                .context = {{"errno", std::to_string(errno)}},
+            });
+        }
+        descriptor.revents = 0;
+    }
+
+    if (!mpd_send_noidle(implementation_->connection.get())) {
+        return std::unexpected(implementation_->take_error("cancel idle"));
+    }
+    static_cast<void>(mpd_recv_idle(implementation_->connection.get(), false));
+    if (mpd_connection_get_error(implementation_->connection.get()) != MPD_ERROR_SUCCESS) {
+        return std::unexpected(implementation_->take_error("finish cancelled idle"));
+    }
+    return std::unexpected(core::Error{.code = core::ErrorCode::cancelled,
+                                       .message = "MPD idle wait was cancelled",
+                                       .context = {}});
+}
+
+} // namespace trackknife::mpd

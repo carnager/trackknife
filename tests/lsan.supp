@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-only
+
+# Qt's font fallback lookup leaves fontconfig-owned cache allocations alive at
+# process exit. Keep leak checking enabled while excluding that external cache.
+leak:FcFontRenderPrepare
+
+# PipeWire's dynamically loaded SPA support modules retain process-global
+# factory/cache allocations even after pw_deinit(). Adapter-owned streams,
+# contexts, and loops are still destroyed normally.
+leak:pw_context_load_module

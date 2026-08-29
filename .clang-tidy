@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: GPL-3.0-only
+Checks: >
+  -*,
+  bugprone-assert-side-effect,
+  bugprone-dangling-handle,
+  bugprone-exception-escape,
+  bugprone-infinite-loop,
+  bugprone-macro-parentheses,
+  bugprone-multiple-statement-macro,
+  bugprone-sizeof-expression,
+  bugprone-suspicious-memset-usage,
+  clang-analyzer-*,
+  concurrency-mt-unsafe,
+  modernize-use-nullptr,
+  modernize-use-override,
+  performance-for-range-copy,
+  performance-implicit-conversion-in-loop,
+  performance-inefficient-algorithm,
+  performance-inefficient-string-concatenation,
+  performance-inefficient-vector-operation,
+  performance-move-const-arg,
+  performance-unnecessary-copy-initialization,
+  portability-simd-intrinsics
+WarningsAsErrors: '*'
+HeaderFilterRegex: '.*/(src|tests|benchmarks)/.*'
+FormatStyle: file

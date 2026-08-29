@@ -1,0 +1,253 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+#include "ui/queue_item_delegate.hpp"
+
+#include "quick/mpd_queue_model.hpp"
+
+#include <QApplication>
+#include <QPainter>
+#include <QStyle>
+#include <QTableView>
+
+#include <algorithm>
+
+namespace trackknife::ui {
+namespace {
+
+constexpr int album_header_height = 30;
+constexpr int track_row_height = 22;
+constexpr int album_cover_extent = 22;
+
+[[nodiscard]] QString groupKey(const QModelIndex& index) {
+    return index.data(quick::MpdQueueModel::AlbumArtistRole).toString() + QChar::Null +
+           index.siblingAtColumn(2).data().toString() + QChar::Null +
+           index.siblingAtColumn(3).data().toString();
+}
+
+[[nodiscard]] QString formatDuration(const qint64 milliseconds) {
+    const auto seconds = std::max<qint64>(0, milliseconds / 1'000);
+    const auto hours = seconds / 3'600;
+    const auto minutes = (seconds / 60) % 60;
+    const auto remainder = seconds % 60;
+    if (hours > 0) {
+        return QStringLiteral("%1:%2:%3")
+            .arg(hours)
+            .arg(minutes, 2, 10, QLatin1Char('0'))
+            .arg(remainder, 2, 10, QLatin1Char('0'));
+    }
+    return QStringLiteral("%1:%2").arg(minutes).arg(remainder, 2, 10, QLatin1Char('0'));
+}
+
+[[nodiscard]] QString formattedTrackNumber(const QModelIndex& index) {
+    const auto raw_number = index.siblingAtColumn(4).data().toString().trimmed();
+    if (raw_number.isEmpty()) {
+        return {};
+    }
+
+    const auto number_text = raw_number.section(QLatin1Char('/'), 0, 0).trimmed();
+    bool numeric = false;
+    const auto number = number_text.toUInt(&numeric);
+    return numeric ? QStringLiteral("%1").arg(number, 2, 10, QLatin1Char('0')) : number_text;
+}
+
+[[nodiscard]] QString trackLabel(const QModelIndex& index) {
+    const auto number = formattedTrackNumber(index);
+    const auto title = index.siblingAtColumn(1).data().toString();
+    return number.isEmpty() ? title : QStringLiteral("%1 %2").arg(number, title);
+}
+
+} // namespace
+
+QueueItemDelegate::QueueItemDelegate(QObject* parent) : QStyledItemDelegate(parent) {}
+
+void QueueItemDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option,
+                              const QModelIndex& index) const {
+    auto item = option;
+    initStyleOption(&item, index);
+    item.state &= ~QStyle::State_MouseOver;
+    const auto* view = qobject_cast<const QTableView*>(parent());
+    if (view != nullptr && view->property("trackknife-hover-row").toInt() == index.row()) {
+        item.state |= QStyle::State_MouseOver;
+    }
+    const auto group_start = beginsAlbum(index);
+    if (group_start) {
+        const QRect header_rect{option.rect.x(), option.rect.y(), option.rect.width(),
+                                album_header_height};
+        painter->save();
+        painter->fillRect(header_rect, option.palette.alternateBase());
+        painter->setPen(option.palette.mid().color());
+        painter->drawLine(header_rect.bottomLeft(), header_rect.bottomRight());
+
+        if (index.column() == 0) {
+            const auto cover = index.data(quick::MpdQueueModel::AlbumArtworkRole).value<QImage>();
+            const QRect cover_bounds{header_rect.left() + 6,
+                                     header_rect.center().y() - album_cover_extent / 2,
+                                     album_cover_extent, album_cover_extent};
+            if (!cover.isNull()) {
+                const auto fitted = cover.size().scaled(cover_bounds.size(), Qt::KeepAspectRatio);
+                const QRect target{cover_bounds.center().x() - fitted.width() / 2,
+                                   cover_bounds.center().y() - fitted.height() / 2, fitted.width(),
+                                   fitted.height()};
+                painter->drawImage(target, cover);
+            } else {
+                const auto icon =
+                    QIcon::fromTheme(QStringLiteral("media-optical-audio"),
+                                     QApplication::style()->standardIcon(QStyle::SP_FileIcon));
+                icon.paint(painter, cover_bounds, Qt::AlignCenter, QIcon::Normal);
+            }
+        } else if (index.column() == 1) {
+            auto font = option.font;
+            font.setBold(true);
+            painter->setFont(font);
+            painter->setPen(option.palette.text().color());
+            painter->drawText(header_rect.adjusted(4, 0, -4, 0), Qt::AlignVCenter | Qt::AlignLeft,
+                              option.fontMetrics.elidedText(albumTitle(index), Qt::ElideRight,
+                                                            header_rect.width() - 8));
+        } else if (index.column() == 5) {
+            auto font = option.font;
+            font.setBold(true);
+            painter->setFont(font);
+            painter->setPen(option.palette.text().color());
+            painter->drawText(header_rect.adjusted(4, 0, -6, 0), Qt::AlignVCenter | Qt::AlignRight,
+                              formatDuration(albumDurationMs(index)));
+        }
+        painter->restore();
+        item.rect.setTop(item.rect.top() + album_header_height);
+    }
+
+    const auto current_track = index.data(quick::MpdQueueModel::CurrentRole).toBool();
+    const auto selected = item.state.testFlag(QStyle::State_Selected);
+    if (current_track) {
+        item.font.setBold(true);
+        if (!selected) {
+            const auto base = item.palette.color(QPalette::Base);
+            const auto accent = item.palette.color(QPalette::Highlight);
+            const auto playback_fill = QColor::fromRgb((base.red() * 3 + accent.red()) / 4,
+                                                       (base.green() * 3 + accent.green()) / 4,
+                                                       (base.blue() * 3 + accent.blue()) / 4);
+            item.backgroundBrush = playback_fill;
+        }
+        if (index.column() == 0) {
+            item.icon =
+                QIcon::fromTheme(QStringLiteral("media-playback-pause"),
+                                 QApplication::style()->standardIcon(QStyle::SP_MediaPause));
+            item.decorationSize = QSize{14, 14};
+        }
+    }
+    QString priority_label;
+    QRect priority_badge;
+    QFont priority_font = item.font;
+    if (index.column() == 0) {
+        item.text.clear();
+    } else if (index.column() == 1) {
+        item.text = trackLabel(index);
+        priority_label = priorityLabel(index);
+        if (!priority_label.isEmpty()) {
+            priority_font.setPointSizeF(std::max(6.5, priority_font.pointSizeF() - 1.5));
+            const QFontMetrics priority_metrics{priority_font};
+            const auto badge_height =
+                std::min(item.rect.height() - 6, priority_metrics.height() + 2);
+            const auto badge_width = priority_metrics.horizontalAdvance(priority_label) + 10;
+            priority_badge =
+                QRect{item.rect.right() - badge_width - 4,
+                      item.rect.center().y() - badge_height / 2, badge_width, badge_height};
+            item.rect.setRight(priority_badge.left() - 4);
+        }
+    }
+    const auto* widget = item.widget;
+    auto* item_style = widget != nullptr ? widget->style() : QApplication::style();
+    item_style->drawControl(QStyle::CE_ItemViewItem, &item, painter, widget);
+    if (!priority_badge.isNull()) {
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        auto outline =
+            item.palette.color(selected ? QPalette::HighlightedText : QPalette::Highlight);
+        auto fill = outline;
+        fill.setAlpha(40);
+        outline.setAlpha(180);
+        painter->setPen(outline);
+        painter->setBrush(fill);
+        painter->drawRoundedRect(priority_badge, 4, 4);
+        painter->setPen(item.palette.color(selected ? QPalette::HighlightedText : QPalette::Text));
+        painter->setFont(priority_font);
+        painter->drawText(priority_badge, Qt::AlignCenter, priority_label);
+        painter->restore();
+    }
+    if (current_track && !selected) {
+        auto playback_line = item.palette.color(QPalette::Highlight);
+        playback_line.setAlpha(180);
+        painter->save();
+        painter->setPen(playback_line);
+        painter->drawLine(item.rect.topLeft(), item.rect.topRight());
+        painter->drawLine(item.rect.bottomLeft(), item.rect.bottomRight());
+        painter->restore();
+    }
+}
+
+QSize QueueItemDelegate::sizeHint(const QStyleOptionViewItem& option,
+                                  const QModelIndex& index) const {
+    auto size = QStyledItemDelegate::sizeHint(option, index);
+    size.setHeight(std::max(track_row_height, size.height()) +
+                   (beginsAlbum(index) ? album_header_height : 0));
+    return size;
+}
+
+bool QueueItemDelegate::isAlbumHeaderHit(const QModelIndex& index, const int relative_y) const {
+    return index.isValid() && beginsAlbum(index) && relative_y >= 0 &&
+           relative_y < album_header_height;
+}
+
+std::pair<int, int> QueueItemDelegate::albumRowRange(const QModelIndex& index) const {
+    if (!index.isValid()) {
+        return {-1, -1};
+    }
+    const auto key = groupKey(index);
+    auto first = index.row();
+    while (first > 0 && groupKey(index.sibling(first - 1, 0)) == key) {
+        --first;
+    }
+    auto last = index.row();
+    while (last + 1 < index.model()->rowCount() && groupKey(index.sibling(last + 1, 0)) == key) {
+        ++last;
+    }
+    return {first, last};
+}
+
+QString QueueItemDelegate::priorityLabel(const QModelIndex& index) const {
+    const auto priority = index.data(quick::MpdQueueModel::PriorityRole);
+    bool numeric = false;
+    const auto value = priority.toUInt(&numeric);
+    return numeric && value > 0U ? QString::number(value) : QString{};
+}
+
+bool QueueItemDelegate::beginsAlbum(const QModelIndex& index) const {
+    return index.row() == 0 || groupKey(index) != groupKey(index.sibling(index.row() - 1, 0));
+}
+
+QString QueueItemDelegate::albumTitle(const QModelIndex& index) const {
+    const auto artist = index.data(quick::MpdQueueModel::AlbumArtistRole).toString();
+    const auto album = index.siblingAtColumn(2).data().toString();
+    const auto date = index.siblingAtColumn(3).data().toString();
+    auto title = artist.isEmpty() ? QStringLiteral("Unknown artist") : artist;
+    title += QStringLiteral(" — ");
+    title += album.isEmpty() ? QStringLiteral("Unknown album") : album;
+    if (!date.isEmpty()) {
+        title += QStringLiteral(" (%1)").arg(date);
+    }
+    return title;
+}
+
+qint64 QueueItemDelegate::albumDurationMs(const QModelIndex& index) const {
+    const auto key = groupKey(index);
+    qint64 duration = 0;
+    for (int row = index.row(); row < index.model()->rowCount(); ++row) {
+        const auto current = index.sibling(row, 0);
+        if (groupKey(current) != key) {
+            break;
+        }
+        duration += current.data(quick::MpdQueueModel::DurationMsRole).toLongLong();
+    }
+    return duration;
+}
+
+} // namespace trackknife::ui

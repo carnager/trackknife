@@ -1,0 +1,378 @@
+# Playback, server library, working lists, conversion, and verification
+
+## Application scope
+
+Since ADR-0025 the repository builds two applications. Server playback and the
+server library belong to **Trackknife**, the MPD/Melody client: transport,
+outputs, browsing, search, live queue, and stored playlists. Local playback,
+lists over local files, and conversion belong to **Trackbench**, the local
+file workstation. Sections below name the owning application; shared engine
+behavior (decode, gapless, DSP, PipeWire) lives in internal libraries consumed
+by Trackbench's player and converter.
+
+## Separate MPD playback and local playback
+
+Trackknife controls MPD as shared server state; Trackbench plays local files
+through FFmpeg and PipeWire. The two never merge into one queue, transport
+timeline, or backend-neutral progression coordinator. MPD may be controlled by
+multiple clients and Melody may expose multiple server-managed agents; a
+private local queue cannot honestly own or interleave that state. The process
+boundary enforces the separation (ADR-0025), so inside Trackbench local
+playback is first-class — its own transport and real list progression — not an
+audition mode.
+
+MPD playback remains server-owned: Trackknife sends transport/queue/output
+commands and projects server status. Trackbench's local pipeline is:
+
+The local player consumes a logical source reference, resolves it to a physical
+source plus subsong/segment, decodes to PCM, applies optional gain/DSP, converts
+to the output format, buffers, and writes to PipeWire.
+
+```text
+source -> demux/decode -> segment + gapless trim -> ReplayGain -> DSP graph
+       -> output sample conversion -> audio device
+```
+
+The clean path with ReplayGain/DSP disabled must avoid unintended resampling,
+channel mixing, dithering, or level changes. “Bit-perfect” is a property of the
+entire configured path and device, not a marketing toggle.
+
+### Required behavior
+
+Trackknife's side is remote MPD transport and output control without local
+decoding, projecting the authoritative live queue behind a transport that
+controls MPD alone. Everything below belongs to Trackbench's local player:
+
+- play, pause, stop, seek, previous, next;
+- gapless transition when codec/container delay and padding are known;
+- correct cue/chapter boundaries;
+- configurable output device and buffer;
+- volume and mute distinct from ReplayGain preamp;
+- resume state on restart as an option;
+- stop after current;
+- cursor-follows-playback and playback-follows-selection as separate options;
+- playback orders: default, repeat track/list, random/shuffle track, album, and
+  folder groups;
+- robust behavior when a file moves, disappears, or changes during playback.
+
+Trackbench speaks no MPD protocol, so local playback structurally cannot
+mutate an MPD queue or transport; no UI rule is needed to promise that.
+
+High buffer sizes resist I/O/CPU stalls but increase control/DSP latency; low
+sizes improve responsiveness but risk underruns. Expose understandable presets
+plus advanced exact values and underrun diagnostics.
+
+The local playback core separates a non-real-time decoder producer from one
+real-time PCM consumer through an explicitly sized SPSC ring. The render path
+may copy preallocated PCM, zero-fill unavailable frames, and update atomics; it
+must not allocate, lock, decode, perform I/O, or notify the UI. Starvation
+returns playback to buffering and increments an underrun counter without
+advancing the consumed source-sample position. PipeWire must quiesce that
+consumer before stop/seek resets the ring.
+
+The first PipeWire adapter connects inactive and negotiates the decoder's exact
+source rate as interleaved native-endian float PCM. Mono and stereo have
+explicit channel positions; wider layouts are rejected until the core carries
+a typed channel map. The real-time process callback only dequeues a mapped
+buffer, clamps PipeWire's requested frame count to its capacity, calls the
+bounded render function, and queues valid PCM (including zero-filled silence).
+Activation waits for streaming. Quiescing deactivates, waits for paused,
+flushes queued converter/device data, and waits for an in-flight callback to
+leave the source. End-of-source drain separately waits for PipeWire's drained
+event. ADR-0021's dedicated player worker — its contract carries over intact
+into Trackbench (ADR-0025) — schedules bounded decoder production and
+serializes source replacement, transport, seek, PipeWire transitions, drain,
+and cancellation. Buffer capacity and start threshold are expressed as
+durations and converted to frames at the decoded source rate. Its immutable
+snapshot feeds Trackbench's transport row, with PipeWire node and underrun
+diagnostics in tooltips.
+Device-clock projection, measured latency presets, volume, device
+discovery/hotplug, and the UI device chooser remain.
+
+### Gapless details
+
+Do not implement “gapless” by trimming detected silence. Honor codec/container
+sample counts, encoder delay, padding, and segment boundaries. LAME/iTunes MP3
+gapless metadata, MP4 gapless data, and inherently sample-exact lossless/Vorbis/
+Opus paths need fixtures. A separate silence-removal DSP is optional and must be
+off by default because it changes artistic timing.
+
+The initial decoder-core acceptance set is PCM WAV, AAC in M4A, LAME MP3, and
+Opus in Ogg. The decoder core requests FFmpeg's explicit skip-sample metadata
+and performs delay/padding trim itself. Seeking decodes a conservative
+one-second preroll, or a larger codec/container requirement when reported,
+before trimming to the exact logical sample; this also restores bounded codec
+convergence such as an MP3 bit reservoir.
+
+### DSP
+
+An ordered graph supports built-ins such as resampler, channel conversion,
+equalizer, crossfeed, convolver, compressor, skip silence, and pause-between-
+tracks as appropriate. Each processor declares accepted/produced sample formats,
+latency, state reset/flush behavior, thread safety, and whether it prevents a
+gapless transition. Presets are reusable by playback and conversion, but the
+user must see when a conversion makes processing permanent.
+
+## Input and output formats
+
+foobar2000's current native list includes MP1/2/3, M4A with AAC/ALAC, raw AAC,
+Vorbis, Opus, Musepack, Speex, AC-3, DTS, WMA, FLAC/Ogg FLAC, WavPack, Monkey's
+Audio, TAK, WAV/Wave64/RF64, AIFF, AU/SND, Matroska/WebM, and MPEG transport
+streams, with more through FFmpeg/component decoders. Trackbench should aim for
+at least that practical breadth on Linux.
+
+The architecture must distinguish container, codec, and logical tracks. Never
+infer capability from extension alone. See the multi-dimensional support table
+in `feature-matrix.md`.
+
+Internet streams (MP3/AAC/Vorbis/FLAC/Opus and HLS) are later core candidates.
+Stream metadata changes over time and must not be treated as stable file tags.
+
+## MPD server library
+
+### Responsibilities
+
+- browse folders, artists, albums, and other advertised tag dimensions through
+  bounded MPD commands;
+- search and filter on the server rather than copying the database to the UI;
+- preserve rich remote references, repeated tags, MusicBrainz identities, and
+  server provenance;
+- respond incrementally to database/update idle events;
+- load cover art/readpicture asynchronously and cache it by server identity;
+- keep remote-only items fully functional when no local root mapping exists.
+
+Trackknife's database stores profiles, workspace, lists, snapshots, and
+caches; Trackbench's stores its own lists, presets, jobs, and journals.
+Neither is a second canonical server-library index. MPD owns its library;
+embedded tags remain canonical for local file metadata.
+
+### Optional local music-root mapping
+
+Each connection profile may map relative MPD URIs below one raw local root. The
+mapping is containment-checked and revalidated before any use. Its eventual
+purpose is opening the explicit local counterpart in Trackbench for tagging,
+scanning, organization, or conversion—a cross-tool convenience deferred until
+both tools stand alone (ADR-0025). It never creates a Trackknife library tree,
+and the client itself offers no local file operations. Remote URLs, traversal,
+non-lossless names, and unavailable paths simply remain remote-only.
+
+Local files enter Trackbench through open, drag/drop, command-line arguments,
+and working tabs. They can also be reached through its folder browser, which
+lazily browses explicitly selected filesystem roots rather than importing them
+into a collection database. Local metadata reads are job-backed, bounded, and
+cached only as needed by current views, lists, and operations.
+
+### Metadata cache and large fields
+
+Each application caches normalized values plus native/provenance data needed
+for its list display—Trackknife for remote items, Trackbench for local
+files—with large lyrics/artwork stored separately and loaded lazily.
+Never replace a large value with an ambiguous dot/placeholder in an editor; show
+an explicit unloaded state and fetch it before permitting a destructive write.
+
+## Browsing and views
+
+Trackknife ships a coherent default layout rather than demanding UI
+construction:
+
+- connection-aware MPD navigation/sidebar and search;
+- fast track table with configurable title-formatted columns and grouping;
+- artwork/now-playing area;
+- transport and queue access;
+- job center and command palette.
+
+Trackbench reuses the same track table, transport row, job center, and command
+palette components over its tabbed local lists; the two applications share one
+visual and interaction language (ADR-0025).
+
+Advanced users can define columns (name, compatible format expression,
+alignment, width, sort expression) and grouping. Faceted views allow chains such
+as Genre -> Artist -> Album and refine the result set at each pane. Multi-value
+fields appear in each appropriate facet without flattening.
+
+Library-tree definitions store an explicit ordered level list; rendered text is
+never split to infer structure. Each level has independent grouping, label, and
+stable-sort `tkfmt-1` expressions plus an optional singleton-elision policy.
+The root also declares the MPD tag used for lazy exact branch queries.
+Multi-value expansion uses `$each` and its bounded tree-host semantics; ordinary
+`%field%` rendering never creates branches accidentally.
+
+## Working lists and stored playlists
+
+In either application, a scratch/named list is an ordered list of item
+references, not just paths:
+
+```text
+PlaylistItem
+  stable track ID when known
+  source URI + subsong/segment identity
+  optional cached TrackRef snapshot
+  per-item flags/state
+```
+
+The cached snapshot can preserve display metadata, duration, and ReplayGain for
+offline/missing sources, echoing the useful property of foobar2000 FPL. It is a
+cache with provenance, not canonical metadata.
+
+Support tab create, rename, pin, duplicate, reorder, add/remove, undo, search
+within, deduplicate, crop selection, sort by title format, reverse, randomize,
+and total duration/size. Local list modifications persist transactionally
+without requiring app shutdown.
+
+MPD stored playlists remain server-owned and capability-driven. Loading a stored
+playlist into the live queue is not the same operation as opening it as a
+working tab. The UI makes destructive server changes and local tab changes
+distinguishable.
+
+### Import/export
+
+- M3U8 is the minimum portable format; resolve relative paths against the file.
+- M3U may require explicit encoding detection/selection.
+- XSPF/PLS are useful later interoperable formats.
+- Cue sheets create logical subsong items, not ordinary playlist semantics.
+- A future FPL importer is best-effort and version-aware because FPL is
+  undocumented and intended by foobar2000 as internal, non-interchange storage.
+
+Export warns when the chosen portable format cannot represent subsongs, remote
+identifiers, cached metadata, or automatic query behavior.
+
+## Live queue and local playback queues
+
+The live MPD queue is the server's current playlist. Items may occur more than
+once and retain stable MPD song IDs; users can add next/end, reorder, remove,
+clear, prioritize where supported, and save queue contents. Other MPD clients
+may modify it concurrently, so positions are never treated as stable identity.
+
+Trackknife's scratch and named lists hold remote references as working memory,
+but they are not playback queues; only the live MPD queue drives server
+playback. Trackbench's tabbed lists hold local files and are its playback
+queues: its player owns real list progression behind its own transport, and
+because Trackbench speaks no MPD protocol it cannot stage MPD items, hand
+progression to the server, or touch MPD transport at all (ADR-0025).
+
+## Autoplaylists and saved views
+
+Autoplaylists are live query results described in `query-language.md`. They are
+not manually editable. Store query source, dialect version, and sort. Updating
+metadata or statistics invalidates affected membership incrementally.
+
+## Playback statistics
+
+Track-owned statistics include play count, first/last played, skip count,
+rating, and optional last position. They bind to stable identity/content rather
+than path alone, survive Trackbench file operations, and are importable/
+exportable. Define when a “play” counts (time/percentage thresholds) and when a
+skip counts. Never write statistics into audio tags without explicit opt-in.
+
+## Converter
+
+Trackbench's converter accepts selected logical tracks and a named preset:
+
+```text
+decode exact logical range
+  -> optional ReplayGain application
+  -> optional DSP graph
+  -> resample/channel/bit-depth conversion + dither policy
+  -> encode/mux
+  -> transfer mapped metadata/artwork
+  -> optional output ReplayGain scan and verification
+  -> publish destination atomically
+```
+
+### Preset data
+
+- output container and codec;
+- encoder implementation/version and quality/bitrate/lossless settings;
+- PCM/resample/channel/bit-depth policy;
+- ReplayGain source/processing;
+- ordered DSP preset;
+- output root and `tkfmt-1` relative-path expression;
+- one-file-per-track, grouped multi-track, or merge mode;
+- conflict policy;
+- tag/artwork transfer mapping and exclusions;
+- cue/chapter creation policy;
+- verification and post-scan actions;
+- concurrency cap.
+
+Presets are declarative, versioned, human-exportable, and show missing encoders
+before starting. External command-line encoders may be supported through a safe
+argument-array template—never shell-string interpolation—and a capability probe.
+
+### Destination modes
+
+- One output per logical track.
+- Mirror source directory structure relative to an explicit source root.
+- Generate directories and names from a useful preset or `tkfmt-1` expression.
+- Grouped multi-track output when the target container supports chapters/tracks;
+  otherwise an audio file plus cue where meaningful.
+- Merge all selected audio into one continuous track.
+
+Preview every output path and conflict. Write to temporary siblings and publish
+atomically. A cancelled/failed conversion removes only Trackbench-created temp
+files, never pre-existing destinations.
+
+### Publishing into an MPD music root
+
+A publication destination may be a directory that happens to be an MPD
+`music_root`; to Trackbench, which speaks no MPD protocol, it is plain
+filesystem output (ADR-0025). The user selects copy, move, or converted
+publication. Trackbench generates and previews contained relative paths,
+checks conflicts and source revisions, stages data, verifies every output, and
+publishes it atomically. Requesting an explicit MPD database update afterwards,
+and adding the published items to a stored playlist or the live queue, is a
+job for any MPD client, including Trackknife. Move semantics delete originals
+only after verified publication and leave a truthful recovery record on
+partial failure.
+
+A transactional Melody upload/import protocol does not currently exist and is
+not required by this workflow. If Melody later advertises one, an upload
+destination would need protocol awareness Trackbench does not have; like other
+cross-tool conveniences it is deferred (ADR-0025), and it must not silently
+change the behavior promised for stock MPD.
+
+### Metadata transfer
+
+Map logical fields through target-container rules and show unrepresentable
+fields. Copy artwork subject to format limits. Do not transfer ReplayGain when
+the signal was changed; scan output instead. Cue-compatible metadata requires a
+separate limited mapping.
+
+### Concurrency
+
+Conversion is naturally parallel per independent output but encoders can be CPU
+and I/O heavy. Use a bounded scheduler with separate decode/encode resource
+weights. Multi-track/group outputs are single dependency chains and maintain
+selection order.
+
+## Verification and diagnostics
+
+### Integrity verification
+
+Decode selected logical tracks to completion and report decoder/container
+errors. Where available, verify codec-native checksums such as FLAC audio MD5.
+Distinguish a missing checksum, a decode error, and a checksum mismatch.
+
+### Audio comparison
+
+Compare decoded PCM under explicit rules:
+
+- exact samples when formats/sample layouts match;
+- account for known encoder delay/padding and segment boundaries;
+- optionally normalize integer/float representations without resampling;
+- report first difference, differing sample count, max absolute error, and
+  whether streams are bit-identical or merely equivalent under the chosen rule.
+
+Never call two lossy encodes identical based on metadata/duration alone.
+
+### Decode benchmark
+
+Measure decode speed separately from file I/O where feasible, with worker count,
+backend/version, source, and cache state recorded. This is useful for diagnosing
+the performance problem Trackbench explicitly intends to avoid.
+
+## Error model
+
+All long operations report structured errors containing operation, track/source,
+stage, backend, recoverability, and technical detail. Summaries group recurring
+causes but retain individual rows. Logs are exportable with private paths
+redacted on request.

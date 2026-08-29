@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: GPL-3.0-only
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    env:
+      CC: ${{ matrix.compiler == 'gcc' && 'gcc-13' || 'clang-18' }}
+      CXX: ${{ matrix.compiler == 'gcc' && 'g++-13' || 'clang++-18' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          cmake ninja-build pkg-config libutf8proc-dev qt6-base-dev clang-format
+          g++-13 clang-18 nlohmann-json3-dev libavformat-dev libavcodec-dev
+          libavutil-dev libswresample-dev
+      - name: Configure
+        run: >-
+          cmake --preset ${{ matrix.compiler == 'clang' && 'tidy' || 'dev' }}
+          -DCMAKE_CXX_COMPILER="$CXX"
+      - name: Build
+        run: cmake --build --preset ${{ matrix.compiler == 'clang' && 'tidy' || 'dev' }}
+      - name: Test
+        run: ctest --preset ${{ matrix.compiler == 'clang' && 'tidy' || 'dev' }}
+      - name: Check formatting
+        run: cmake --build --preset ${{ matrix.compiler == 'clang' && 'tidy' || 'dev' }} --target format-check
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang-18
+      CXX: clang++-18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          cmake ninja-build pkg-config libutf8proc-dev qt6-base-dev clang-18
+          nlohmann-json3-dev libavformat-dev libavcodec-dev libavutil-dev
+          libswresample-dev
+      - name: Configure
+        run: cmake --preset asan
+      - name: Build
+        run: cmake --build --preset asan
+      - name: Test
+        run: ctest --preset asan
+
+  fuzz-smoke:
+    runs-on: ubuntu-24.04
+    env:
+      CXX: clang++-18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          cmake ninja-build pkg-config libutf8proc-dev clang-18
+          libavformat-dev libavcodec-dev libavutil-dev libswresample-dev
+      - name: Configure
+        run: cmake --preset fuzz -DCMAKE_CXX_COMPILER="$CXX"
+      - name: Build
+        run: cmake --build --preset fuzz
+      - name: Fuzz parser
+        run: >-
+          ./build/fuzz/fuzz/trackknife_titleformat_parser_fuzz
+          -dict=fuzz/titleformat.dict -runs=20000 -max_len=4096
+      - name: Fuzz compiler and evaluator
+        run: >-
+          ./build/fuzz/fuzz/trackknife_titleformat_evaluator_fuzz
+          -dict=fuzz/titleformat.dict -runs=20000 -max_len=4096

@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "reference": {
+    "product": "foobar2000 public SDK UTF-8 comparison helper",
+    "version": "2025-03-07",
+    "platform": "official public source distribution"
+  },
+  "cases": [
+    {
+      "id": "fb2k-sdk-2025-03-07.inferred.stricmp-bmp-simple-lower",
+      "script": "$stricmp('Ä','ä')",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "1", "truth": true },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Compatibility inference from the official SDK helper's code-point-wise lowercase comparison; not a black-box title-format observation."
+      }
+    },
+    {
+      "id": "fb2k-sdk-2025-03-07.inferred.stricmp-no-full-fold",
+      "script": "$stricmp('Straße',STRASSE)",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "", "truth": false },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "The official SDK helper compares one lowered code point at a time, so this does not use multi-code-point full case folding; pending black-box confirmation."
+      }
+    },
+    {
+      "id": "fb2k-sdk-2025-03-07.inferred.len-unicode-code-points",
+      "script": "$len('AÄ🙂')",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "3", "truth": false },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Compatibility inference combining the syntax reference's character terminology with the official SDK UTF-8 character counter; not a black-box title-format observation."
+      }
+    },
+    {
+      "id": "fb2k-sdk-2025-03-07.inferred.left-unicode-code-points",
+      "script": "$left('AÄ🙂Z',3)",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "AÄ🙂", "truth": false },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Compatibility inference combining the syntax reference with the official SDK character-to-byte helper; not a black-box title-format observation."
+      }
+    },
+    {
+      "id": "fb2k-sdk-2025-03-07.inferred.lower-unicode-simple-mapping",
+      "script": "$lower('ÄBC🙂')",
+      "context": { "kind": "track", "fields": {} },
+      "expected": { "text": "äbc🙂", "truth": false },
+      "provenance": {
+        "kind": "documentation",
+        "observed_at": "2026-08-23",
+        "notes": "Compatibility inference from the official SDK simple lowercase helper, including its unchanged non-BMP behavior; not a black-box title-format observation."
+      }
+    }
+  ]
+}
