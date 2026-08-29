@@ -6,6 +6,7 @@ extern "C" {
 #include <libavcodec/codec_desc.h>
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/samplefmt.h>
 }
@@ -68,6 +69,16 @@ int interrupt_callback(void* opaque) {
     std::array<char, 128> description{};
     const auto length = av_channel_layout_describe(&layout, description.data(), description.size());
     return length < 0 ? std::string{} : std::string{description.data()};
+}
+
+void append_tags(const AVDictionary* dictionary, std::vector<ProbedTag>& tags) {
+    const AVDictionaryEntry* entry = nullptr;
+    while ((entry = av_dict_iterate(dictionary, entry)) != nullptr) {
+        if (entry->key == nullptr || entry->value == nullptr) {
+            continue;
+        }
+        tags.push_back(ProbedTag{.name = entry->key, .value = entry->value});
+    }
 }
 
 } // namespace
@@ -134,6 +145,7 @@ core::Result<MediaProbe> probe_local_media(const std::string& raw_path,
         .bit_rate = format->bit_rate,
         .audio_streams = {},
         .best_audio_stream = std::nullopt,
+        .tags = {},
     };
     probe.audio_streams.reserve(format->nb_streams);
     for (unsigned index = 0U; index < format->nb_streams; ++index) {
@@ -161,6 +173,10 @@ core::Result<MediaProbe> probe_local_media(const std::string& raw_path,
     const auto best = av_find_best_stream(format.get(), AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
     if (best >= 0) {
         probe.best_audio_stream = best;
+    }
+    append_tags(format->metadata, probe.tags);
+    if (best >= 0 && static_cast<unsigned>(best) < format->nb_streams) {
+        append_tags(format->streams[best]->metadata, probe.tags);
     }
     if (probe.audio_streams.empty()) {
         return std::unexpected(core::Error{

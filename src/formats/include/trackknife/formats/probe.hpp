@@ -25,6 +25,15 @@ struct AudioStreamInfo {
     friend bool operator==(const AudioStreamInfo&, const AudioStreamInfo&) = default;
 };
 
+struct ProbedTag {
+    // Exactly as the demuxer reports it; no case folding or vocabulary
+    // mapping happens at this boundary.
+    std::string name;
+    std::string value;
+
+    friend bool operator==(const ProbedTag&, const ProbedTag&) = default;
+};
+
 struct MediaProbe {
     std::string raw_path;
     std::string container_names;
@@ -33,6 +42,9 @@ struct MediaProbe {
     std::int64_t bit_rate{0};
     std::vector<AudioStreamInfo> audio_streams;
     std::optional<int> best_audio_stream;
+    // Container-level metadata first, then the best audio stream's metadata,
+    // each in demuxer order with repeated names preserved.
+    std::vector<ProbedTag> tags;
 
     friend bool operator==(const MediaProbe&, const MediaProbe&) = default;
 };

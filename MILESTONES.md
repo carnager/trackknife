@@ -316,12 +316,22 @@ migration sources.
   playable). The superseded chip/audition tests were deleted; all 25 tests,
   warnings-as-errors, format, and SPDX gates pass, and `ldd` shows the
   client links no PipeWire/FFmpeg while `trackbench` does.
-- Remaining: Trackbench album-grouped presentation with covers and richer
-  track metadata (tags via `formats` probe instead of filenames), gapless
+- Done: the `formats` probe projects ordered container and best-stream tags
+  (`MediaProbe::tags`, demuxer order, repeated names preserved), and a
+  repository-owned tagged FLAC fixture with recorded provenance proves tag
+  survival plus a 4,410-frame contiguous non-silent complete decode.
+  Trackbench lists now show Title/Artist/Album/Length columns: new rows are
+  enriched by a bounded cancellable background probe batch off the UI
+  thread, results persist into the list document's typed fields and
+  duration, and restored lists render without reprobing. CLI/startup opens
+  queue until the asynchronous list restore finishes instead of being
+  dropped. An offscreen end-to-end run verified the FLAC's tags and
+  duration surviving into the SQLite document.
+- Remaining: Trackbench album-grouped presentation with covers, gapless
   verification in the shipped player, per-tab view polish (drag reorder,
   pin/duplicate, dirty indicators at parity with the client), local-path
-  containment/symlink revalidation, the shipped format matrix (FLAC and
-  WavPack fixtures first), PipeWire buffer presets and hotplug, and the
+  containment/symlink revalidation, WavPack coverage and the rest of the
+  shipped format matrix, PipeWire buffer presets and hotplug, and the
   shared UI budget measurements on large folders.
 
 ### Exit criteria

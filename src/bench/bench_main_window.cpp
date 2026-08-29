@@ -5,6 +5,7 @@
 #include "bench/local_list_model.hpp"
 #include "trackknife/audio/local_audition.hpp"
 #include "trackknife/core/stable_id.hpp"
+#include "trackknife/formats/probe.hpp"
 #include "uicommon/list_persistence_service.hpp"
 #include "uicommon/local_folder_tree_model.hpp"
 
@@ -39,8 +40,10 @@
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
+#include <iterator>
 #include <limits>
 #include <span>
+#include <string_view>
 #include <utility>
 
 namespace trackknife::bench {
@@ -70,6 +73,28 @@ constexpr int persist_debounce_ms = 1'000;
     return state == audio::LocalAuditionState::buffering ||
            state == audio::LocalAuditionState::playing ||
            state == audio::LocalAuditionState::draining;
+}
+
+constexpr std::size_t probe_batch_size = 8U;
+
+[[nodiscard]] std::string lowercased_ascii(std::string name) {
+    for (auto& character : name) {
+        if (character >= 'A' && character <= 'Z') {
+            character = static_cast<char>(character - 'A' + 'a');
+        }
+    }
+    return name;
+}
+
+// Case-insensitive first-value lookup over the probe's ordered tags.
+[[nodiscard]] std::string probed_tag(const formats::MediaProbe& probe,
+                                     const std::string_view name) {
+    for (const auto& tag : probe.tags) {
+        if (lowercased_ascii(tag.name) == name) {
+            return tag.value;
+        }
+    }
+    return {};
 }
 
 } // namespace
@@ -269,6 +294,7 @@ void BenchMainWindow::initializePersistence() {
 }
 
 void BenchMainWindow::restoreLists(std::vector<persistence::ListDocument> documents) {
+    lists_restored_ = true;
     for (auto& document : documents) {
         addListTab(std::move(document), false);
     }
@@ -285,6 +311,10 @@ void BenchMainWindow::restoreLists(std::vector<persistence::ListDocument> docume
             true);
     } else {
         tabs_->setCurrentIndex(0);
+    }
+    if (!pending_open_paths_.empty()) {
+        openLocalPaths(std::move(pending_open_paths_));
+        pending_open_paths_.clear();
     }
 }
 
@@ -309,15 +339,25 @@ std::vector<persistence::ListDocument> BenchMainWindow::collectDocuments() {
         }
         auto document = tab->document;
         document.items.clear();
-        document.items.reserve(tab->model->rawPaths().size());
-        for (const auto& raw : tab->model->rawPaths()) {
-            document.items.push_back(persistence::ListItem{
+        document.items.reserve(tab->model->rows().size());
+        for (const auto& row : tab->model->rows()) {
+            persistence::ListItem item{
                 .source = persistence::ListSource::local,
                 .profile_id = std::nullopt,
-                .source_reference = raw,
-                .duration_ms = std::nullopt,
+                .source_reference = row.raw_path,
+                .duration_ms = row.duration_ms,
                 .fields = {},
-            });
+            };
+            if (!row.title.empty()) {
+                item.fields.push_back({.name = "title", .value = row.title});
+            }
+            if (!row.artist.empty()) {
+                item.fields.push_back({.name = "artist", .value = row.artist});
+            }
+            if (!row.album.empty()) {
+                item.fields.push_back({.name = "album", .value = row.album});
+            }
+            document.items.push_back(std::move(item));
         }
         documents.push_back(std::move(document));
     }
@@ -347,14 +387,29 @@ BenchMainWindow::ListTab* BenchMainWindow::addListTab(persistence::ListDocument 
                                                       const bool select) {
     const auto id = QString::fromStdString(document.id.to_string());
     auto* model = new LocalListModel(tabs_);
-    std::vector<std::string> paths;
-    paths.reserve(document.items.size());
+    std::vector<LocalTrackRow> rows;
+    rows.reserve(document.items.size());
     for (const auto& item : document.items) {
-        if (item.source == persistence::ListSource::local) {
-            paths.push_back(item.source_reference);
+        if (item.source != persistence::ListSource::local) {
+            continue;
         }
+        LocalTrackRow row;
+        row.raw_path = item.source_reference;
+        row.duration_ms = item.duration_ms;
+        for (const auto& field : item.fields) {
+            if (field.name == "title") {
+                row.title = field.value;
+            } else if (field.name == "artist") {
+                row.artist = field.value;
+            } else if (field.name == "album") {
+                row.album = field.value;
+            }
+        }
+        row.probed = row.duration_ms.has_value() || !row.title.empty() || !row.artist.empty() ||
+                     !row.album.empty();
+        rows.push_back(std::move(row));
     }
-    model->replacePaths(std::move(paths));
+    model->replaceRows(std::move(rows));
 
     auto* view = new QTableView(tabs_);
     view->setObjectName(QStringLiteral("bench-list-%1").arg(id.left(8)));
@@ -387,7 +442,79 @@ BenchMainWindow::ListTab* BenchMainWindow::addListTab(persistence::ListDocument 
         tabs_->setCurrentIndex(index);
         view->setFocus(Qt::ShortcutFocusReason);
     }
+    enqueueUnprobedRows(*raw_tab);
     return raw_tab;
+}
+
+void BenchMainWindow::enqueueUnprobedRows(ListTab& tab) {
+    const auto id = QString::fromStdString(tab.document.id.to_string());
+    const auto& rows = tab.model->rows();
+    for (int row = 0; row < static_cast<int>(rows.size()); ++row) {
+        if (!rows[static_cast<std::size_t>(row)].probed) {
+            probe_queue_.push_back(ProbeJob{
+                .document_id = id,
+                .raw_path = rows[static_cast<std::size_t>(row)].raw_path,
+                .hint_row = row,
+            });
+        }
+    }
+    pumpProbeQueue();
+}
+
+void BenchMainWindow::pumpProbeQueue() {
+    if (probe_running_ || probe_queue_.empty()) {
+        return;
+    }
+    std::vector<ProbeJob> batch;
+    batch.reserve(probe_batch_size);
+    while (!probe_queue_.empty() && batch.size() < probe_batch_size) {
+        batch.push_back(std::move(probe_queue_.front()));
+        probe_queue_.pop_front();
+    }
+    probe_running_ = true;
+    connect(&probe_watcher_, &QFutureWatcher<std::vector<ProbeOutcome>>::finished, this,
+            &BenchMainWindow::finishProbeBatch, Qt::SingleShotConnection);
+    probe_watcher_.setFuture(QtConcurrent::run(
+        [jobs = std::move(batch), cancellation = probe_cancellation_.token()]() mutable {
+            std::vector<ProbeOutcome> outcomes;
+            outcomes.reserve(jobs.size());
+            for (auto& job : jobs) {
+                if (cancellation.is_cancellation_requested()) {
+                    break;
+                }
+                LocalTrackRow metadata;
+                if (auto probe = formats::probe_local_media(job.raw_path, cancellation); probe) {
+                    metadata.title = probed_tag(*probe, "title");
+                    metadata.artist = probed_tag(*probe, "artist");
+                    metadata.album = probed_tag(*probe, "album");
+                    metadata.duration_ms = probe->duration_ms;
+                }
+                // A failed probe still marks the row probed so it is not
+                // retried in a loop; the file-name fallback stays visible.
+                outcomes.push_back(
+                    ProbeOutcome{.job = std::move(job), .metadata = std::move(metadata)});
+            }
+            return outcomes;
+        }));
+}
+
+void BenchMainWindow::finishProbeBatch() {
+    probe_running_ = false;
+    auto outcomes = probe_watcher_.result();
+    bool applied = false;
+    for (auto& outcome : outcomes) {
+        auto* tab = tabForDocument(outcome.job.document_id);
+        if (tab == nullptr) {
+            continue;
+        }
+        applied = tab->model->applyMetadata(outcome.job.raw_path, outcome.job.hint_row,
+                                            std::move(outcome.metadata)) ||
+                  applied;
+    }
+    if (applied) {
+        schedulePersist();
+    }
+    pumpProbeQueue();
 }
 
 BenchMainWindow::ListTab* BenchMainWindow::currentListTab() {
@@ -519,11 +646,17 @@ void BenchMainWindow::openLocalPaths(std::vector<std::string> raw_paths) {
     if (raw_paths.empty()) {
         return;
     }
+    if (!lists_restored_) {
+        pending_open_paths_.insert(pending_open_paths_.end(),
+                                   std::make_move_iterator(raw_paths.begin()),
+                                   std::make_move_iterator(raw_paths.end()));
+        return;
+    }
     auto* tab = currentListTab();
     if (tab == nullptr) {
         return;
     }
-    startDiscovery(std::move(raw_paths), tab->document.id.to_string().c_str(), -1);
+    startDiscovery(std::move(raw_paths), QString::fromStdString(tab->document.id.to_string()), -1);
 }
 
 void BenchMainWindow::startDiscovery(std::vector<std::string> raw_paths, QString target_document_id,
@@ -537,9 +670,9 @@ void BenchMainWindow::startDiscovery(std::vector<std::string> raw_paths, QString
     discovery_insertion_row_ = insertion_row;
     connect(&discovery_watcher_, &QFutureWatcher<core::LocalSourceDiscovery>::finished, this,
             &BenchMainWindow::finishDiscovery, Qt::SingleShotConnection);
-    discovery_watcher_.setFuture(QtConcurrent::run([paths = std::move(raw_paths)] {
-        return core::discover_local_sources(std::span{paths.data(), paths.size()},
-                                            core::CancellationToken{});
+    discovery_watcher_.setFuture(QtConcurrent::run([paths = std::move(raw_paths),
+                                                    cancellation = probe_cancellation_.token()] {
+        return core::discover_local_sources(std::span{paths.data(), paths.size()}, cancellation);
     }));
 }
 
@@ -556,6 +689,7 @@ void BenchMainWindow::finishDiscovery() {
     if (!result.raw_files.empty()) {
         tab->model->appendPaths(std::move(result.raw_files), discovery_insertion_row_);
         markTabDirty(*tab);
+        enqueueUnprobedRows(*tab);
     }
     if (!result.issues.empty()) {
         statusBar()->showMessage(
@@ -757,6 +891,14 @@ void BenchMainWindow::refreshTransport() {
 }
 
 void BenchMainWindow::closeEvent(QCloseEvent* event) {
+    probe_cancellation_.request_cancellation();
+    probe_queue_.clear();
+    if (probe_running_) {
+        probe_watcher_.waitForFinished();
+    }
+    if (discovery_running_) {
+        discovery_watcher_.waitForFinished();
+    }
     persistNow(true);
     if (transport_timer_ != nullptr) {
         transport_timer_->stop();

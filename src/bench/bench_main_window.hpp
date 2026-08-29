@@ -2,12 +2,15 @@
 
 #pragma once
 
+#include "bench/local_list_model.hpp"
+#include "trackknife/core/cancellation.hpp"
 #include "trackknife/core/local_sources.hpp"
 #include "trackknife/persistence/list_repository.hpp"
 
 #include <QFutureWatcher>
 #include <QMainWindow>
 
+#include <deque>
 #include <memory>
 #include <optional>
 #include <string>
@@ -31,8 +34,6 @@ class LocalFolderTreeModel;
 } // namespace trackknife::ui
 
 namespace trackknife::bench {
-
-class LocalListModel;
 
 // Trackbench main window: tabbed local working lists, a folder library dock,
 // and one local-domain transport over the serialized playback worker
@@ -84,6 +85,19 @@ class BenchMainWindow final : public QMainWindow {
                         int insertion_row);
     void finishDiscovery();
 
+    struct ProbeJob {
+        QString document_id;
+        std::string raw_path;
+        int hint_row{-1};
+    };
+    struct ProbeOutcome {
+        ProbeJob job;
+        LocalTrackRow metadata;
+    };
+    void enqueueUnprobedRows(ListTab& tab);
+    void pumpProbeQueue();
+    void finishProbeBatch();
+
     void playRow(ListTab& tab, int row);
     void playAdjacent(int direction);
     [[nodiscard]] std::optional<std::pair<int, std::string>> adjacentPlaybackRow(int direction);
@@ -117,6 +131,16 @@ class BenchMainWindow final : public QMainWindow {
     QString discovery_target_document_;
     int discovery_insertion_row_{-1};
     bool discovery_running_{false};
+
+    QFutureWatcher<std::vector<ProbeOutcome>> probe_watcher_;
+    std::deque<ProbeJob> probe_queue_;
+    bool probe_running_{false};
+    core::CancellationSource probe_cancellation_;
+
+    // Paths opened before the asynchronous list restore finishes are queued
+    // and flushed into the initial tab once it exists.
+    std::vector<std::string> pending_open_paths_;
+    bool lists_restored_{false};
 
     QString playback_document_id_;
     int playback_row_{-1};

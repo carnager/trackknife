@@ -28,6 +28,27 @@ documented packet skip-sample semantics. The Trackknife test additionally
 requires a non-silent first and last window, preventing encoder priming or
 trailing padding from passing merely because it happens to contain zeros.
 
+## Tagged FLAC fixture
+
+`tagged-tone-flac.b64` is 4,410 mono samples (100 ms) of the same 997 Hz sine
+at 44.1 kHz with five Vorbis-comment tags. It was generated and encoded with
+FFmpeg n9.0.1 / libavcodec 63.1.101 using `-bitexact` for reproducibility:
+
+```sh
+ffmpeg -f lavfi -i "sine=frequency=997:sample_rate=44100:duration=0.1" \
+  -c:a pcm_s16le source44.wav
+ffmpeg -i source44.wav -metadata title="Fixture Tone" \
+  -metadata artist="Trackknife Project" \
+  -metadata album="Trackbench Fixtures" -metadata date="2026" \
+  -metadata track="3" -c:a flac -bitexact tagged-tone.flac
+```
+
+The binary SHA-256 is
+`f126f1b8100ad2b80ed1d8fab3e19b6834d2cb7f42c1ec15fc7388f46b04ea41`.
+The probe test requires the five tags to survive projection through
+`formats::MediaProbe` and the complete decode to publish exactly 4,410
+contiguous frames from sample zero with non-silent first and last windows.
+
 ## Vorbis timeline fixture
 
 `vorbis-positive-start.b64` is 4,410 mono samples (100 ms) of the same 997 Hz
