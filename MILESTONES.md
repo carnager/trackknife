@@ -335,12 +335,15 @@ migration sources.
   missing paths, directories, and empty inputs. File-operation call sites
   arrive with the M5 planner, which revalidates immediately before offering
   or executing every operation.
+- Done: a tagged WavPack fixture with recorded provenance joins the matrix,
+  proving APEv2 tag projection and a 4,410-frame contiguous non-silent
+  complete decode alongside the FLAC entry.
 - Remaining: Trackbench album-grouped presentation with covers, gapless
   verification in the shipped player, per-tab view polish (drag reorder,
-  pin/duplicate, dirty indicators at parity with the client), WavPack
-  coverage and the rest of the shipped format matrix, PipeWire buffer
-  presets and hotplug, and the shared UI budget measurements on large
-  folders.
+  pin/duplicate, dirty indicators at parity with the client), the rest of
+  the shipped format matrix (AIFF, WAV/RF64 edge cases, cue/subsong),
+  PipeWire buffer presets and hotplug, and the shared UI budget
+  measurements on large folders.
 
 ### Exit criteria
 

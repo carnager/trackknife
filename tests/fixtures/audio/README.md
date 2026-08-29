@@ -49,6 +49,23 @@ The probe test requires the five tags to survive projection through
 `formats::MediaProbe` and the complete decode to publish exactly 4,410
 contiguous frames from sample zero with non-silent first and last windows.
 
+## Tagged WavPack fixture
+
+`tagged-tone-wavpack.b64` is the same 4,410-sample 44.1 kHz mono tone in a
+WavPack container with two APEv2 tags, generated with FFmpeg n9.0.1 /
+libavcodec 63.1.101:
+
+```sh
+ffmpeg -i source44.wav -metadata title="Fixture Tone" \
+  -metadata artist="Trackknife Project" -c:a wavpack -bitexact tagged-tone.wv
+```
+
+The binary SHA-256 is
+`07b9afb934a54ca0113b056c68a8a7f7731b0c11c12e8d65456e4b53ce249073`.
+The probe test requires both tags to survive projection and the complete
+decode to publish exactly 4,410 contiguous frames from sample zero with
+non-silent first and last windows.
+
 ## Vorbis timeline fixture
 
 `vorbis-positive-start.b64` is 4,410 mono samples (100 ms) of the same 997 Hz

@@ -486,6 +486,58 @@ void probesTaggedFlacFixture(const std::filesystem::path& fixture_directory) {
     CHECK(!error);
 }
 
+void probesTaggedWavPackFixture(const std::filesystem::path& fixture_directory) {
+    const auto binary = decode_base64_file(fixture_directory / "tagged-tone-wavpack.b64");
+    CHECK(binary.has_value());
+    if (!binary) {
+        return;
+    }
+    const auto path =
+        std::filesystem::temp_directory_path() /
+        ("trackknife-tagged-wavpack-" + trackknife::core::StableId::random().to_string() + ".wv");
+    std::ofstream output{path, std::ios::binary};
+    output.write(reinterpret_cast<const char*>(binary->data()),
+                 static_cast<std::streamsize>(binary->size()));
+    output.close();
+    CHECK(output.good());
+
+    const auto probe = trackknife::formats::probe_local_media(path.native());
+    CHECK(probe.has_value());
+    if (probe) {
+        CHECK(probe->audio_streams.size() == 1U);
+        CHECK(probe->audio_streams.front().codec_name == "wavpack");
+        CHECK(probe->audio_streams.front().sample_rate == 44'100);
+        CHECK(probe->audio_streams.front().channels == 1);
+        const auto tag_value = [&probe](const std::string_view name) -> std::string {
+            for (const auto& tag : probe->tags) {
+                if (tag.name == name) {
+                    return tag.value;
+                }
+            }
+            return {};
+        };
+        CHECK(probe->tags.size() == 2U);
+        CHECK(tag_value("title") == "Fixture Tone");
+        CHECK(tag_value("artist") == "Trackknife Project");
+    }
+
+    auto decoder = trackknife::formats::AudioDecoder::open(path.native());
+    CHECK(decoder.has_value());
+    if (decoder) {
+        CHECK(decoder->output_format().sample_rate == 44'100);
+        CHECK(decoder->output_format().channels == 1);
+        const auto decoded = decode_all(*decoder);
+        CHECK(decoded.size() == 4'410U);
+        const auto loud = [](const float sample) { return std::fabs(sample) > 0.01F; };
+        CHECK(std::ranges::any_of(decoded | std::views::take(64U), loud));
+        CHECK(std::ranges::any_of(decoded | std::views::drop(decoded.size() - 64U), loud));
+    }
+
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    CHECK(!error);
+}
+
 } // namespace
 
 int main(const int argc, char** argv) {
@@ -496,6 +548,7 @@ int main(const int argc, char** argv) {
         decodesCompressedGaplessFixtures(argv[1]);
         normalizesVorbisFrameTimeline(argv[1]);
         probesTaggedFlacFixture(argv[1]);
+        probesTaggedWavPackFixture(argv[1]);
     }
     return failures == 0 ? 0 : 1;
 }
