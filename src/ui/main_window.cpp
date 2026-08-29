@@ -12,11 +12,11 @@
 #include "ui/format_sandbox.hpp"
 #include "ui/library_tree_editor_dialog.hpp"
 #include "ui/mpd_connection_dialog.hpp"
-#include "ui/queue_item_delegate.hpp"
-#include "ui/queue_table_view.hpp"
 #include "ui/server_library_tree_model.hpp"
 #include "uicommon/command_palette.hpp"
 #include "uicommon/list_persistence_service.hpp"
+#include "uicommon/queue_item_delegate.hpp"
+#include "uicommon/queue_table_view.hpp"
 
 #include <QAbstractItemView>
 #include <QAction>

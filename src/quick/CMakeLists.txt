@@ -18,7 +18,8 @@ add_library(Trackknife::MpdUi ALIAS trackknife_mpd_ui)
 target_include_directories(trackknife_mpd_ui PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_link_libraries(
     trackknife_mpd_ui
-    PUBLIC Qt6::Core Qt6::Gui Trackknife::Mpd trackknife_project_options
+    PUBLIC Qt6::Core Qt6::Gui Trackknife::Mpd Trackknife::UiCommon
+           trackknife_project_options
     PRIVATE Qt6::Concurrent trackknife_project_warnings
 )
 target_compile_features(trackknife_mpd_ui PUBLIC cxx_std_23)

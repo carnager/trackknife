@@ -349,10 +349,24 @@ migration sources.
   unexecuted until an unrelated wakeup; enqueue/request now notify every
   waiter. The session test went from roughly one failure in twenty ASan
   runs to 0 in 150, and it now prints its wait-state flags on timeout.
-- Remaining: Trackbench album-grouped presentation with covers, gapless
-  verification in the shipped player, per-tab view polish (drag reorder,
-  pin/duplicate, dirty indicators at parity with the client), the rest of
-  the shipped format matrix (AIFF, WAV/RF64 edge cases, cue/subsong),
+- Done: Trackbench now renders the client's album-grouped presentation
+  through shared code. The `QueueItemDelegate`/`QueueTableView` pair moved
+  into `uicommon` behind a documented role/column contract
+  (`track_row_roles.hpp`); the MPD queue model's roles alias the shared
+  values so the client is behaviorally unchanged, and Trackbench's local
+  list model implements the same contract. Local lists get bold
+  artist—album—(date) headers with summed durations, dense numbered rows,
+  the playing-row highlight, multi-selection drag reorder within a list,
+  cross-tab drag copy/move, album-header click selection, and file drops
+  at a precise insertion row. The probe pipeline now also captures album
+  artist, date, and track number, persisted alongside the existing
+  fields. A `--screenshot` QA flag (test-mode settings) renders the
+  workspace headlessly; an offscreen render of a two-album fixture set
+  verified header grouping, totals, and numbering.
+- Remaining: local cover art in group headers (embedded art or folder
+  images through a Trackbench artwork loader), gapless verification in
+  the shipped player, pin/duplicate and dirty-indicator parity, the rest
+  of the shipped format matrix (AIFF, WAV/RF64 edge cases, cue/subsong),
   PipeWire buffer presets and hotplug, and the shared UI budget
   measurements on large folders.
 

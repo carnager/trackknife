@@ -8,6 +8,11 @@ qt_add_library(
     list_persistence_service.hpp
     local_folder_tree_model.cpp
     local_folder_tree_model.hpp
+    queue_item_delegate.cpp
+    queue_item_delegate.hpp
+    queue_table_view.cpp
+    queue_table_view.hpp
+    track_row_roles.hpp
 )
 add_library(Trackknife::UiCommon ALIAS trackknife_ui_common)
 

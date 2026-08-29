@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-#include "ui/queue_item_delegate.hpp"
+#include "uicommon/queue_item_delegate.hpp"
 
-#include "quick/mpd_queue_model.hpp"
+#include "uicommon/track_row_roles.hpp"
 
 #include <QApplication>
 #include <QPainter>
@@ -19,7 +19,7 @@ constexpr int track_row_height = 22;
 constexpr int album_cover_extent = 22;
 
 [[nodiscard]] QString groupKey(const QModelIndex& index) {
-    return index.data(quick::MpdQueueModel::AlbumArtistRole).toString() + QChar::Null +
+    return index.data(track_album_artist_role).toString() + QChar::Null +
            index.siblingAtColumn(2).data().toString() + QChar::Null +
            index.siblingAtColumn(3).data().toString();
 }
@@ -79,7 +79,7 @@ void QueueItemDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         painter->drawLine(header_rect.bottomLeft(), header_rect.bottomRight());
 
         if (index.column() == 0) {
-            const auto cover = index.data(quick::MpdQueueModel::AlbumArtworkRole).value<QImage>();
+            const auto cover = index.data(track_album_artwork_role).value<QImage>();
             const QRect cover_bounds{header_rect.left() + 6,
                                      header_rect.center().y() - album_cover_extent / 2,
                                      album_cover_extent, album_cover_extent};
@@ -115,7 +115,7 @@ void QueueItemDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         item.rect.setTop(item.rect.top() + album_header_height);
     }
 
-    const auto current_track = index.data(quick::MpdQueueModel::CurrentRole).toBool();
+    const auto current_track = index.data(track_current_role).toBool();
     const auto selected = item.state.testFlag(QStyle::State_Selected);
     if (current_track) {
         item.font.setBold(true);
@@ -214,7 +214,7 @@ std::pair<int, int> QueueItemDelegate::albumRowRange(const QModelIndex& index) c
 }
 
 QString QueueItemDelegate::priorityLabel(const QModelIndex& index) const {
-    const auto priority = index.data(quick::MpdQueueModel::PriorityRole);
+    const auto priority = index.data(track_priority_role);
     bool numeric = false;
     const auto value = priority.toUInt(&numeric);
     return numeric && value > 0U ? QString::number(value) : QString{};
@@ -225,7 +225,7 @@ bool QueueItemDelegate::beginsAlbum(const QModelIndex& index) const {
 }
 
 QString QueueItemDelegate::albumTitle(const QModelIndex& index) const {
-    const auto artist = index.data(quick::MpdQueueModel::AlbumArtistRole).toString();
+    const auto artist = index.data(track_album_artist_role).toString();
     const auto album = index.siblingAtColumn(2).data().toString();
     const auto date = index.siblingAtColumn(3).data().toString();
     auto title = artist.isEmpty() ? QStringLiteral("Unknown artist") : artist;
@@ -245,7 +245,7 @@ qint64 QueueItemDelegate::albumDurationMs(const QModelIndex& index) const {
         if (groupKey(current) != key) {
             break;
         }
-        duration += current.data(quick::MpdQueueModel::DurationMsRole).toLongLong();
+        duration += current.data(track_duration_ms_role).toLongLong();
     }
     return duration;
 }

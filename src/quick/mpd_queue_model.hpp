@@ -3,6 +3,7 @@
 #pragma once
 
 #include "trackknife/mpd/model.hpp"
+#include "uicommon/track_row_roles.hpp"
 
 #include <QAbstractTableModel>
 #include <QHash>
@@ -22,17 +23,20 @@ class MpdQueueModel final : public QAbstractTableModel {
   public:
     static constexpr int column_count = 6;
 
+    // The values implement the shared album-grouped presentation contract
+    // consumed by the uicommon delegate/view.
     enum ExtraRole {
-        UriRole = Qt::UserRole + 1,
-        QueueIdRole,
-        QueuePositionRole,
-        DurationMsRole,
-        CurrentRole,
-        AlbumArtistRole,
-        PriorityRole,
-        AlbumArtworkRole,
-        AlbumArtworkUriRole,
+        UriRole = ui::track_source_role,
+        QueueIdRole = ui::track_id_role,
+        QueuePositionRole = ui::track_position_role,
+        DurationMsRole = ui::track_duration_ms_role,
+        CurrentRole = ui::track_current_role,
+        AlbumArtistRole = ui::track_album_artist_role,
+        PriorityRole = ui::track_priority_role,
+        AlbumArtworkRole = ui::track_album_artwork_role,
+        AlbumArtworkUriRole = ui::track_album_artwork_key_role,
     };
+    static_assert(column_count == ui::track_column_count);
 
     explicit MpdQueueModel(QObject* parent = nullptr);
 

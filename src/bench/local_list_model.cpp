@@ -3,6 +3,9 @@
 #include "bench/local_list_model.hpp"
 
 #include "trackknife/core/local_sources.hpp"
+#include "uicommon/track_row_roles.hpp"
+
+#include <QImage>
 
 #include <algorithm>
 #include <cstddef>
@@ -36,6 +39,13 @@ namespace {
         .arg(total_seconds % 60, 2, 10, QLatin1Char('0'));
 }
 
+[[nodiscard]] std::vector<int> normalized_rows(std::vector<int> rows, const int row_count) {
+    std::ranges::sort(rows);
+    rows.erase(std::ranges::unique(rows).begin(), rows.end());
+    std::erase_if(rows, [row_count](const int row) { return row < 0 || row >= row_count; });
+    return rows;
+}
+
 } // namespace
 
 LocalListModel::LocalListModel(QObject* parent) : QAbstractTableModel(parent) {}
@@ -44,37 +54,65 @@ void LocalListModel::replaceRows(std::vector<LocalTrackRow> rows) {
     beginResetModel();
     rows_ = std::move(rows);
     endResetModel();
+    refreshCurrentRow();
 }
 
 void LocalListModel::appendPaths(std::vector<std::string> raw_paths, const int insertion_row) {
-    if (raw_paths.empty()) {
+    std::vector<LocalTrackRow> rows;
+    rows.reserve(raw_paths.size());
+    for (auto& raw : raw_paths) {
+        LocalTrackRow row;
+        row.raw_path = std::move(raw);
+        rows.push_back(std::move(row));
+    }
+    appendRows(std::move(rows), insertion_row);
+}
+
+void LocalListModel::appendRows(std::vector<LocalTrackRow> rows, const int insertion_row) {
+    if (rows.empty()) {
         return;
     }
     const auto row_count = static_cast<int>(rows_.size());
     const auto target = insertion_row < 0 || insertion_row > row_count ? row_count : insertion_row;
-    beginInsertRows({}, target, target + static_cast<int>(raw_paths.size()) - 1);
-    auto position = rows_.begin() + target;
-    for (auto& raw : raw_paths) {
-        LocalTrackRow row;
-        row.raw_path = std::move(raw);
-        position = rows_.insert(position, std::move(row));
-        ++position;
-    }
+    beginInsertRows({}, target, target + static_cast<int>(rows.size()) - 1);
+    rows_.insert(rows_.begin() + target, std::make_move_iterator(rows.begin()),
+                 std::make_move_iterator(rows.end()));
     endInsertRows();
+    refreshCurrentRow();
 }
 
 void LocalListModel::removeRowIndexes(std::vector<int> rows) {
-    std::ranges::sort(rows);
-    rows.erase(std::ranges::unique(rows).begin(), rows.end());
+    rows = normalized_rows(std::move(rows), static_cast<int>(rows_.size()));
     for (auto it = rows.rbegin(); it != rows.rend(); ++it) {
-        const auto row = *it;
-        if (row < 0 || row >= static_cast<int>(rows_.size())) {
-            continue;
-        }
-        beginRemoveRows({}, row, row);
-        rows_.erase(rows_.begin() + row);
+        beginRemoveRows({}, *it, *it);
+        rows_.erase(rows_.begin() + *it);
         endRemoveRows();
     }
+    refreshCurrentRow();
+}
+
+void LocalListModel::reorderRows(std::vector<int> rows, const int insertion_row) {
+    rows = normalized_rows(std::move(rows), static_cast<int>(rows_.size()));
+    if (rows.empty()) {
+        return;
+    }
+    std::vector<LocalTrackRow> moved;
+    moved.reserve(rows.size());
+    auto target = insertion_row < 0 ? static_cast<int>(rows_.size()) : insertion_row;
+    for (auto it = rows.rbegin(); it != rows.rend(); ++it) {
+        moved.push_back(std::move(rows_[static_cast<std::size_t>(*it)]));
+        rows_.erase(rows_.begin() + *it);
+        if (*it < target) {
+            --target;
+        }
+    }
+    std::ranges::reverse(moved);
+    target = std::clamp(target, 0, static_cast<int>(rows_.size()));
+    beginResetModel();
+    rows_.insert(rows_.begin() + target, std::make_move_iterator(moved.begin()),
+                 std::make_move_iterator(moved.end()));
+    endResetModel();
+    refreshCurrentRow();
 }
 
 bool LocalListModel::applyMetadata(const std::string& raw_path, const int hint_row,
@@ -86,8 +124,20 @@ bool LocalListModel::applyMetadata(const std::string& raw_path, const int hint_r
     metadata.raw_path = raw_path;
     metadata.probed = true;
     rows_[static_cast<std::size_t>(row)] = std::move(metadata);
-    emit dataChanged(index(row, 0), index(row, column_count - 1));
+    emitRowChanged(row);
     return true;
+}
+
+void LocalListModel::setCurrentPath(std::string raw_path, const int hint_row) {
+    const auto previous = current_row_;
+    current_path_ = std::move(raw_path);
+    current_row_ = current_path_.empty() ? -1 : rowOfPath(current_path_, hint_row);
+    if (previous >= 0 && previous < static_cast<int>(rows_.size())) {
+        emitRowChanged(previous);
+    }
+    if (current_row_ >= 0) {
+        emitRowChanged(current_row_);
+    }
 }
 
 std::string LocalListModel::rawPath(const int row) const {
@@ -114,7 +164,7 @@ int LocalListModel::rowCount(const QModelIndex& parent) const {
 }
 
 int LocalListModel::columnCount(const QModelIndex& parent) const {
-    return parent.isValid() ? 0 : column_count;
+    return parent.isValid() ? 0 : ui::track_column_count;
 }
 
 QVariant LocalListModel::data(const QModelIndex& index, const int role) const {
@@ -122,31 +172,48 @@ QVariant LocalListModel::data(const QModelIndex& index, const int role) const {
         return {};
     }
     const auto& row = rows_[static_cast<std::size_t>(index.row())];
-    if (role == raw_path_role) {
+    switch (role) {
+    case ui::track_source_role:
         return QByteArray(row.raw_path.data(), static_cast<qsizetype>(row.raw_path.size()));
+    case ui::track_id_role:
+    case ui::track_position_role:
+        return index.row();
+    case ui::track_duration_ms_role:
+        return static_cast<qlonglong>(row.duration_ms.value_or(0));
+    case ui::track_current_role:
+        return index.row() == current_row_;
+    case ui::track_album_artist_role:
+        return display_utf8(row.album_artist.empty() ? row.artist : row.album_artist);
+    case ui::track_priority_role:
+        return {};
+    case ui::track_album_artwork_role:
+        return QVariant::fromValue(QImage{});
+    case ui::track_album_artwork_key_role:
+        return {};
+    default:
+        break;
     }
     if (role == Qt::DisplayRole) {
         switch (index.column()) {
-        case title_column:
+        case ui::track_marker_column:
+            return display_utf8(row.artist);
+        case ui::track_title_column:
             return row.title.empty() ? escaped(file_name_of(row.raw_path))
                                      : display_utf8(row.title);
-        case artist_column:
-            return display_utf8(row.artist);
-        case album_column:
+        case ui::track_album_column:
             return display_utf8(row.album);
-        case duration_column:
+        case ui::track_date_column:
+            return display_utf8(row.date);
+        case ui::track_number_column:
+            return display_utf8(row.track_number);
+        case ui::track_length_column:
             return row.duration_ms ? format_duration(*row.duration_ms) : QString{};
-        case path_column:
-            return escaped(row.raw_path);
         default:
             return {};
         }
     }
     if (role == Qt::ToolTipRole) {
         return escaped(row.raw_path);
-    }
-    if (role == Qt::TextAlignmentRole && index.column() == duration_column) {
-        return static_cast<int>(Qt::AlignRight | Qt::AlignVCenter);
     }
     return {};
 }
@@ -157,26 +224,53 @@ QVariant LocalListModel::headerData(const int section, const Qt::Orientation ori
         return {};
     }
     switch (section) {
-    case title_column:
-        return QStringLiteral("Title");
-    case artist_column:
+    case ui::track_marker_column:
         return QStringLiteral("Artist");
-    case album_column:
+    case ui::track_title_column:
+        return QStringLiteral("Title");
+    case ui::track_album_column:
         return QStringLiteral("Album");
-    case duration_column:
+    case ui::track_date_column:
+        return QStringLiteral("Date");
+    case ui::track_number_column:
+        return QStringLiteral("#");
+    case ui::track_length_column:
         return QStringLiteral("Length");
-    case path_column:
-        return QStringLiteral("Path");
     default:
         return {};
     }
 }
 
 Qt::ItemFlags LocalListModel::flags(const QModelIndex& index) const {
-    if (!index.isValid()) {
-        return Qt::NoItemFlags;
+    auto item_flags = QAbstractTableModel::flags(index);
+    if (index.isValid()) {
+        item_flags |= Qt::ItemIsDragEnabled;
     }
-    return Qt::ItemIsEnabled | Qt::ItemIsSelectable;
+    return item_flags;
+}
+
+Qt::DropActions LocalListModel::supportedDropActions() const {
+    // Drops are executed by the view's typed callbacks, never by the model,
+    // but Qt only tracks and paints the drop indicator for actions the target
+    // model advertises.
+    return Qt::MoveAction | Qt::CopyAction;
+}
+
+void LocalListModel::refreshCurrentRow() {
+    const auto previous = current_row_;
+    current_row_ = current_path_.empty() ? -1 : rowOfPath(current_path_, current_row_);
+    if (previous != current_row_) {
+        if (previous >= 0 && previous < static_cast<int>(rows_.size())) {
+            emitRowChanged(previous);
+        }
+        if (current_row_ >= 0) {
+            emitRowChanged(current_row_);
+        }
+    }
+}
+
+void LocalListModel::emitRowChanged(const int row) {
+    emit dataChanged(index(row, 0), index(row, ui::track_column_count - 1));
 }
 
 } // namespace trackknife::bench

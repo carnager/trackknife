@@ -10,10 +10,6 @@ qt_add_library(
     main_window.hpp
     mpd_connection_dialog.cpp
     mpd_connection_dialog.hpp
-    queue_item_delegate.cpp
-    queue_item_delegate.hpp
-    queue_table_view.cpp
-    queue_table_view.hpp
     server_library_tree_model.cpp
     server_library_tree_model.hpp
 )

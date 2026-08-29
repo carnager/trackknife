@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-#include "ui/queue_table_view.hpp"
+#include "uicommon/queue_table_view.hpp"
 
-#include "ui/queue_item_delegate.hpp"
+#include "uicommon/queue_item_delegate.hpp"
 
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>

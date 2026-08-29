@@ -6,9 +6,9 @@
 #include "ui/format_sandbox.hpp"
 #include "ui/main_window.hpp"
 #include "ui/mpd_connection_dialog.hpp"
-#include "ui/queue_item_delegate.hpp"
-#include "ui/queue_table_view.hpp"
 #include "ui/server_library_tree_model.hpp"
+#include "uicommon/queue_item_delegate.hpp"
+#include "uicommon/queue_table_view.hpp"
 
 #include <QAction>
 #include <QBuffer>

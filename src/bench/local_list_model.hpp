@@ -19,6 +19,9 @@ struct LocalTrackRow {
     std::string title;
     std::string artist;
     std::string album;
+    std::string album_artist;
+    std::string date;
+    std::string track_number;
     std::optional<std::int64_t> duration_ms;
     // True once a probe ran or persisted metadata was restored; unprobed rows
     // fall back to their file name and are queued for enrichment.
@@ -27,30 +30,29 @@ struct LocalTrackRow {
     friend bool operator==(const LocalTrackRow&, const LocalTrackRow&) = default;
 };
 
-// Table model over one Trackbench working list. Rows hold raw path bytes;
-// presentation uses the lossless escaped form from the core.
+// Table model over one Trackbench working list, implementing the shared
+// album-grouped presentation contract (uicommon/track_row_roles.hpp) so the
+// client's QueueItemDelegate/QueueTableView render it unchanged. Rows hold
+// raw path bytes; presentation uses the lossless escaped form from the core.
 class LocalListModel final : public QAbstractTableModel {
     Q_OBJECT
 
   public:
-    enum Column {
-        title_column = 0,
-        artist_column = 1,
-        album_column = 2,
-        duration_column = 3,
-        path_column = 4,
-        column_count = 5,
-    };
-    enum Role { raw_path_role = Qt::UserRole + 1 };
-
     explicit LocalListModel(QObject* parent = nullptr);
 
     void replaceRows(std::vector<LocalTrackRow> rows);
     void appendPaths(std::vector<std::string> raw_paths, int insertion_row = -1);
+    void appendRows(std::vector<LocalTrackRow> rows, int insertion_row = -1);
     void removeRowIndexes(std::vector<int> rows);
+    // Moves the given rows (ascending, deduplicated) as one block to
+    // insertion_row, preserving their relative order.
+    void reorderRows(std::vector<int> rows, int insertion_row);
     // Applies probe metadata to the row holding raw_path (hint first, then
     // search); returns false when the row no longer exists.
     bool applyMetadata(const std::string& raw_path, int hint_row, LocalTrackRow metadata);
+    // Marks the playing occurrence rendered by the shared delegate; an empty
+    // path clears it.
+    void setCurrentPath(std::string raw_path, int hint_row);
     [[nodiscard]] const std::vector<LocalTrackRow>& rows() const noexcept { return rows_; }
     [[nodiscard]] std::string rawPath(int row) const;
     // Finds the row holding raw_path, preferring the hint row so duplicate
@@ -63,9 +65,15 @@ class LocalListModel final : public QAbstractTableModel {
     [[nodiscard]] QVariant headerData(int section, Qt::Orientation orientation,
                                       int role) const override;
     [[nodiscard]] Qt::ItemFlags flags(const QModelIndex& index) const override;
+    [[nodiscard]] Qt::DropActions supportedDropActions() const override;
 
   private:
+    void refreshCurrentRow();
+    void emitRowChanged(int row);
+
     std::vector<LocalTrackRow> rows_;
+    std::string current_path_;
+    int current_row_{-1};
 };
 
 } // namespace trackknife::bench

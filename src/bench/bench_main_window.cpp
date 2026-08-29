@@ -8,6 +8,9 @@
 #include "trackknife/formats/probe.hpp"
 #include "uicommon/list_persistence_service.hpp"
 #include "uicommon/local_folder_tree_model.hpp"
+#include "uicommon/queue_item_delegate.hpp"
+#include "uicommon/queue_table_view.hpp"
+#include "uicommon/track_row_roles.hpp"
 
 #include <QAction>
 #include <QApplication>
@@ -357,6 +360,15 @@ std::vector<persistence::ListDocument> BenchMainWindow::collectDocuments() {
             if (!row.album.empty()) {
                 item.fields.push_back({.name = "album", .value = row.album});
             }
+            if (!row.album_artist.empty()) {
+                item.fields.push_back({.name = "albumartist", .value = row.album_artist});
+            }
+            if (!row.date.empty()) {
+                item.fields.push_back({.name = "date", .value = row.date});
+            }
+            if (!row.track_number.empty()) {
+                item.fields.push_back({.name = "track", .value = row.track_number});
+            }
             document.items.push_back(std::move(item));
         }
         documents.push_back(std::move(document));
@@ -387,8 +399,8 @@ BenchMainWindow::ListTab* BenchMainWindow::addListTab(persistence::ListDocument 
                                                       const bool select) {
     const auto id = QString::fromStdString(document.id.to_string());
     auto* model = new LocalListModel(tabs_);
-    std::vector<LocalTrackRow> rows;
-    rows.reserve(document.items.size());
+    std::vector<LocalTrackRow> restored_rows;
+    restored_rows.reserve(document.items.size());
     for (const auto& item : document.items) {
         if (item.source != persistence::ListSource::local) {
             continue;
@@ -403,31 +415,97 @@ BenchMainWindow::ListTab* BenchMainWindow::addListTab(persistence::ListDocument 
                 row.artist = field.value;
             } else if (field.name == "album") {
                 row.album = field.value;
+            } else if (field.name == "albumartist") {
+                row.album_artist = field.value;
+            } else if (field.name == "date") {
+                row.date = field.value;
+            } else if (field.name == "track") {
+                row.track_number = field.value;
             }
         }
         row.probed = row.duration_ms.has_value() || !row.title.empty() || !row.artist.empty() ||
                      !row.album.empty();
-        rows.push_back(std::move(row));
+        restored_rows.push_back(std::move(row));
     }
-    model->replaceRows(std::move(rows));
+    model->replaceRows(std::move(restored_rows));
 
-    auto* view = new QTableView(tabs_);
+    auto* view = new ui::QueueTableView(tabs_);
     view->setObjectName(QStringLiteral("bench-list-%1").arg(id.left(8)));
     view->setProperty("bench-document-id", id);
     view->setModel(model);
+    view->setItemDelegate(new ui::QueueItemDelegate(view));
+    view->setProperty("trackknife-hover-row", -1);
+    view->setAlternatingRowColors(true);
+    view->setShowGrid(false);
     view->setSelectionBehavior(QAbstractItemView::SelectRows);
     view->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    view->setShowGrid(false);
-    view->verticalHeader()->setVisible(false);
-    view->verticalHeader()->setDefaultSectionSize(view->fontMetrics().height() + 6);
-    view->horizontalHeader()->setStretchLastSection(true);
-    view->horizontalHeader()->resizeSection(LocalListModel::title_column, 320);
     view->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    connect(view, &QTableView::activated, this, [this, id](const QModelIndex& index) {
+    view->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    view->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    view->verticalHeader()->setDefaultSectionSize(22);
+    view->verticalHeader()->setMinimumSectionSize(18);
+    view->verticalHeader()->hide();
+    view->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    view->horizontalHeader()->setSectionsMovable(true);
+    view->horizontalHeader()->setHighlightSections(false);
+    view->horizontalHeader()->setStretchLastSection(false);
+    view->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    view->horizontalHeader()->setSectionResizeMode(ui::track_title_column, QHeaderView::Stretch);
+    view->setColumnWidth(ui::track_marker_column, 180);
+    view->setColumnWidth(ui::track_album_column, 220);
+    view->setColumnWidth(ui::track_date_column, 72);
+    view->setColumnWidth(ui::track_number_column, 60);
+    view->setColumnWidth(ui::track_length_column, 72);
+    view->setDragEnabled(true);
+    view->setAcceptDrops(true);
+    view->setDropIndicatorShown(true);
+    view->setDragDropOverwriteMode(false);
+    view->setDragDropMode(QAbstractItemView::DragDrop);
+    view->setDefaultDropAction(Qt::MoveAction);
+    view->setActivateCallback([this, id](const QModelIndex& index) {
         auto* tab = tabForDocument(id);
         if (tab != nullptr && index.isValid()) {
             playRow(*tab, index.row());
         }
+    });
+    connect(view, &QTableView::doubleClicked, this, [this, id](const QModelIndex& index) {
+        auto* tab = tabForDocument(id);
+        if (tab != nullptr && index.isValid()) {
+            playRow(*tab, index.row());
+        }
+    });
+    view->setReorderCallback([this, id](const QVariantList& rows, const int insertion_row) {
+        auto* tab = tabForDocument(id);
+        if (tab == nullptr) {
+            return;
+        }
+        std::vector<int> row_indexes;
+        row_indexes.reserve(static_cast<std::size_t>(rows.size()));
+        for (const auto& row : rows) {
+            row_indexes.push_back(row.toInt());
+        }
+        tab->model->reorderRows(std::move(row_indexes), insertion_row);
+        markTabDirty(*tab);
+    });
+    view->setExternalDropCallback([this, id](QTableView* source, const QVariantList& rows,
+                                             const int insertion_row, const Qt::DropAction action) {
+        return transferRows(source, rows, id, action == Qt::MoveAction, insertion_row);
+    });
+    view->setLocalUrlDropCallback([this, id](const QList<QUrl>& urls, const int insertion_row) {
+        std::vector<std::string> raw_paths;
+        raw_paths.reserve(static_cast<std::size_t>(urls.size()));
+        for (const auto& url : urls) {
+            if (!url.isLocalFile()) {
+                continue;
+            }
+            const auto encoded = QFile::encodeName(url.toLocalFile());
+            raw_paths.emplace_back(encoded.constData(), static_cast<std::size_t>(encoded.size()));
+        }
+        if (raw_paths.empty()) {
+            return false;
+        }
+        startDiscovery(std::move(raw_paths), id, insertion_row);
+        return true;
     });
 
     const auto index = tabs_->addTab(view, displayText(document.name) +
@@ -487,6 +565,9 @@ void BenchMainWindow::pumpProbeQueue() {
                     metadata.title = probed_tag(*probe, "title");
                     metadata.artist = probed_tag(*probe, "artist");
                     metadata.album = probed_tag(*probe, "album");
+                    metadata.album_artist = probed_tag(*probe, "album_artist");
+                    metadata.date = probed_tag(*probe, "date");
+                    metadata.track_number = probed_tag(*probe, "track");
                     metadata.duration_ms = probe->duration_ms;
                 }
                 // A failed probe still marks the row probed so it is not
@@ -533,6 +614,41 @@ BenchMainWindow::ListTab* BenchMainWindow::tabForDocument(const QString& documen
         }
     }
     return nullptr;
+}
+
+bool BenchMainWindow::transferRows(QTableView* source, const QVariantList& rows,
+                                   const QString& target_id, const bool move,
+                                   const int insertion_row) {
+    auto* target = tabForDocument(target_id);
+    if (target == nullptr || source == nullptr) {
+        return false;
+    }
+    auto* source_tab = static_cast<ListTab*>(source->property("bench-tab-pointer").value<void*>());
+    if (source_tab == nullptr || source_tab == target) {
+        return false;
+    }
+    std::vector<LocalTrackRow> transferred;
+    std::vector<int> source_rows;
+    transferred.reserve(static_cast<std::size_t>(rows.size()));
+    source_rows.reserve(static_cast<std::size_t>(rows.size()));
+    for (const auto& row : rows) {
+        const auto row_index = row.toInt();
+        if (row_index < 0 || row_index >= static_cast<int>(source_tab->model->rows().size())) {
+            continue;
+        }
+        transferred.push_back(source_tab->model->rows()[static_cast<std::size_t>(row_index)]);
+        source_rows.push_back(row_index);
+    }
+    if (transferred.empty()) {
+        return false;
+    }
+    target->model->appendRows(std::move(transferred), insertion_row);
+    markTabDirty(*target);
+    if (move) {
+        source_tab->model->removeRowIndexes(std::move(source_rows));
+        markTabDirty(*source_tab);
+    }
+    return true;
 }
 
 void BenchMainWindow::markTabDirty(ListTab& tab) {
@@ -716,10 +832,17 @@ void BenchMainWindow::playRow(ListTab& tab, const int row) {
             QStringLiteral("Playback failed: %1").arg(displayText(result.error().message)), 5'000);
         return;
     }
-    playback_document_id_ = QString::fromStdString(tab.document.id.to_string());
+    const auto id = QString::fromStdString(tab.document.id.to_string());
+    if (playback_document_id_ != id) {
+        if (auto* previous = tabForDocument(playback_document_id_); previous != nullptr) {
+            previous->model->setCurrentPath({}, -1);
+        }
+    }
+    playback_document_id_ = id;
     playback_row_ = row;
     playback_path_ = raw;
     advance_pending_ = false;
+    tab.model->setCurrentPath(raw, row);
 }
 
 std::optional<std::pair<int, std::string>>
@@ -749,6 +872,7 @@ void BenchMainWindow::playAdjacent(const int direction) {
         playback_row_ = next->first;
         playback_path_ = next->second;
         advance_pending_ = false;
+        tab->model->setCurrentPath(next->second, next->first);
     } else {
         statusBar()->showMessage(
             QStringLiteral("Playback failed: %1").arg(displayText(result.error().message)), 5'000);
@@ -800,9 +924,22 @@ void BenchMainWindow::refreshTransport() {
                     playback_row_ = next->first;
                     playback_path_ = next->second;
                     advance_pending_ = false;
+                    if (auto* tab = tabForDocument(playback_document_id_); tab != nullptr) {
+                        tab->model->setCurrentPath(next->second, next->first);
+                    }
                 }
             }
         }
+    } else if (snapshot.state == audio::LocalAuditionState::empty) {
+        if (!playback_document_id_.isEmpty()) {
+            if (auto* tab = tabForDocument(playback_document_id_); tab != nullptr) {
+                tab->model->setCurrentPath({}, -1);
+            }
+            playback_document_id_.clear();
+            playback_row_ = -1;
+            playback_path_.clear();
+        }
+        advance_pending_ = false;
     } else if (snapshot.state != audio::LocalAuditionState::loading) {
         advance_pending_ = false;
     }

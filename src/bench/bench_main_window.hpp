@@ -73,6 +73,8 @@ class BenchMainWindow final : public QMainWindow {
     ListTab* addListTab(persistence::ListDocument document, bool select);
     [[nodiscard]] ListTab* currentListTab();
     [[nodiscard]] ListTab* tabForDocument(const QString& document_id);
+    bool transferRows(QTableView* source, const QVariantList& rows, const QString& target_id,
+                      bool move, int insertion_row);
     void markTabDirty(ListTab& tab);
     void closeTabAt(int index);
     void createList();
