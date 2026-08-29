@@ -1003,6 +1003,7 @@ void BenchMainWindow::playRow(ListTab& tab, const int row) {
     // A load was just dispatched; block auto-advance until the player state
     // leaves "ended" so the previous track's end cannot skip this one.
     advance_pending_ = true;
+    last_requested_next_.reset();
     tab.model->setCurrentPath(raw, row);
 }
 
@@ -1033,6 +1034,7 @@ void BenchMainWindow::playAdjacent(const int direction) {
         playback_row_ = next->first;
         playback_path_ = next->second;
         advance_pending_ = true;
+        last_requested_next_.reset();
         tab->model->setCurrentPath(next->second, next->first);
     } else {
         statusBar()->showMessage(
@@ -1076,6 +1078,22 @@ void BenchMainWindow::refreshTransport() {
     const auto snapshot = player_->snapshot();
     // Observable for offscreen tests and diagnostics.
     setProperty("trackbench-player-state", static_cast<int>(snapshot.state));
+
+    // A consumed gapless takeover moves the anchors and highlight without any
+    // load; the engine already plays the next row.
+    if (snapshot.chain_transitions != last_chain_transitions_) {
+        last_chain_transitions_ = snapshot.chain_transitions;
+        last_requested_next_.reset();
+        if (auto* tab = tabForDocument(playback_document_id_);
+            tab != nullptr && !snapshot.raw_path.empty()) {
+            const auto row = tab->model->rowOfPath(snapshot.raw_path, playback_row_ + 1);
+            if (row >= 0) {
+                playback_row_ = row;
+                playback_path_ = snapshot.raw_path;
+                tab->model->setCurrentPath(snapshot.raw_path, row);
+            }
+        }
+    }
     setProperty("trackbench-player-position", static_cast<qlonglong>(snapshot.position_sample));
     setProperty("trackbench-player-buffered", static_cast<qlonglong>(snapshot.buffered_frames));
     setProperty("trackbench-player-callbacks",
@@ -1120,6 +1138,30 @@ void BenchMainWindow::refreshTransport() {
         statusBar()->showMessage(QStringLiteral("Playback failed: %1").arg(error), 5'000);
     } else if (error.isEmpty()) {
         last_player_error_.clear();
+    }
+
+    // Keep the engine's queued continuation in sync with the next list row so
+    // transitions are gapless. Re-requests are throttled: the engine drops
+    // the queue on seeks and silently rejects format changes, and the drain
+    // fallback below covers rejected continuations.
+    if (snapshot.format.has_value() && snapshot.state != audio::LocalAuditionState::failed &&
+        snapshot.state != audio::LocalAuditionState::empty &&
+        snapshot.state != audio::LocalAuditionState::loading) {
+        const auto next = adjacentPlaybackRow(1);
+        const auto desired = next ? next->second : std::string{};
+        const bool changed = !last_requested_next_ || *last_requested_next_ != desired;
+        const bool stale =
+            desired != snapshot.next_raw_path &&
+            (!next_request_timer_.isValid() || next_request_timer_.elapsed() > 1'000);
+        if (desired != snapshot.next_raw_path && (changed || stale)) {
+            if (desired.empty()) {
+                static_cast<void>(player_->clear_gapless_next());
+            } else {
+                static_cast<void>(player_->queue_gapless_next(desired));
+            }
+            last_requested_next_ = desired;
+            next_request_timer_.start();
+        }
     }
 
     const bool active = playerActive(snapshot.state);

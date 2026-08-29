@@ -148,13 +148,17 @@ void BenchMainWindowTest::autoAdvancesOncePerFinishedTrack() {
         QSKIP("live PipeWire playback unavailable");
     }
 
-    // Each two-second track advances exactly one row.
+    // Each two-second track advances exactly one row, and transitions are
+    // gapless: the player never reports "ended" (7) between tracks — that
+    // state may only appear once the final track finishes.
+    bool ended_between_tracks = false;
     {
         const QDeadlineTimer advance_deadline{5'000};
         int last_state = -1;
         int ticks = 0;
         while (!current(1) && !advance_deadline.hasExpired()) {
             const auto state = window.property("trackbench-player-state").toInt();
+            ended_between_tracks = ended_between_tracks || state == 7;
             if (state != last_state || ++ticks % 20 == 0) {
                 qInfo() << "player state" << state << "position"
                         << window.property("trackbench-player-position").toLongLong() << "buffered"
@@ -170,7 +174,16 @@ void BenchMainWindowTest::autoAdvancesOncePerFinishedTrack() {
     QTest::qWait(300);
     QVERIFY(current(1));
     QVERIFY(!current(2));
-    QTRY_VERIFY_WITH_TIMEOUT(current(2), 5'000);
+    {
+        const QDeadlineTimer second_deadline{5'000};
+        while (!current(2) && !second_deadline.hasExpired()) {
+            ended_between_tracks =
+                ended_between_tracks || window.property("trackbench-player-state").toInt() == 7;
+            QTest::qWait(50);
+        }
+    }
+    QVERIFY(current(2));
+    QVERIFY(!ended_between_tracks);
 
     // The end of the list stays ended: no wrap-around back to the first row.
     QTest::qWait(2'700);

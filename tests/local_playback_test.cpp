@@ -54,8 +54,8 @@ void append_u32(std::array<unsigned char, 44>& header, const std::size_t offset,
     return static_cast<float>(pattern_sample(sample)) / 32'768.0F;
 }
 
-void write_wave(const std::filesystem::path& path, const std::size_t frame_count) {
-    constexpr std::uint32_t sample_rate = 8'000U;
+void write_wave(const std::filesystem::path& path, const std::size_t frame_count,
+                const std::int64_t pattern_offset = 0, const std::uint32_t sample_rate = 8'000U) {
     constexpr std::uint16_t channels = 1U;
     constexpr std::uint16_t bits_per_sample = 16U;
     const auto data_bytes = static_cast<std::uint32_t>(frame_count) * (bits_per_sample / 8U);
@@ -82,8 +82,8 @@ void write_wave(const std::filesystem::path& path, const std::size_t frame_count
     output.write(reinterpret_cast<const char*>(header.data()),
                  static_cast<std::streamsize>(header.size()));
     for (std::size_t sample = 0U; sample < frame_count; ++sample) {
-        const auto bits =
-            static_cast<std::uint16_t>(pattern_sample(static_cast<std::int64_t>(sample)));
+        const auto bits = static_cast<std::uint16_t>(
+            pattern_sample(static_cast<std::int64_t>(sample) + pattern_offset));
         const std::array bytes{static_cast<char>(bits & 0xFFU),
                                static_cast<char>((bits >> 8U) & 0xFFU)};
         output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
@@ -322,6 +322,83 @@ void producerAndConsumerRunConcurrently(const std::filesystem::path& path) {
     }
 }
 
+// Gapless continuation: a queued source takes over in the same ring at decode
+// end and the consumed stream is the byte-exact concatenation of both
+// sources — no gap, duplicate, or reordering at the boundary.
+void chainsQueuedSourceGaplessly(const std::filesystem::path& first,
+                                 const std::filesystem::path& second,
+                                 const std::filesystem::path& other_rate) {
+    constexpr trackknife::audio::PlaybackBufferConfig config{
+        .capacity_frames = 256U,
+        .start_threshold_frames = 128U,
+    };
+    constexpr std::int64_t first_frames = 4'096;
+    constexpr std::int64_t second_frames = 2'048;
+    constexpr std::int64_t second_pattern_offset = 100'000;
+
+    auto playback = trackknife::audio::LocalPlayback::open(first.native(), config);
+    CHECK(playback.has_value());
+    if (!playback) {
+        return;
+    }
+
+    // A continuation with a different PCM format is rejected up front.
+    const auto mismatched = playback->queue_next(other_rate.native());
+    CHECK(!mismatched.has_value());
+    CHECK(!mismatched && mismatched.error().code == trackknife::core::ErrorCode::unsupported);
+    CHECK(!playback->snapshot().next_queued);
+
+    CHECK(playback->queue_next(second.native()).has_value());
+    CHECK(playback->snapshot().next_queued);
+    // Only one continuation may be queued at a time.
+    const auto duplicate = playback->queue_next(second.native());
+    CHECK(!duplicate.has_value());
+    CHECK(!duplicate && duplicate.error().code == trackknife::core::ErrorCode::conflict);
+
+    // A seek drops the queued continuation with the flushed buffer.
+    CHECK(playback->seek_to_sample(64).has_value());
+    CHECK(!playback->snapshot().next_queued);
+    CHECK(playback->seek_to_sample(0).has_value());
+    CHECK(playback->queue_next(second.native()).has_value());
+
+    CHECK(playback->play().has_value());
+    std::vector<float> collected;
+    collected.reserve(static_cast<std::size_t>(first_frames + second_frames));
+    std::array<float, 64> block{};
+    bool crossed_before_boundary = false;
+    for (int guard = 0; guard < 10'000 &&
+                        playback->snapshot().state != trackknife::audio::LocalPlaybackState::ended;
+         ++guard) {
+        CHECK(playback->fill_buffer().has_value());
+        const auto copied = playback->render(block);
+        if (playback->snapshot().chain_crossed &&
+            collected.size() + copied < static_cast<std::size_t>(first_frames)) {
+            crossed_before_boundary = true;
+        }
+        collected.insert(collected.end(), block.begin(),
+                         block.begin() + static_cast<std::ptrdiff_t>(copied));
+    }
+    CHECK(!crossed_before_boundary);
+    CHECK(playback->snapshot().state == trackknife::audio::LocalPlaybackState::ended);
+    CHECK(collected.size() == static_cast<std::size_t>(first_frames + second_frames));
+    CHECK(playback->snapshot().end_sample == first_frames + second_frames);
+
+    bool exact = true;
+    for (std::int64_t sample = 0; sample < static_cast<std::int64_t>(collected.size()); ++sample) {
+        const auto expected =
+            sample < first_frames
+                ? expected_float_sample(sample)
+                : expected_float_sample(sample - first_frames + second_pattern_offset);
+        exact = exact && collected[static_cast<std::size_t>(sample)] == expected;
+    }
+    CHECK(exact);
+
+    const auto crossing = playback->take_chain_crossing();
+    CHECK(crossing.has_value());
+    CHECK(crossing && *crossing == first_frames);
+    CHECK(!playback->take_chain_crossing().has_value());
+}
+
 } // namespace
 
 int main() {
@@ -332,11 +409,16 @@ int main() {
     CHECK(std::filesystem::create_directories(root, error));
     const auto path = root / "pattern.wav";
     write_wave(path, 4'096U);
+    const auto continuation = root / "continuation.wav";
+    write_wave(continuation, 2'048U, 100'000);
+    const auto other_rate = root / "other-rate.wav";
+    write_wave(other_rate, 2'048U, 0, 44'100U);
 
     transportIsBufferedAndSampleAccurate(path);
     boundedSegmentDrainsAndRestarts(path);
     validatesConfigurationAndPropagatesCancellation(path);
     producerAndConsumerRunConcurrently(path);
+    chainsQueuedSourceGaplessly(path, continuation, other_rate);
 
     std::filesystem::remove_all(root, error);
     CHECK(!error);

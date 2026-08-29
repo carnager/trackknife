@@ -7,6 +7,7 @@
 #include "trackknife/core/local_sources.hpp"
 #include "trackknife/persistence/list_repository.hpp"
 
+#include <QElapsedTimer>
 #include <QFutureWatcher>
 #include <QHash>
 #include <QImage>
@@ -170,6 +171,12 @@ class BenchMainWindow final : public QMainWindow {
     int playback_row_{-1};
     std::string playback_path_;
     bool advance_pending_{false};
+    // Gapless continuation upkeep: the last takeover count seen, the last
+    // requested next path, and a throttle for re-requests after the engine
+    // dropped or rejected a queue.
+    quint64 last_chain_transitions_{0U};
+    std::optional<std::string> last_requested_next_;
+    QElapsedTimer next_request_timer_;
     bool seeking_{false};
     bool changing_volume_{false};
     QString last_player_error_;

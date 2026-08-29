@@ -47,6 +47,12 @@ struct LocalPlaybackSnapshot {
     std::optional<std::int64_t> end_sample;
     std::size_t buffered_frames{0U};
     std::uint64_t underrun_count{0U};
+    // Gapless continuation bookkeeping: whether a queued source is waiting to
+    // take over at decode end, the produced-domain sample where the active
+    // source began after a swap, and whether the consumer has crossed it.
+    bool next_queued{false};
+    std::optional<std::int64_t> chain_boundary_sample;
+    bool chain_crossed{false};
 
     friend bool operator==(const LocalPlaybackSnapshot&, const LocalPlaybackSnapshot&) = default;
 };
@@ -79,6 +85,22 @@ class LocalPlayback final {
 
     [[nodiscard]] core::Result<void> play();
     void pause() noexcept;
+
+    // Queues a source to continue seamlessly in the same ring the moment the
+    // active source's decode ends. The queued source must match the active
+    // output format exactly (rate, channels, layout); positions continue
+    // monotonically in the produced domain past the recorded boundary. Only
+    // one continuation may be queued at a time, and it must be queued before
+    // the active decode ends.
+    [[nodiscard]] core::Result<void> queue_next(std::string raw_path,
+                                                core::CancellationToken cancellation = {});
+    // Drops a queued continuation that has not yet taken over. A continuation
+    // whose frames already entered the ring can no longer be withdrawn.
+    void clear_next() noexcept;
+    // Returns the boundary once the consumer has crossed into the queued
+    // source and clears the crossing latch; the caller rebases its per-track
+    // accounting on the returned produced-domain sample.
+    [[nodiscard]] std::optional<std::int64_t> take_chain_crossing() noexcept;
 
     // The output consumer must be quiesced before stop, seek, move, or
     // destruction; these operations reset producer/consumer queue state.

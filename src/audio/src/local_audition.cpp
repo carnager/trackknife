@@ -25,6 +25,8 @@ enum class CommandKind {
     refresh_devices,
     set_target,
     clear,
+    queue_next,
+    clear_next,
 };
 
 struct Command {
@@ -118,6 +120,13 @@ struct LocalAuditionService::Impl {
             std::erase_if(commands, [kind = command.kind](const Command& pending) {
                 return pending.kind == kind;
             });
+        } else if (command.kind == CommandKind::queue_next ||
+                   command.kind == CommandKind::clear_next) {
+            // Only the newest continuation intent matters.
+            std::erase_if(commands, [](const Command& pending) {
+                return pending.kind == CommandKind::queue_next ||
+                       pending.kind == CommandKind::clear_next;
+            });
         }
         if (commands.size() >= config.command_capacity) {
             return std::unexpected(core::Error{
@@ -130,6 +139,7 @@ struct LocalAuditionService::Impl {
             std::lock_guard snapshot_lock{snapshot_mutex};
             published.state = LocalAuditionState::loading;
             published.raw_path = command.raw_path;
+            published.next_raw_path.clear();
             published.format.reset();
             published.position_sample = 0;
             published.end_sample.reset();
@@ -148,16 +158,37 @@ struct LocalAuditionService::Impl {
         return published;
     }
 
+    // Rebases the audible-track bookkeeping when the consumer crossed into a
+    // queued continuation. Runs on the worker before anything that reads or
+    // republishes track-relative state.
+    void acknowledge_transitions() {
+        if (!source) {
+            return;
+        }
+        while (const auto boundary = source->take_chain_crossing()) {
+            track_base = *boundary;
+            if (!pending_next_path.empty()) {
+                current_path = std::move(pending_next_path);
+                pending_next_path.clear();
+            }
+            ++chain_transitions;
+        }
+    }
+
     void publish(std::optional<core::Error> error = std::nullopt) {
+        acknowledge_transitions();
         LocalAuditionSnapshot next;
         next.raw_path = current_path;
+        next.next_raw_path = pending_next_path;
+        next.chain_transitions = chain_transitions;
         next.error = std::move(error);
         if (source) {
             const auto playback = source->snapshot();
             next.state = map_state(playback.state);
             next.format = source->output_format();
-            next.position_sample = playback.position_sample;
-            next.end_sample = playback.end_sample;
+            next.position_sample = playback.position_sample - track_base;
+            next.end_sample = playback.end_sample ? std::optional{*playback.end_sample - track_base}
+                                                  : std::nullopt;
             next.buffered_frames = playback.buffered_frames;
             next.underrun_count = playback.underrun_count;
         }
@@ -210,6 +241,8 @@ struct LocalAuditionService::Impl {
             source_cancellation.reset();
         }
         current_path.clear();
+        pending_next_path.clear();
+        track_base = 0;
         sticky_failure.reset();
         publish();
     }
@@ -226,6 +259,8 @@ struct LocalAuditionService::Impl {
         output.reset();
         source.reset();
         sticky_failure.reset();
+        pending_next_path.clear();
+        track_base = 0;
         current_path = std::move(command.raw_path);
         std::shared_ptr<core::CancellationSource> cancellation;
         {
@@ -334,6 +369,7 @@ struct LocalAuditionService::Impl {
             publish(no_source_error("stop"));
             return;
         }
+        acknowledge_transitions();
         auto quiet = output->quiesce();
         if (!quiet) {
             fail(std::move(quiet.error()));
@@ -341,10 +377,39 @@ struct LocalAuditionService::Impl {
         }
         output_active = false;
         auto stopped = source->stop();
+        // The core collapses the chain back to single-source semantics.
+        track_base = 0;
+        pending_next_path.clear();
         if (!stopped) {
             fail(std::move(stopped.error()));
             return;
         }
+        publish();
+    }
+
+    void queue_next_source(Command command) {
+        if (!source) {
+            publish(no_source_error("queue a gapless continuation for"));
+            return;
+        }
+        acknowledge_transitions();
+        auto path = std::move(command.raw_path);
+        // A rejected continuation (format change, unreadable file) is not a
+        // playback failure: next_raw_path simply stays empty and the caller
+        // falls back to an ordinary load at end-of-track.
+        if (auto queued = source->queue_next(path); queued) {
+            pending_next_path = std::move(path);
+        } else {
+            pending_next_path.clear();
+        }
+        publish();
+    }
+
+    void clear_next_source() {
+        if (source) {
+            source->clear_next();
+        }
+        pending_next_path.clear();
         publish();
     }
 
@@ -353,6 +418,7 @@ struct LocalAuditionService::Impl {
             publish(no_source_error("seek"));
             return;
         }
+        acknowledge_transitions();
         const auto before = source->snapshot().state;
         const bool resume = before == LocalPlaybackState::buffering ||
                             before == LocalPlaybackState::playing ||
@@ -363,7 +429,10 @@ struct LocalAuditionService::Impl {
             return;
         }
         output_active = false;
-        auto sought = source->seek_to_sample(target_sample);
+        // Track-relative target onto the produced domain; the flush drops any
+        // queued continuation, which the caller re-queues afterwards.
+        auto sought = source->seek_to_sample(track_base + target_sample);
+        pending_next_path.clear();
         if (!sought) {
             publish(std::move(sought.error()));
             return;
@@ -489,6 +558,12 @@ struct LocalAuditionService::Impl {
         case CommandKind::clear:
             clear_source();
             break;
+        case CommandKind::queue_next:
+            queue_next_source(std::move(command));
+            break;
+        case CommandKind::clear_next:
+            clear_next_source();
+            break;
         }
     }
 
@@ -591,6 +666,11 @@ struct LocalAuditionService::Impl {
     std::vector<PipeWireDevice> devices;
     std::optional<core::Error> sticky_failure;
     std::string current_path;
+    // Gapless bookkeeping: the queued continuation's path, the produced-domain
+    // sample where the audible track begins, and the consumed takeover count.
+    std::string pending_next_path;
+    std::int64_t track_base{0};
+    std::uint64_t chain_transitions{0U};
     std::chrono::steady_clock::time_point last_publish{};
     std::jthread worker;
 };
@@ -632,6 +712,25 @@ core::Result<void> LocalAuditionService::load_and_play(std::string raw_path) {
     }
     return implementation_->enqueue(Command{.kind = CommandKind::load_and_play,
                                             .raw_path = std::move(raw_path),
+                                            .target_sample = 0,
+                                            .volume_percent = 100,
+                                            .target = {}});
+}
+
+core::Result<void> LocalAuditionService::queue_gapless_next(std::string raw_path) {
+    if (raw_path.empty()) {
+        return std::unexpected(invalid_config("local audition path must not be empty"));
+    }
+    return implementation_->enqueue(Command{.kind = CommandKind::queue_next,
+                                            .raw_path = std::move(raw_path),
+                                            .target_sample = 0,
+                                            .volume_percent = 100,
+                                            .target = {}});
+}
+
+core::Result<void> LocalAuditionService::clear_gapless_next() {
+    return implementation_->enqueue(Command{.kind = CommandKind::clear_next,
+                                            .raw_path = {},
                                             .target_sample = 0,
                                             .volume_percent = 100,
                                             .target = {}});

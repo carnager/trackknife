@@ -390,10 +390,25 @@ migration sources.
   window exposes player state/position/buffer/callback properties for
   offscreen diagnostics. A tab-ownership leak found by ASan in the same
   run is fixed.
-- Remaining: hands-on gapless listening verification, pin/duplicate and
-  dirty-indicator parity, the rest of the shipped format matrix (AIFF,
-  WAV/RF64 edge cases, cue/subsong), PipeWire buffer presets and hotplug,
-  and the shared UI budget measurements on large folders.
+- Done: track transitions are gapless. `LocalPlayback::queue_next` chains a
+  second decoder into the same ring the moment the active decode ends —
+  exact-format continuations only, positions continuing monotonically in a
+  produced domain past a recorded boundary with a real-time-safe crossing
+  latch. A core test proves the consumed stream is the byte-exact
+  concatenation of two real sources with no gap, duplicate, or early
+  crossing, plus format-mismatch rejection, single-queue enforcement, and
+  seek dropping the queue. The audition service exposes
+  queue/clear/transition-count, rebases per-track position/duration on
+  consumed takeovers, and keeps rejected continuations silent so the
+  existing drain path remains the fallback for format changes. Trackbench
+  keeps the engine's queued continuation in sync with the next list row
+  (throttled re-requests after seeks) and moves anchors/highlight on
+  transitions without issuing a load. The live-PipeWire UI test now also
+  asserts the player never reports "ended" between tracks.
+- Remaining: pin/duplicate and dirty-indicator parity, the rest of the
+  shipped format matrix (AIFF, WAV/RF64 edge cases, cue/subsong), PipeWire
+  buffer presets and hotplug, and the shared UI budget measurements on
+  large folders.
 
 ### Exit criteria
 

@@ -182,6 +182,16 @@ struct LocalPlayback::Impl {
     std::atomic<LocalPlaybackState> state{LocalPlaybackState::stopped};
     std::atomic_bool source_ended{false};
 
+    // Gapless continuation: the queued decoder takes over in the same ring at
+    // decode end. next_decode_sample and position_sample then live in the
+    // produced domain (they keep increasing past the boundary), and
+    // chain_offset maps produced samples onto the active decoder's own
+    // sample domain.
+    std::optional<formats::AudioDecoder> next_decoder;
+    std::int64_t chain_offset{0};
+    std::atomic<std::int64_t> chain_boundary{-1};
+    std::atomic_bool chain_crossed{false};
+
     Impl(formats::AudioDecoder source_decoder, const PlaybackBufferConfig buffer_config)
         : ring(buffer_config.capacity_frames,
                static_cast<std::size_t>(source_decoder.output_format().channels)),
@@ -191,7 +201,11 @@ struct LocalPlayback::Impl {
           range(decoder.sample_range()), output(decoder.output_format()) {}
 
     [[nodiscard]] std::optional<std::int64_t> end_sample() const noexcept {
-        return range.end_sample ? range.end_sample : decoder.duration_samples();
+        const auto source_end = range.end_sample ? range.end_sample : decoder.duration_samples();
+        if (!source_end) {
+            return std::nullopt;
+        }
+        return chain_offset + *source_end;
     }
 
     void clear_buffer_quiesced() noexcept {
@@ -199,6 +213,13 @@ struct LocalPlayback::Impl {
         pending_samples.clear();
         pending_frame_offset = 0U;
         source_ended.store(false, std::memory_order_release);
+    }
+
+    void clear_chain_quiesced() noexcept {
+        next_decoder.reset();
+        chain_offset = 0;
+        chain_boundary.store(-1, std::memory_order_release);
+        chain_crossed.store(false, std::memory_order_release);
     }
 
     [[nodiscard]] std::size_t write_pending(const std::size_t frame_budget) noexcept {
@@ -341,12 +362,16 @@ const formats::SampleRange& LocalPlayback::sample_range() const noexcept {
 
 LocalPlaybackSnapshot LocalPlayback::snapshot() const noexcept {
     const auto& playback = *implementation_;
+    const auto boundary = playback.chain_boundary.load(std::memory_order_acquire);
     return LocalPlaybackSnapshot{
         .state = playback.state.load(std::memory_order_acquire),
         .position_sample = playback.position_sample.load(std::memory_order_acquire),
         .end_sample = playback.end_sample(),
         .buffered_frames = playback.ring.size_frames(),
         .underrun_count = playback.underrun_count.load(std::memory_order_acquire),
+        .next_queued = playback.next_decoder.has_value(),
+        .chain_boundary_sample = boundary >= 0 ? std::optional{boundary} : std::nullopt,
+        .chain_crossed = playback.chain_crossed.load(std::memory_order_acquire),
     };
 }
 
@@ -397,6 +422,9 @@ core::Result<void> LocalPlayback::stop() {
     auto& playback = *implementation_;
     playback.state.store(LocalPlaybackState::stopped, std::memory_order_release);
     playback.clear_buffer_quiesced();
+    // Stop collapses a chain back to plain single-source semantics of the
+    // active decoder.
+    playback.clear_chain_quiesced();
     auto seek = playback.decoder.seek_to_sample(playback.range.start_sample);
     if (!seek) {
         playback.state.store(LocalPlaybackState::failed, std::memory_order_release);
@@ -417,7 +445,7 @@ core::Result<void> LocalPlayback::seek_to_sample(const std::int64_t target_sampl
         });
     }
     const auto end_sample = playback.end_sample();
-    if (target_sample < playback.range.start_sample ||
+    if (target_sample < playback.chain_offset + playback.range.start_sample ||
         (end_sample && target_sample > *end_sample)) {
         return std::unexpected(core::Error{
             .code = core::ErrorCode::invalid_argument,
@@ -433,7 +461,12 @@ core::Result<void> LocalPlayback::seek_to_sample(const std::int64_t target_sampl
                                                              : LocalPlaybackState::buffering);
     playback.state.store(seek_state, std::memory_order_release);
     playback.clear_buffer_quiesced();
-    auto seek = playback.decoder.seek_to_sample(target_sample);
+    // A queued continuation and any unacknowledged crossing latch cannot
+    // survive the flush; the caller re-queues after the seek.
+    playback.next_decoder.reset();
+    playback.chain_boundary.store(-1, std::memory_order_release);
+    playback.chain_crossed.store(false, std::memory_order_release);
+    auto seek = playback.decoder.seek_to_sample(target_sample - playback.chain_offset);
     if (!seek) {
         playback.state.store(LocalPlaybackState::failed, std::memory_order_release);
         return seek;
@@ -441,6 +474,65 @@ core::Result<void> LocalPlayback::seek_to_sample(const std::int64_t target_sampl
     playback.next_decode_sample = target_sample;
     playback.position_sample.store(target_sample, std::memory_order_release);
     return {};
+}
+
+core::Result<void> LocalPlayback::queue_next(std::string raw_path,
+                                             core::CancellationToken cancellation) {
+    auto& playback = *implementation_;
+    if (playback.state.load(std::memory_order_acquire) == LocalPlaybackState::failed) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::conflict,
+            .message = "failed local playback cannot queue a continuation",
+            .context = {},
+        });
+    }
+    if (playback.next_decoder || playback.chain_boundary.load(std::memory_order_acquire) >= 0) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::conflict,
+            .message = "a gapless continuation is already queued or in flight",
+            .context = {},
+        });
+    }
+    if (playback.source_ended.load(std::memory_order_acquire)) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::conflict,
+            .message = "the active source already ended; load the next source instead",
+            .context = {},
+        });
+    }
+    auto decoder = formats::AudioDecoder::open(std::move(raw_path), std::move(cancellation));
+    if (!decoder) {
+        return std::unexpected(std::move(decoder.error()));
+    }
+    if (!(decoder->output_format() == playback.output)) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::unsupported,
+            .message = "gapless continuation requires an identical PCM format",
+            .context = {{.key = "active_rate",
+                         .value = std::to_string(playback.output.sample_rate)},
+                        {.key = "next_rate",
+                         .value = std::to_string(decoder->output_format().sample_rate)},
+                        {.key = "active_channels",
+                         .value = std::to_string(playback.output.channels)},
+                        {.key = "next_channels",
+                         .value = std::to_string(decoder->output_format().channels)}},
+        });
+    }
+    playback.next_decoder = std::move(*decoder);
+    return {};
+}
+
+void LocalPlayback::clear_next() noexcept { implementation_->next_decoder.reset(); }
+
+std::optional<std::int64_t> LocalPlayback::take_chain_crossing() noexcept {
+    auto& playback = *implementation_;
+    if (!playback.chain_crossed.load(std::memory_order_acquire)) {
+        return std::nullopt;
+    }
+    const auto boundary = playback.chain_boundary.load(std::memory_order_acquire);
+    playback.chain_crossed.store(false, std::memory_order_release);
+    playback.chain_boundary.store(-1, std::memory_order_release);
+    return boundary >= 0 ? std::optional{boundary} : std::nullopt;
 }
 
 core::Result<void> LocalPlayback::fill_buffer() {
@@ -469,18 +561,31 @@ core::Result<void> LocalPlayback::fill_buffer() {
             return std::unexpected(std::move(chunk.error()));
         }
         if (!*chunk) {
+            if (playback.next_decoder) {
+                // Seamless takeover: the queued decoder continues into the
+                // same ring, positions keep increasing in the produced
+                // domain, and the boundary is published for the consumer's
+                // crossing latch.
+                const auto boundary = playback.next_decode_sample;
+                playback.decoder = std::move(*playback.next_decoder);
+                playback.next_decoder.reset();
+                playback.range = playback.decoder.sample_range();
+                playback.chain_offset = boundary - playback.range.start_sample;
+                playback.chain_boundary.store(boundary, std::memory_order_release);
+                continue;
+            }
             playback.source_ended.store(true, std::memory_order_release);
             break;
         }
-        if ((*chunk)->start_sample != playback.next_decode_sample) {
+        if ((*chunk)->start_sample != playback.next_decode_sample - playback.chain_offset) {
             playback.state.store(LocalPlaybackState::failed, std::memory_order_release);
             return std::unexpected(core::Error{
                 .code = core::ErrorCode::invariant,
                 .message = "local decoder produced a non-contiguous PCM chunk",
-                .context = {{.key = "expected_start",
-                             .value = std::to_string(playback.next_decode_sample)},
-                            {.key = "actual_start",
-                             .value = std::to_string((*chunk)->start_sample)}},
+                .context =
+                    {{.key = "expected_start",
+                      .value = std::to_string(playback.next_decode_sample - playback.chain_offset)},
+                     {.key = "actual_start", .value = std::to_string((*chunk)->start_sample)}},
             });
         }
         const auto chunk_frames =
@@ -528,8 +633,12 @@ std::size_t LocalPlayback::render(std::span<float> interleaved_output) noexcept 
     }
 
     const auto copied_frames = playback.ring.read(interleaved_output);
-    playback.position_sample.fetch_add(static_cast<std::int64_t>(copied_frames),
-                                       std::memory_order_release);
+    const auto previous_position = playback.position_sample.fetch_add(
+        static_cast<std::int64_t>(copied_frames), std::memory_order_release);
+    const auto boundary = playback.chain_boundary.load(std::memory_order_acquire);
+    if (boundary >= 0 && previous_position + static_cast<std::int64_t>(copied_frames) >= boundary) {
+        playback.chain_crossed.store(true, std::memory_order_release);
+    }
     if (copied_frames < requested_frames) {
         if (state == LocalPlaybackState::playing) {
             playback.underrun_count.fetch_add(1U, std::memory_order_relaxed);

@@ -41,6 +41,11 @@ struct LocalAuditionConfig {
 struct LocalAuditionSnapshot {
     LocalAuditionState state{LocalAuditionState::empty};
     std::string raw_path;
+    // Queued gapless continuation and the count of consumed takeovers; the
+    // count increments exactly when raw_path flips to the queued source and
+    // position/end rebase to the new track.
+    std::string next_raw_path;
+    std::uint64_t chain_transitions{0U};
     std::optional<formats::PcmFormat> format;
     std::int64_t position_sample{0};
     std::optional<std::int64_t> end_sample;
@@ -71,6 +76,12 @@ class LocalAuditionService final {
     [[nodiscard]] LocalAuditionSnapshot snapshot() const;
 
     [[nodiscard]] core::Result<void> load_and_play(std::string raw_path);
+    // Queues the file to continue seamlessly when the current one ends. The
+    // continuation must match the active PCM format exactly; on rejection the
+    // snapshot's next_raw_path simply stays empty and the caller falls back
+    // to an ordinary load at end-of-track. Seeks and loads drop the queue.
+    [[nodiscard]] core::Result<void> queue_gapless_next(std::string raw_path);
+    [[nodiscard]] core::Result<void> clear_gapless_next();
     [[nodiscard]] core::Result<void> play();
     [[nodiscard]] core::Result<void> pause();
     [[nodiscard]] core::Result<void> stop();
