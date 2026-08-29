@@ -769,6 +769,12 @@ void session_publishes_initial_and_idle_refreshed_snapshots() {
         const auto ambiguous_failed = changed.wait_for(lock, std::chrono::seconds{4}, [&] {
             return ambiguous_add_failed && saw_reconnecting_error;
         });
+        if (!ambiguous_failed) {
+            std::cerr << "diagnostic: add_failed=" << ambiguous_add_failed
+                      << " reconnecting_error=" << saw_reconnecting_error << " adds_sent="
+                      << (server.queueAddCommandCount() - additions_before_ambiguous_command)
+                      << '\n';
+        }
         require(ambiguous_failed,
                 "a disconnected non-idempotent queue command must report an ambiguous failure");
         require(server.queueAddCommandCount() == additions_before_ambiguous_command + 1U,

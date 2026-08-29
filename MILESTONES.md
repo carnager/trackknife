@@ -338,6 +338,17 @@ migration sources.
 - Done: a tagged WavPack fixture with recorded provenance joins the matrix,
   proving APEv2 tag projection and a 4,410-frame contiguous non-silent
   complete decode alongside the FLAC entry.
+- Done: ASan stress-running the session suite exposed two real M2-era
+  concurrency bugs. First, the authoritative reconnect snapshot was
+  published to observers before command acceptance was re-enabled, so an
+  observer reacting to the snapshot could have a command rejected on a
+  healthy connection; acceptance now precedes publication. Second, the
+  command worker and the idle worker's reconnect backoff share one
+  condition variable, and single-waiter notification could be consumed by
+  the backoff waiter, leaving an accepted user command queued but
+  unexecuted until an unrelated wakeup; enqueue/request now notify every
+  waiter. The session test went from roughly one failure in twenty ASan
+  runs to 0 in 150, and it now prints its wait-state flags on timeout.
 - Remaining: Trackbench album-grouped presentation with covers, gapless
   verification in the shipped player, per-tab view polish (drag reorder,
   pin/duplicate, dirty indicators at parity with the client), the rest of

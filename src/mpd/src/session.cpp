@@ -194,9 +194,13 @@ struct Session::Impl {
         });
     }
 
+    // The command worker and the idle worker's reconnect backoff share one
+    // condition variable, so a single notification can be consumed by the
+    // wrong waiter. Always notify every waiter; the loser re-checks its
+    // predicate and sleeps again.
     void request(std::uint32_t mask) {
         pending_refresh.fetch_or(mask, std::memory_order_release);
-        wake.notify_one();
+        wake.notify_all();
     }
 
     void finish_command(PendingCommand command, SessionCommandPayload payload,
@@ -251,7 +255,7 @@ struct Session::Impl {
         if (rejection) {
             finish_command(command, std::monostate{}, std::move(rejection));
         } else {
-            wake.notify_one();
+            wake.notify_all();
         }
         return command.id;
     }
@@ -591,12 +595,15 @@ struct Session::Impl {
                         reconnect = true;
                         break;
                     }
-                    invoke_safely(callbacks.snapshot_changed, snapshot);
+                    // Accept commands before publishing: an observer reacting
+                    // to the authoritative snapshot may immediately issue a
+                    // command, and a healthy connection must not reject it.
                     reconnect_attempt = 0U;
                     {
                         std::lock_guard lock{wake_mutex};
                         accepting_commands = true;
                     }
+                    invoke_safely(callbacks.snapshot_changed, snapshot);
                 }
 
                 std::optional<PendingCommand> command;
