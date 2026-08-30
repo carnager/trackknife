@@ -34,7 +34,8 @@ machine (ADR-0056), plus journaled same-filesystem file publication and recovery
 same-filesystem undo (ADR-0060), and verified cross-filesystem publication
 (ADR-0061), plus revision-qualified active-playback relocation (ADR-0062), are
 joined by bounded file-publication Apply (ADR-0063) and typed keep-first
-metadata transformation (ADR-0064); decisions are accepted through ADR-0064.
+metadata transformation (ADR-0064), plus pasted rule-script translation and
+conditional removal (ADR-0065); decisions are accepted through ADR-0065.
 Backend selection is not a capability claim; protocol and file behavior still
 require fixtures and measurements.
 
@@ -310,8 +311,10 @@ local, mapped-local, writable, and decodable sources before offering actions.
   adds complete-value exact remove/replace and captured-file-order numbering
   without folding grouping or capture grammar into schema 1. ADR-0064 adds a
   bounded Unicode-scalar keep-first action without assigning it date parsing
-  semantics. Other format and artwork writes remain disabled until their real
-  preservation tests pass.
+  semantics. ADR-0065 translates a bounded Picard-style paste subset into
+  ordinary typed actions and adds versioned conditional field removal without
+  adding mutation to `tkfmt-1`. Other format and artwork writes remain disabled
+  until their real preservation tests pass.
 - **Loudness:** libebur128 behind Trackknife-owned ReplayGain policy.
 - **Preparation:** ADR-0054 composes tag persistence, qualified ReplayGain
   storage, and filesystem rename/move into one immutable per-source review and
@@ -336,8 +339,8 @@ local, mapped-local, writable, and decodable sources before offering actions.
 - **State:** SQLite with explicit reversible development migrations, including
   normalized ordered schema-1 metadata transformation definitions owned by the
   serialized persistence worker, including their automatic tagging policy
-  flags, exact matching payloads, and numeric arguments (ADRs 0049–0053 and
-  0064), plus
+  flags, exact matching payloads, numeric arguments, and dialect-qualified
+  conditions (ADRs 0049–0053 and 0064–0065), plus
   separately versioned output-layout and raw destination profiles (ADR-0055)
   and file-publication recovery evidence (ADR-0056).
 - **Local output:** direct PipeWire with a narrow fallback-capable interface.

@@ -40,6 +40,17 @@ struct MetadataRemoveFieldAction {
                            const MetadataRemoveFieldAction&) = default;
 };
 
+// Removes the target only when the pure tkfmt-1 condition evaluates to a
+// non-empty string against the working document at this point in the chain.
+struct MetadataRemoveFieldIfAction {
+    std::string target_field;
+    titleformat::DialectVersion dialect;
+    std::string condition;
+
+    friend bool operator==(const MetadataRemoveFieldIfAction&,
+                           const MetadataRemoveFieldIfAction&) = default;
+};
+
 enum class MetadataValueTransformKind : std::uint8_t {
     trim_ascii,
     lowercase,
@@ -134,10 +145,11 @@ struct MetadataKeepFirstCharactersAction {
 
 using MetadataTransformationAction =
     std::variant<MetadataSetValuesAction, MetadataAddValuesAction, MetadataRemoveFieldAction,
-                 MetadataTransformValuesAction, MetadataFormatValueAction, MetadataCopyFieldAction,
-                 MetadataSplitValuesAction, MetadataJoinValuesAction,
-                 MetadataRemoveMatchingValuesAction, MetadataReplaceMatchingValuesAction,
-                 MetadataNumberSelectedItemsAction, MetadataKeepFirstCharactersAction>;
+                 MetadataRemoveFieldIfAction, MetadataTransformValuesAction,
+                 MetadataFormatValueAction, MetadataCopyFieldAction, MetadataSplitValuesAction,
+                 MetadataJoinValuesAction, MetadataRemoveMatchingValuesAction,
+                 MetadataReplaceMatchingValuesAction, MetadataNumberSelectedItemsAction,
+                 MetadataKeepFirstCharactersAction>;
 
 struct MetadataTransformationChain {
     std::uint32_t schema_version{1U};

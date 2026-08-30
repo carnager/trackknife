@@ -42,6 +42,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSettings>
 #include <QSlider>
@@ -1412,6 +1413,12 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
         QStringLiteral("bench-metadata-transformation-character-count"));
     auto* add =
         dialog->findChild<QPushButton*>(QStringLiteral("bench-metadata-transformation-add"));
+    auto* import_script = dialog->findChild<QPushButton*>(
+        QStringLiteral("bench-metadata-transformation-import-script"));
+    auto* steps =
+        dialog->findChild<QListWidget*>(QStringLiteral("bench-metadata-transformation-steps"));
+    auto* remove =
+        dialog->findChild<QPushButton*>(QStringLiteral("bench-metadata-transformation-remove"));
     auto* preview =
         dialog->findChild<QPushButton*>(QStringLiteral("bench-metadata-transformation-preview"));
     auto* stage =
@@ -1428,16 +1435,59 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     QVERIFY(number_padding != nullptr);
     QVERIFY(character_count != nullptr);
     QVERIFY(add != nullptr);
+    QVERIFY(import_script != nullptr);
+    QVERIFY(steps != nullptr);
+    QVERIFY(remove != nullptr);
     QVERIFY(preview != nullptr);
     QVERIFY(stage != nullptr);
     QVERIFY(preview_table != nullptr);
     QVERIFY(preview_summary != nullptr);
-    QCOMPARE(kind->count(), 15);
+    QCOMPARE(kind->count(), 16);
     QCOMPARE(kind->itemText(6), QStringLiteral("Capitalize first character"));
     QCOMPARE(kind->itemText(11), QStringLiteral("Remove exact matching values"));
     QCOMPARE(kind->itemText(12), QStringLiteral("Replace exact matching values"));
     QCOMPARE(kind->itemText(13), QStringLiteral("Number by selected-file order"));
     QCOMPARE(kind->itemText(14), QStringLiteral("Keep first characters of each value"));
+    QCOMPARE(kind->itemText(15), QStringLiteral("Remove field when condition matches"));
+
+    QTimer::singleShot(0, dialog, [dialog] {
+        auto* importer =
+            dialog->findChild<QDialog*>(QStringLiteral("bench-metadata-rule-script-import"));
+        QVERIFY(importer != nullptr);
+        auto* source_edit = importer->findChild<QPlainTextEdit*>(
+            QStringLiteral("bench-metadata-rule-script-source"));
+        auto* diagnostics = importer->findChild<QPlainTextEdit*>(
+            QStringLiteral("bench-metadata-rule-script-diagnostics"));
+        auto* replace =
+            importer->findChild<QPushButton*>(QStringLiteral("bench-metadata-rule-script-replace"));
+        QVERIFY(source_edit != nullptr);
+        QVERIFY(diagnostics != nullptr);
+        QVERIFY(replace != nullptr);
+        source_edit->setPlainText(QStringLiteral(
+            "$delete(comment:)\n"
+            "$if($or($not(%totaldiscs%),$eq(%totaldiscs%,1)),"
+            "$delete(discnumber)$delete(totaldiscs))\n"
+            "$if(%originaldate%,$set(date,$left(%originaldate%,4))"
+            "$set(originaldate,$left(%originaldate%,4)),$set(date,$left(%date%,4)))"));
+        QVERIFY(replace->isEnabled());
+        QVERIFY(diagnostics->toPlainText().contains(QStringLiteral("5 generated rules")));
+        QTest::mouseClick(replace, Qt::LeftButton);
+    });
+    QTest::mouseClick(import_script, Qt::LeftButton);
+    QCOMPARE(steps->count(), 5);
+    QVERIFY(steps->item(0)->text().contains(QStringLiteral("Remove comment")));
+    QVERIFY(steps->item(1)->text().contains(
+        QStringLiteral("Remove discnumber when $or($not(%totaldiscs%),$eq(%totaldiscs%,1))")));
+    QVERIFY(steps->item(2)->text().contains(
+        QStringLiteral("Remove totaldiscs when $or($not(%totaldiscs%),$eq(%totaldiscs%,1))")));
+    QVERIFY(steps->item(3)->text().contains(QStringLiteral("Format date as $if(%originaldate%")));
+    QVERIFY(steps->item(4)->text().contains(
+        QStringLiteral("Keep the first 4 characters of each value of originaldate")));
+    for (auto count = 0; count < 5; ++count) {
+        QTest::mouseClick(remove, Qt::LeftButton);
+    }
+    QCOMPARE(steps->count(), 0);
+
     target->setText(QStringLiteral("custom"));
     QTRY_VERIFY(target_completer->model()->rowCount() > 0);
     QCOMPARE(target_completer->model()->index(0, 0).data().toString(),
@@ -1508,8 +1558,7 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     QTRY_VERIFY((dialog = properties->findChild<QDialog*>(
                      QStringLiteral("bench-metadata-transformation"))) != nullptr);
     saved = dialog->findChild<QComboBox*>(QStringLiteral("bench-metadata-transformation-saved"));
-    auto* steps =
-        dialog->findChild<QListWidget*>(QStringLiteral("bench-metadata-transformation-steps"));
+    steps = dialog->findChild<QListWidget*>(QStringLiteral("bench-metadata-transformation-steps"));
     preview =
         dialog->findChild<QPushButton*>(QStringLiteral("bench-metadata-transformation-preview"));
     stage = dialog->findChild<QPushButton*>(QStringLiteral("bench-metadata-transformation-stage"));

@@ -101,7 +101,7 @@ void list_documents_round_trip_transactionally() {
         }
         require(opened.has_value(), "list repository must create and migrate a new database");
         auto repository = std::move(*opened);
-        require(repository.schema_version() == 17U, "state repository schema must be explicit");
+        require(repository.schema_version() == 18U, "state repository schema must be explicit");
         require(repository.replace_all(expected).has_value(),
                 "valid list documents must commit in one transaction");
         require(repository.load_all() == expected,
@@ -231,6 +231,11 @@ void metadata_transformation_chains_round_trip_transactionally() {
                             .target_field = "Track Number", .start = 7U, .padding = 2U},
                         metadata::MetadataKeepFirstCharactersAction{.target_field = "Date",
                                                                     .character_count = 4U},
+                        metadata::MetadataRemoveFieldIfAction{
+                            .target_field = "Disc Number",
+                            .dialect = {},
+                            .condition = "$not(%totaldiscs%)",
+                        },
                     },
             },
         .automatic = true,
@@ -303,7 +308,11 @@ void metadata_transformation_chains_round_trip_transactionally() {
                 require_action<metadata::MetadataKeepFirstCharactersAction>(chain, 14U,
                                                                             "keep-first action") ==
                     require_action<metadata::MetadataKeepFirstCharactersAction>(
-                        expected.chain, 14U, "expected keep-first action"),
+                        expected.chain, 14U, "expected keep-first action") &&
+                require_action<metadata::MetadataRemoveFieldIfAction>(
+                    chain, 15U, "conditional-remove action") ==
+                    require_action<metadata::MetadataRemoveFieldIfAction>(
+                        expected.chain, 15U, "expected conditional-remove action"),
             "explicit action kinds and exact ordered payloads must round trip");
 
         auto conflicting = expected;
@@ -322,8 +331,12 @@ void metadata_transformation_chains_round_trip_transactionally() {
                     require_action<metadata::MetadataKeepFirstCharactersAction>(
                         loaded->front().chain, 14U, "reopened keep-first action") ==
                         require_action<metadata::MetadataKeepFirstCharactersAction>(
-                            expected.chain, 14U, "expected reopened keep-first action"),
-                "typed keep-first transformations must survive restart");
+                            expected.chain, 14U, "expected reopened keep-first action") &&
+                    require_action<metadata::MetadataRemoveFieldIfAction>(
+                        loaded->front().chain, 15U, "reopened conditional-remove action") ==
+                        require_action<metadata::MetadataRemoveFieldIfAction>(
+                            expected.chain, 15U, "expected reopened conditional-remove action"),
+                "typed numeric and conditional transformations must survive restart");
         auto updated = expected;
         updated.chain.name = "Exact cleanup v2";
         updated.chain.actions = {
@@ -396,8 +409,8 @@ void output_layout_and_destination_profiles_round_trip_transactionally() {
         auto opened = persistence::ListRepository::open(database_path);
         require(opened.has_value(), "output-profile repository must open");
         auto repository = std::move(*opened);
-        require(repository.schema_version() == 17U,
-                "output profiles must survive the explicit schema-17 migration");
+        require(repository.schema_version() == 18U,
+                "output profiles must survive the explicit schema-18 migration");
         require(repository.upsert_output_layout_profile(expected_layout).has_value() &&
                     repository.upsert_destination_profile(expected_destination).has_value(),
                 "validated output and destination profiles must persist atomically");
@@ -990,8 +1003,8 @@ void committed_source_relocation_rekeys_every_occurrence_and_stale_snapshot() {
                 repository.load_all() == loaded,
             "a persisted target collision must reject the complete relocation transaction");
     auto reopened = persistence::ListRepository::open(database_path);
-    require(reopened && reopened->schema_version() == 17U && reopened->load_all() == loaded,
-            "relocation evidence and resolved paths must survive reopening schema 17");
+    require(reopened && reopened->schema_version() == 18U && reopened->load_all() == loaded,
+            "relocation evidence and resolved paths must survive reopening schema 18");
 
     cleanup();
 }

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+#include "trackknife/metadata/rule_script_import.hpp"
 #include "trackknife/metadata/transformation.hpp"
 
+#include <algorithm>
 #include <array>
 #include <iostream>
 #include <optional>
@@ -255,6 +257,142 @@ void keepFirstCharactersUsesUnicodeAndRetainsShortValues() {
     CHECK(preview->unchanged_present_cell_count == 1U);
 }
 
+void pastedCleanupScriptGeneratesTypedPreviewedRules() {
+    using namespace trackknife::metadata;
+    const auto two_argument_if =
+        import_metadata_rule_script("$if($not(%totaldiscs%),$unset(discnumber))");
+    CHECK(!two_argument_if.has_errors());
+    CHECK(two_argument_if.actions.size() == 1U);
+    CHECK(two_argument_if.actions.size() == 1U &&
+          std::get_if<MetadataRemoveFieldIfAction>(&two_argument_if.actions.front()) != nullptr);
+
+    const auto four_argument_if =
+        import_metadata_rule_script("$if(%date%,$unset(one),$unset(two),$unset(three))");
+    CHECK(four_argument_if.has_errors());
+    CHECK(std::ranges::any_of(four_argument_if.diagnostics, [](const auto& diagnostic) {
+        return diagnostic.message.find("accepts 2 or 3 arguments") != std::string::npos &&
+               diagnostic.message.find("this call has 4") != std::string::npos;
+    }));
+
+    constexpr auto source = R"($delete(albumartist)
+$delete(albumartistsort)
+$delete(releasestatus)
+$delete(releasetype)
+$delete(asin)
+$delete(language)
+$delete(script)
+$delete(catalognumber)
+$delete(comment:)
+$delete(barcode)
+$delete(label)
+$delete(media)
+$delete(musicbrainz_discid)
+$delete(totaltracks)
+$delete(discid)
+$delete(cddb_discid)
+
+$if($or($not(%totaldiscs%),$eq(%totaldiscs%,1)),$delete(discnumber)$delete(totaldiscs))
+
+$if(%originaldate%,$set(date,$left(%originaldate%,4))$set(originaldate,$left(%originaldate%,4)),$set(date,$left(%date%,4)))
+)";
+    const auto imported = import_metadata_rule_script(source);
+    CHECK(!imported.has_errors());
+    CHECK(imported.actions.size() == 20U);
+    CHECK(std::get_if<MetadataRemoveFieldAction>(&imported.actions[0]) != nullptr);
+    CHECK(std::get_if<MetadataRemoveFieldIfAction>(&imported.actions[16]) != nullptr);
+    CHECK(std::get_if<MetadataRemoveFieldIfAction>(&imported.actions[17]) != nullptr);
+    const auto* date = std::get_if<MetadataFormatValueAction>(&imported.actions[18]);
+    CHECK(date != nullptr);
+    CHECK(date != nullptr &&
+          date->source == "$if(%originaldate%,$left(%originaldate%,4),$left(%date%,4))");
+    const auto* original = std::get_if<MetadataKeepFirstCharactersAction>(&imported.actions[19]);
+    CHECK(original != nullptr);
+    CHECK(original != nullptr && original->target_field == "originaldate" &&
+          original->character_count == 4U);
+    CHECK(std::ranges::any_of(imported.diagnostics, [](const auto& diagnostic) {
+        return diagnostic.severity == MetadataRuleScriptDiagnosticSeverity::warning &&
+               diagnostic.message.find("default comment target") != std::string::npos;
+    }));
+
+    auto selected = StagedMetadataSelection::create({
+        StagedMetadataSource{
+            .raw_path = "/music/one.flac",
+            .source_revision = std::nullopt,
+            .baseline =
+                MetadataDocument{
+                    .fields = {field("COMMENT", {"remove"}), field("TOTALDISCS", {"1"}),
+                               field("DISCNUMBER", {"1"}), field("DATE", {"2024-08-30"}),
+                               field("ORIGINALDATE", {"1988-03-04"})},
+                    .unsupported_native_objects = {},
+                },
+        },
+        StagedMetadataSource{
+            .raw_path = "/music/two.flac",
+            .source_revision = std::nullopt,
+            .baseline =
+                MetadataDocument{
+                    .fields = {field("TOTALDISCS", {"2"}), field("DISCNUMBER", {"2"}),
+                               field("DATE", {"2001-07-09"})},
+                    .unsupported_native_objects = {},
+                },
+        },
+        StagedMetadataSource{
+            .raw_path = "/music/three.flac",
+            .source_revision = std::nullopt,
+            .baseline =
+                MetadataDocument{
+                    .fields = {field("DISCNUMBER", {"1"}), field("DATE", {"1999"})},
+                    .unsupported_native_objects = {},
+                },
+        },
+    });
+    CHECK(selected.has_value());
+    if (!selected) {
+        return;
+    }
+    const MetadataTransformationChain chain{
+        .schema_version = 1U,
+        .name = "Imported cleanup",
+        .actions = imported.actions,
+    };
+    const StagedMetadataPatchSet draft;
+    const std::array items{std::size_t{0U}, std::size_t{1U}, std::size_t{2U}};
+    const auto preview = plan_metadata_transformation(*selected, draft, items, chain);
+    CHECK(preview.has_value());
+    if (!preview) {
+        return;
+    }
+    const auto cell = [&preview](const std::size_t item, const std::string_view canonical) {
+        return std::ranges::find_if(preview->cells, [item, canonical](const auto& candidate) {
+            return candidate.item_index == item && candidate.canonical_field == canonical;
+        });
+    };
+    CHECK(cell(0U, "comment") != preview->cells.end() && !cell(0U, "comment")->after);
+    CHECK(cell(0U, "discnumber") != preview->cells.end() && !cell(0U, "discnumber")->after);
+    CHECK(cell(0U, "totaldiscs") != preview->cells.end() && !cell(0U, "totaldiscs")->after);
+    CHECK(cell(0U, "date") != preview->cells.end() &&
+          cell(0U, "date")->after == std::optional<std::vector<std::string>>{{"1988"}});
+    CHECK(cell(0U, "originaldate") != preview->cells.end() &&
+          cell(0U, "originaldate")->after == std::optional<std::vector<std::string>>{{"1988"}});
+    CHECK(cell(1U, "discnumber") == preview->cells.end());
+    CHECK(cell(1U, "totaldiscs") == preview->cells.end());
+    CHECK(cell(1U, "date") != preview->cells.end() &&
+          cell(1U, "date")->after == std::optional<std::vector<std::string>>{{"2001"}});
+    CHECK(cell(2U, "discnumber") != preview->cells.end() && !cell(2U, "discnumber")->after);
+
+    const auto unsupported = import_metadata_rule_script("$rreplace(%title%,x,y)");
+    CHECK(unsupported.has_errors());
+    CHECK(unsupported.actions.empty());
+    const auto unsafe_conditional_set =
+        import_metadata_rule_script("$if(%foo%,$set(bar,$left(%bar%,4)))");
+    CHECK(unsafe_conditional_set.has_errors());
+
+    const auto recovered_punctuation = import_metadata_rule_script("$delete(foo),$delete(bar))");
+    CHECK(!recovered_punctuation.has_errors());
+    CHECK(recovered_punctuation.actions.size() == 2U);
+    CHECK(recovered_punctuation.diagnostics.size() == 2U);
+}
+
 void exactMatchingAndSelectionNumberingComposeInOrder() {
     using namespace trackknife::metadata;
     const auto baseline = selection();
@@ -402,6 +540,15 @@ void plansRejectInvalidDialectInputLimitsAndCancellation() {
         });
     CHECK(!invalid_keep_count);
 
+    const auto invalid_condition =
+        metadata::validate_metadata_transformation_chain(metadata::MetadataTransformationChain{
+            .schema_version = 1U,
+            .name = "Invalid condition",
+            .actions = {metadata::MetadataRemoveFieldIfAction{
+                .target_field = "Disc Number", .dialect = {}, .condition = "$unknown()"}},
+        });
+    CHECK(!invalid_condition);
+
     const metadata::MetadataTransformationChain bounded{
         .schema_version = 1U,
         .name = {},
@@ -435,6 +582,7 @@ int main() {
     exactAddCopySplitAndJoinPreserveOrderedState();
     capitalizationNoOpCountsPresentAndMissingTargets();
     keepFirstCharactersUsesUnicodeAndRetainsShortValues();
+    pastedCleanupScriptGeneratesTypedPreviewedRules();
     exactMatchingAndSelectionNumberingComposeInOrder();
     plansRejectInvalidDialectInputLimitsAndCancellation();
     return failures == 0 ? 0 : 1;

@@ -92,7 +92,10 @@ ADR-0053 fixes case-sensitive complete-value remove/replace semantics and
 bounded consecutive numbering in captured file order while explicitly
 deferring group resets and `TOTALTRACKS`. ADR-0064 adds exact bounded Unicode-
 scalar prefix extraction as an exposed saved action without treating it as a
-date parser. ADR-0054 fixes the shared preparation-
+date parser. ADR-0065 adds a bounded Picard-style paste translator that
+discards source after generating typed rules, plus dialect-qualified
+conditional removal; it does not settle full chain interchange or external
+script compatibility. ADR-0054 fixes the shared preparation-
 plan shape and separates reusable relative output layouts from explicit
 destination roots so rename/move, ReplayGain, and conversion can share one
 review vocabulary. ADR-0055 fixes the persisted schema-1 profile contracts,
@@ -106,7 +109,7 @@ case-folded aliases remain unsupported. Bind-mount confinement, the concrete
 dependent path transaction, same-filesystem undo, cross-filesystem execution,
 combined content intent,
 portable/custom sanitization and Unicode normalization, grouped numbering,
-richer match dialects, import/export, the separate capture-pattern grammar,
+richer match dialects, native chain interchange, the separate capture-pattern grammar,
 other exact format writers, artwork mutation, and sidecars remain open M5
 decisions and capability work.
 

@@ -4,6 +4,7 @@
 
 #include "bench/metadata_grid_model.hpp"
 #include "trackknife/metadata/field_suggestions.hpp"
+#include "trackknife/metadata/rule_script_import.hpp"
 
 #include <QAbstractListModel>
 #include <QApplication>
@@ -29,6 +30,7 @@
 #include <QMessageBox>
 #include <QModelIndex>
 #include <QPersistentModelIndex>
+#include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -47,6 +49,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <mutex>
 #include <ranges>
@@ -505,6 +508,109 @@ class MetadataTransformationPreviewModel final : public QAbstractItemModel {
     QStringList track_labels_;
 };
 
+class MetadataRuleScriptImportDialog final : public QDialog {
+  public:
+    enum class ImportMode : std::uint8_t {
+        append,
+        replace,
+    };
+
+    explicit MetadataRuleScriptImportDialog(QWidget* parent) : QDialog(parent) {
+        setObjectName(QStringLiteral("bench-metadata-rule-script-import"));
+        setWindowTitle(QStringLiteral("Generate rules from script"));
+        setWindowModality(Qt::WindowModal);
+        resize(760, 560);
+
+        auto* layout = new QVBoxLayout(this);
+        auto* explanation = new QLabel(
+            QStringLiteral("Paste a Picard-style cleanup script. Trackbench translates the "
+                           "supported $unset/$delete, $set, $if, $and/$or, $eq/$ne, $not, and "
+                           "$left subset into editable typed rules; it does not store or execute "
+                           "the pasted script. Here, $unset generates an actual Remove field "
+                           "rule."),
+            this);
+        explanation->setWordWrap(true);
+        layout->addWidget(explanation);
+
+        source_ = new QPlainTextEdit(this);
+        source_->setObjectName(QStringLiteral("bench-metadata-rule-script-source"));
+        source_->setPlaceholderText(QStringLiteral("$unset(comment)\n$set(date,$left(%date%,4))"));
+        layout->addWidget(source_, 2);
+
+        diagnostics_ = new QPlainTextEdit(this);
+        diagnostics_->setObjectName(QStringLiteral("bench-metadata-rule-script-diagnostics"));
+        diagnostics_->setReadOnly(true);
+        diagnostics_->setMaximumBlockCount(128);
+        diagnostics_->setMaximumHeight(150);
+        layout->addWidget(diagnostics_);
+
+        buttons_ = new QDialogButtonBox(QDialogButtonBox::Cancel, this);
+        append_ = buttons_->addButton(QStringLiteral("Append generated rules"),
+                                      QDialogButtonBox::ActionRole);
+        append_->setObjectName(QStringLiteral("bench-metadata-rule-script-append"));
+        replace_ =
+            buttons_->addButton(QStringLiteral("Replace rules"), QDialogButtonBox::AcceptRole);
+        replace_->setObjectName(QStringLiteral("bench-metadata-rule-script-replace"));
+        layout->addWidget(buttons_);
+
+        connect(source_, &QPlainTextEdit::textChanged, this, [this] { updateTranslation(); });
+        connect(append_, &QPushButton::clicked, this, [this] {
+            mode_ = ImportMode::append;
+            accept();
+        });
+        connect(replace_, &QPushButton::clicked, this, [this] {
+            mode_ = ImportMode::replace;
+            accept();
+        });
+        connect(buttons_, &QDialogButtonBox::rejected, this, &QDialog::reject);
+        updateTranslation();
+    }
+
+    [[nodiscard]] std::vector<metadata::MetadataTransformationAction> takeActions() {
+        return std::move(result_.actions);
+    }
+
+    [[nodiscard]] ImportMode importMode() const noexcept { return mode_; }
+
+  private:
+    void updateTranslation() {
+        result_ = metadata::import_metadata_rule_script(encode_utf8(source_->toPlainText()));
+        QStringList lines;
+        for (const auto& diagnostic : result_.diagnostics) {
+            const auto severity =
+                diagnostic.severity == metadata::MetadataRuleScriptDiagnosticSeverity::error
+                    ? QStringLiteral("Error")
+                    : QStringLiteral("Warning");
+            lines.push_back(QStringLiteral("%1 · line %2, column %3 · %4")
+                                .arg(severity)
+                                .arg(diagnostic.line)
+                                .arg(diagnostic.column)
+                                .arg(display_utf8(diagnostic.message)));
+        }
+        if (lines.isEmpty()) {
+            lines.push_back(
+                result_.actions.empty()
+                    ? QStringLiteral("Paste a script to inspect generated rules.")
+                    : QStringLiteral("Ready · %1 generated rules").arg(result_.actions.size()));
+        } else if (!result_.has_errors()) {
+            lines.prepend(QStringLiteral("Ready · %1 generated rules with warnings")
+                              .arg(result_.actions.size()));
+        }
+        diagnostics_->setPlainText(lines.join(QChar{'\n'}));
+        const auto ready = !result_.has_errors() && !result_.actions.empty();
+        append_->setEnabled(ready);
+        replace_->setEnabled(ready);
+    }
+
+    metadata::MetadataRuleScriptImportResult result_;
+    ImportMode mode_{ImportMode::replace};
+    QPlainTextEdit* source_{nullptr};
+    QPlainTextEdit* diagnostics_{nullptr};
+    QDialogButtonBox* buttons_{nullptr};
+    QPushButton* append_{nullptr};
+    QPushButton* replace_{nullptr};
+};
+
 class MetadataTransformationDialog final : public QDialog {
   public:
     using StageCallback =
@@ -583,7 +689,8 @@ class MetadataTransformationDialog final : public QDialog {
              QStringLiteral("Remove exact matching values"),
              QStringLiteral("Replace exact matching values"),
              QStringLiteral("Number by selected-file order"),
-             QStringLiteral("Keep first characters of each value")});
+             QStringLiteral("Keep first characters of each value"),
+             QStringLiteral("Remove field when condition matches")});
         target_ = new QLineEdit(this);
         target_->setObjectName(QStringLiteral("bench-metadata-transformation-target"));
         target_->setPlaceholderText(QStringLiteral("For example: Title or ALBUM ARTIST"));
@@ -643,7 +750,10 @@ class MetadataTransformationDialog final : public QDialog {
         auto* add_row = new QHBoxLayout;
         add_ = new QPushButton(QStringLiteral("Add step"), this);
         add_->setObjectName(QStringLiteral("bench-metadata-transformation-add"));
+        import_ = new QPushButton(QStringLiteral("Paste script…"), this);
+        import_->setObjectName(QStringLiteral("bench-metadata-transformation-import-script"));
         add_row->addWidget(add_);
+        add_row->addWidget(import_);
         add_row->addStretch(1);
         layout->addLayout(add_row);
 
@@ -720,6 +830,7 @@ class MetadataTransformationDialog final : public QDialog {
         connect(save_as_, &QPushButton::clicked, this, [this] { saveCurrent(true); });
         connect(delete_saved_, &QPushButton::clicked, this, [this] { deleteSaved(); });
         connect(add_, &QPushButton::clicked, this, [this] { addStep(); });
+        connect(import_, &QPushButton::clicked, this, [this] { importRules(); });
         connect(remove_, &QPushButton::clicked, this, [this] { removeStep(); });
         connect(up_, &QPushButton::clicked, this, [this] { moveStep(-1); });
         connect(down_, &QPushButton::clicked, this, [this] { moveStep(1); });
@@ -782,6 +893,11 @@ class MetadataTransformationDialog final : public QDialog {
                         .arg(field, display_plan_values(typed.values));
                 } else if constexpr (std::is_same_v<Action, metadata::MetadataRemoveFieldAction>) {
                     return QStringLiteral("%1. Remove %2").arg(index + 1U).arg(field);
+                } else if constexpr (std::is_same_v<Action,
+                                                    metadata::MetadataRemoveFieldIfAction>) {
+                    return QStringLiteral("%1. Remove %2 when %3")
+                        .arg(index + 1U)
+                        .arg(field, display_utf8(typed.condition));
                 } else if constexpr (std::is_same_v<Action,
                                                     metadata::MetadataTransformValuesAction>) {
                     QString verb;
@@ -1102,7 +1218,7 @@ class MetadataTransformationDialog final : public QDialog {
 
     void updateInputForKind() {
         const auto kind = kind_->currentIndex();
-        const auto has_input = kind == 0 || kind == 1 || (kind >= 7 && kind <= 12);
+        const auto has_input = kind == 0 || kind == 1 || (kind >= 7 && kind <= 12) || kind == 15;
         input_label_->setVisible(has_input);
         input_->setVisible(has_input);
         const auto has_replacement = kind == 12;
@@ -1129,6 +1245,9 @@ class MetadataTransformationDialog final : public QDialog {
         } else if (kind == 11 || kind == 12) {
             input_label_->setText(QStringLiteral("Exact value:"));
             input_->setPlaceholderText(QStringLiteral("Case-sensitive; may be empty"));
+        } else if (kind == 15) {
+            input_label_->setText(QStringLiteral("Condition:"));
+            input_->setPlaceholderText(QStringLiteral("For example: $not(%totaldiscs%)"));
         } else {
             input_label_->setText(QStringLiteral("Value:"));
             input_->setPlaceholderText(QString{});
@@ -1227,6 +1346,19 @@ class MetadataTransformationDialog final : public QDialog {
                 .character_count = static_cast<std::uint32_t>(character_count_->value()),
             });
             break;
+        case 15:
+            if (input_->text().trimmed().isEmpty()) {
+                summary_->setText(
+                    QStringLiteral("Conditional removal requires a non-empty condition."));
+                input_->setFocus(Qt::OtherFocusReason);
+                return;
+            }
+            actions_.push_back(metadata::MetadataRemoveFieldIfAction{
+                .target_field = target,
+                .dialect = {},
+                .condition = encode_utf8(input_->text()),
+            });
+            break;
         default:
             return;
         }
@@ -1246,6 +1378,31 @@ class MetadataTransformationDialog final : public QDialog {
         actions_.erase(actions_.begin() + row);
         invalidatePreview();
         rebuildSteps(std::min(row, static_cast<int>(actions_.size()) - 1));
+    }
+
+    void importRules() {
+        MetadataRuleScriptImportDialog dialog{this};
+        if (dialog.exec() != QDialog::Accepted) {
+            return;
+        }
+        auto imported = dialog.takeActions();
+        if (dialog.importMode() == MetadataRuleScriptImportDialog::ImportMode::append) {
+            if (actions_.size() > 256U || imported.size() > 256U - actions_.size()) {
+                summary_->setText(
+                    QStringLiteral("Appending those rules would exceed the 256-step limit."));
+                return;
+            }
+            actions_.insert(actions_.end(), std::make_move_iterator(imported.begin()),
+                            std::make_move_iterator(imported.end()));
+        } else {
+            actions_ = std::move(imported);
+        }
+        invalidatePreview();
+        rebuildSteps(static_cast<int>(actions_.size()) - 1);
+        catalog_status_->setText(
+            QStringLiteral("Generated %1 typed rules from the pasted script. Review, preview, "
+                           "and save them like any other chain.")
+                .arg(actions_.size()));
     }
 
     void moveStep(const int offset) {
@@ -1294,6 +1451,7 @@ class MetadataTransformationDialog final : public QDialog {
         number_start_->setEnabled(editing_enabled);
         number_padding_->setEnabled(editing_enabled);
         character_count_->setEnabled(editing_enabled);
+        import_->setEnabled(editing_enabled);
         add_->setEnabled(editing_enabled && actions_.size() < 256U);
         steps_->setEnabled(editing_enabled);
         remove_->setEnabled(editing_enabled && valid);
@@ -1412,6 +1570,7 @@ class MetadataTransformationDialog final : public QDialog {
     QLabel* character_count_label_{nullptr};
     QSpinBox* character_count_{nullptr};
     QPushButton* add_{nullptr};
+    QPushButton* import_{nullptr};
     QListWidget* steps_{nullptr};
     QPushButton* remove_{nullptr};
     QPushButton* up_{nullptr};

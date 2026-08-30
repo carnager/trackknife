@@ -777,6 +777,11 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   of each value** defaults to 4, retains short/empty and multi-value states,
   and follows the same explicit preview, staging, and checked automatic-chain
   path as the other schema-1 actions.
+- Done: ADR-0065 and reversible migration 18 add **Paste script…** as a bounded
+  Picard-style cleanup translator. Supported mutations and pure expressions
+  generate normal editable typed rules with source-positioned diagnostics;
+  conditional removal is directly exposed and persisted with complete
+  `tkfmt-1` dialect identity. The pasted source is never executed or saved.
 - Done: the tagging workspace now has a dedicated **Operations** side-panel
   page. **Save tags** is a real independent choice, while Rename, Move, and
   ReplayGain are visible but capability-gated. Reusable naming layouts and
@@ -784,8 +789,8 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   serialized persistence worker without a separate settings window.
 - Next: generalize the immutable review for final metadata plus file paths,
   enable Rename/Move, and bind it to bounded publication Apply and visible
-  source reconciliation. The capture-pattern grammar and chain import/export
-  follow that vertical slice.
+  source reconciliation. The capture-pattern grammar and native chain
+  interchange follow that vertical slice.
 
 ### Exit criteria
 

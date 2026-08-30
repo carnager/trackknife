@@ -45,11 +45,13 @@ Consequences:
 
 - foobar2000 and Picard scripts may look similar but are not promised to run;
 - there is no separate foobar truth flag or optional-section behavior;
-- Picard metadata-mutating functions such as `$set` are intentionally absent;
+- Picard metadata-mutating functions such as `$set` are intentionally absent
+  from `tkfmt-1`; ADR-0065's bounded paste importer may translate a documented
+  subset into ordinary Trackbench rules without executing Picard code;
 - missing fields, escaping, integer conversion, multi-values, and every
   built-in follow `docs/title-formatting.md`;
-- a future importer or compatibility dialect must have a distinct persisted
-  identifier and must not change `tkfmt-1`.
+- an importer or compatibility dialect must remain separate and must not
+  change `tkfmt-1`.
 
 ## Search/query syntax
 
@@ -75,9 +77,9 @@ implementation details.
 - undocumented title-formatting and query quirks;
 - Picard plugin APIs and metadata-mutating tagging scripts.
 
-An importer may eventually help migration, but imported data is translated into
-Trackbench's versioned models rather than making an external private format
-canonical.
+The ADR-0065 paste importer helps migrate a small documented cleanup subset by
+translating it into Trackbench's versioned models. It does not make the
+external language or source text canonical.
 
 ## Rich source references: retained lesson
 

@@ -370,13 +370,13 @@ shows the original and final document plus optionally each intermediate step.
 Do not serialize executable host-language code; persist declarative action data
 and formatting source.
 
-**Trackbench decision (ADRs 0048–0053 and 0064, M5 transformation slices):** schema 1
-chains are Qt-free ordered declarative data evaluated against the selected
-items' current staged draft. The first actions set exact values, remove a
-field, trim/lowercase/uppercase each existing value without flattening the
-list, capitalize only the first Unicode character of each existing value while
-leaving its remainder unchanged, or set one scalar from the typed metadata-
-transformation `tkfmt-1` host.
+**Trackbench decision (ADRs 0048–0053 and 0064–0065, M5 transformation
+slices):** schema 1 chains are Qt-free ordered declarative data evaluated
+against the selected items' current staged draft. The first actions set exact
+values, remove a field, trim/lowercase/uppercase each existing value without
+flattening the list, capitalize only the first Unicode character of each
+existing value while leaving its remainder unchanged, or set one scalar from
+the typed metadata-transformation `tkfmt-1` host.
 Exact add appends values in order without deduplication; copy mirrors the full
 source field state and removes the target when the source is missing; split
 uses one non-empty exact separator while retaining leading, trailing, and
@@ -425,8 +425,20 @@ each value is transformed independently, short and empty values remain exact,
 and a missing target stays missing. It is not a date parser, but `DATE` with a
 count of 4 turns `2024-08-30` into `2024`. Reversible migration 17 stores this
 typed action under stable code 14 without reinterpreting older definitions.
-Import/export, grouped numbering, richer match dialects, and the separately
-versioned capture-pattern parser remain future slices.
+Per ADR-0065, **Paste script…** translates a bounded Picard-style cleanup
+subset into the same editable typed list; it neither stores nor executes the
+foreign source. `$unset`/`$delete`, `$set`, and `$if` combine with a small pure
+field/conditional/`$left` subset. Unsupported calls fail closed with
+source-positioned diagnostics. `$unset` explicitly means actual Trackbench
+field removal, not Picard's separate old/new-metadata behavior. Conditional
+deletions use a typed `tkfmt-1` predicate evaluated at that chain position;
+migration 18 stores it under stable action code 15. Matching `$set` targets
+across true/false branches collapse into one conditional value rule, while a
+self-prefix cleanup guarded by the same field remains a no-op when absent and
+becomes a normal keep-first rule. Picard's `comment:` default-comment target
+maps visibly to Trackbench's conventional `COMMENT`; wildcard deletion remains
+unsupported. Full chain interchange, grouped numbering, richer match dialects,
+and the separately versioned capture-pattern parser remain future slices.
 
 ## Artwork
 

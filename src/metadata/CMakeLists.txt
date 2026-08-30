@@ -7,6 +7,7 @@ add_library(
     src/flac_mapping.cpp
     src/flac_writer.cpp
     src/local_reader.cpp
+    src/rule_script_import.cpp
     src/staged_patch.cpp
     src/staged_selection.cpp
     src/transformation.cpp

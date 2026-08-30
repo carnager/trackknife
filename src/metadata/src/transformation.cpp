@@ -190,6 +190,36 @@ class TransformationEvaluationContext final : public titleformat::EvaluationCont
                                                 action_index, item_index));
 }
 
+[[nodiscard]] core::Result<std::string>
+evaluate_action_program(const PreparedAction& prepared, const WorkingDocument& document,
+                        const std::size_t action_index, const std::size_t item_index,
+                        const core::CancellationToken& cancellation) {
+    if (!prepared.program) {
+        return std::unexpected(transformation_error(
+            core::ErrorCode::invariant, "compiled metadata transformation expression is missing",
+            action_index, item_index));
+    }
+    const TransformationEvaluationContext context{document};
+    auto evaluated =
+        titleformat::evaluate(*prepared.program, context,
+                              titleformat::EvaluationOptions{.maximum_steps = 100'000U,
+                                                             .maximum_output_bytes = 1024U * 1024U,
+                                                             .maximum_expanded_results = 1U,
+                                                             .cancellation = cancellation});
+    if (!evaluated) {
+        auto error = std::move(evaluated.error());
+        error.context.push_back({.key = "action", .value = std::to_string(action_index)});
+        error.context.push_back({.key = "item", .value = std::to_string(item_index)});
+        return std::unexpected(std::move(error));
+    }
+    if (auto valid = validate_utf8(evaluated->text, "metadata transformation expression result",
+                                   action_index);
+        !valid) {
+        return std::unexpected(std::move(valid.error()));
+    }
+    return std::move(evaluated->text);
+}
+
 [[nodiscard]] core::Result<void>
 apply_action(const PreparedAction& prepared, WorkingDocument& document,
              const std::size_t action_index, const std::size_t item_index,
@@ -212,6 +242,15 @@ apply_action(const PreparedAction& prepared, WorkingDocument& document,
                 values.insert(values.end(), action.values.begin(), action.values.end());
             } else if constexpr (std::is_same_v<Action, MetadataRemoveFieldAction>) {
                 document.erase(prepared.canonical_field);
+            } else if constexpr (std::is_same_v<Action, MetadataRemoveFieldIfAction>) {
+                auto condition = evaluate_action_program(prepared, document, action_index,
+                                                         item_index, cancellation);
+                if (!condition) {
+                    return std::unexpected(std::move(condition.error()));
+                }
+                if (!condition->empty()) {
+                    document.erase(prepared.canonical_field);
+                }
             } else if constexpr (std::is_same_v<Action, MetadataTransformValuesAction>) {
                 const auto found = document.find(prepared.canonical_field);
                 if (found == document.end()) {
@@ -333,32 +372,12 @@ apply_action(const PreparedAction& prepared, WorkingDocument& document,
                     value.resize(*end);
                 }
             } else if constexpr (std::is_same_v<Action, MetadataFormatValueAction>) {
-                if (!prepared.program) {
-                    return std::unexpected(transformation_error(
-                        core::ErrorCode::invariant,
-                        "compiled metadata transformation expression is missing", action_index,
-                        item_index));
-                }
-                const TransformationEvaluationContext context{document};
-                auto evaluated = titleformat::evaluate(
-                    *prepared.program, context,
-                    titleformat::EvaluationOptions{.maximum_steps = 100'000U,
-                                                   .maximum_output_bytes = 1024U * 1024U,
-                                                   .maximum_expanded_results = 1U,
-                                                   .cancellation = cancellation});
+                auto evaluated = evaluate_action_program(prepared, document, action_index,
+                                                         item_index, cancellation);
                 if (!evaluated) {
-                    auto error = std::move(evaluated.error());
-                    error.context.push_back(
-                        {.key = "action", .value = std::to_string(action_index)});
-                    error.context.push_back({.key = "item", .value = std::to_string(item_index)});
-                    return std::unexpected(std::move(error));
+                    return std::unexpected(std::move(evaluated.error()));
                 }
-                if (auto valid = validate_utf8(
-                        evaluated->text, "metadata transformation expression result", action_index);
-                    !valid) {
-                    return valid;
-                }
-                document[prepared.canonical_field] = {std::move(evaluated->text)};
+                document[prepared.canonical_field] = {std::move(*evaluated)};
             }
             return {};
         },
@@ -522,6 +541,41 @@ prepare_chain(const MetadataTransformationChain& chain,
                         std::to_string(limits.maximum_character_count),
                     action_index));
             }
+        } else if (const auto* conditional = std::get_if<MetadataRemoveFieldIfAction>(&action)) {
+            const titleformat::DialectVersion current_dialect;
+            if (conditional->dialect != current_dialect) {
+                return std::unexpected(transformation_error(
+                    core::ErrorCode::invalid_argument,
+                    "metadata conditional-remove expression uses an unsupported dialect or "
+                    "compiler schema",
+                    action_index));
+            }
+            if (conditional->condition.empty() ||
+                conditional->condition.size() > limits.action_text_bytes) {
+                return std::unexpected(transformation_error(
+                    core::ErrorCode::invalid_argument,
+                    "metadata conditional remove requires a bounded non-empty condition",
+                    action_index));
+            }
+            if (auto valid =
+                    validate_utf8(conditional->condition,
+                                  "metadata conditional-remove expression source", action_index);
+                !valid) {
+                return std::unexpected(std::move(valid.error()));
+            }
+            titleformat::CompileOptions options;
+            options.context = titleformat::FormatContextKind::metadata_transformation;
+            options.dialect = conditional->dialect;
+            auto compiled = titleformat::compile(conditional->condition, options);
+            if (!compiled.isValid()) {
+                const auto message = !compiled.parse_diagnostics.empty()
+                                         ? compiled.parse_diagnostics.front().message
+                                         : compiled.diagnostics.front().message;
+                return std::unexpected(transformation_error(
+                    core::ErrorCode::invalid_argument,
+                    "metadata conditional-remove expression is invalid: " + message, action_index));
+            }
+            prepared_action.program = std::move(*compiled.program);
         } else if (const auto* format = std::get_if<MetadataFormatValueAction>(&action)) {
             const titleformat::DialectVersion current_dialect;
             if (format->dialect != current_dialect) {
