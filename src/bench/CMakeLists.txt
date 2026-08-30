@@ -6,12 +6,16 @@ qt_add_library(
     bench_main_window.hpp
     local_list_model.cpp
     local_list_model.hpp
+    metadata_dialog_helpers.cpp
+    metadata_dialog_helpers.hpp
     metadata_exact_value_dialog.cpp
     metadata_exact_value_dialog.hpp
     metadata_grid_model.cpp
     metadata_grid_model.hpp
     metadata_properties_dialog.cpp
     metadata_properties_dialog.hpp
+    metadata_transformation_preview_model.cpp
+    metadata_transformation_preview_model.hpp
 )
 add_library(Trackknife::BenchUi ALIAS trackknife_bench_ui)
 
