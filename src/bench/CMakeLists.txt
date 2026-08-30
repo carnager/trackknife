@@ -14,6 +14,8 @@ qt_add_library(
     metadata_grid_model.hpp
     metadata_properties_dialog.cpp
     metadata_properties_dialog.hpp
+    metadata_rule_script_import_dialog.cpp
+    metadata_rule_script_import_dialog.hpp
     metadata_transformation_preview_model.cpp
     metadata_transformation_preview_model.hpp
 )
