@@ -117,6 +117,7 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
     MetadataDialogLayoutStore layout_store)
     : QDialog(parent), selection_watcher_(this), write_plan_watcher_(this),
       metadata_apply_watcher_(this), file_apply_watcher_(this),
+      output_example_watcher_(this),
       source_reader_(std::move(source_reader)),
       plan_applier_factory_(std::move(plan_applier_factory)),
       apply_observer_(std::move(apply_observer)),
@@ -291,6 +292,13 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
         QStringLiteral("For example: %tracknumber% - %title%"));
     layout_form->addRow(QStringLiteral("Filename:"), output_basename_expression_);
     layout_manager_box->addLayout(layout_form);
+    output_layout_example_ = new QLabel(QStringLiteral("Example: waiting for a track…"),
+                                        layout_manager);
+    output_layout_example_->setObjectName(QStringLiteral("bench-output-layout-example"));
+    output_layout_example_->setAccessibleName(QStringLiteral("Naming layout live example"));
+    output_layout_example_->setTextFormat(Qt::PlainText);
+    output_layout_example_->setWordWrap(true);
+    layout_manager_box->addWidget(output_layout_example_);
     auto* layout_buttons = new QHBoxLayout;
     output_layout_new_button_ = new QPushButton(QStringLiteral("New"), layout_manager);
     output_layout_new_button_->setObjectName(QStringLiteral("bench-output-layout-new"));
@@ -501,6 +509,10 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
         connect(editor, &QLineEdit::textChanged, this,
                 &MetadataPropertiesDialog::updateOutputProfileButtons);
     }
+    for (auto* expression : {output_directory_expression_, output_basename_expression_}) {
+        connect(expression, &QLineEdit::textChanged, this,
+                &MetadataPropertiesDialog::scheduleOutputLayoutExample);
+    }
     connect(destination_root_, &QLineEdit::textEdited, this, [this](const QString& text) {
         const auto encoded = QFile::encodeName(text);
         destination_root_raw_path_.assign(encoded.constData(),
@@ -528,6 +540,7 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
     connect(save_tags_check_, &QCheckBox::toggled, this, [this] {
         invalidateWritePlan();
         updateDraftState(draft_count_, undo_button_->isEnabled(), redo_button_->isEnabled());
+        scheduleOutputLayoutExample();
     });
     for (auto* path_choice : {rename_files_check_, move_files_check_}) {
         connect(path_choice, &QCheckBox::toggled, this, [this] {
@@ -543,6 +556,14 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
             &MetadataPropertiesDialog::finishMetadataApply);
     connect(&file_apply_watcher_, &QFutureWatcherBase::finished, this,
             &MetadataPropertiesDialog::finishFileApply);
+    connect(&output_example_watcher_, &QFutureWatcherBase::finished, this,
+            &MetadataPropertiesDialog::finishOutputLayoutExample);
+    output_example_debounce_ = new QTimer(this);
+    output_example_debounce_->setObjectName(QStringLiteral("bench-output-layout-example-timer"));
+    output_example_debounce_->setSingleShot(true);
+    output_example_debounce_->setInterval(250);
+    connect(output_example_debounce_, &QTimer::timeout, this,
+            &MetadataPropertiesDialog::startOutputLayoutExample);
     apply_progress_timer_ = new QTimer(this);
     apply_progress_timer_->setInterval(50);
     connect(apply_progress_timer_, &QTimer::timeout, this,
@@ -582,12 +603,16 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
 MetadataPropertiesDialog::~MetadataPropertiesDialog() {
     write_plan_cancellation_.request_cancellation();
     apply_cancellation_.request_cancellation();
+    output_example_cancellation_.request_cancellation();
     if (write_plan_running_) {
         write_plan_watcher_.waitForFinished();
     }
     if (apply_running_) {
         metadata_apply_watcher_.waitForFinished();
         file_apply_watcher_.waitForFinished();
+    }
+    if (output_example_running_) {
+        output_example_watcher_.waitForFinished();
     }
 }
 
@@ -832,6 +857,7 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
             [this](const int patch_count, const bool can_undo, const bool can_redo) {
                 invalidateWritePlan();
                 updateDraftState(patch_count, can_undo, can_redo);
+                scheduleOutputLayoutExample();
             });
     connect(grid_model_, &MetadataGridModel::editRejected, this, [this](const QString& message) {
         read_only_->setText(QStringLiteral("Draft edit rejected · %1").arg(message));
@@ -855,6 +881,7 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
                 updateEditValuesButton();
                 updateTransformationButton();
             });
+    scheduleOutputLayoutExample();
     if (grid_model_->rowCount() > 0) {
         file_list_->selectionModel()->setCurrentIndex(grid_model_->index(0, 0),
                                                       QItemSelectionModel::NoUpdate);
@@ -897,6 +924,7 @@ void MetadataPropertiesDialog::updateSelectionProjection() {
     updateDraftState(draft_count_, undo_button_->isEnabled(), redo_button_->isEnabled());
     aggregate_model_->setSelectedItems(std::move(selected_items));
     updateTransformationButton();
+    scheduleOutputLayoutExample();
 }
 
 void MetadataPropertiesDialog::updateDraftState(const int patch_count, const bool can_undo,
@@ -1442,6 +1470,141 @@ void MetadataPropertiesDialog::updateOutputProfileButtons() {
     }
     if (!move_files_check_->isEnabled() && move_files_check_->isChecked()) {
         move_files_check_->setChecked(false);
+    }
+}
+
+void MetadataPropertiesDialog::scheduleOutputLayoutExample() {
+    if (output_example_debounce_ == nullptr || output_layout_example_ == nullptr) {
+        return;
+    }
+    ++output_example_generation_;
+    output_example_cancellation_.request_cancellation();
+    output_example_pending_ = false;
+    output_example_debounce_->start();
+}
+
+void MetadataPropertiesDialog::startOutputLayoutExample() {
+    if (output_example_running_) {
+        output_example_pending_ = true;
+        output_example_cancellation_.request_cancellation();
+        return;
+    }
+    if (grid_model_ == nullptr) {
+        output_layout_example_->setText(QStringLiteral("Example: waiting for a track…"));
+        return;
+    }
+    const auto selected_items = selectedItemIndexes();
+    if (selected_items.empty()) {
+        output_layout_example_->setText(QStringLiteral("Example: select a track to preview"));
+        return;
+    }
+
+    const auto item_index = selected_items.front();
+    auto selection = grid_model_->sharedSelection();
+    auto draft = save_tags_check_->isChecked() ? grid_model_->patches()
+                                                : metadata::StagedMetadataPatchSet{};
+    auto layout = operations::OutputLayoutProfile{
+        .schema_version = 1U,
+        .name = "Live example",
+        .dialect = {},
+        .relative_directory_expression = encode_utf8(output_directory_expression_->text()),
+        .basename_expression = encode_utf8(output_basename_expression_->text()),
+        .sanitization_policy = {"linux", 1U},
+    };
+    output_example_job_generation_ = output_example_generation_;
+    output_example_cancellation_ = core::CancellationSource{};
+    const auto cancellation = output_example_cancellation_.token();
+    output_example_running_ = true;
+    output_layout_example_->setText(QStringLiteral("Example: updating…"));
+
+    output_example_watcher_.setFuture(QtConcurrent::run(
+        [selection = std::move(selection), draft = std::move(draft), item_index,
+         layout = std::move(layout), cancellation]() mutable {
+            const std::array items{item_index};
+            auto documents =
+                metadata::materialize_metadata_draft(*selection, draft, items, cancellation);
+            if (!documents) {
+                return std::make_shared<OutputLayoutExampleResult>(
+                    std::unexpected(std::move(documents.error())));
+            }
+            const auto& source = selection->source(item_index);
+            const auto revision = source.source_revision.value_or(core::LocalSourceRevision{
+                .device = 1U,
+                .inode = 1U,
+                .size = 1U,
+                .modification_time_seconds = 0,
+                .modification_time_nanoseconds = 0,
+            });
+            constexpr auto preview_root = "/trackbench-layout-example";
+            const std::array planning_items{operations::OutputPathPlanningItem{
+                .item_index = item_index,
+                .source_raw_path = source.raw_path,
+                .source_revision = revision,
+                .final_metadata = std::move(documents->front()),
+            }};
+            auto planned = operations::plan_output_paths(
+                planning_items, {.rename_files = true, .move_files = true}, std::move(layout),
+                operations::DestinationProfile{
+                    .schema_version = 1U,
+                    .name = "Live example",
+                    .root_raw_path = preview_root,
+                    .containment_policy = {"lexical-beneath-root", 1U},
+                },
+                {}, cancellation);
+            if (!planned) {
+                return std::make_shared<OutputLayoutExampleResult>(
+                    std::unexpected(std::move(planned.error())));
+            }
+            const auto blocking = std::ranges::find_if(
+                planned->issues, [](const auto& issue) { return issue.blocking; });
+            if (blocking != planned->issues.end()) {
+                return std::make_shared<OutputLayoutExampleResult>(
+                    std::unexpected(core::Error{
+                        .code = core::ErrorCode::invalid_argument,
+                        .message = blocking->message,
+                        .context = {},
+                    }));
+            }
+            if (planned->sources.size() != 1U) {
+                return std::make_shared<OutputLayoutExampleResult>(
+                    std::unexpected(core::Error{
+                        .code = core::ErrorCode::invariant,
+                        .message = "Naming layout example did not produce one path",
+                        .context = {},
+                    }));
+            }
+            auto relative_path = planned->sources.front().target_raw_path;
+            constexpr std::string_view prefix = "/trackbench-layout-example/";
+            if (!relative_path.starts_with(prefix)) {
+                return std::make_shared<OutputLayoutExampleResult>(
+                    std::unexpected(core::Error{
+                        .code = core::ErrorCode::invariant,
+                        .message = "Naming layout example escaped its preview root",
+                        .context = {},
+                    }));
+            }
+            relative_path.erase(0U, prefix.size());
+            return std::make_shared<OutputLayoutExampleResult>(std::move(relative_path));
+        }));
+}
+
+void MetadataPropertiesDialog::finishOutputLayoutExample() {
+    output_example_running_ = false;
+    const auto result = output_example_watcher_.result();
+    if (output_example_job_generation_ == output_example_generation_ && result) {
+        if (*result) {
+            output_layout_example_->setText(
+                QStringLiteral("Example: %1")
+                    .arg(QString::fromStdString(core::escape_raw_path(**result))));
+        } else if (result->error().code != core::ErrorCode::cancelled) {
+            output_layout_example_->setText(
+                QStringLiteral("Example error: %1")
+                    .arg(display_utf8(result->error().message)));
+        }
+    }
+    if (output_example_pending_) {
+        output_example_pending_ = false;
+        startOutputLayoutExample();
     }
 }
 

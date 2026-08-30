@@ -1402,6 +1402,22 @@ void BenchMainWindowTest::preparationSidePanelEditsReusableOutputProfiles() {
     QVERIFY(!layout_manager->isVisible());
     QTest::mouseClick(layout_manage, Qt::LeftButton);
     QTRY_VERIFY(layout_manager->isVisible());
+    auto* layout_example = layout_manager->findChild<QLabel*>(
+        QStringLiteral("bench-output-layout-example"));
+    auto* layout_example_timer = properties->findChild<QTimer*>(
+        QStringLiteral("bench-output-layout-example-timer"));
+    QVERIFY(layout_example != nullptr);
+    QVERIFY(layout_example_timer != nullptr);
+    QTRY_VERIFY_WITH_TIMEOUT(layout_example->text().contains(QStringLiteral("Naming context")),
+                             5'000);
+    QVERIFY(layout_example->text().contains(QStringLiteral(".flac")));
+    layout_basename->setText(QStringLiteral("$unknown(%title%)"));
+    QVERIFY(layout_example_timer->isActive());
+    QTRY_VERIFY_WITH_TIMEOUT(layout_example->text().startsWith(QStringLiteral("Example error:")),
+                             5'000);
+    layout_basename->setText(QStringLiteral("%title%"));
+    QTRY_VERIFY_WITH_TIMEOUT(layout_example->text().contains(QStringLiteral("Naming context.flac")),
+                             5'000);
     QTest::mouseClick(layout_new, Qt::LeftButton);
     layout_name->setText(QStringLiteral("Artist folders"));
     layout_directory->setText(QStringLiteral("%artist%"));

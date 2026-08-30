@@ -119,6 +119,7 @@ class MetadataPropertiesDialog final : public QDialog {
   private:
     using SelectionResult = core::Result<metadata::StagedMetadataSelection>;
     using WritePlanResult = core::Result<operations::PreparationPlan>;
+    using OutputLayoutExampleResult = core::Result<std::string>;
 
     void captureSources();
     void startSelection();
@@ -147,6 +148,9 @@ class MetadataPropertiesDialog final : public QDialog {
     void removeOutputLayout();
     void removeDestination();
     void updateOutputProfileButtons();
+    void scheduleOutputLayoutExample();
+    void startOutputLayoutExample();
+    void finishOutputLayoutExample();
     void updateWritePlanButton();
     void invalidateWritePlan();
     void previewWritePlan();
@@ -175,6 +179,7 @@ class MetadataPropertiesDialog final : public QDialog {
         metadata_apply_watcher_;
     QFutureWatcher<std::shared_ptr<core::Result<operations::FilePublicationApplyResult>>>
         file_apply_watcher_;
+    QFutureWatcher<std::shared_ptr<OutputLayoutExampleResult>> output_example_watcher_;
     MetadataPropertiesSourceReader source_reader_;
     MetadataWritePlanApplierFactory plan_applier_factory_;
     MetadataApplyObserver apply_observer_;
@@ -227,6 +232,7 @@ class MetadataPropertiesDialog final : public QDialog {
     QPushButton* destination_save_button_{nullptr};
     QPushButton* destination_remove_button_{nullptr};
     QLabel* output_profile_status_{nullptr};
+    QLabel* output_layout_example_{nullptr};
     QPushButton* preview_plan_button_{nullptr};
     MetadataGridModel* grid_model_{nullptr};
     MetadataAggregateModel* aggregate_model_{nullptr};
@@ -236,6 +242,7 @@ class MetadataPropertiesDialog final : public QDialog {
     QSplitter* metadata_splitter_{nullptr};
     QTimer* selection_debounce_{nullptr};
     QTimer* apply_progress_timer_{nullptr};
+    QTimer* output_example_debounce_{nullptr};
     QPointer<QDialog> exact_values_dialog_;
     QPointer<QInputDialog> field_name_dialog_;
     QPointer<QDialog> transformation_dialog_;
@@ -253,8 +260,11 @@ class MetadataPropertiesDialog final : public QDialog {
     std::size_t selected_item_count_{0U};
     std::size_t write_plan_generation_{0U};
     std::size_t write_plan_job_generation_{0U};
+    std::size_t output_example_generation_{0U};
+    std::size_t output_example_job_generation_{0U};
     core::CancellationSource write_plan_cancellation_;
     core::CancellationSource apply_cancellation_;
+    core::CancellationSource output_example_cancellation_;
     int draft_count_{0};
     bool transformation_catalog_loading_{false};
     bool output_profiles_loading_{false};
@@ -267,6 +277,8 @@ class MetadataPropertiesDialog final : public QDialog {
     bool applying_file_paths_{false};
     bool apply_committed_{false};
     bool layout_state_saved_{false};
+    bool output_example_running_{false};
+    bool output_example_pending_{false};
 };
 
 } // namespace trackknife::bench
