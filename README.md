@@ -26,7 +26,7 @@ file. The transformation editor also provides canonical Raw script editing for
 the bounded cleanup subset with live typed translation and Save/discard dirty
 protection. The development, ASan/UBSan, TSan, and clang-tidy builds and their
 complete 43/43 test suites pass at this continuation point (validated
-2026-08-30).
+2026-08-31).
 
 The next vertical slice is the one named at the end of M5 in
 [`MILESTONES.md`](MILESTONES.md): add native transformation-chain interchange

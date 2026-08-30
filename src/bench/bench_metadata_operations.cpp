@@ -150,7 +150,7 @@ metadata_refresh(const operations::MetadataCommitResult& result) {
 
 [[nodiscard]] std::shared_ptr<MetadataOperationJobOutcome> run_metadata_operation_job(
     const std::filesystem::path& database_path,
-    const QPointer<ui::ListPersistenceService>& persistence_service,
+    ui::ListPersistenceService* const persistence_service,
     audio::LocalAuditionService* player_service, const MetadataOperationJobKind kind,
     const std::optional<core::StableId>& journal_id, const core::CancellationToken& cancellation) {
     auto outcome = std::make_shared<MetadataOperationJobOutcome>();
@@ -515,7 +515,7 @@ void BenchMainWindow::showMetadataProperties() {
     }
     const auto selected_row_count = selected_rows.size();
     const QPointer model{tab->model};
-    const QPointer persistence_service{persistence_};
+    auto* const persistence_service = persistence_;
     const auto database_path = database_path_;
     auto* properties = new MetadataPropertiesDialog(
         selected_row_count,
@@ -868,7 +868,7 @@ void BenchMainWindow::startMetadataOperationRecovery() {
         metadata_history_action_->setEnabled(false);
     }
     setProperty("trackbench-metadata-operation-running", true);
-    const QPointer persistence_service{persistence_};
+    auto* const persistence_service = persistence_;
     const auto database_path = database_path_;
     const auto cancellation = metadata_operation_cancellation_.token();
     metadata_operation_watcher_.setFuture(
@@ -891,7 +891,7 @@ void BenchMainWindow::requestMetadataOperationHistoryReload() {
         metadata_history_action_->setEnabled(false);
     }
     setProperty("trackbench-metadata-operation-running", true);
-    const QPointer persistence_service{persistence_};
+    auto* const persistence_service = persistence_;
     const auto database_path = database_path_;
     const auto cancellation = metadata_operation_cancellation_.token();
     metadata_operation_watcher_.setFuture(
@@ -913,7 +913,7 @@ void BenchMainWindow::startMetadataUndo(const core::StableId& journal_id) {
     }
     setProperty("trackbench-metadata-operation-running", true);
     statusBar()->showMessage(QStringLiteral("Restoring retained metadata backup…"));
-    const QPointer persistence_service{persistence_};
+    auto* const persistence_service = persistence_;
     const auto database_path = database_path_;
     const auto cancellation = metadata_operation_cancellation_.token();
     metadata_operation_watcher_.setFuture(QtConcurrent::run(
@@ -935,7 +935,7 @@ void BenchMainWindow::startFilePublicationUndo(const core::StableId& journal_id)
     }
     setProperty("trackbench-metadata-operation-running", true);
     statusBar()->showMessage(QStringLiteral("Moving the file back…"));
-    const QPointer persistence_service{persistence_};
+    auto* const persistence_service = persistence_;
     const auto database_path = database_path_;
     const auto cancellation = metadata_operation_cancellation_.token();
     metadata_operation_watcher_.setFuture(QtConcurrent::run(
@@ -957,7 +957,7 @@ void BenchMainWindow::startMetadataBackupRelease(const core::StableId& journal_i
     }
     setProperty("trackbench-metadata-operation-running", true);
     statusBar()->showMessage(QStringLiteral("Releasing retained metadata backup…"));
-    const QPointer persistence_service{persistence_};
+    auto* const persistence_service = persistence_;
     const auto database_path = database_path_;
     const auto cancellation = metadata_operation_cancellation_.token();
     metadata_operation_watcher_.setFuture(QtConcurrent::run(

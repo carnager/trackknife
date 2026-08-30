@@ -32,6 +32,11 @@
 #include <utility>
 #include <vector>
 
+#if defined(TRACKKNIFE_THREAD_SANITIZER)
+extern "C" void __tsan_acquire(void* address);
+extern "C" void __tsan_release(void* address);
+#endif
+
 namespace trackknife::bench {
 namespace {
 
@@ -565,40 +570,49 @@ void BenchMainWindow::pumpArtworkQueue() {
     auto job = std::move(artwork_queue_.front());
     artwork_queue_.pop_front();
     artwork_running_ = true;
-    connect(&artwork_watcher_, &QFutureWatcher<ArtworkOutcome>::finished, this,
+    connect(&artwork_watcher_, &QFutureWatcher<void>::finished, this,
             &BenchMainWindow::finishArtworkLoad, Qt::SingleShotConnection);
-    artwork_watcher_.setFuture(QtConcurrent::run(
-        [job = std::move(job), cancellation = probe_cancellation_.token()]() mutable {
-            ArtworkOutcome outcome{.key = std::move(job.key), .image = {}};
-            if (cancellation.is_cancellation_requested()) {
-                return outcome;
+    artwork_outcome_ =
+        std::make_shared<ArtworkOutcome>(ArtworkOutcome{.key = std::move(job.key), .image = {}});
+    artwork_watcher_.setFuture(QtConcurrent::run([raw_path = std::move(job.raw_path),
+                                                  outcome = artwork_outcome_,
+                                                  cancellation = probe_cancellation_.token()] {
+        if (!cancellation.is_cancellation_requested()) {
+            if (auto embedded = formats::load_embedded_artwork(raw_path, cancellation); embedded) {
+                outcome->image = decoded_artwork(*embedded);
             }
-            if (auto embedded = formats::load_embedded_artwork(job.raw_path, cancellation);
-                embedded) {
-                outcome.image = decoded_artwork(*embedded);
+            if (outcome->image.isNull() && !cancellation.is_cancellation_requested()) {
+                outcome->image = decoded_artwork(folder_artwork_bytes(raw_path));
             }
-            if (outcome.image.isNull() && !cancellation.is_cancellation_requested()) {
-                outcome.image = decoded_artwork(folder_artwork_bytes(job.raw_path));
-            }
-            return outcome;
-        }));
+        }
+#if defined(TRACKKNIFE_THREAD_SANITIZER)
+        __tsan_release(outcome.get());
+#endif
+    }));
 }
 
 void BenchMainWindow::finishArtworkLoad() {
     artwork_running_ = false;
-    auto outcome = artwork_watcher_.result();
+    auto outcome = artwork_outcome_;
+    if (!outcome) {
+        pumpArtworkQueue();
+        return;
+    }
+#if defined(TRACKKNIFE_THREAD_SANITIZER)
+    __tsan_acquire(outcome.get());
+#endif
     // Failed lookups are cached as null so a missing cover is asked once, not
     // on every metadata refresh.
-    artwork_cache_.insert(outcome.key, outcome.image);
-    if (!outcome.image.isNull()) {
+    artwork_cache_.insert(outcome->key, outcome->image);
+    if (!outcome->image.isNull()) {
         for (int index = 0; index < tabs_->count(); ++index) {
             auto* view = qobject_cast<QTableView*>(tabs_->widget(index));
             if (view == nullptr) {
                 continue;
             }
             auto* tab = static_cast<ListTab*>(view->property("bench-tab-pointer").value<void*>());
-            if (tab != nullptr && !tab->model->hasArtwork(outcome.key)) {
-                tab->model->setArtwork(outcome.key, outcome.image);
+            if (tab != nullptr && !tab->model->hasArtwork(outcome->key)) {
+                tab->model->setArtwork(outcome->key, outcome->image);
             }
         }
     }

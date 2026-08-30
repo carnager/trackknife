@@ -184,6 +184,7 @@ class BenchMainWindow final : public QMainWindow {
     void resetTrackViewLayout();
     void copyTrackViewLayoutToAllTabs();
     void refreshTrackViewActions();
+    void stopBackgroundWork();
     void refreshSelectionStatus();
     void showTrackViewHeaderMenu(QTableView* view, const QPoint& position);
 
@@ -360,7 +361,8 @@ class BenchMainWindow final : public QMainWindow {
     bool probe_running_{false};
     core::CancellationSource probe_cancellation_;
 
-    QFutureWatcher<ArtworkOutcome> artwork_watcher_;
+    QFutureWatcher<void> artwork_watcher_;
+    std::shared_ptr<ArtworkOutcome> artwork_outcome_;
     std::deque<ArtworkJob> artwork_queue_;
     QHash<QString, QImage> artwork_cache_;
     QSet<QString> artwork_pending_;

@@ -25,7 +25,11 @@ Start metadata and file-operation work with
 and
 [`adr/0071-retire-trackknife-compatibility-shell.md`](adr/0071-retire-trackknife-compatibility-shell.md).
 The development, ASan/UBSan, TSan, and clang-tidy builds and their complete
-43/43 test suites pass at this continuation point (validated 2026-08-30).
+43/43 test suites pass at this continuation point (validated 2026-08-31).
+The TSan-only bench test shim routes Qt 6.9+'s uninstrumented
+`pthread_clockjoin_np` wait through TSan's intercepted blocking
+`pthread_join`; normal Trackbench builds are unchanged, and CTest retains the
+outer deadlock timeout.
 
 The next implementation slice is native transformation-chain interchange,
 followed by another preservation-proven writer or combined changed-content/

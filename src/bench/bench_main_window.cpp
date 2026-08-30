@@ -23,7 +23,44 @@
 #include <utility>
 #include <vector>
 
+#if defined(TRACKKNIFE_THREAD_SANITIZER)
+extern "C" void __tsan_acquire(void* address);
+#endif
+
 namespace trackknife::bench {
+
+void BenchMainWindow::stopBackgroundWork() {
+    probe_cancellation_.request_cancellation();
+    metadata_operation_cancellation_.request_cancellation();
+    probe_queue_.clear();
+    artwork_queue_.clear();
+    if (probe_watcher_.isRunning()) {
+        probe_watcher_.waitForFinished();
+    }
+    if (artwork_watcher_.isRunning()) {
+        artwork_watcher_.waitForFinished();
+    }
+#if defined(TRACKKNIFE_THREAD_SANITIZER)
+    if (artwork_outcome_) {
+        __tsan_acquire(artwork_outcome_.get());
+    }
+#endif
+    if (discovery_watcher_.isRunning()) {
+        discovery_watcher_.waitForFinished();
+    }
+    if (metadata_operation_watcher_.isRunning()) {
+        metadata_operation_watcher_.waitForFinished();
+    }
+    probe_running_ = false;
+    artwork_running_ = false;
+    discovery_running_ = false;
+    metadata_operation_running_ = false;
+    if (transport_timer_ != nullptr) {
+        transport_timer_->stop();
+    }
+    player_ = nullptr;
+    player_storage_.reset();
+}
 
 void BenchMainWindow::closeEvent(QCloseEvent* event) {
     std::vector<QPointer<MetadataPropertiesDialog>> properties_tabs;
@@ -38,29 +75,8 @@ void BenchMainWindow::closeEvent(QCloseEvent* event) {
             return;
         }
     }
-    probe_cancellation_.request_cancellation();
-    metadata_operation_cancellation_.request_cancellation();
-    probe_queue_.clear();
-    artwork_queue_.clear();
-    if (probe_running_) {
-        probe_watcher_.waitForFinished();
-    }
-    if (artwork_running_) {
-        artwork_watcher_.waitForFinished();
-    }
-    if (discovery_running_) {
-        discovery_watcher_.waitForFinished();
-    }
-    if (metadata_operation_running_) {
-        metadata_operation_watcher_.waitForFinished();
-        metadata_operation_running_ = false;
-    }
+    stopBackgroundWork();
     persistNow(true);
-    if (transport_timer_ != nullptr) {
-        transport_timer_->stop();
-    }
-    player_ = nullptr;
-    player_storage_.reset();
     event->accept();
 }
 

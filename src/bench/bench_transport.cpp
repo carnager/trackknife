@@ -165,10 +165,7 @@ BenchMainWindow::BenchMainWindow(QWidget* parent) : QMainWindow(parent) {
 }
 
 BenchMainWindow::~BenchMainWindow() {
-    metadata_operation_cancellation_.request_cancellation();
-    if (metadata_operation_running_) {
-        metadata_operation_watcher_.waitForFinished();
-    }
+    stopBackgroundWork();
 }
 
 void BenchMainWindow::buildTransport() {

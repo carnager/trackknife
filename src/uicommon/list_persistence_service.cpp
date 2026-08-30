@@ -20,6 +20,22 @@ extern "C" void __tsan_release(void* address);
 namespace trackknife::ui {
 namespace {
 
+void threadSanitizerAcquire(void* const address) noexcept {
+#if defined(TRACKKNIFE_THREAD_SANITIZER)
+    __tsan_acquire(address);
+#else
+    static_cast<void>(address);
+#endif
+}
+
+void threadSanitizerRelease(void* const address) noexcept {
+#if defined(TRACKKNIFE_THREAD_SANITIZER)
+    __tsan_release(address);
+#else
+    static_cast<void>(address);
+#endif
+}
+
 [[nodiscard]] QString errorText(const core::Error& error) {
     return QString::fromStdString(error.message);
 }
@@ -81,6 +97,19 @@ template <typename Callable> void invokeQueued(QObject* receiver, Callable&& cal
         Qt::QueuedConnection));
 }
 
+template <typename Callable> void invokeBlocking(QObject* receiver, Callable&& callable) {
+    char completion{0};
+    threadSanitizerRelease(&completion);
+    static_cast<void>(QMetaObject::invokeMethod(
+        receiver,
+        QueuedInvocation{[callable = std::forward<Callable>(callable), &completion]() mutable {
+            std::invoke(callable);
+            threadSanitizerRelease(&completion);
+        }},
+        Qt::BlockingQueuedConnection));
+    threadSanitizerAcquire(&completion);
+}
+
 } // namespace
 
 struct ListPersistenceService::State {
@@ -104,8 +133,7 @@ ListPersistenceService::~ListPersistenceService() {
     if (thread_ == nullptr || worker_ == nullptr) {
         return;
     }
-    QMetaObject::invokeMethod(
-        worker_, [state = state_] { state->repository.reset(); }, Qt::BlockingQueuedConnection);
+    invokeBlocking(worker_, [state = state_] { state->repository.reset(); });
     thread_->quit();
     thread_->wait();
 }
@@ -397,9 +425,8 @@ QString
 ListPersistenceService::saveWorkspaceAndWait(std::vector<persistence::ListDocument> lists,
                                              std::vector<persistence::TrackViewPreset> presets) {
     QString error;
-    QMetaObject::invokeMethod(
-        worker_,
-        [state = state_, lists = std::move(lists), presets = std::move(presets), &error] {
+    invokeBlocking(
+        worker_, [state = state_, lists = std::move(lists), presets = std::move(presets), &error] {
             error = state->initialization_error;
             if (!error.isEmpty() || !state->repository) {
                 return;
@@ -410,8 +437,7 @@ ListPersistenceService::saveWorkspaceAndWait(std::vector<persistence::ListDocume
                        !stored_presets) {
                 error = errorText(stored_presets.error());
             }
-        },
-        Qt::BlockingQueuedConnection);
+        });
     return error;
 }
 
@@ -437,22 +463,19 @@ ListPersistenceService::refreshLocalMetadataAndWait(persistence::LocalMetadataRe
         return state_->repository->refresh_local_metadata(refresh);
     }
     std::optional<core::Result<persistence::LocalMetadataRefreshResult>> result;
-    QMetaObject::invokeMethod(
-        worker_,
-        [state = state_, refresh = std::move(refresh), &result] {
-            if (!state->initialization_error.isEmpty() || !state->repository) {
-                result = std::unexpected(core::Error{
-                    .code = core::ErrorCode::database,
-                    .message = state->initialization_error.isEmpty()
-                                   ? "List persistence is not initialized"
-                                   : state->initialization_error.toStdString(),
-                    .context = {},
-                });
-                return;
-            }
-            result = state->repository->refresh_local_metadata(refresh);
-        },
-        Qt::BlockingQueuedConnection);
+    invokeBlocking(worker_, [state = state_, refresh = std::move(refresh), &result] {
+        if (!state->initialization_error.isEmpty() || !state->repository) {
+            result = std::unexpected(core::Error{
+                .code = core::ErrorCode::database,
+                .message = state->initialization_error.isEmpty()
+                               ? "List persistence is not initialized"
+                               : state->initialization_error.toStdString(),
+                .context = {},
+            });
+            return;
+        }
+        result = state->repository->refresh_local_metadata(refresh);
+    });
     if (!result) {
         return std::unexpected(core::Error{
             .code = core::ErrorCode::invariant,
@@ -485,22 +508,19 @@ ListPersistenceService::relocateLocalSourceAndWait(persistence::LocalSourceReloc
         return state_->repository->relocate_local_source(relocation);
     }
     std::optional<core::Result<persistence::LocalSourceRelocationResult>> result;
-    QMetaObject::invokeMethod(
-        worker_,
-        [state = state_, relocation = std::move(relocation), &result] {
-            if (!state->initialization_error.isEmpty() || !state->repository) {
-                result = std::unexpected(core::Error{
-                    .code = core::ErrorCode::database,
-                    .message = state->initialization_error.isEmpty()
-                                   ? "List persistence is not initialized"
-                                   : state->initialization_error.toStdString(),
-                    .context = {},
-                });
-                return;
-            }
-            result = state->repository->relocate_local_source(relocation);
-        },
-        Qt::BlockingQueuedConnection);
+    invokeBlocking(worker_, [state = state_, relocation = std::move(relocation), &result] {
+        if (!state->initialization_error.isEmpty() || !state->repository) {
+            result = std::unexpected(core::Error{
+                .code = core::ErrorCode::database,
+                .message = state->initialization_error.isEmpty()
+                               ? "List persistence is not initialized"
+                               : state->initialization_error.toStdString(),
+                .context = {},
+            });
+            return;
+        }
+        result = state->repository->relocate_local_source(relocation);
+    });
     if (!result) {
         return std::unexpected(core::Error{
             .code = core::ErrorCode::invariant,
