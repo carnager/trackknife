@@ -3,7 +3,9 @@
 #pragma once
 
 #include "trackknife/metadata/write_plan.hpp"
+#include "trackknife/operations/file_publication_apply.hpp"
 #include "trackknife/operations/metadata_apply.hpp"
+#include "trackknife/operations/preparation_plan.hpp"
 #include "trackknife/persistence/list_repository.hpp"
 
 #include <QDialog>
@@ -53,6 +55,13 @@ using MetadataWritePlanApplier = std::function<core::Result<operations::Metadata
     const core::CancellationToken&)>;
 using MetadataWritePlanApplierFactory = std::function<MetadataWritePlanApplier()>;
 using MetadataApplyObserver = std::function<void(const operations::MetadataApplyResult&)>;
+using FilePublicationPlanApplier =
+    std::function<core::Result<operations::FilePublicationApplyResult>(
+        const operations::OutputPathPreflight&,
+        const operations::FilePublicationApplyProgressCallback&, const core::CancellationToken&)>;
+using FilePublicationPlanApplierFactory = std::function<FilePublicationPlanApplier()>;
+using FilePublicationApplyObserver =
+    std::function<void(const operations::FilePublicationApplyResult&)>;
 
 struct MetadataTransformationStore {
     using LoadCompletion =
@@ -78,6 +87,7 @@ struct OutputProfileStore {
 };
 
 struct MetadataApplyProgressState;
+struct FilePublicationApplyProgressState;
 
 class MetadataPropertiesDialog final : public QDialog {
     Q_OBJECT
@@ -90,12 +100,14 @@ class MetadataPropertiesDialog final : public QDialog {
                              MetadataApplyObserver apply_observer,
                              MetadataTransformationStore transformation_store = {},
                              OutputProfileStore output_profile_store = {},
+                             FilePublicationPlanApplierFactory file_plan_applier_factory = {},
+                             FilePublicationApplyObserver file_apply_observer = {},
                              QWidget* parent = nullptr);
     ~MetadataPropertiesDialog() override;
 
   private:
     using SelectionResult = core::Result<metadata::StagedMetadataSelection>;
-    using WritePlanResult = core::Result<metadata::MetadataWritePlan>;
+    using WritePlanResult = core::Result<operations::PreparationPlan>;
 
     void captureSources();
     void startSelection();
@@ -128,9 +140,12 @@ class MetadataPropertiesDialog final : public QDialog {
     void invalidateWritePlan();
     void previewWritePlan();
     void finishWritePlan();
-    void startApply(std::shared_ptr<const metadata::MetadataWritePlan> plan);
+    void startApply(std::shared_ptr<const operations::PreparationPlan> plan);
+    void startMetadataApply(std::shared_ptr<const operations::PreparationPlan> plan);
+    void startFileApply(std::shared_ptr<const operations::PreparationPlan> plan);
     void updateApplyProgress();
-    void finishApply();
+    void finishMetadataApply();
+    void finishFileApply();
     [[nodiscard]] QStringList metadataFieldNameSuggestions(const QString& query) const;
     [[nodiscard]] std::vector<std::size_t> selectedItemIndexes() const;
     void promptAddField();
@@ -143,12 +158,17 @@ class MetadataPropertiesDialog final : public QDialog {
 
     QFutureWatcher<std::shared_ptr<SelectionResult>> selection_watcher_;
     QFutureWatcher<std::shared_ptr<WritePlanResult>> write_plan_watcher_;
-    QFutureWatcher<std::shared_ptr<core::Result<operations::MetadataApplyResult>>> apply_watcher_;
+    QFutureWatcher<std::shared_ptr<core::Result<operations::MetadataApplyResult>>>
+        metadata_apply_watcher_;
+    QFutureWatcher<std::shared_ptr<core::Result<operations::FilePublicationApplyResult>>>
+        file_apply_watcher_;
     MetadataPropertiesSourceReader source_reader_;
     MetadataWritePlanApplierFactory plan_applier_factory_;
     MetadataApplyObserver apply_observer_;
     MetadataTransformationStore transformation_store_;
     OutputProfileStore output_profile_store_;
+    FilePublicationPlanApplierFactory file_plan_applier_factory_;
+    FilePublicationApplyObserver file_apply_observer_;
     std::vector<persistence::SavedMetadataTransformationChain> transformation_catalog_;
     std::vector<persistence::SavedOutputLayoutProfile> output_layout_catalog_;
     std::vector<persistence::SavedDestinationProfile> destination_catalog_;
@@ -205,6 +225,7 @@ class MetadataPropertiesDialog final : public QDialog {
     QPointer<QDialog> write_plan_dialog_;
     QPointer<QDialog> apply_dialog_;
     std::shared_ptr<MetadataApplyProgressState> apply_progress_state_;
+    std::shared_ptr<FilePublicationApplyProgressState> file_apply_progress_state_;
     QString selection_summary_;
     QString revision_summary_;
     std::size_t loaded_item_count_{0U};
@@ -224,6 +245,7 @@ class MetadataPropertiesDialog final : public QDialog {
     std::string destination_root_raw_path_;
     bool write_plan_running_{false};
     bool apply_running_{false};
+    bool applying_file_paths_{false};
     bool apply_committed_{false};
 };
 

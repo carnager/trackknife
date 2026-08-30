@@ -9,22 +9,29 @@ The ordered delivery plan is [`../MILESTONES.md`](../MILESTONES.md).
 
 ## Current continuation point
 
-M5 is active, implementation is accepted through ADR-0066, and the persistence
-schema is version 19. The latest completed slice replaces spelling-derived tag
-aliases with explicit adapter mappings and separately mutable freeform native
-fields. Start metadata work with
+M5 is active, implementation is accepted through ADR-0070, and the persistence
+schema is version 20. Path-only Rename/Move now derives strictly from captured
+revision-qualified source tags, never manual drafts or automatic chains, when
+Save tags is off. The transformation editor also exposes a canonical Raw script
+view for the bounded cleanup subset with live typed translation and explicit
+dirty-state protection.
+Start metadata and file-operation work with
 [`metadata-and-files.md`](metadata-and-files.md),
-[`adr/0065-pasted-rule-script-translation.md`](adr/0065-pasted-rule-script-translation.md),
+[`adr/0066-explicit-semantic-and-freeform-field-identity.md`](adr/0066-explicit-semantic-and-freeform-field-identity.md),
+[`adr/0067-immutable-preparation-review-and-file-publication-ui.md`](adr/0067-immutable-preparation-review-and-file-publication-ui.md),
+[`adr/0068-versioned-metadata-capture-patterns.md`](adr/0068-versioned-metadata-capture-patterns.md),
+[`adr/0069-source-tag-authority-for-path-only-preparation.md`](adr/0069-source-tag-authority-for-path-only-preparation.md),
 and
-[`adr/0066-explicit-semantic-and-freeform-field-identity.md`](adr/0066-explicit-semantic-and-freeform-field-identity.md).
-The handoff baseline is 44/44 development tests, 10/10 focused sanitizer tests,
-and a clean full clang-tidy build.
+[`adr/0070-canonical-raw-transformation-editor.md`](adr/0070-canonical-raw-transformation-editor.md).
+The development build, complete 45/45 development test suite, and targeted
+clang-tidy build for the changed metadata/operations/Trackbench targets pass.
+Full sanitizer validation remains to be rerun for this continuation point.
 
-The next implementation slice is to combine final metadata and planned paths
-in one immutable review, then expose Rename and Move through the existing
-ADR-0054–0063 planning, preflight, publication, recovery, and reconciliation
-core. The exact current completion list and next marker live under **M5 — Fast
-tag workspace and safe file operations** in
+The next implementation slice is native transformation-chain interchange,
+followed by another preservation-proven writer or combined changed-content/
+destination publication. The exact current
+completion list and next marker live under **M5 — Fast tag workspace and safe
+file operations** in
 [`../MILESTONES.md`](../MILESTONES.md).
 
 ADR-0058 supersedes ADR-0025's permanent process split. If an older feature

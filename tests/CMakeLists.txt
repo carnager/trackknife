@@ -123,6 +123,13 @@ target_link_libraries(
 )
 add_test(NAME output-path-preflight COMMAND trackknife_output_path_preflight_tests)
 
+add_executable(trackknife_preparation_plan_tests preparation_plan_test.cpp)
+target_link_libraries(
+    trackknife_preparation_plan_tests
+    PRIVATE Trackknife::Operations trackknife_project_options trackknife_project_warnings
+)
+add_test(NAME preparation-plan COMMAND trackknife_preparation_plan_tests)
+
 add_executable(trackknife_mpd_domain_tests mpd_domain_test.cpp)
 target_link_libraries(
     trackknife_mpd_domain_tests

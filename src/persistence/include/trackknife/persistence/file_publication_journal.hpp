@@ -32,6 +32,11 @@ class SqliteFilePublicationJournal final : public operations::FilePublicationJou
     load_incomplete() const override;
     [[nodiscard]] core::Result<std::vector<operations::FilePublicationJournalRecord>>
     load_reversals(const core::StableId& journal_id) const override;
+    // UI/history query over terminal and non-terminal evidence. This is not
+    // part of the executor interface because recovery only needs incomplete
+    // records and reversal lookups.
+    [[nodiscard]] core::Result<std::vector<operations::FilePublicationJournalRecord>>
+    load_recent() const;
 
   private:
     struct Impl;

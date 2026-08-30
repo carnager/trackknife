@@ -15,7 +15,9 @@
 #include "trackknife/formats/probe.hpp"
 #include "trackknife/metadata/flac_mapping.hpp"
 #include "trackknife/metadata/local_reader.hpp"
+#include "trackknife/operations/file_publication_apply.hpp"
 #include "trackknife/operations/metadata_commit.hpp"
+#include "trackknife/persistence/file_publication_journal.hpp"
 #include "trackknife/persistence/operation_journal.hpp"
 #include "ui/mpd_connection_dialog.hpp"
 #include "ui/server_library_tree_model.hpp"
@@ -105,7 +107,7 @@
 
 namespace trackknife::bench {
 
-enum class MetadataOperationJobKind : std::uint8_t { startup, reload, undo, release };
+enum class MetadataOperationJobKind : std::uint8_t { startup, reload, undo, release, file_undo };
 
 struct MetadataOperationJobOutcome {
     MetadataOperationJobKind kind{MetadataOperationJobKind::startup};
@@ -115,6 +117,9 @@ struct MetadataOperationJobOutcome {
     std::vector<operations::MetadataOperationBackupRecord> backups;
     std::vector<operations::MetadataOperationJournalRecord> reconciliation;
     std::vector<operations::MetadataCommitResult> refreshed_sources;
+    std::vector<operations::FilePublicationRecoveryResult> file_recovery;
+    std::vector<operations::FilePublicationJournalRecord> file_publications;
+    std::vector<operations::FilePublicationCommitResult> relocated_sources;
 };
 
 namespace {
@@ -447,6 +452,7 @@ struct MetadataHistoryRow {
     QString source;
     QString detail;
     QString completed;
+    bool file_publication{false};
     bool can_undo{false};
     bool can_release{false};
 };
@@ -570,21 +576,31 @@ metadata_refresh(const operations::MetadataCommitResult& result) {
     };
 }
 
-[[nodiscard]] std::shared_ptr<MetadataOperationJobOutcome>
-run_metadata_operation_job(const std::filesystem::path& database_path,
-                           const QPointer<ui::ListPersistenceService>& persistence_service,
-                           const MetadataOperationJobKind kind,
-                           const std::optional<core::StableId>& journal_id,
-                           const core::CancellationToken& cancellation) {
+[[nodiscard]] std::shared_ptr<MetadataOperationJobOutcome> run_metadata_operation_job(
+    const std::filesystem::path& database_path,
+    const QPointer<ui::ListPersistenceService>& persistence_service,
+    audio::LocalAuditionService* player_service, const MetadataOperationJobKind kind,
+    const std::optional<core::StableId>& journal_id, const core::CancellationToken& cancellation) {
     auto outcome = std::make_shared<MetadataOperationJobOutcome>();
     outcome->kind = kind;
-    auto opened = persistence::SqliteMetadataOperationJournal::open(database_path);
-    if (!opened) {
-        outcome->error = std::move(opened.error());
+    auto metadata_opened = persistence::SqliteMetadataOperationJournal::open(database_path);
+    if (!metadata_opened) {
+        outcome->error = std::move(metadata_opened.error());
         return outcome;
     }
-    auto journal = std::move(*opened);
-    const auto dependent =
+    auto file_opened = persistence::SqliteFilePublicationJournal::open(database_path);
+    if (!file_opened) {
+        outcome->error = std::move(file_opened.error());
+        return outcome;
+    }
+    auto metadata_journal = std::move(*metadata_opened);
+    auto file_journal = std::move(*file_opened);
+    const auto remember_error = [outcome](core::Error error) {
+        if (!outcome->error) {
+            outcome->error = std::move(error);
+        }
+    };
+    const auto metadata_dependent =
         [persistence_service,
          outcome](const operations::MetadataCommitResult& result) -> core::Result<void> {
         if (!persistence_service) {
@@ -601,15 +617,62 @@ run_metadata_operation_job(const std::filesystem::path& database_path,
         outcome->refreshed_sources.push_back(result);
         return {};
     };
+    const auto file_dependent =
+        [persistence_service, player_service,
+         outcome](const operations::FilePublicationCommitResult& result) -> core::Result<void> {
+        if (!persistence_service) {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::cancelled,
+                .message = "Trackbench closed during source reconciliation",
+                .context = {},
+            });
+        }
+        const auto durable = [persistence_service, result]() -> core::Result<void> {
+            if (!persistence_service) {
+                return std::unexpected(core::Error{
+                    .code = core::ErrorCode::cancelled,
+                    .message = "Trackbench closed during source reconciliation",
+                    .context = {},
+                });
+            }
+            auto relocated =
+                persistence_service->relocateLocalSourceAndWait(persistence::LocalSourceRelocation{
+                    .operation_id = result.journal_id,
+                    .source_reference = result.source_raw_path,
+                    .target_reference = result.target_raw_path,
+                    .previous_revision = result.source_revision,
+                    .published_revision = result.target_revision,
+                });
+            return relocated ? core::Result<void>{} : std::unexpected(std::move(relocated.error()));
+        };
+        if (player_service != nullptr) {
+            auto relocated = player_service->commit_source_relocation_and_wait(
+                audio::LocalAuditionSourceRelocation{
+                    .source_raw_path = result.source_raw_path,
+                    .target_raw_path = result.target_raw_path,
+                    .source_revision = result.source_revision,
+                    .target_revision = result.target_revision,
+                },
+                durable);
+            if (!relocated) {
+                return std::unexpected(std::move(relocated.error()));
+            }
+        } else if (auto relocated = durable(); !relocated) {
+            return std::unexpected(std::move(relocated.error()));
+        }
+        outcome->relocated_sources.push_back(result);
+        return {};
+    };
 
     if (kind == MetadataOperationJobKind::startup) {
-        auto recovered = operations::recover_metadata_operations(journal, dependent, cancellation);
+        auto recovered = operations::recover_metadata_operations(metadata_journal,
+                                                                 metadata_dependent, cancellation);
         if (!recovered) {
-            outcome->error = std::move(recovered.error());
+            remember_error(std::move(recovered.error()));
         } else {
             outcome->recovery = std::move(*recovered);
             auto maintained = operations::maintain_metadata_backups(
-                journal,
+                metadata_journal,
                 operations::MetadataBackupRetentionPolicy{
                     .maximum_age_seconds = metadata_retention_days * 24 * 60 * 60,
                     .maximum_entries = metadata_retention_entries,
@@ -617,37 +680,76 @@ run_metadata_operation_job(const std::filesystem::path& database_path,
                 },
                 static_cast<std::int64_t>(std::time(nullptr)), cancellation);
             if (!maintained) {
-                outcome->error = std::move(maintained.error());
+                remember_error(std::move(maintained.error()));
             } else {
                 outcome->maintenance = std::move(*maintained);
             }
         }
-    } else if (kind == MetadataOperationJobKind::reload) {
+    } else if (kind == MetadataOperationJobKind::reload ||
+               kind == MetadataOperationJobKind::file_undo) {
         // Loading the terminal/incomplete snapshots below is the whole job.
     } else if (!journal_id) {
         outcome->error = core::Error{.code = core::ErrorCode::invalid_argument,
                                      .message = "Metadata operation identity is missing",
                                      .context = {}};
     } else if (kind == MetadataOperationJobKind::undo) {
-        auto undone =
-            operations::undo_flac_metadata_operation(*journal_id, journal, dependent, cancellation);
+        auto undone = operations::undo_flac_metadata_operation(*journal_id, metadata_journal,
+                                                               metadata_dependent, cancellation);
         if (!undone) {
-            outcome->error = std::move(undone.error());
+            remember_error(std::move(undone.error()));
         }
     } else {
-        auto released = operations::release_metadata_backup(*journal_id, journal, cancellation);
+        auto released =
+            operations::release_metadata_backup(*journal_id, metadata_journal, cancellation);
         if (!released) {
-            outcome->error = std::move(released.error());
+            remember_error(std::move(released.error()));
         }
     }
 
-    auto backups = journal.load_backups();
-    auto incomplete = journal.load_incomplete();
+    if (kind == MetadataOperationJobKind::startup) {
+        auto same = operations::recover_same_filesystem_publications(file_journal, file_dependent,
+                                                                     cancellation);
+        if (!same) {
+            remember_error(std::move(same.error()));
+        } else {
+            outcome->file_recovery.insert(outcome->file_recovery.end(),
+                                          std::make_move_iterator(same->begin()),
+                                          std::make_move_iterator(same->end()));
+        }
+        auto cross = operations::recover_cross_filesystem_publications(file_journal, file_dependent,
+                                                                       cancellation);
+        if (!cross) {
+            remember_error(std::move(cross.error()));
+        } else {
+            outcome->file_recovery.insert(outcome->file_recovery.end(),
+                                          std::make_move_iterator(cross->begin()),
+                                          std::make_move_iterator(cross->end()));
+        }
+    } else if (kind == MetadataOperationJobKind::file_undo) {
+        if (!journal_id) {
+            remember_error(core::Error{.code = core::ErrorCode::invalid_argument,
+                                       .message = "File publication identity is missing",
+                                       .context = {}});
+        } else {
+            auto undone = operations::undo_same_filesystem_publication(
+                *journal_id, file_journal, file_dependent, cancellation);
+            if (!undone) {
+                remember_error(std::move(undone.error()));
+            }
+        }
+    }
+
+    auto backups = metadata_journal.load_backups();
+    auto incomplete = metadata_journal.load_incomplete();
+    auto file_publications = file_journal.load_recent();
     if (!backups && !outcome->error) {
         outcome->error = std::move(backups.error());
     }
     if (!incomplete && !outcome->error) {
         outcome->error = std::move(incomplete.error());
+    }
+    if (!file_publications && !outcome->error) {
+        outcome->error = std::move(file_publications.error());
     }
     if (backups) {
         outcome->backups = std::move(*backups);
@@ -658,6 +760,9 @@ run_metadata_operation_job(const std::filesystem::path& database_path,
                 outcome->reconciliation.push_back(std::move(record));
             }
         }
+    }
+    if (file_publications) {
+        outcome->file_publications = std::move(*file_publications);
     }
     return outcome;
 }
@@ -679,10 +784,49 @@ run_metadata_operation_job(const std::filesystem::path& database_path,
     return QStringLiteral("Unknown");
 }
 
+[[nodiscard]] QString
+file_publication_state_text(const operations::FilePublicationJournalRecord& record,
+                            const bool has_completed_reversal, const bool has_blocking_reversal) {
+    using State = operations::FilePublicationJournalState;
+    switch (record.state) {
+    case State::planned:
+        return record.reverses_journal_id ? QStringLiteral("Undo planned")
+                                          : QStringLiteral("Planned");
+    case State::target_prepared:
+        return QStringLiteral("Target prepared");
+    case State::target_published:
+        return QStringLiteral("Target published");
+    case State::dependent_state_committed:
+        return QStringLiteral("References updated");
+    case State::source_removed:
+        return QStringLiteral("Source removed");
+    case State::complete:
+        if (record.reverses_journal_id) {
+            return QStringLiteral("Undo complete");
+        }
+        if (has_completed_reversal) {
+            return QStringLiteral("Undone");
+        }
+        if (has_blocking_reversal) {
+            return QStringLiteral("Undo interrupted");
+        }
+        return record.publication == operations::OutputPathPublicationKind::same_filesystem_rename
+                   ? QStringLiteral("Undo available")
+                   : QStringLiteral("Complete");
+    case State::rolled_back:
+        return record.reverses_journal_id ? QStringLiteral("Undo rolled back")
+                                          : QStringLiteral("Rolled back");
+    case State::needs_reconciliation:
+        return QStringLiteral("Needs attention");
+    }
+    return QStringLiteral("Unknown");
+}
+
 [[nodiscard]] std::vector<MetadataHistoryRow>
 metadata_history_rows(const MetadataOperationJobOutcome& snapshot) {
     std::vector<MetadataHistoryRow> rows;
-    rows.reserve(snapshot.backups.size() + snapshot.reconciliation.size());
+    rows.reserve(snapshot.backups.size() + snapshot.reconciliation.size() +
+                 snapshot.file_publications.size());
     std::unordered_set<std::string> seen;
     seen.reserve(snapshot.backups.size());
     for (const auto& backup : snapshot.backups) {
@@ -704,6 +848,7 @@ metadata_history_rows(const MetadataOperationJobOutcome& snapshot) {
             .completed = QDateTime::fromSecsSinceEpoch(backup.completed_at_unix_seconds)
                              .toLocalTime()
                              .toString(QStringLiteral("yyyy-MM-dd HH:mm")),
+            .file_publication = false,
             .can_undo = backup.state == operations::MetadataOperationBackupState::retained,
             .can_release = backup.state == operations::MetadataOperationBackupState::retained,
         });
@@ -723,7 +868,56 @@ metadata_history_rows(const MetadataOperationJobOutcome& snapshot) {
             .source = QString::fromStdString(core::escape_raw_path(record.source_raw_path)),
             .detail = std::move(detail),
             .completed = QStringLiteral("Interrupted"),
+            .file_publication = false,
             .can_undo = false,
+            .can_release = false,
+        });
+    }
+    std::unordered_set<std::string> reversal_blocks;
+    std::unordered_set<std::string> completed_reversals;
+    reversal_blocks.reserve(snapshot.file_publications.size());
+    completed_reversals.reserve(snapshot.file_publications.size());
+    for (const auto& record : snapshot.file_publications) {
+        if (record.reverses_journal_id &&
+            record.state != operations::FilePublicationJournalState::rolled_back) {
+            reversal_blocks.insert(record.reverses_journal_id->to_string());
+            if (record.state == operations::FilePublicationJournalState::complete) {
+                completed_reversals.insert(record.reverses_journal_id->to_string());
+            }
+        }
+    }
+    for (const auto& record : snapshot.file_publications) {
+        const auto has_blocking_reversal = reversal_blocks.contains(record.id.to_string());
+        const auto has_completed_reversal = completed_reversals.contains(record.id.to_string());
+        auto detail =
+            QStringLiteral("File publication · %1 · target %2 · journal %3")
+                .arg(record.publication ==
+                             operations::OutputPathPublicationKind::same_filesystem_rename
+                         ? QStringLiteral("same-filesystem rename")
+                         : QStringLiteral("verified cross-filesystem copy"))
+                .arg(QString::fromStdString(core::escape_raw_path(record.target_raw_path)))
+                .arg(QString::fromStdString(record.id.to_string()));
+        if (record.reverses_journal_id) {
+            detail += QStringLiteral(" · reverses %1")
+                          .arg(QString::fromStdString(record.reverses_journal_id->to_string()));
+        }
+        if (record.failure) {
+            detail += QStringLiteral(" · %1").arg(displayText(record.failure->message));
+        }
+        rows.push_back(MetadataHistoryRow{
+            .journal_id = record.id,
+            .state =
+                file_publication_state_text(record, has_completed_reversal, has_blocking_reversal),
+            .source = QString::fromStdString(core::escape_raw_path(record.source_raw_path)),
+            .detail = std::move(detail),
+            .completed = record.state == operations::FilePublicationJournalState::complete
+                             ? QStringLiteral("Recorded")
+                             : QStringLiteral("Interrupted"),
+            .file_publication = true,
+            .can_undo = record.publication ==
+                            operations::OutputPathPublicationKind::same_filesystem_rename &&
+                        record.state == operations::FilePublicationJournalState::complete &&
+                        !record.reverses_journal_id && !has_blocking_reversal,
             .can_release = false,
         });
     }
@@ -833,6 +1027,43 @@ constexpr std::size_t discovery_row_limit = 100'000U;
     return name;
 }
 
+// FFmpeg exposes a few format-native fields through generic AVDictionary
+// spellings. Those spellings are presentation projections, not additional
+// native tag identities. Keep this adapter mapping explicit so ADR-0066's
+// freeform-field identity never mistakes one for an independently writable
+// property.
+[[nodiscard]] std::optional<std::string_view>
+probed_semantic_alias(const std::string_view native_name) {
+    const auto name = lowercased_ascii(std::string{native_name});
+    if (name == "track") {
+        return "tracknumber";
+    }
+    if (name == "disc") {
+        return "discnumber";
+    }
+    if (name == "album_artist") {
+        return "albumartist";
+    }
+    return std::nullopt;
+}
+
+void remove_shadowed_probed_metadata(metadata::MetadataDocument& document) {
+    std::unordered_set<std::string> embedded_semantic_names;
+    embedded_semantic_names.reserve(document.fields.size());
+    for (const auto& field : document.fields) {
+        if (field.provenance == metadata::FieldProvenance::embedded) {
+            embedded_semantic_names.insert(field.canonical_name);
+        }
+    }
+    std::erase_if(document.fields, [&embedded_semantic_names](const auto& field) {
+        if (field.provenance != metadata::FieldProvenance::stream) {
+            return false;
+        }
+        const auto semantic = probed_semantic_alias(field.native_name);
+        return semantic && embedded_semantic_names.contains(std::string{*semantic});
+    });
+}
+
 // Case-insensitive first-value lookup over one ordered metadata scope.
 [[nodiscard]] std::string probed_tag(const std::span<const formats::ProbedTag> tags,
                                      const std::string_view name) {
@@ -908,10 +1139,16 @@ void append_missing_probed_metadata(metadata::MetadataDocument& document,
     for (const auto& tag : tags) {
         const auto canonical_name =
             metadata::resolve_text_property_identity(tag.name).canonical_name;
-        if (!primary_names.contains(canonical_name)) {
-            append_metadata_value(document, tag.name, tag.value, metadata::FieldProvenance::stream);
+        if (primary_names.contains(canonical_name)) {
+            continue;
         }
+        const auto semantic = probed_semantic_alias(tag.name);
+        if (semantic && primary_names.contains(std::string{*semantic})) {
+            continue;
+        }
+        append_metadata_value(document, tag.name, tag.value, metadata::FieldProvenance::stream);
     }
+    remove_shadowed_probed_metadata(document);
 }
 
 [[nodiscard]] std::string
@@ -1396,7 +1633,7 @@ void BenchMainWindow::buildWorkspace() {
     properties_action_->setEnabled(false);
     connect(properties_action_, &QAction::triggered, this,
             &BenchMainWindow::showMetadataProperties);
-    metadata_history_action_ = edit_menu->addAction(QStringLiteral("Metadata operations…"));
+    metadata_history_action_ = edit_menu->addAction(QStringLiteral("Preparation operations…"));
     metadata_history_action_->setObjectName(QStringLiteral("action-metadata-operation-history"));
     metadata_history_action_->setEnabled(false);
     connect(metadata_history_action_, &QAction::triggered, this,
@@ -3839,6 +4076,7 @@ BenchMainWindow::ListTab* BenchMainWindow::addListTab(persistence::ListDocument 
                 });
             }
         }
+        remove_shadowed_probed_metadata(row.metadata);
         project_display_metadata(row);
         row.probed = row.selection.stream_index.has_value() ||
                      row.selection.subsong_index.has_value() || row.segment.has_value() ||
@@ -4778,6 +5016,8 @@ void BenchMainWindow::showMetadataProperties() {
             }
             if (committed) {
                 schedulePersist();
+            }
+            if (!result.sources.empty()) {
                 requestMetadataOperationHistoryReload();
             }
         },
@@ -4859,6 +5099,109 @@ void BenchMainWindow::showMetadataProperties() {
                     persistence_service->removeDestinationProfile(id, std::move(completion));
                 },
         },
+        [this, database_path, persistence_service] {
+            auto documents = collectDocuments();
+            auto view_layouts = collectTrackViewLayouts();
+            const auto recovery_was_running = metadata_operation_running_;
+            return FilePublicationPlanApplier{
+                [this, database_path, persistence_service, documents = std::move(documents),
+                 view_layouts = std::move(view_layouts), recovery_was_running](
+                    const operations::OutputPathPreflight& preflight,
+                    const operations::FilePublicationApplyProgressCallback& progress,
+                    const core::CancellationToken& cancellation) mutable
+                    -> core::Result<operations::FilePublicationApplyResult> {
+                    if (recovery_was_running) {
+                        return std::unexpected(core::Error{
+                            .code = core::ErrorCode::conflict,
+                            .message = "Startup operation recovery is still running; preview "
+                                       "again after it finishes",
+                            .context = {},
+                        });
+                    }
+                    if (!persistence_service) {
+                        return std::unexpected(core::Error{
+                            .code = core::ErrorCode::cancelled,
+                            .message = "Trackbench closed during file publication",
+                            .context = {},
+                        });
+                    }
+                    const auto persistence_error = persistence_service->saveWorkspaceAndWait(
+                        std::move(documents), std::move(view_layouts));
+                    if (!persistence_error.isEmpty()) {
+                        return std::unexpected(core::Error{
+                            .code = core::ErrorCode::database,
+                            .message = utf8Bytes(persistence_error),
+                            .context = {},
+                        });
+                    }
+                    auto opened = persistence::SqliteFilePublicationJournal::open(database_path);
+                    if (!opened) {
+                        return std::unexpected(std::move(opened.error()));
+                    }
+                    auto journal = std::move(*opened);
+                    const auto dependent =
+                        [this,
+                         persistence_service](const operations::FilePublicationCommitResult& result)
+                        -> core::Result<void> {
+                        if (!persistence_service) {
+                            return std::unexpected(core::Error{
+                                .code = core::ErrorCode::cancelled,
+                                .message = "Trackbench closed during source reconciliation",
+                                .context = {},
+                            });
+                        }
+                        const auto durable = [persistence_service, result]() -> core::Result<void> {
+                            if (!persistence_service) {
+                                return std::unexpected(core::Error{
+                                    .code = core::ErrorCode::cancelled,
+                                    .message = "Trackbench closed during source reconciliation",
+                                    .context = {},
+                                });
+                            }
+                            auto relocated = persistence_service->relocateLocalSourceAndWait(
+                                persistence::LocalSourceRelocation{
+                                    .operation_id = result.journal_id,
+                                    .source_reference = result.source_raw_path,
+                                    .target_reference = result.target_raw_path,
+                                    .previous_revision = result.source_revision,
+                                    .published_revision = result.target_revision,
+                                });
+                            return relocated ? core::Result<void>{}
+                                             : std::unexpected(std::move(relocated.error()));
+                        };
+                        if (player_ == nullptr) {
+                            return durable();
+                        }
+                        auto relocated = player_->commit_source_relocation_and_wait(
+                            audio::LocalAuditionSourceRelocation{
+                                .source_raw_path = result.source_raw_path,
+                                .target_raw_path = result.target_raw_path,
+                                .source_revision = result.source_revision,
+                                .target_revision = result.target_revision,
+                            },
+                            durable);
+                        return relocated ? core::Result<void>{}
+                                         : std::unexpected(std::move(relocated.error()));
+                    };
+                    return operations::apply_file_publications(
+                        preflight, journal, dependent, progress, cancellation,
+                        operations::FilePublicationApplyOptions{.maximum_parallelism = 2U});
+                }};
+        },
+        [this](const operations::FilePublicationApplyResult& result) {
+            auto committed = false;
+            for (const auto& source : result.sources) {
+                if (!source.commit) {
+                    continue;
+                }
+                applyCommittedRelocation(*source.commit);
+                committed = true;
+            }
+            if (committed) {
+                schedulePersist();
+                requestMetadataOperationHistoryReload();
+            }
+        },
         tabs_);
     properties->setWindowFlags(Qt::Widget);
     properties->setProperty("bench-special-tab", QStringLiteral("metadata-properties"));
@@ -4909,8 +5252,8 @@ void BenchMainWindow::startMetadataOperationRecovery() {
     const auto database_path = database_path_;
     const auto cancellation = metadata_operation_cancellation_.token();
     metadata_operation_watcher_.setFuture(
-        QtConcurrent::run([database_path, persistence_service, cancellation] {
-            return run_metadata_operation_job(database_path, persistence_service,
+        QtConcurrent::run([database_path, persistence_service, player = player_, cancellation] {
+            return run_metadata_operation_job(database_path, persistence_service, player,
                                               MetadataOperationJobKind::startup, std::nullopt,
                                               cancellation);
         }));
@@ -4932,8 +5275,8 @@ void BenchMainWindow::requestMetadataOperationHistoryReload() {
     const auto database_path = database_path_;
     const auto cancellation = metadata_operation_cancellation_.token();
     metadata_operation_watcher_.setFuture(
-        QtConcurrent::run([database_path, persistence_service, cancellation] {
-            return run_metadata_operation_job(database_path, persistence_service,
+        QtConcurrent::run([database_path, persistence_service, player = player_, cancellation] {
+            return run_metadata_operation_job(database_path, persistence_service, player,
                                               MetadataOperationJobKind::reload, std::nullopt,
                                               cancellation);
         }));
@@ -4953,11 +5296,34 @@ void BenchMainWindow::startMetadataUndo(const core::StableId& journal_id) {
     const QPointer persistence_service{persistence_};
     const auto database_path = database_path_;
     const auto cancellation = metadata_operation_cancellation_.token();
-    metadata_operation_watcher_.setFuture(QtConcurrent::run([database_path, persistence_service,
-                                                             cancellation, journal_id] {
-        return run_metadata_operation_job(database_path, persistence_service,
-                                          MetadataOperationJobKind::undo, journal_id, cancellation);
-    }));
+    metadata_operation_watcher_.setFuture(QtConcurrent::run(
+        [database_path, persistence_service, player = player_, cancellation, journal_id] {
+            return run_metadata_operation_job(database_path, persistence_service, player,
+                                              MetadataOperationJobKind::undo, journal_id,
+                                              cancellation);
+        }));
+}
+
+void BenchMainWindow::startFilePublicationUndo(const core::StableId& journal_id) {
+    if (metadata_operation_running_ || persistence_ == nullptr || journal_id.is_nil()) {
+        return;
+    }
+    metadata_operation_running_ = true;
+    metadata_operation_cancellation_ = core::CancellationSource{};
+    if (metadata_history_action_ != nullptr) {
+        metadata_history_action_->setEnabled(false);
+    }
+    setProperty("trackbench-metadata-operation-running", true);
+    statusBar()->showMessage(QStringLiteral("Moving the file back…"));
+    const QPointer persistence_service{persistence_};
+    const auto database_path = database_path_;
+    const auto cancellation = metadata_operation_cancellation_.token();
+    metadata_operation_watcher_.setFuture(QtConcurrent::run(
+        [database_path, persistence_service, player = player_, cancellation, journal_id] {
+            return run_metadata_operation_job(database_path, persistence_service, player,
+                                              MetadataOperationJobKind::file_undo, journal_id,
+                                              cancellation);
+        }));
 }
 
 void BenchMainWindow::startMetadataBackupRelease(const core::StableId& journal_id) {
@@ -4974,9 +5340,9 @@ void BenchMainWindow::startMetadataBackupRelease(const core::StableId& journal_i
     const QPointer persistence_service{persistence_};
     const auto database_path = database_path_;
     const auto cancellation = metadata_operation_cancellation_.token();
-    metadata_operation_watcher_.setFuture(
-        QtConcurrent::run([database_path, persistence_service, cancellation, journal_id] {
-            return run_metadata_operation_job(database_path, persistence_service,
+    metadata_operation_watcher_.setFuture(QtConcurrent::run(
+        [database_path, persistence_service, player = player_, cancellation, journal_id] {
+            return run_metadata_operation_job(database_path, persistence_service, player,
                                               MetadataOperationJobKind::release, journal_id,
                                               cancellation);
         }));
@@ -4998,6 +5364,30 @@ void BenchMainWindow::applyCommittedMetadata(const operations::MetadataCommitRes
     }
 }
 
+void BenchMainWindow::applyCommittedRelocation(
+    const operations::FilePublicationCommitResult& result) {
+    for (auto& tab : list_tabs_) {
+        auto applied =
+            tab->model->applyCommittedRelocation(result.source_raw_path, result.target_raw_path,
+                                                 result.source_revision, result.target_revision);
+        if (!applied) {
+            statusBar()->showMessage(QStringLiteral("File-path view refresh needs attention: %1")
+                                         .arg(displayText(applied.error().message)),
+                                     8'000);
+            continue;
+        }
+        if (*applied > 0U) {
+            syncArtwork(*tab);
+        }
+    }
+    if (playback_source_.raw_path == result.source_raw_path) {
+        playback_source_.raw_path = result.target_raw_path;
+    }
+    if (last_requested_next_ && last_requested_next_->raw_path == result.source_raw_path) {
+        last_requested_next_->raw_path = result.target_raw_path;
+    }
+}
+
 void BenchMainWindow::finishMetadataOperationJob() {
     metadata_operation_running_ = false;
     setProperty("trackbench-metadata-operation-running", false);
@@ -5012,7 +5402,10 @@ void BenchMainWindow::finishMetadataOperationJob() {
     for (const auto& refreshed : snapshot->refreshed_sources) {
         applyCommittedMetadata(refreshed);
     }
-    if (!snapshot->refreshed_sources.empty()) {
+    for (const auto& relocated : snapshot->relocated_sources) {
+        applyCommittedRelocation(relocated);
+    }
+    if (!snapshot->refreshed_sources.empty() || !snapshot->relocated_sources.empty()) {
         schedulePersist();
     }
     metadata_operation_snapshot_ = std::move(snapshot);
@@ -5020,13 +5413,20 @@ void BenchMainWindow::finishMetadataOperationJob() {
         std::ranges::count(metadata_operation_snapshot_->backups,
                            operations::MetadataOperationBackupState::needs_reconciliation,
                            &operations::MetadataOperationBackupRecord::state);
-    const auto attention = metadata_operation_snapshot_->reconciliation.size() +
-                           static_cast<std::size_t>(backup_attention);
+    const auto file_attention =
+        std::ranges::count(metadata_operation_snapshot_->file_publications,
+                           operations::FilePublicationJournalState::needs_reconciliation,
+                           &operations::FilePublicationJournalRecord::state);
+    const auto metadata_attention = metadata_operation_snapshot_->reconciliation.size() +
+                                    static_cast<std::size_t>(backup_attention);
+    const auto attention = metadata_attention + static_cast<std::size_t>(file_attention);
     const auto retained = std::ranges::count(metadata_operation_snapshot_->backups,
                                              operations::MetadataOperationBackupState::retained,
                                              &operations::MetadataOperationBackupRecord::state);
     setProperty("trackbench-metadata-retained-backups", static_cast<qulonglong>(retained));
-    setProperty("trackbench-metadata-reconciliation-count", static_cast<qulonglong>(attention));
+    setProperty("trackbench-metadata-reconciliation-count",
+                static_cast<qulonglong>(metadata_attention));
+    setProperty("trackbench-file-reconciliation-count", static_cast<qulonglong>(file_attention));
     if (metadata_history_action_ != nullptr) {
         metadata_history_action_->setEnabled(!isMpdContext());
     }
@@ -5038,11 +5438,11 @@ void BenchMainWindow::finishMetadataOperationJob() {
 
     if (metadata_operation_snapshot_->error) {
         statusBar()->showMessage(
-            QStringLiteral("Metadata operation failed: %1")
+            QStringLiteral("Preparation operation failed: %1")
                 .arg(displayText(metadata_operation_snapshot_->error->message)),
             10'000);
     } else if (attention > 0U) {
-        statusBar()->showMessage(QStringLiteral("%1 metadata operation%2 need attention")
+        statusBar()->showMessage(QStringLiteral("%1 preparation operation%2 need attention")
                                      .arg(attention)
                                      .arg(attention == 1U ? QString{} : QStringLiteral("s")),
                                  10'000);
@@ -5050,18 +5450,28 @@ void BenchMainWindow::finishMetadataOperationJob() {
         statusBar()->showMessage(QStringLiteral("Metadata change undone"), 5'000);
     } else if (metadata_operation_snapshot_->kind == MetadataOperationJobKind::release) {
         statusBar()->showMessage(QStringLiteral("Metadata undo backup released"), 5'000);
-    } else if (!metadata_operation_snapshot_->recovery.empty()) {
-        const auto recovered =
+    } else if (metadata_operation_snapshot_->kind == MetadataOperationJobKind::file_undo) {
+        statusBar()->showMessage(QStringLiteral("File move undone"), 5'000);
+    } else if (!metadata_operation_snapshot_->recovery.empty() ||
+               !metadata_operation_snapshot_->file_recovery.empty()) {
+        const auto metadata_recovered =
             std::ranges::count_if(metadata_operation_snapshot_->recovery, [](const auto& result) {
                 return result.outcome != operations::MetadataRecoveryOutcome::needs_reconciliation;
             });
-        statusBar()->showMessage(QStringLiteral("Recovered %1 interrupted metadata operation%2")
+        const auto file_recovered = std::ranges::count_if(
+            metadata_operation_snapshot_->file_recovery, [](const auto& result) {
+                return result.outcome !=
+                       operations::FilePublicationRecoveryOutcome::needs_reconciliation;
+            });
+        const auto recovered = metadata_recovered + file_recovered;
+        statusBar()->showMessage(QStringLiteral("Recovered %1 interrupted preparation operation%2")
                                      .arg(recovered)
                                      .arg(recovered == 1 ? QString{} : QStringLiteral("s")),
                                  5'000);
     }
     if (attention > 0U || metadata_operation_snapshot_->kind == MetadataOperationJobKind::undo ||
-        metadata_operation_snapshot_->kind == MetadataOperationJobKind::release) {
+        metadata_operation_snapshot_->kind == MetadataOperationJobKind::release ||
+        metadata_operation_snapshot_->kind == MetadataOperationJobKind::file_undo) {
         showMetadataOperationHistory();
     }
     if (metadata_history_reload_pending_) {
@@ -5077,21 +5487,23 @@ void BenchMainWindow::showMetadataOperationHistory() {
         return;
     }
     if (!metadata_operation_snapshot_) {
-        statusBar()->showMessage(QStringLiteral("Metadata operation history is still loading"),
+        statusBar()->showMessage(QStringLiteral("Preparation operation history is still loading"),
                                  5'000);
         return;
     }
 
     auto* dialog = new QDialog(this);
     dialog->setObjectName(QStringLiteral("bench-metadata-operation-history"));
-    dialog->setWindowTitle(QStringLiteral("Metadata operations"));
+    dialog->setWindowTitle(QStringLiteral("Preparation operations"));
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->resize(900, 420);
     metadata_history_dialog_ = dialog;
     auto* layout = new QVBoxLayout(dialog);
     auto* policy = new QLabel(
-        QStringLiteral("Undo backups are kept for up to %1 days; only the newest change per file "
-                       "is retained, within %2 operations and %3 GiB.")
+        QStringLiteral("Metadata undo backups are kept for up to %1 days; only the newest tag "
+                       "change per file is retained, within %2 operations and %3 GiB. Completed "
+                       "same-filesystem file moves can be moved back; cross-filesystem moves "
+                       "remain visible but are not currently undoable.")
             .arg(metadata_retention_days)
             .arg(metadata_retention_entries)
             .arg(metadata_retention_bytes / (1024U * 1024U * 1024U)),
@@ -5119,7 +5531,7 @@ void BenchMainWindow::showMetadataOperationHistory() {
 
     if (model->rowCount() == 0) {
         auto* empty =
-            new QLabel(QStringLiteral("No metadata operations have been recorded."), dialog);
+            new QLabel(QStringLiteral("No preparation operations have been recorded."), dialog);
         empty->setObjectName(QStringLiteral("bench-metadata-operation-empty"));
         layout->insertWidget(1, empty);
     }
@@ -5147,9 +5559,17 @@ void BenchMainWindow::showMetadataOperationHistory() {
         }
         const auto id = row->journal_id;
         const auto source = row->source;
+        const auto file_publication = row->file_publication;
         QMessageBox confirmation{
-            QMessageBox::Question, QStringLiteral("Undo metadata change"),
-            QStringLiteral("Restore the exact tags from before this operation?\n\n%1").arg(source),
+            QMessageBox::Question,
+            file_publication ? QStringLiteral("Undo file move")
+                             : QStringLiteral("Undo metadata change"),
+            file_publication
+                ? QStringLiteral("Move this file back to its original path? The destination must "
+                                 "still be unoccupied.\n\n%1")
+                      .arg(source)
+                : QStringLiteral("Restore the exact tags from before this operation?\n\n%1")
+                      .arg(source),
             QMessageBox::Yes | QMessageBox::Cancel, dialog};
         confirmation.setOption(QMessageBox::Option::DontUseNativeDialog);
         confirmation.setDefaultButton(QMessageBox::Cancel);
@@ -5158,7 +5578,11 @@ void BenchMainWindow::showMetadataOperationHistory() {
         }
         metadata_history_dialog_ = nullptr;
         dialog->close();
-        startMetadataUndo(id);
+        if (file_publication) {
+            startFilePublicationUndo(id);
+        } else {
+            startMetadataUndo(id);
+        }
     });
     connect(release, &QPushButton::clicked, dialog, [this, dialog, table, model] {
         const auto* row = model->row(table->currentIndex().row());

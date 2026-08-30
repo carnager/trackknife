@@ -5,6 +5,7 @@
 #include "bench/local_list_model.hpp"
 #include "trackknife/core/cancellation.hpp"
 #include "trackknife/core/local_sources.hpp"
+#include "trackknife/operations/file_publication.hpp"
 #include "trackknife/operations/metadata_commit.hpp"
 #include "trackknife/persistence/list_repository.hpp"
 #include "uicommon/panel_layout.hpp"
@@ -161,10 +162,12 @@ class BenchMainWindow final : public QMainWindow {
     void startMetadataOperationRecovery();
     void requestMetadataOperationHistoryReload();
     void startMetadataUndo(const core::StableId& journal_id);
+    void startFilePublicationUndo(const core::StableId& journal_id);
     void startMetadataBackupRelease(const core::StableId& journal_id);
     void finishMetadataOperationJob();
     void showMetadataOperationHistory();
     void applyCommittedMetadata(const operations::MetadataCommitResult& result);
+    void applyCommittedRelocation(const operations::FilePublicationCommitResult& result);
     void removeSelectedRows();
     void transferSelectedRows(QTableView* source, const QString& target_id, bool move);
     [[nodiscard]] ui::TrackViewLayout

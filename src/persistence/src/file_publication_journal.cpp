@@ -27,6 +27,7 @@ constexpr std::size_t maximum_occurrences = 100'000U;
 constexpr std::size_t maximum_directories = 4'096U;
 constexpr std::size_t maximum_incomplete_records = 10'000U;
 constexpr std::size_t maximum_reversal_records = 1'024U;
+constexpr std::size_t maximum_recent_records = 1'024U;
 constexpr std::size_t maximum_text_bytes = 64U * 1024U * 1024U;
 
 using Kind = operations::OutputPathPublicationKind;
@@ -918,6 +919,22 @@ SqliteFilePublicationJournal::load_reversals(const core::StableId& journal_id) c
     if (records->size() > maximum_reversal_records) {
         return std::unexpected(
             database_error(implementation_->database, "Too many file-publication reversals"));
+    }
+    return records;
+}
+
+core::Result<std::vector<operations::FilePublicationJournalRecord>>
+SqliteFilePublicationJournal::load_recent() const {
+    std::scoped_lock lock{implementation_->mutex};
+    const auto sql = "SELECT " + std::string{record_columns} +
+                     "FROM file_publication_journal ORDER BY rowid DESC LIMIT 1024";
+    auto records = load_records(implementation_->database, sql.c_str());
+    if (!records) {
+        return std::unexpected(std::move(records.error()));
+    }
+    if (records->size() > maximum_recent_records) {
+        return std::unexpected(
+            database_error(implementation_->database, "Too many recent file publications"));
     }
     return records;
 }

@@ -72,6 +72,8 @@ struct OutputPathPreflight {
     std::vector<OutputPathPreflightIssue> issues;
 
     [[nodiscard]] bool ready() const noexcept;
+
+    friend bool operator==(const OutputPathPreflight&, const OutputPathPreflight&) = default;
 };
 
 // Fresh Linux filesystem observation for a ready pure plan. Every path

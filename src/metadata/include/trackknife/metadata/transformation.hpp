@@ -4,6 +4,7 @@
 
 #include "trackknife/core/cancellation.hpp"
 #include "trackknife/core/result.hpp"
+#include "trackknife/metadata/capture_pattern.hpp"
 #include "trackknife/metadata/staged_patch.hpp"
 #include "trackknife/titleformat/compiler.hpp"
 
@@ -150,13 +151,33 @@ struct MetadataKeepFirstCharactersAction {
                            const MetadataKeepFirstCharactersAction&) = default;
 };
 
+enum class MetadataCaptureSourceKind : std::uint8_t {
+    filename = 0,
+    full_path = 1,
+    formatted = 2,
+    field = 3,
+};
+
+// Recognizes one complete source with tkcapture-1 and replaces every named
+// logical target captured by the pattern. The source payload is required only
+// for formatted and field sources.
+struct MetadataCaptureValuesAction {
+    CapturePatternDialectVersion dialect;
+    MetadataCaptureSourceKind source_kind{MetadataCaptureSourceKind::filename};
+    std::string source;
+    std::string pattern;
+
+    friend bool operator==(const MetadataCaptureValuesAction&,
+                           const MetadataCaptureValuesAction&) = default;
+};
+
 using MetadataTransformationAction =
     std::variant<MetadataSetValuesAction, MetadataAddValuesAction, MetadataRemoveFieldAction,
                  MetadataRemoveFieldIfAction, MetadataTransformValuesAction,
                  MetadataFormatValueAction, MetadataCopyFieldAction, MetadataSplitValuesAction,
                  MetadataJoinValuesAction, MetadataRemoveMatchingValuesAction,
                  MetadataReplaceMatchingValuesAction, MetadataNumberSelectedItemsAction,
-                 MetadataKeepFirstCharactersAction>;
+                 MetadataKeepFirstCharactersAction, MetadataCaptureValuesAction>;
 
 struct MetadataTransformationChain {
     std::uint32_t schema_version{1U};

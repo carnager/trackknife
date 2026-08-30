@@ -130,6 +130,8 @@ struct OutputPathPlan {
     std::vector<OutputPathPlanIssue> issues;
 
     [[nodiscard]] bool ready() const noexcept;
+
+    friend bool operator==(const OutputPathPlan&, const OutputPathPlan&) = default;
 };
 
 struct OutputPathPlanningLimits {

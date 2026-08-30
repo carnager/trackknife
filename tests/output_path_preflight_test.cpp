@@ -110,8 +110,10 @@ void classifiesSameFilesystemAndMissingDirectoriesWithoutMutation() {
     if (!revision) {
         return;
     }
+    const auto destination_with_trailing_separator =
+        std::filesystem::path{temporary.path().native() + "/"};
     const auto checked = operations::preflight_output_paths(
-        ready_plan(source, target, *revision, true, temporary.path()));
+        ready_plan(source, target, *revision, true, destination_with_trailing_separator));
     CHECK(checked.has_value());
     CHECK(checked && checked->ready());
     CHECK(checked && checked->sources.size() == 1U);

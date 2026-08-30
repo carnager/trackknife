@@ -320,6 +320,19 @@ $if(%originaldate%,$set(date,$left(%originaldate%,4))$set(originaldate,$left(%or
                diagnostic.message.find("default comment target") != std::string::npos;
     }));
 
+    const auto exported = export_metadata_rule_script(imported.actions);
+    CHECK(exported.has_value());
+    const auto reimported =
+        exported ? import_metadata_rule_script(*exported) : MetadataRuleScriptImportResult{};
+    CHECK(exported && !reimported.has_errors());
+    CHECK(exported && reimported.actions == imported.actions);
+    const std::array typed_only{MetadataTransformationAction{
+        MetadataAddValuesAction{.target_field = "genre", .values = {"Rock"}}}};
+    const auto unsupported_export = export_metadata_rule_script(typed_only);
+    CHECK(!unsupported_export);
+    CHECK(!unsupported_export &&
+          unsupported_export.error().code == trackknife::core::ErrorCode::unsupported);
+
     auto selected = StagedMetadataSelection::create({
         StagedMetadataSource{
             .raw_path = "/music/one.flac",
@@ -453,6 +466,30 @@ void importedDeleteKeepsSimilarConventionalAndFreeformFieldsSeparate() {
     CHECK(preview && preview->cells.front().before ==
                          std::optional<std::vector<std::string>>{{"Legacy custom"}});
     CHECK(preview && !preview->cells.front().after);
+
+    const MetadataTransformationChain capture_chain{
+        .schema_version = 1U,
+        .name = "Capture separate identities",
+        .actions = {MetadataCaptureValuesAction{
+            .dialect = {},
+            .source_kind = MetadataCaptureSourceKind::formatted,
+            .source = "Captured semantic|Captured freeform",
+            .pattern = "%albumartist%|%album artist%",
+        }},
+    };
+    const auto capture_preview =
+        plan_metadata_transformation(*selection, StagedMetadataPatchSet{}, items, capture_chain);
+    CHECK(capture_preview.has_value());
+    CHECK(capture_preview && capture_preview->cells.size() == 2U);
+    if (capture_preview && capture_preview->cells.size() == 2U) {
+        CHECK(capture_preview->cells[0].match_mode == MetadataFieldMatchMode::logical);
+        CHECK(capture_preview->cells[0].after ==
+              std::optional<std::vector<std::string>>{{"Captured semantic"}});
+        CHECK(capture_preview->cells[1].match_mode == MetadataFieldMatchMode::exact_native);
+        CHECK(capture_preview->cells[1].display_field == "album artist");
+        CHECK(capture_preview->cells[1].after ==
+              std::optional<std::vector<std::string>>{{"Captured freeform"}});
+    }
 }
 
 void exactMatchingAndSelectionNumberingComposeInOrder() {
@@ -511,6 +548,176 @@ void exactMatchingAndSelectionNumberingComposeInOrder() {
     CHECK(preview->cells[7].canonical_field == "summary");
     CHECK(preview->cells[7].after ==
           std::optional<std::vector<std::string>>{{"08: Beta —   Two  "}});
+}
+
+void capturePatternGrammarRejectsGuessingAndPreservesExactValues() {
+    using namespace trackknife::metadata;
+    const auto compiled = compile_capture_pattern("%artist% - %% - %title%");
+    CHECK(compiled.has_value());
+    if (!compiled) {
+        return;
+    }
+    CHECK(compiled->named_capture_count == 2U);
+    const auto matched = match_capture_pattern(*compiled, "Alpha - ignored - Song");
+    CHECK(matched.has_value());
+    CHECK(matched && matched->kind == CapturePatternMatchKind::unique);
+    const std::vector<CapturedMetadataValue> expected{{.field = "artist", .value = "Alpha"},
+                                                      {.field = "title", .value = "Song"}};
+    CHECK(matched && matched->values == expected);
+
+    const auto escaped = compile_capture_pattern("100\\%%title%");
+    CHECK(escaped.has_value());
+    if (!escaped) {
+        return;
+    }
+    const auto escaped_match = match_capture_pattern(*escaped, "100%é");
+    CHECK(escaped_match && escaped_match->kind == CapturePatternMatchKind::unique);
+    CHECK(escaped_match && escaped_match->values.front().value == "é");
+
+    const auto ambiguous = compile_capture_pattern("%artist% - %title%");
+    CHECK(ambiguous.has_value());
+    if (!ambiguous) {
+        return;
+    }
+    const auto ambiguous_match = match_capture_pattern(*ambiguous, "A - B - C");
+    CHECK(ambiguous_match && ambiguous_match->kind == CapturePatternMatchKind::ambiguous);
+    const auto unmatched = match_capture_pattern(*ambiguous, "No delimiter");
+    CHECK(unmatched && unmatched->kind == CapturePatternMatchKind::unmatched);
+
+    const auto empty = compile_capture_pattern("%artist%--%title%");
+    CHECK(empty.has_value());
+    if (!empty) {
+        return;
+    }
+    const auto empty_match = match_capture_pattern(*empty, "--Title");
+    CHECK(empty_match && empty_match->kind == CapturePatternMatchKind::unique);
+    CHECK(empty_match && empty_match->values.front().value.empty());
+    CHECK(!compile_capture_pattern("literal only"));
+    CHECK(!compile_capture_pattern("%unclosed"));
+    CHECK(!compile_capture_pattern("%title%\\"));
+    CHECK(!compile_capture_pattern("%one%tail", {},
+                                   CapturePatternLimits{.pattern_bytes = 64U,
+                                                        .source_bytes = 64U,
+                                                        .tokens = 1U,
+                                                        .captures = 1U,
+                                                        .match_steps = 64U}));
+    const auto bounded = compile_capture_pattern("%one%x");
+    CHECK(bounded.has_value());
+    if (bounded) {
+        const auto limited = match_capture_pattern(*bounded, "aaaaaaaa",
+                                                   CapturePatternLimits{.pattern_bytes = 64U,
+                                                                        .source_bytes = 64U,
+                                                                        .tokens = 8U,
+                                                                        .captures = 8U,
+                                                                        .match_steps = 2U});
+        CHECK(!limited);
+        CHECK(!limited && limited.error().code == trackknife::core::ErrorCode::limit_exceeded);
+    }
+}
+
+void captureSourcesComposeAsOneMultiTargetTransformation() {
+    using namespace trackknife::metadata;
+    auto selected = StagedMetadataSelection::create({
+        StagedMetadataSource{
+            .raw_path = "/library/Alpha/Record [2024]/03. Song.flac",
+            .source_revision = std::nullopt,
+            .baseline =
+                MetadataDocument{.fields = {field("CUSTOM SOURCE", {"Guest:One", "Guest:Two"})},
+                                 .unsupported_native_objects = {}},
+        },
+    });
+    CHECK(selected.has_value());
+    if (!selected) {
+        return;
+    }
+    const MetadataTransformationChain chain{
+        .schema_version = 1U,
+        .name = "Capture filename",
+        .actions =
+            {
+                MetadataCaptureValuesAction{
+                    .dialect = {},
+                    .source_kind = MetadataCaptureSourceKind::filename,
+                    .source = {},
+                    .pattern = "%artist%/%album% [%date%]/%tracknumber%. %title%",
+                },
+                MetadataCaptureValuesAction{
+                    .dialect = {},
+                    .source_kind = MetadataCaptureSourceKind::full_path,
+                    .source = {},
+                    .pattern = "/library/%pathartist%/%pathalbum% [%pathdate%]/%pathtrack%. "
+                               "%pathtitle%.flac",
+                },
+                MetadataCaptureValuesAction{
+                    .dialect = {},
+                    .source_kind = MetadataCaptureSourceKind::formatted,
+                    .source = "%artist% | %title%",
+                    .pattern = "%formattedartist% | %formattedtitle%",
+                },
+                MetadataCaptureValuesAction{
+                    .dialect = {},
+                    .source_kind = MetadataCaptureSourceKind::formatted,
+                    .source = "%artist% | %title%",
+                    .pattern = "%alias% | %alias%",
+                },
+                MetadataFormatValueAction{
+                    .target_field = "Summary", .dialect = {}, .source = "%tracknumber%: %title%"},
+                MetadataCaptureValuesAction{
+                    .dialect = {},
+                    .source_kind = MetadataCaptureSourceKind::field,
+                    .source = "CUSTOM SOURCE",
+                    .pattern = "%%:%guest%",
+                },
+                MetadataCaptureValuesAction{
+                    .dialect = {},
+                    .source_kind = MetadataCaptureSourceKind::field,
+                    .source = "guest",
+                    .pattern = "%nextguest%",
+                },
+            },
+    };
+    CHECK(validate_metadata_transformation_chain(chain).has_value());
+    const std::array items{std::size_t{0U}};
+    const auto preview =
+        plan_metadata_transformation(*selected, StagedMetadataPatchSet{}, items, chain);
+    if (!preview) {
+        std::cerr << preview.error().message << '\n';
+    }
+    CHECK(preview.has_value());
+    if (!preview) {
+        return;
+    }
+    const auto value = [&preview](const std::string_view field_name) {
+        const auto found = std::ranges::find_if(
+            preview->cells, [&](const auto& cell) { return cell.canonical_field == field_name; });
+        return found == preview->cells.end() ? std::optional<std::vector<std::string>>{}
+                                             : found->after;
+    };
+    CHECK(value("artist") == std::optional<std::vector<std::string>>{{"Alpha"}});
+    CHECK(value("album") == std::optional<std::vector<std::string>>{{"Record"}});
+    CHECK(value("date") == std::optional<std::vector<std::string>>{{"2024"}});
+    CHECK(value("tracknumber") == std::optional<std::vector<std::string>>{{"03"}});
+    CHECK(value("title") == std::optional<std::vector<std::string>>{{"Song"}});
+    CHECK(value("pathartist") == std::optional<std::vector<std::string>>{{"Alpha"}});
+    CHECK(value("pathtitle") == std::optional<std::vector<std::string>>{{"Song"}});
+    CHECK(value("formattedartist") == std::optional<std::vector<std::string>>{{"Alpha"}});
+    CHECK(value("formattedtitle") == std::optional<std::vector<std::string>>{{"Song"}});
+    CHECK(value("alias") == (std::optional<std::vector<std::string>>{{"Alpha", "Song"}}));
+    CHECK(value("summary") == std::optional<std::vector<std::string>>{{"03: Song"}});
+    CHECK(value("guest") == (std::optional<std::vector<std::string>>{{"One", "Two"}}));
+    CHECK(value("nextguest") == (std::optional<std::vector<std::string>>{{"One", "Two"}}));
+
+    auto ambiguous_chain = chain;
+    ambiguous_chain.actions = {MetadataCaptureValuesAction{
+        .dialect = {},
+        .source_kind = MetadataCaptureSourceKind::full_path,
+        .source = {},
+        .pattern = "%prefix%/%middle%/%title%",
+    }};
+    const auto ambiguous =
+        plan_metadata_transformation(*selected, StagedMetadataPatchSet{}, items, ambiguous_chain);
+    CHECK(!ambiguous);
+    CHECK(!ambiguous && ambiguous.error().code == trackknife::core::ErrorCode::conflict);
 }
 
 void plansRejectInvalidDialectInputLimitsAndCancellation() {
@@ -611,6 +818,37 @@ void plansRejectInvalidDialectInputLimitsAndCancellation() {
         });
     CHECK(!invalid_condition);
 
+    const auto invalid_capture =
+        metadata::validate_metadata_transformation_chain(metadata::MetadataTransformationChain{
+            .schema_version = 1U,
+            .name = "Invalid capture",
+            .actions = {metadata::MetadataCaptureValuesAction{
+                .dialect = {},
+                .source_kind = metadata::MetadataCaptureSourceKind::filename,
+                .source = "unexpected",
+                .pattern = "%title%",
+            }},
+        });
+    CHECK(!invalid_capture);
+    auto wrong_capture_dialect = metadata::MetadataTransformationChain{
+        .schema_version = 1U,
+        .name = "Invalid capture dialect",
+        .actions = {metadata::MetadataCaptureValuesAction{
+            .dialect = {},
+            .source_kind = metadata::MetadataCaptureSourceKind::filename,
+            .source = {},
+            .pattern = "%title%",
+        }},
+    };
+    auto* wrong_capture =
+        std::get_if<metadata::MetadataCaptureValuesAction>(&wrong_capture_dialect.actions.front());
+    CHECK(wrong_capture != nullptr);
+    if (wrong_capture == nullptr) {
+        return;
+    }
+    wrong_capture->dialect.dialect_version = 2U;
+    CHECK(!metadata::validate_metadata_transformation_chain(wrong_capture_dialect));
+
     const metadata::MetadataTransformationChain bounded{
         .schema_version = 1U,
         .name = {},
@@ -647,6 +885,8 @@ int main() {
     pastedCleanupScriptGeneratesTypedPreviewedRules();
     importedDeleteKeepsSimilarConventionalAndFreeformFieldsSeparate();
     exactMatchingAndSelectionNumberingComposeInOrder();
+    capturePatternGrammarRejectsGuessingAndPreservesExactValues();
+    captureSourcesComposeAsOneMultiTargetTransformation();
     plansRejectInvalidDialectInputLimitsAndCancellation();
     return failures == 0 ? 0 : 1;
 }

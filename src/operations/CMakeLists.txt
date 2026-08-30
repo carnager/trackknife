@@ -11,6 +11,7 @@ add_library(
     src/metadata_commit.cpp
     src/output_path_plan.cpp
     src/output_path_preflight.cpp
+    src/preparation_plan.cpp
 )
 add_library(Trackknife::Operations ALIAS trackknife_operations)
 

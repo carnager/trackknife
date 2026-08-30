@@ -5,6 +5,7 @@
 #include "trackknife/metadata/transformation.hpp"
 
 #include <cstddef>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -49,5 +50,11 @@ struct MetadataRuleScriptImportResult {
 [[nodiscard]] MetadataRuleScriptImportResult
 import_metadata_rule_script(std::string_view source,
                             const MetadataRuleScriptImportLimits& limits = {});
+
+// Produces canonical editable cleanup source only for actions represented by
+// the bounded import subset. The result is required to import back to the
+// exact same typed actions; typed-only actions return an unsupported error.
+[[nodiscard]] core::Result<std::string>
+export_metadata_rule_script(std::span<const MetadataTransformationAction> actions);
 
 } // namespace trackknife::metadata

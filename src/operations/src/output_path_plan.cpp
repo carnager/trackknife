@@ -71,6 +71,13 @@ namespace {
     return path.is_absolute() && path != path.root_path() && path == path.lexically_normal();
 }
 
+[[nodiscard]] std::filesystem::path operation_root_path(std::filesystem::path path) {
+    if (path != path.root_path() && path.filename().empty()) {
+        path = path.parent_path();
+    }
+    return path;
+}
+
 [[nodiscard]] core::Result<titleformat::Program>
 compile_expression(const OutputLayoutProfile& profile, const std::string& source,
                    const std::string_view description) {
@@ -516,9 +523,10 @@ core::Result<OutputPathPlan> plan_output_paths(const std::span<const OutputPathP
         item.source.sanitized = sanitized_directory.changed || sanitized_basename.changed;
 
         const std::filesystem::path source_path{input.source_raw_path};
-        const auto root = operations.move_files
-                              ? std::filesystem::path{plan.destination->root_raw_path}
-                              : source_path.parent_path();
+        const auto root =
+            operations.move_files
+                ? operation_root_path(std::filesystem::path{plan.destination->root_raw_path})
+                : source_path.parent_path();
         auto target_parent = root;
         if (operations.move_files && !sanitized_directory.value.empty()) {
             target_parent /= std::filesystem::path{sanitized_directory.value};

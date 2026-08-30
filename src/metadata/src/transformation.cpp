@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <filesystem>
 #include <iterator>
 #include <limits>
 #include <optional>
@@ -36,13 +37,24 @@ struct WorkingNativeField {
 
 using WorkingNativeDocument = std::unordered_map<std::string, WorkingNativeField>;
 
+struct PreparedCaptureField {
+    std::string canonical_field;
+    std::string exact_native_field;
+    std::string native_canonical_field;
+    std::string display_field;
+    MetadataFieldMatchMode match_mode{MetadataFieldMatchMode::logical};
+};
+
 struct PreparedAction {
     const MetadataTransformationAction* action{nullptr};
     std::string canonical_field;
     std::string exact_native_field;
     std::string canonical_source_field;
+    std::string exact_native_source_field;
     std::string display_field;
     std::optional<titleformat::Program> program;
+    std::optional<CapturePatternProgram> capture_program;
+    std::vector<PreparedCaptureField> capture_fields;
 };
 
 struct Target {
@@ -83,8 +95,17 @@ struct PreparedChain {
 }
 
 [[nodiscard]] const std::string& target_field(const MetadataTransformationAction& action) {
-    return std::visit([](const auto& typed) -> const std::string& { return typed.target_field; },
-                      action);
+    return std::visit(
+        [](const auto& typed) -> const std::string& {
+            using Action = std::decay_t<decltype(typed)>;
+            if constexpr (std::is_same_v<Action, MetadataCaptureValuesAction>) {
+                static const std::string empty;
+                return empty;
+            } else {
+                return typed.target_field;
+            }
+        },
+        action);
 }
 
 [[nodiscard]] MetadataFieldMatchMode field_match_mode(const MetadataTransformationAction& action) {
@@ -344,11 +365,41 @@ evaluate_action_program(const PreparedAction& prepared, const WorkingDocument& d
     return std::move(evaluated->text);
 }
 
+[[nodiscard]] std::optional<std::string> filename_capture_source(const std::string_view raw_path,
+                                                                 const std::size_t parent_count) {
+    const std::filesystem::path path{std::string{raw_path}};
+    const auto filename = path.filename();
+    if (filename.empty()) {
+        return std::nullopt;
+    }
+    std::vector<std::string> components;
+    components.reserve(parent_count + 1U);
+    components.push_back(filename.stem().native());
+    auto parent = path.parent_path();
+    for (std::size_t index = 0U; index < parent_count; ++index) {
+        const auto component = parent.filename();
+        if (component.empty()) {
+            return std::nullopt;
+        }
+        components.push_back(component.native());
+        parent = parent.parent_path();
+    }
+    std::ranges::reverse(components);
+    std::string result;
+    for (std::size_t index = 0U; index < components.size(); ++index) {
+        if (index > 0U) {
+            result.push_back('/');
+        }
+        result += components[index];
+    }
+    return result;
+}
+
 [[nodiscard]] core::Result<void>
 apply_action(const PreparedAction& prepared, WorkingDocument& document,
              WorkingNativeDocument& native_document, const std::size_t action_index,
              const std::size_t item_index, const std::size_t selection_position,
-             const core::CancellationToken& cancellation,
+             const std::string_view raw_path, const core::CancellationToken& cancellation,
              const MetadataTransformationLimits& limits) {
     return std::visit(
         [&](const auto& action) -> core::Result<void> {
@@ -513,6 +564,140 @@ apply_action(const PreparedAction& prepared, WorkingDocument& document,
                     return std::unexpected(std::move(evaluated.error()));
                 }
                 document[prepared.canonical_field] = {std::move(*evaluated)};
+            } else if constexpr (std::is_same_v<Action, MetadataCaptureValuesAction>) {
+                if (!prepared.capture_program) {
+                    return std::unexpected(transformation_error(
+                        core::ErrorCode::invariant, "compiled capture pattern is missing",
+                        action_index, item_index));
+                }
+                std::vector<std::string> sources;
+                switch (action.source_kind) {
+                case MetadataCaptureSourceKind::filename: {
+                    auto source = filename_capture_source(
+                        raw_path, prepared.capture_program->literal_path_separator_count);
+                    if (!source) {
+                        return std::unexpected(transformation_error(
+                            core::ErrorCode::invalid_argument,
+                            "capture filename source does not have enough parent components",
+                            action_index, item_index));
+                    }
+                    sources.push_back(std::move(*source));
+                    break;
+                }
+                case MetadataCaptureSourceKind::full_path:
+                    sources.emplace_back(raw_path);
+                    break;
+                case MetadataCaptureSourceKind::formatted: {
+                    auto source = evaluate_action_program(prepared, document, action_index,
+                                                          item_index, cancellation);
+                    if (!source) {
+                        return std::unexpected(std::move(source.error()));
+                    }
+                    sources.push_back(std::move(*source));
+                    break;
+                }
+                case MetadataCaptureSourceKind::field: {
+                    if (!prepared.exact_native_source_field.empty()) {
+                        const auto source =
+                            native_document.find(prepared.exact_native_source_field);
+                        if (source == native_document.end()) {
+                            return std::unexpected(transformation_error(
+                                core::ErrorCode::invalid_argument,
+                                "capture source field is missing in the working metadata",
+                                action_index, item_index));
+                        }
+                        sources = source->second.values;
+                        break;
+                    }
+                    const auto logical_source = document.find(prepared.canonical_source_field);
+                    if (logical_source == document.end()) {
+                        return std::unexpected(transformation_error(
+                            core::ErrorCode::invalid_argument,
+                            "capture source field is missing in the working metadata", action_index,
+                            item_index));
+                    }
+                    sources = logical_source->second;
+                    break;
+                }
+                }
+                if (sources.empty()) {
+                    return std::unexpected(transformation_error(
+                        core::ErrorCode::invalid_argument,
+                        "capture source field has no ordered values", action_index, item_index));
+                }
+
+                struct CapturedTarget {
+                    const PreparedCaptureField* field{nullptr};
+                    Values values;
+                };
+                std::vector<CapturedTarget> captured;
+                captured.reserve(prepared.capture_fields.size());
+                for (const auto& source : sources) {
+                    auto matched = match_capture_pattern(*prepared.capture_program, source);
+                    if (!matched) {
+                        auto error = std::move(matched.error());
+                        error.context.push_back(
+                            {.key = "action", .value = std::to_string(action_index)});
+                        error.context.push_back(
+                            {.key = "item", .value = std::to_string(item_index)});
+                        return std::unexpected(std::move(error));
+                    }
+                    if (matched->kind == CapturePatternMatchKind::unmatched) {
+                        return std::unexpected(transformation_error(
+                            core::ErrorCode::invalid_argument,
+                            "capture pattern does not match the complete source", action_index,
+                            item_index));
+                    }
+                    if (matched->kind == CapturePatternMatchKind::ambiguous) {
+                        return std::unexpected(
+                            transformation_error(core::ErrorCode::conflict,
+                                                 "capture pattern has more than one possible parse",
+                                                 action_index, item_index));
+                    }
+                    if (matched->values.size() != prepared.capture_fields.size()) {
+                        return std::unexpected(transformation_error(
+                            core::ErrorCode::invariant,
+                            "capture pattern result does not match its prepared targets",
+                            action_index, item_index));
+                    }
+                    for (std::size_t index = 0U; index < matched->values.size(); ++index) {
+                        const auto& field = prepared.capture_fields[index];
+                        const auto found =
+                            std::ranges::find_if(captured, [&field](const auto& item) {
+                                return item.field->match_mode == field.match_mode &&
+                                       item.field->canonical_field == field.canonical_field &&
+                                       item.field->exact_native_field == field.exact_native_field;
+                            });
+                        auto* target = found == captured.end()
+                                           ? &captured.emplace_back(
+                                                 CapturedTarget{.field = &field, .values = {}})
+                                           : &*found;
+                        if (target->values.size() >= limits.values_per_cell) {
+                            return std::unexpected(transformation_error(
+                                core::ErrorCode::limit_exceeded,
+                                "metadata capture exceeds the per-cell value limit", action_index,
+                                item_index));
+                        }
+                        target->values.push_back(std::move(matched->values[index].value));
+                    }
+                }
+                for (auto& target : captured) {
+                    if (target.field->match_mode == MetadataFieldMatchMode::logical) {
+                        document[target.field->canonical_field] = std::move(target.values);
+                        continue;
+                    }
+                    std::size_t next_order = 0U;
+                    for (const auto& [name, existing] : native_document) {
+                        static_cast<void>(name);
+                        next_order = std::max(next_order, existing.order + 1U);
+                    }
+                    native_document[target.field->exact_native_field] = WorkingNativeField{
+                        .canonical_field = target.field->native_canonical_field,
+                        .values = std::move(target.values),
+                        .provenance = FieldProvenance::sidecar,
+                        .order = next_order,
+                    };
+                }
             }
             return {};
         },
@@ -535,8 +720,160 @@ prepare_chain(const MetadataTransformationChain& chain,
     PreparedChain result;
     result.actions.reserve(chain.actions.size());
     result.targets.reserve(chain.actions.size());
+    const auto add_target = [&result](std::string canonical, std::string exact_native,
+                                      std::string display, const MetadataFieldMatchMode match_mode,
+                                      const std::size_t action_index) -> core::Result<void> {
+        if (std::ranges::any_of(result.targets, [&](const auto& candidate) {
+                if (candidate.canonical_field != canonical || candidate.match_mode == match_mode) {
+                    return false;
+                }
+                const auto& exact_name = match_mode == MetadataFieldMatchMode::exact_native
+                                             ? exact_native
+                                             : candidate.exact_native_field;
+                const auto identity = resolve_text_property_identity(exact_name);
+                return identity.conventional && identity.canonical_name == canonical;
+            })) {
+            return std::unexpected(transformation_error(
+                core::ErrorCode::invalid_argument,
+                "metadata transformation cannot mix logical and exact-native actions for one "
+                "field",
+                action_index));
+        }
+        const auto existing = std::ranges::find_if(result.targets, [&](const auto& candidate) {
+            return candidate.match_mode == match_mode && candidate.canonical_field == canonical &&
+                   candidate.exact_native_field == exact_native;
+        });
+        if (existing == result.targets.end()) {
+            result.targets.push_back(Target{.canonical_field = std::move(canonical),
+                                            .exact_native_field = std::move(exact_native),
+                                            .display_field = std::move(display),
+                                            .match_mode = match_mode,
+                                            .last_action_index = action_index});
+        } else {
+            existing->last_action_index = action_index;
+        }
+        return {};
+    };
     for (std::size_t action_index = 0U; action_index < chain.actions.size(); ++action_index) {
         const auto& action = chain.actions[action_index];
+        if (const auto* capture = std::get_if<MetadataCaptureValuesAction>(&action)) {
+            if (capture->source_kind != MetadataCaptureSourceKind::filename &&
+                capture->source_kind != MetadataCaptureSourceKind::full_path &&
+                capture->source_kind != MetadataCaptureSourceKind::formatted &&
+                capture->source_kind != MetadataCaptureSourceKind::field) {
+                return std::unexpected(transformation_error(
+                    core::ErrorCode::invalid_argument,
+                    "metadata capture uses an unknown source kind", action_index));
+            }
+            if ((capture->source_kind == MetadataCaptureSourceKind::filename ||
+                 capture->source_kind == MetadataCaptureSourceKind::full_path) &&
+                !capture->source.empty()) {
+                return std::unexpected(transformation_error(
+                    core::ErrorCode::invalid_argument,
+                    "filename and full-path capture sources cannot have a source argument",
+                    action_index));
+            }
+            if ((capture->source_kind == MetadataCaptureSourceKind::formatted ||
+                 capture->source_kind == MetadataCaptureSourceKind::field) &&
+                (capture->source.empty() || capture->source.size() > limits.action_text_bytes)) {
+                return std::unexpected(transformation_error(
+                    core::ErrorCode::invalid_argument,
+                    "formatted and field captures require a bounded source argument",
+                    action_index));
+            }
+            if (auto valid =
+                    validate_utf8(capture->source, "metadata capture source", action_index);
+                !valid) {
+                return std::unexpected(std::move(valid.error()));
+            }
+            auto capture_program = compile_capture_pattern(
+                capture->pattern, capture->dialect,
+                CapturePatternLimits{.pattern_bytes = limits.action_text_bytes,
+                                     .source_bytes = limits.action_text_bytes,
+                                     .tokens = limits.actions,
+                                     .captures = limits.actions,
+                                     .match_steps = 4'000'000U});
+            if (!capture_program) {
+                auto error = std::move(capture_program.error());
+                error.context.push_back({.key = "action", .value = std::to_string(action_index)});
+                return std::unexpected(std::move(error));
+            }
+            PreparedAction prepared_action{
+                .action = &action,
+                .canonical_field = {},
+                .exact_native_field = {},
+                .canonical_source_field = {},
+                .exact_native_source_field = {},
+                .display_field = {},
+                .program = std::nullopt,
+                .capture_program = std::move(*capture_program),
+                .capture_fields = {},
+            };
+            prepared_action.capture_fields.reserve(
+                prepared_action.capture_program->named_capture_count);
+            for (const auto& token : prepared_action.capture_program->tokens) {
+                if (token.kind != CapturePatternTokenKind::field) {
+                    continue;
+                }
+                const auto identity = resolve_text_property_identity(token.text);
+                const auto match_mode = identity.conventional
+                                            ? MetadataFieldMatchMode::logical
+                                            : MetadataFieldMatchMode::exact_native;
+                const auto canonical = identity.conventional ? identity.canonical_name
+                                                             : canonicalize_field_name(token.text);
+                const auto exact_native = identity.conventional
+                                              ? std::string{}
+                                              : canonicalize_native_field_name(token.text);
+                if (token.text.size() > limits.field_name_bytes || canonical.empty()) {
+                    return std::unexpected(transformation_error(
+                        core::ErrorCode::invalid_argument,
+                        "metadata capture target field is empty or exceeds its byte limit",
+                        action_index));
+                }
+                prepared_action.capture_fields.push_back(PreparedCaptureField{
+                    .canonical_field = canonical,
+                    .exact_native_field = exact_native,
+                    .native_canonical_field = identity.canonical_name,
+                    .display_field = token.text,
+                    .match_mode = match_mode,
+                });
+                if (auto added =
+                        add_target(canonical, exact_native, token.text, match_mode, action_index);
+                    !added) {
+                    return std::unexpected(std::move(added.error()));
+                }
+            }
+            if (capture->source_kind == MetadataCaptureSourceKind::field) {
+                const auto identity = resolve_text_property_identity(capture->source);
+                prepared_action.canonical_source_field = canonicalize_field_name(capture->source);
+                if (!identity.conventional) {
+                    prepared_action.exact_native_source_field =
+                        canonicalize_native_field_name(capture->source);
+                }
+                if (prepared_action.canonical_source_field.empty() ||
+                    capture->source.size() > limits.field_name_bytes) {
+                    return std::unexpected(transformation_error(
+                        core::ErrorCode::invalid_argument,
+                        "metadata capture source field is empty or exceeds its byte limit",
+                        action_index));
+                }
+            } else if (capture->source_kind == MetadataCaptureSourceKind::formatted) {
+                titleformat::CompileOptions options;
+                options.context = titleformat::FormatContextKind::metadata_transformation;
+                auto compiled = titleformat::compile(capture->source, options);
+                if (!compiled.isValid()) {
+                    const auto message = !compiled.parse_diagnostics.empty()
+                                             ? compiled.parse_diagnostics.front().message
+                                             : compiled.diagnostics.front().message;
+                    return std::unexpected(transformation_error(
+                        core::ErrorCode::invalid_argument,
+                        "metadata capture source expression is invalid: " + message, action_index));
+                }
+                prepared_action.program = std::move(*compiled.program);
+            }
+            result.actions.push_back(std::move(prepared_action));
+            continue;
+        }
         const auto& target = target_field(action);
         const auto canonical = canonicalize_field_name(target);
         const auto match_mode = field_match_mode(action);
@@ -565,8 +902,11 @@ prepare_chain(const MetadataTransformationChain& chain,
             .canonical_field = canonical,
             .exact_native_field = exact_native,
             .canonical_source_field = {},
+            .exact_native_source_field = {},
             .display_field = target,
             .program = std::nullopt,
+            .capture_program = std::nullopt,
+            .capture_fields = {},
         };
         const auto validate_values = [&](const std::vector<std::string>& values,
                                          const std::string_view description) -> core::Result<void> {
@@ -756,34 +1096,9 @@ prepare_chain(const MetadataTransformationChain& chain,
             prepared_action.program = std::move(*compiled.program);
         }
         result.actions.push_back(std::move(prepared_action));
-        if (std::ranges::any_of(result.targets, [&](const auto& candidate) {
-                if (candidate.canonical_field != canonical || candidate.match_mode == match_mode) {
-                    return false;
-                }
-                const auto& exact_name = match_mode == MetadataFieldMatchMode::exact_native
-                                             ? exact_native
-                                             : candidate.exact_native_field;
-                const auto identity = resolve_text_property_identity(exact_name);
-                return identity.conventional && identity.canonical_name == canonical;
-            })) {
-            return std::unexpected(transformation_error(
-                core::ErrorCode::invalid_argument,
-                "metadata transformation cannot mix logical and exact-native actions for one "
-                "field",
-                action_index));
-        }
-        const auto existing = std::ranges::find_if(result.targets, [&](const auto& candidate) {
-            return candidate.match_mode == match_mode && candidate.canonical_field == canonical &&
-                   candidate.exact_native_field == exact_native;
-        });
-        if (existing == result.targets.end()) {
-            result.targets.push_back(Target{.canonical_field = canonical,
-                                            .exact_native_field = exact_native,
-                                            .display_field = target,
-                                            .match_mode = match_mode,
-                                            .last_action_index = action_index});
-        } else {
-            existing->last_action_index = action_index;
+        if (auto added = add_target(canonical, exact_native, target, match_mode, action_index);
+            !added) {
+            return std::unexpected(std::move(added.error()));
         }
     }
     return result;
@@ -926,7 +1241,8 @@ core::Result<MetadataTransformationPreview> plan_metadata_transformation(
             }
             if (auto applied =
                     apply_action(prepared[action_index], document, native_document, action_index,
-                                 item_index, selection_position, cancellation, limits);
+                                 item_index, selection_position,
+                                 selection.source(item_index).raw_path, cancellation, limits);
                 !applied) {
                 return std::unexpected(std::move(applied.error()));
             }

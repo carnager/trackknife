@@ -13,6 +13,7 @@
 #include "trackknife/metadata/staged_selection.hpp"
 #include "trackknife/metadata/write_plan.hpp"
 #include "trackknife/operations/metadata_commit.hpp"
+#include "trackknife/persistence/file_publication_journal.hpp"
 #include "trackknife/persistence/list_repository.hpp"
 #include "trackknife/persistence/operation_journal.hpp"
 #include "ui/server_library_tree_model.hpp"
@@ -33,6 +34,7 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QLabel>
@@ -156,9 +158,13 @@ class BenchMainWindowTest final : public QObject {
     void metadataReadyPlanAppliesAndRefreshesHistory();
     void metadataApplyCancellationPreservesDraftForFreshPreview();
     void metadataTransformationChainPreviewsAndStagesOneUndo();
+    void metadataCapturePatternSavesReloadsAndStagesAllFields();
     void preparationSidePanelEditsReusableOutputProfiles();
+    void pathOnlyPreparationUsesActualTagsAndAppliesReviewedPlan();
     void metadataOperationHistoryUndoesRetainedBackup();
+    void filePublicationHistoryUndoesSameFilesystemMove();
     void metadataStartupPresentsReconciliation();
+    void filePublicationStartupPresentsReconciliation();
     void folderDiscoveryAdmitsWave64();
     void contextMenusTargetSelectionsListsAndFolders();
     void panelLayoutPersistsAndPreservesFutureState();
@@ -1309,6 +1315,187 @@ void BenchMainWindowTest::preparationSidePanelEditsReusableOutputProfiles() {
     delete properties;
 }
 
+void BenchMainWindowTest::pathOnlyPreparationUsesActualTagsAndAppliesReviewedPlan() {
+    QTemporaryDir media;
+    QVERIFY(media.isValid());
+    const auto path = media.filePath(QStringLiteral("before.flac"));
+    QVERIFY(materialize_audio_fixture(QStringLiteral("rich-metadata-flac.b64"), path));
+    const auto encoded = QFile::encodeName(path);
+    const std::string raw_path{encoded.constData(), static_cast<std::size_t>(encoded.size())};
+    const auto read = metadata::read_local_metadata(raw_path);
+    QVERIFY(read.has_value());
+    const auto actual_title = read->document.first_effective_value("title");
+    QVERIFY(actual_title.has_value());
+    const MetadataPropertiesSource source{
+        .source =
+            metadata::StagedMetadataSource{
+                .raw_path = raw_path,
+                .source_revision = read->source_revision,
+                .baseline = read->document,
+            },
+        .track_label = QStringLiteral("Path fixture"),
+    };
+    const std::vector layouts{persistence::SavedOutputLayoutProfile{
+        .id = core::StableId::random(),
+        .profile =
+            operations::OutputLayoutProfile{
+                .schema_version = 1U,
+                .name = "Draft title",
+                .dialect = {},
+                .relative_directory_expression = {},
+                .basename_expression = "%title%",
+                .sanitization_policy = {"linux", 1U},
+            },
+    }};
+    OutputProfileStore output_store{
+        .load = [layouts](
+                    OutputProfileStore::LoadCompletion completion) { completion(layouts, {}, {}); },
+        .save_layout = {},
+        .remove_layout = {},
+        .save_destination = {},
+        .remove_destination = {},
+    };
+    const std::vector automatic_chains{persistence::SavedMetadataTransformationChain{
+        .id = core::StableId::random(),
+        .chain =
+            metadata::MetadataTransformationChain{
+                .schema_version = 1U,
+                .name = "Synthetic path title",
+                .actions = {metadata::MetadataFormatValueAction{
+                    .target_field = "title", .dialect = {}, .source = "Synthetic path title"}},
+            },
+        .automatic = true,
+    }};
+    MetadataTransformationStore transformation_store{
+        .load =
+            [automatic_chains](MetadataTransformationStore::LoadCompletion completion) {
+                completion(automatic_chains, {});
+            },
+        .save = {},
+        .remove = {},
+    };
+    std::optional<operations::FilePublicationApplyResult> observed;
+    std::string reviewed_target;
+    auto* properties = new MetadataPropertiesDialog(
+        1U,
+        [source](const std::size_t index) -> std::optional<MetadataPropertiesSource> {
+            return index == 0U ? std::optional{source} : std::nullopt;
+        },
+        {}, {}, {}, transformation_store, output_store,
+        [&reviewed_target] {
+            return FilePublicationPlanApplier{
+                [&reviewed_target](const operations::OutputPathPreflight& preflight,
+                                   const operations::FilePublicationApplyProgressCallback& progress,
+                                   const core::CancellationToken&)
+                    -> core::Result<operations::FilePublicationApplyResult> {
+                    if (preflight.sources.size() != 1U) {
+                        return std::unexpected(core::Error{
+                            .code = core::ErrorCode::invariant,
+                            .message = "Expected one reviewed path",
+                            .context = {},
+                        });
+                    }
+                    const auto& checked_source = preflight.sources.front();
+                    reviewed_target = checked_source.planned.target_raw_path;
+                    if (progress) {
+                        progress(operations::FilePublicationApplyProgress{
+                            .source_index = 0U,
+                            .source_raw_path = checked_source.planned.source_raw_path,
+                            .target_raw_path = checked_source.planned.target_raw_path,
+                            .publication = checked_source.publication,
+                            .state = operations::FilePublicationApplySourceState::committed,
+                            .completed_sources = 1U,
+                            .total_sources = 1U,
+                            .issue = std::nullopt,
+                        });
+                    }
+                    auto commit = operations::FilePublicationCommitResult{
+                        .journal_id = core::StableId::random(),
+                        .source_raw_path = checked_source.planned.source_raw_path,
+                        .target_raw_path = checked_source.planned.target_raw_path,
+                        .source_revision = checked_source.planned.source_revision,
+                        .target_revision = checked_source.observed_revision,
+                        .occurrence_indexes = checked_source.planned.item_indexes,
+                    };
+                    return operations::FilePublicationApplyResult{
+                        .sources = {operations::FilePublicationApplySourceResult{
+                            .source_index = 0U,
+                            .source_raw_path = checked_source.planned.source_raw_path,
+                            .target_raw_path = checked_source.planned.target_raw_path,
+                            .publication = checked_source.publication,
+                            .state = operations::FilePublicationApplySourceState::committed,
+                            .commit = std::move(commit),
+                            .issue = std::nullopt,
+                        }},
+                        .cancellation_requested = false,
+                    };
+                }};
+        },
+        [&observed](const operations::FilePublicationApplyResult& result) { observed = result; });
+    properties->show();
+
+    QTableView* fields = nullptr;
+    QTRY_VERIFY((fields = properties->findChild<QTableView*>(
+                     QStringLiteral("bench-metadata-fields"))) != nullptr);
+    auto* aggregate_model = qobject_cast<MetadataAggregateModel*>(fields->model());
+    auto* save_tags =
+        properties->findChild<QCheckBox*>(QStringLiteral("bench-preparation-save-tags"));
+    auto* rename_files =
+        properties->findChild<QCheckBox*>(QStringLiteral("bench-preparation-rename-files"));
+    auto* preview =
+        properties->findChild<QPushButton*>(QStringLiteral("bench-metadata-preview-write-plan"));
+    QVERIFY(aggregate_model != nullptr);
+    QVERIFY(save_tags != nullptr);
+    QVERIFY(rename_files != nullptr);
+    QVERIFY(preview != nullptr);
+    QTRY_VERIFY(rename_files->isEnabled());
+    QListWidget* automatic_list = nullptr;
+    QTRY_VERIFY((automatic_list = properties->findChild<QListWidget*>(
+                     QStringLiteral("bench-metadata-transformation-list"))) != nullptr);
+    QTRY_COMPARE(automatic_list->count(), 1);
+    QCOMPARE(automatic_list->item(0)->checkState(), Qt::Checked);
+    const auto title_row = aggregate_model->fieldRow(QStringLiteral("title"));
+    QVERIFY(title_row.has_value());
+    QVERIFY(aggregate_model->setData(aggregate_model->index(*title_row, 2),
+                                     QStringLiteral("Draft path title"), Qt::EditRole));
+    save_tags->setChecked(false);
+    rename_files->setChecked(true);
+    QTRY_VERIFY(preview->isEnabled());
+    QTest::mouseClick(preview, Qt::LeftButton);
+
+    QDialog* review = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((review = properties->findChild<QDialog*>(
+                                  QStringLiteral("bench-metadata-write-plan"))) != nullptr,
+                             5'000);
+    auto* path_table =
+        review->findChild<QTableView*>(QStringLiteral("bench-output-path-plan-table"));
+    auto* apply =
+        review->findChild<QPushButton*>(QStringLiteral("bench-metadata-write-plan-apply"));
+    QVERIFY(path_table != nullptr);
+    QVERIFY(apply != nullptr);
+    QCOMPARE(path_table->model()->rowCount(), 1);
+    const auto expected_target =
+        media.filePath(QString::fromStdString(*actual_title) + QStringLiteral(".flac"));
+    QCOMPARE(path_table->model()->index(0, 2).data().toString(), expected_target);
+    QVERIFY(!expected_target.endsWith(QStringLiteral("/Draft path title.flac")));
+    QVERIFY(!expected_target.endsWith(QStringLiteral("/Synthetic path title.flac")));
+    QTest::mouseClick(apply, Qt::LeftButton);
+
+    QDialog* result = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((result = properties->findChild<QDialog*>(
+                                  QStringLiteral("bench-file-publication-apply"))) != nullptr,
+                             5'000);
+    QPushButton* close = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((close = result->findChild<QPushButton*>(
+                                  QStringLiteral("bench-file-publication-apply-close"))) != nullptr,
+                             5'000);
+    QVERIFY(observed.has_value());
+    QCOMPARE(observed->committed_source_count(), 1U);
+    QCOMPARE(QString::fromStdString(reviewed_target), expected_target);
+    QTest::mouseClick(close, Qt::LeftButton);
+    QTRY_VERIFY(properties->parent() == nullptr || !properties->isVisible());
+}
+
 void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() {
     QTemporaryDir media;
     QVERIFY(media.isValid());
@@ -1442,13 +1629,14 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     QVERIFY(stage != nullptr);
     QVERIFY(preview_table != nullptr);
     QVERIFY(preview_summary != nullptr);
-    QCOMPARE(kind->count(), 16);
+    QCOMPARE(kind->count(), 17);
     QCOMPARE(kind->itemText(6), QStringLiteral("Capitalize first character"));
     QCOMPARE(kind->itemText(11), QStringLiteral("Remove exact matching values"));
     QCOMPARE(kind->itemText(12), QStringLiteral("Replace exact matching values"));
     QCOMPARE(kind->itemText(13), QStringLiteral("Number by selected-file order"));
     QCOMPARE(kind->itemText(14), QStringLiteral("Keep first characters of each value"));
     QCOMPARE(kind->itemText(15), QStringLiteral("Remove field when condition matches"));
+    QCOMPARE(kind->itemText(16), QStringLiteral("Capture fields with tkcapture-1"));
 
     QTimer::singleShot(0, dialog, [dialog] {
         auto* importer =
@@ -1485,6 +1673,46 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     QVERIFY(steps->item(3)->text().contains(QStringLiteral("Format date as $if(%originaldate%")));
     QVERIFY(steps->item(4)->text().contains(
         QStringLiteral("Keep the first 4 characters of each value of originaldate")));
+    auto* editor_tabs =
+        dialog->findChild<QTabWidget*>(QStringLiteral("bench-metadata-transformation-editor-tabs"));
+    auto* raw_source = dialog->findChild<QPlainTextEdit*>(
+        QStringLiteral("bench-metadata-transformation-raw-source"));
+    auto* raw_diagnostics = dialog->findChild<QPlainTextEdit*>(
+        QStringLiteral("bench-metadata-transformation-raw-diagnostics"));
+    QVERIFY(editor_tabs != nullptr);
+    QVERIFY(raw_source != nullptr);
+    QVERIFY(raw_diagnostics != nullptr);
+    QCOMPARE(editor_tabs->tabText(1), QStringLiteral("Raw script"));
+    QVERIFY(raw_source->toPlainText().contains(
+        QStringLiteral("$or($not(%totaldiscs%),$eq(%totaldiscs%,1))")));
+    auto revised_source = raw_source->toPlainText();
+    revised_source.replace(QStringLiteral("$or($not(%totaldiscs%),$eq(%totaldiscs%,1))"),
+                           QStringLiteral("$eq(%totaldiscs%,1)"));
+    raw_source->setPlainText(revised_source);
+    QTRY_VERIFY(raw_diagnostics->toPlainText().contains(QStringLiteral("Ready")));
+    QVERIFY(steps->item(1)->text().contains(QStringLiteral("$eq(%totaldiscs%,1)")));
+    QVERIFY(!steps->item(1)->text().contains(QStringLiteral("$not(%totaldiscs%)")));
+    QVERIFY(dialog->isWindowModified());
+    QTimer::singleShot(0, dialog, [] {
+        auto* confirmation = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        QVERIFY(confirmation != nullptr);
+        auto* cancel = confirmation->button(QMessageBox::Cancel);
+        QVERIFY(cancel != nullptr);
+        QTest::mouseClick(cancel, Qt::LeftButton);
+    });
+    dialog->close();
+    QVERIFY(dialog->isVisible());
+    auto* save =
+        dialog->findChild<QPushButton*>(QStringLiteral("bench-metadata-transformation-save"));
+    QVERIFY(save != nullptr);
+    QVERIFY(save->isEnabled());
+    QTest::mouseClick(save, Qt::LeftButton);
+    QCOMPARE(saved_chains.size(), std::size_t{1U});
+    const auto* saved_conditional =
+        std::get_if<metadata::MetadataRemoveFieldIfAction>(&saved_chains.front().chain.actions[1]);
+    QVERIFY(saved_conditional != nullptr);
+    QCOMPARE(saved_conditional->condition, std::string{"$eq(%totaldiscs%,1)"});
+    QVERIFY(!dialog->isWindowModified());
     for (auto count = 0; count < 5; ++count) {
         QTest::mouseClick(remove, Qt::LeftButton);
     }
@@ -1523,14 +1751,11 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     QCOMPARE(character_count->value(), 4);
     QTest::mouseClick(add, Qt::LeftButton);
 
-    auto* save_as = dialog->findChild<QPushButton*>(
-        QStringLiteral("bench-metadata-transformation-save-as-new"));
     auto* saved =
         dialog->findChild<QComboBox*>(QStringLiteral("bench-metadata-transformation-saved"));
-    QVERIFY(save_as != nullptr);
     QVERIFY(saved != nullptr);
-    QVERIFY(save_as->isEnabled());
-    QTest::mouseClick(save_as, Qt::LeftButton);
+    QVERIFY(save->isEnabled());
+    QTest::mouseClick(save, Qt::LeftButton);
     QCOMPARE(saved_chains.size(), std::size_t{1U});
     QCOMPARE(saved->count(), 2);
     QCOMPARE(saved->currentIndex(), 1);
@@ -1693,6 +1918,147 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     delete properties;
 }
 
+void BenchMainWindowTest::metadataCapturePatternSavesReloadsAndStagesAllFields() {
+    const MetadataPropertiesSource source{
+        .source =
+            metadata::StagedMetadataSource{
+                .raw_path = "/library/Alpha/Album/03. Song.flac",
+                .source_revision = std::nullopt,
+                .baseline = metadata::MetadataDocument{},
+            },
+        .track_label = QStringLiteral("Capture fixture"),
+    };
+    std::vector<persistence::SavedMetadataTransformationChain> saved_chains;
+    MetadataTransformationStore store{
+        .load =
+            [&saved_chains](MetadataTransformationStore::LoadCompletion completion) {
+                completion(saved_chains, {});
+            },
+        .save =
+            [&saved_chains](persistence::SavedMetadataTransformationChain chain,
+                            MetadataTransformationStore::Completion completion) {
+                const auto found = std::ranges::find(
+                    saved_chains, chain.id, &persistence::SavedMetadataTransformationChain::id);
+                if (found == saved_chains.end()) {
+                    saved_chains.push_back(std::move(chain));
+                } else {
+                    *found = std::move(chain);
+                }
+                completion({});
+            },
+        .remove = {},
+    };
+    auto* properties = new MetadataPropertiesDialog(
+        1U,
+        [source](const std::size_t index) -> std::optional<MetadataPropertiesSource> {
+            return index == 0U ? std::optional{source} : std::nullopt;
+        },
+        {}, {}, {}, store);
+    properties->show();
+    auto* transform =
+        properties->findChild<QPushButton*>(QStringLiteral("bench-metadata-transform"));
+    QTableView* files = nullptr;
+    QTRY_VERIFY((files = properties->findChild<QTableView*>(
+                     QStringLiteral("bench-metadata-files"))) != nullptr);
+    auto* grid_model = qobject_cast<MetadataGridModel*>(files->model());
+    QVERIFY(transform != nullptr);
+    QVERIFY(grid_model != nullptr);
+    QTRY_VERIFY(transform->isEnabled());
+    QTest::mouseClick(transform, Qt::LeftButton);
+
+    QDialog* dialog = nullptr;
+    QTRY_VERIFY((dialog = properties->findChild<QDialog*>(
+                     QStringLiteral("bench-metadata-transformation"))) != nullptr);
+    auto* kind =
+        dialog->findChild<QComboBox*>(QStringLiteral("bench-metadata-transformation-kind"));
+    auto* source_kind = dialog->findChild<QComboBox*>(
+        QStringLiteral("bench-metadata-transformation-capture-source"));
+    auto* source_argument = dialog->findChild<QLineEdit*>(
+        QStringLiteral("bench-metadata-transformation-capture-argument"));
+    auto* input =
+        dialog->findChild<QLineEdit*>(QStringLiteral("bench-metadata-transformation-input"));
+    auto* add =
+        dialog->findChild<QPushButton*>(QStringLiteral("bench-metadata-transformation-add"));
+    auto* steps =
+        dialog->findChild<QListWidget*>(QStringLiteral("bench-metadata-transformation-steps"));
+    auto* save_as = dialog->findChild<QPushButton*>(
+        QStringLiteral("bench-metadata-transformation-save-as-new"));
+    QVERIFY(kind != nullptr);
+    QVERIFY(source_kind != nullptr);
+    QVERIFY(source_argument != nullptr);
+    QVERIFY(input != nullptr);
+    QVERIFY(add != nullptr);
+    QVERIFY(steps != nullptr);
+    QVERIFY(save_as != nullptr);
+    kind->setCurrentIndex(16);
+    QCOMPARE(source_kind->count(), 4);
+    source_kind->setCurrentIndex(0);
+    QVERIFY(!source_argument->isVisible());
+    input->setText(QStringLiteral("%artist%/%album%/%tracknumber%. %title%"));
+    QTest::mouseClick(add, Qt::LeftButton);
+    QCOMPARE(steps->count(), 1);
+    QVERIFY(steps->item(0)->text().contains(QStringLiteral("Capture filename with")));
+    QTest::mouseClick(save_as, Qt::LeftButton);
+    QCOMPARE(saved_chains.size(), std::size_t{1U});
+    const auto* saved_capture = std::get_if<metadata::MetadataCaptureValuesAction>(
+        &saved_chains.front().chain.actions.front());
+    QVERIFY(saved_capture != nullptr);
+    QCOMPARE(saved_capture->pattern, std::string{"%artist%/%album%/%tracknumber%. %title%"});
+
+    dialog->close();
+    QTRY_VERIFY(properties->findChild<QDialog*>(QStringLiteral("bench-metadata-transformation")) ==
+                nullptr);
+    auto* script_list =
+        properties->findChild<QListWidget*>(QStringLiteral("bench-metadata-transformation-list"));
+    QVERIFY(script_list != nullptr);
+    QTRY_COMPARE(script_list->count(), 1);
+    script_list->setCurrentRow(0);
+    QTRY_VERIFY(transform->isEnabled());
+    QTest::mouseClick(transform, Qt::LeftButton);
+    QTRY_VERIFY((dialog = properties->findChild<QDialog*>(
+                     QStringLiteral("bench-metadata-transformation"))) != nullptr);
+    steps = dialog->findChild<QListWidget*>(QStringLiteral("bench-metadata-transformation-steps"));
+    auto* preview =
+        dialog->findChild<QPushButton*>(QStringLiteral("bench-metadata-transformation-preview"));
+    auto* stage =
+        dialog->findChild<QPushButton*>(QStringLiteral("bench-metadata-transformation-stage"));
+    auto* table =
+        dialog->findChild<QTreeView*>(QStringLiteral("bench-metadata-transformation-table"));
+    QVERIFY(steps != nullptr);
+    QVERIFY(preview != nullptr);
+    QVERIFY(stage != nullptr);
+    QVERIFY(table != nullptr);
+    QCOMPARE(steps->count(), 1);
+    QTest::mouseClick(preview, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(table->model() != nullptr, 5'000);
+    QCOMPARE(table->model()->rowCount(), 4);
+    QStringList fields;
+    for (auto row = 0; row < table->model()->rowCount(); ++row) {
+        fields.push_back(table->model()->index(row, 0).data().toString().toCaseFolded());
+    }
+    QCOMPARE(fields, (QStringList{QStringLiteral("artist"), QStringLiteral("album"),
+                                  QStringLiteral("tracknumber"), QStringLiteral("title")}));
+    QVERIFY(stage->isEnabled());
+    QTest::mouseClick(stage, Qt::LeftButton);
+    QTRY_VERIFY(properties->findChild<QDialog*>(QStringLiteral("bench-metadata-transformation")) ==
+                nullptr);
+    QCOMPARE(grid_model->patches().patch_count(), std::size_t{4U});
+    const auto artist = grid_model->fieldColumn(QStringLiteral("artist"));
+    const auto album = grid_model->fieldColumn(QStringLiteral("album"));
+    const auto track = grid_model->fieldColumn(QStringLiteral("tracknumber"));
+    const auto title = grid_model->fieldColumn(QStringLiteral("title"));
+    QVERIFY(artist && album && track && title);
+    QCOMPARE(grid_model->index(0, *artist).data(metadata_cell_values_role).toStringList(),
+             QStringList{QStringLiteral("Alpha")});
+    QCOMPARE(grid_model->index(0, *album).data(metadata_cell_values_role).toStringList(),
+             QStringList{QStringLiteral("Album")});
+    QCOMPARE(grid_model->index(0, *track).data(metadata_cell_values_role).toStringList(),
+             QStringList{QStringLiteral("03")});
+    QCOMPARE(grid_model->index(0, *title).data(metadata_cell_values_role).toStringList(),
+             QStringList{QStringLiteral("Song")});
+    delete properties;
+}
+
 void BenchMainWindowTest::metadataOperationHistoryUndoesRetainedBackup() {
     QTemporaryDir media;
     QVERIFY(media.isValid());
@@ -1828,6 +2194,157 @@ void BenchMainWindowTest::metadataOperationHistoryUndoesRetainedBackup() {
     QCOMPARE(refreshed_table->model()->index(0, 0).data().toString(), QStringLiteral("Undone"));
 }
 
+void BenchMainWindowTest::filePublicationHistoryUndoesSameFilesystemMove() {
+    QTemporaryDir media;
+    QVERIFY(media.isValid());
+    const auto source_path = media.filePath(QStringLiteral("original.flac"));
+    const auto target_path = media.filePath(QStringLiteral("published.flac"));
+    QVERIFY(materialize_audio_fixture(QStringLiteral("rich-metadata-flac.b64"), source_path));
+    const auto source_encoded = QFile::encodeName(source_path);
+    const auto target_encoded = QFile::encodeName(target_path);
+    const std::string source_raw{source_encoded.constData(),
+                                 static_cast<std::size_t>(source_encoded.size())};
+    const std::string target_raw{target_encoded.constData(),
+                                 static_cast<std::size_t>(target_encoded.size())};
+    const auto source_read = metadata::read_local_metadata(source_raw);
+    QVERIFY(source_read.has_value());
+
+    const auto base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QVERIFY(QDir().mkpath(base));
+    const auto database_path = std::filesystem::path{
+        QFile::encodeName(base + QStringLiteral("/lists.sqlite")).toStdString()};
+    const auto operation_id = core::StableId::random();
+    {
+        auto repository = persistence::ListRepository::open(database_path);
+        QVERIFY(repository.has_value());
+        const std::vector documents{persistence::ListDocument{
+            .id = core::StableId::random(),
+            .kind = persistence::ListKind::scratch,
+            .name = "File history",
+            .pinned = false,
+            .dirty = false,
+            .items = {persistence::ListItem{
+                .source = persistence::ListSource::local,
+                .profile_id = std::nullopt,
+                .source_reference = source_raw,
+                .logical_reference = std::nullopt,
+                .segment = std::nullopt,
+                .source_selection = std::nullopt,
+                .duration_ms = std::nullopt,
+                .source_revision = source_read->source_revision,
+                .fields = {},
+            }},
+        }};
+        QVERIFY(repository->replace_all(documents));
+        auto journal = persistence::SqliteFilePublicationJournal::open(database_path);
+        QVERIFY(journal.has_value());
+        const operations::FilePublicationJournalRecord record{
+            .id = operation_id,
+            .state = operations::FilePublicationJournalState::planned,
+            .publication = operations::OutputPathPublicationKind::same_filesystem_rename,
+            .source_raw_path = source_raw,
+            .target_raw_path = target_raw,
+            .prepared_raw_path = {},
+            .expected_source_revision = source_read->source_revision,
+            .prepared_revision = std::nullopt,
+            .target_revision = std::nullopt,
+            .occurrence_indexes = {0U},
+            .planned_missing_directory_raw_paths = {},
+            .reverses_journal_id = std::nullopt,
+            .failure = std::nullopt,
+        };
+        QVERIFY(journal->create(record));
+        QVERIFY(QFile::rename(source_path, target_path));
+        const auto target_read = metadata::read_local_metadata(target_raw);
+        QVERIFY(target_read.has_value());
+        QVERIFY(journal->transition(
+            operation_id, operations::FilePublicationJournalTransition{
+                              .expected_state = operations::FilePublicationJournalState::planned,
+                              .state = operations::FilePublicationJournalState::target_published,
+                              .prepared_revision = std::nullopt,
+                              .target_revision = target_read->source_revision,
+                              .failure = std::nullopt,
+                          }));
+        QVERIFY(repository->relocate_local_source(persistence::LocalSourceRelocation{
+            .operation_id = operation_id,
+            .source_reference = source_raw,
+            .target_reference = target_raw,
+            .previous_revision = source_read->source_revision,
+            .published_revision = target_read->source_revision,
+        }));
+        QVERIFY(journal->transition(
+            operation_id,
+            operations::FilePublicationJournalTransition{
+                .expected_state = operations::FilePublicationJournalState::target_published,
+                .state = operations::FilePublicationJournalState::dependent_state_committed,
+                .prepared_revision = std::nullopt,
+                .target_revision = target_read->source_revision,
+                .failure = std::nullopt,
+            }));
+        QVERIFY(journal->transition(
+            operation_id,
+            operations::FilePublicationJournalTransition{
+                .expected_state =
+                    operations::FilePublicationJournalState::dependent_state_committed,
+                .state = operations::FilePublicationJournalState::complete,
+                .prepared_revision = std::nullopt,
+                .target_revision = target_read->source_revision,
+                .failure = std::nullopt,
+            }));
+    }
+
+    BenchMainWindow window;
+    window.show();
+    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("bench-tabs"));
+    auto* history = window.findChild<QAction*>(QStringLiteral("action-metadata-operation-history"));
+    QVERIFY(tabs != nullptr);
+    QVERIFY(history != nullptr);
+    QTRY_COMPARE(tabs->count(), 2);
+    QTRY_VERIFY(!window.property("trackbench-metadata-operation-running").toBool());
+    auto* list_model =
+        qobject_cast<LocalListModel*>(qobject_cast<QTableView*>(tabs->currentWidget())->model());
+    QVERIFY(list_model != nullptr);
+    QTRY_COMPARE(list_model->rowCount(), 1);
+    QCOMPARE(list_model->rows().front().raw_path, target_raw);
+
+    history->trigger();
+    auto* dialog = window.findChild<QDialog*>(QStringLiteral("bench-metadata-operation-history"));
+    QVERIFY(dialog != nullptr);
+    auto* table = dialog->findChild<QTableView*>(QStringLiteral("bench-metadata-operation-table"));
+    auto* undo = dialog->findChild<QPushButton*>(QStringLiteral("bench-metadata-operation-undo"));
+    QVERIFY(table != nullptr);
+    QVERIFY(undo != nullptr);
+    QCOMPARE(table->model()->rowCount(), 1);
+    QCOMPARE(table->model()->index(0, 0).data().toString(), QStringLiteral("Undo available"));
+    QVERIFY(table->model()->index(0, 3).data().toString().contains(
+        QStringLiteral("same-filesystem rename")));
+    QVERIFY(undo->isEnabled());
+
+    QTimer::singleShot(0, [] {
+        auto* confirmation = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        QVERIFY(confirmation != nullptr);
+        auto* yes = confirmation->button(QMessageBox::Yes);
+        QVERIFY(yes != nullptr);
+        QTest::mouseClick(yes, Qt::LeftButton);
+    });
+    QTest::mouseClick(undo, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(!window.property("trackbench-metadata-operation-running").toBool(),
+                             5'000);
+    QTRY_COMPARE_WITH_TIMEOUT(list_model->rows().front().raw_path, source_raw, 5'000);
+    QVERIFY(QFileInfo::exists(source_path));
+    QVERIFY(!QFileInfo::exists(target_path));
+    QDialog* refreshed = nullptr;
+    QTRY_VERIFY((refreshed = window.findChild<QDialog*>(
+                     QStringLiteral("bench-metadata-operation-history"))) != nullptr);
+    auto* refreshed_table =
+        refreshed->findChild<QTableView*>(QStringLiteral("bench-metadata-operation-table"));
+    QVERIFY(refreshed_table != nullptr);
+    QCOMPARE(refreshed_table->model()->rowCount(), 2);
+    QCOMPARE(refreshed_table->model()->index(0, 0).data().toString(),
+             QStringLiteral("Undo complete"));
+    QCOMPARE(refreshed_table->model()->index(1, 0).data().toString(), QStringLiteral("Undone"));
+}
+
 void BenchMainWindowTest::metadataStartupPresentsReconciliation() {
     const auto base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QVERIFY(QDir().mkpath(base));
@@ -1898,6 +2415,69 @@ void BenchMainWindowTest::metadataStartupPresentsReconciliation() {
         QStringLiteral("Ambiguous source identity")));
     QVERIFY(!undo->isEnabled());
     QVERIFY(!release->isEnabled());
+}
+
+void BenchMainWindowTest::filePublicationStartupPresentsReconciliation() {
+    const auto base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QVERIFY(QDir().mkpath(base));
+    const auto database_path = std::filesystem::path{
+        QFile::encodeName(base + QStringLiteral("/lists.sqlite")).toStdString()};
+    {
+        auto journal = persistence::SqliteFilePublicationJournal::open(database_path);
+        QVERIFY(journal.has_value());
+        const auto id = core::StableId::random();
+        const core::LocalSourceRevision revision{.device = 1U,
+                                                 .inode = 2U,
+                                                 .size = 3U,
+                                                 .modification_time_seconds = 4,
+                                                 .modification_time_nanoseconds = 5};
+        const operations::FilePublicationJournalRecord record{
+            .id = id,
+            .state = operations::FilePublicationJournalState::planned,
+            .publication = operations::OutputPathPublicationKind::same_filesystem_rename,
+            .source_raw_path = "/music/original.flac",
+            .target_raw_path = "/music/renamed.flac",
+            .prepared_raw_path = {},
+            .expected_source_revision = revision,
+            .prepared_revision = std::nullopt,
+            .target_revision = std::nullopt,
+            .occurrence_indexes = {0U},
+            .planned_missing_directory_raw_paths = {},
+            .reverses_journal_id = std::nullopt,
+            .failure = std::nullopt,
+        };
+        QVERIFY(journal->create(record));
+        QVERIFY(journal->transition(
+            id, operations::FilePublicationJournalTransition{
+                    .expected_state = operations::FilePublicationJournalState::planned,
+                    .state = operations::FilePublicationJournalState::needs_reconciliation,
+                    .prepared_revision = std::nullopt,
+                    .target_revision = std::nullopt,
+                    .failure = core::Error{.code = core::ErrorCode::conflict,
+                                           .message = "Ambiguous rename topology",
+                                           .context = {}},
+                }));
+    }
+
+    BenchMainWindow window;
+    window.show();
+    QTRY_VERIFY(!window.property("trackbench-metadata-operation-running").toBool());
+    QTRY_COMPARE(window.property("trackbench-metadata-reconciliation-count").toULongLong(), 0ULL);
+    QTRY_COMPARE(window.property("trackbench-file-reconciliation-count").toULongLong(), 1ULL);
+    QDialog* dialog = nullptr;
+    QTRY_VERIFY((dialog = window.findChild<QDialog*>(
+                     QStringLiteral("bench-metadata-operation-history"))) != nullptr);
+    auto* table = dialog->findChild<QTableView*>(QStringLiteral("bench-metadata-operation-table"));
+    auto* undo = dialog->findChild<QPushButton*>(QStringLiteral("bench-metadata-operation-undo"));
+    QVERIFY(table != nullptr);
+    QVERIFY(undo != nullptr);
+    QCOMPARE(table->model()->rowCount(), 1);
+    QCOMPARE(table->model()->index(0, 0).data().toString(), QStringLiteral("Needs attention"));
+    QVERIFY(table->model()->index(0, 3).data().toString().contains(
+        QStringLiteral("Ambiguous rename topology")));
+    QVERIFY(table->model()->index(0, 3).data().toString().contains(
+        QStringLiteral("/music/renamed.flac")));
+    QVERIFY(!undo->isEnabled());
 }
 
 void BenchMainWindowTest::folderDiscoveryAdmitsWave64() {
@@ -2535,6 +3115,34 @@ void BenchMainWindowTest::richMetadataValuesAndIdentitiesSurviveListRestart() {
                                            "66666666-6666-6666-6666-666666666666"}));
         QVERIFY(row.source_revision.has_value());
         QCOMPARE(row.source_revision->size, 2'308U);
+
+        // Simulate a workspace saved by the pre-ADR-0066 merge: FFmpeg's
+        // generic `track` projection was cached beside TagLib's authoritative
+        // native TRACKNUMBER field. Restart must discard only the redundant
+        // stream projection and retain the embedded field.
+        auto legacy_rows = model->rows();
+        legacy_rows.front().metadata.fields.push_back(metadata::MetadataField{
+            .canonical_name = "tracknumber",
+            .native_name = "TRACKNUMBER",
+            .values = {"3"},
+            .qualifier = {},
+            .provenance = metadata::FieldProvenance::embedded,
+        });
+        legacy_rows.front().metadata.fields.push_back(metadata::MetadataField{
+            .canonical_name = "track",
+            .native_name = "track",
+            .values = {"3"},
+            .qualifier = {},
+            .provenance = metadata::FieldProvenance::stream,
+        });
+        legacy_rows.front().metadata.fields.push_back(metadata::MetadataField{
+            .canonical_name = "album_artist",
+            .native_name = "ALBUM_ARTIST",
+            .values = {"Independent freeform value"},
+            .qualifier = {},
+            .provenance = metadata::FieldProvenance::embedded,
+        });
+        model->replaceRows(std::move(legacy_rows));
         QVERIFY(window.close());
     }
 
@@ -2555,6 +3163,12 @@ void BenchMainWindowTest::richMetadataValuesAndIdentitiesSurviveListRestart() {
              (std::vector<std::string>{"first custom value", "second custom value"}));
     QCOMPARE(metadata::project_musicbrainz(row.metadata).release_ids,
              (std::vector<std::string>{"33333333-3333-3333-3333-333333333333"}));
+    QCOMPARE(row.metadata.effective_values("tracknumber"), (std::vector<std::string>{"3"}));
+    QVERIFY(!row.metadata.effective_native_field("track").has_value());
+    const auto freeform_album_artist = row.metadata.effective_native_field("ALBUM_ARTIST");
+    QVERIFY(freeform_album_artist.has_value());
+    QCOMPARE(freeform_album_artist->values,
+             (std::vector<std::string>{"Independent freeform value"}));
     // The snapshot and revision are explicitly stale evidence. The write-plan
     // boundary observes the file again and compares this value before commit;
     // retaining it lets dependent-state replay distinguish an older queued
@@ -2592,6 +3206,15 @@ void BenchMainWindowTest::metadataPropertiesFileSelectionDrivesIndividualAndBulk
     QVERIFY(list_model != nullptr);
     QTRY_COMPARE_WITH_TIMEOUT(list_model->rowCount(), 2, 5'000);
     QTRY_VERIFY_WITH_TIMEOUT(list_model->rows()[0].probed && list_model->rows()[1].probed, 5'000);
+    const auto ordinary_row =
+        std::ranges::find(list_model->rows(), ordinary_raw, &LocalTrackRow::raw_path);
+    QVERIFY(ordinary_row != list_model->rows().end());
+    QCOMPARE(ordinary_row->metadata.effective_values("tracknumber"),
+             (std::vector<std::string>{"3"}));
+    QVERIFY(!ordinary_row->metadata.effective_native_field("track").has_value());
+    const auto rich_row = std::ranges::find(list_model->rows(), rich_raw, &LocalTrackRow::raw_path);
+    QVERIFY(rich_row != list_model->rows().end());
+    QVERIFY(!rich_row->metadata.effective_native_field("album_artist").has_value());
     view->selectionModel()->select(list_model->index(0, 0),
                                    QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
     view->selectionModel()->select(list_model->index(1, 0),
@@ -2683,11 +3306,14 @@ void BenchMainWindowTest::metadataPropertiesFileSelectionDrivesIndividualAndBulk
     const auto date_column = grid_model->fieldColumn(QStringLiteral("date"));
     const auto genre_column = grid_model->fieldColumn(QStringLiteral("genre"));
     const auto custom_column = grid_model->fieldColumn(QStringLiteral("custom_field"));
+    const auto track_number_column = grid_model->fieldColumn(QStringLiteral("tracknumber"));
     QVERIFY(title_column.has_value());
     QVERIFY(artist_column.has_value());
     QVERIFY(date_column.has_value());
     QVERIFY(genre_column.has_value());
     QVERIFY(custom_column.has_value());
+    QVERIFY(track_number_column.has_value());
+    QVERIFY(!grid_model->fieldColumn(QStringLiteral("track")).has_value());
     const auto title_row = aggregate_model->fieldRow(QStringLiteral("title"));
     const auto artist_row = aggregate_model->fieldRow(QStringLiteral("artist"));
     const auto date_row = aggregate_model->fieldRow(QStringLiteral("date"));

@@ -36,7 +36,12 @@ same-filesystem undo (ADR-0060), and verified cross-filesystem publication
 joined by bounded file-publication Apply (ADR-0063) and typed keep-first
 metadata transformation (ADR-0064), plus pasted rule-script translation and
 conditional removal (ADR-0065), and explicit semantic/freeform metadata field
-identity (ADR-0066); decisions are accepted through ADR-0066.
+identity (ADR-0066), plus the immutable final-metadata/path review, qualified
+Rename/Move UI, and unified file recovery/history (ADR-0067), and bounded
+versioned multi-target metadata capture patterns (ADR-0068), plus strict
+source-tag authority for path-only preparation (ADR-0069) and canonical raw
+transformation editing with dirty-state protection (ADR-0070); decisions are
+accepted through ADR-0070.
 Backend selection is not a capability claim; protocol and file behavior still
 require fixtures and measurements.
 
@@ -150,9 +155,13 @@ search, the bounded copy-on-write patch set and worker result projection, and
 the physical-source-aware revalidated write-plan preview, plus the native-FLAC
 preservation-verified prepared-copy writer. Versioned ordered transformation
 chains, their exact add/copy/split/join and first-character capitalization
-semantics, pure final-cell preview, and future capture patterns remain in this
-module. Saved definitions cross the
-`persistence` boundary only as validated declarative data. Each adapter
+semantics, pure final-cell preview, and the independent Qt-free `tkcapture-1`
+compiler/matcher remain in this module. One capture action may expose several
+semantic and exact-freeform preview targets while still staging atomically.
+The bounded cleanup importer also owns a verified canonical source projection
+for representable typed actions; persisted typed actions remain authoritative.
+Saved definitions cross the `persistence` boundary only as validated
+declarative data. Each adapter
 publishes independent
 read/write/artwork/preservation capabilities;
 decode or read support never implies write safety. Loudness is displayed beside
@@ -178,6 +187,11 @@ release, startup maintenance, and restart recovery without conflating backup
 retention with publication state. A Qt-free two-worker Apply orchestrator now
 consumes only wholly ready plans, serializes progress delivery, stops new
 admission on cancellation, and preserves ordered per-source partial results.
+Trackbench composes final tag context and file paths into one immutable
+preparation review; changed-content plus path publication remains blocked until
+one destination-artifact executor can satisfy that combined plan. A path-only
+review carries no metadata plan or synthetic context and evaluates from the
+captured revision-qualified source tags.
 
 ### `jobs`
 
@@ -208,8 +222,9 @@ shortcuts, and the versioned panel- and track-view-layout models/validators)
 plus one primary Trackbench shell: authority-bound MPD connection,
 server-browser/search, queue tabs, and outputs alongside the composed-panel
 renderer, folder navigation, local list tabs, tag grid, previews,
-metadata-operation history and reconciliation evidence, and job center. The
-compatibility Trackknife shell reuses the MPD components during migration.
+preparation-operation history and metadata/file reconciliation evidence, and
+job center. The compatibility Trackknife shell reuses the MPD components during
+migration.
 Panel layout
 owns only placement and sizing of registered instances, never application
 state. ADR-0052 hosts each captured metadata Properties task as a temporary
@@ -319,8 +334,11 @@ local, mapped-local, writable, and decodable sources before offering actions.
   adding mutation to `tkfmt-1`. ADR-0066 permits semantic aliasing only through
   explicit adapter tables, exposes other properties as independently mutable
   freeform native fields, and carries exact-native imported deletion through
-  preview, write, journal, and recovery. Other format and artwork writes remain
-  disabled until their real preservation tests pass.
+  preview, write, journal, and recovery. ADR-0070 adds a deterministic raw
+  cleanup-source projection, live translation, and explicit dirty-state
+  protection while keeping typed actions as the only persisted authority.
+  Other format and artwork writes remain disabled until their real
+  preservation tests pass.
 - **Loudness:** libebur128 behind Trackknife-owned ReplayGain policy.
 - **Preparation:** ADR-0054 composes tag persistence, qualified ReplayGain
   storage, and filesystem rename/move into one immutable per-source review and
@@ -340,8 +358,14 @@ local, mapped-local, writable, and decodable sources before offering actions.
   revision audio-binding barrier and compensates it if the durable list/cache
   transaction fails. ADR-0063 adds ordered bounded file batches, fresh per-
   source admission, monotonic progress, partial results, cancellation, and
-  shared-directory topology coordination. Cross-filesystem undo and UI
-  exposure remain to qualify.
+  shared-directory topology coordination. ADR-0067 exposes qualified path-only
+  Rename/Move through one final-metadata/path review, persists the captured
+  workspace before bounded Apply, refreshes visible/player references, and
+  connects both publication recovery state machines plus same-filesystem undo
+  to the preparation-operation history. ADR-0069 excludes manual drafts and
+  checked automatic chains from path evaluation whenever Save tags is off and
+  makes a metadata-bearing path-only plan structurally invalid. Combined
+  changed-content publication and cross-filesystem undo remain to qualify.
 - **State:** SQLite with explicit reversible development migrations, including
   normalized ordered schema-1 metadata transformation definitions owned by the
   serialized persistence worker, including their automatic tagging policy
@@ -363,9 +387,9 @@ combining their queues or controllers:
 4. ~~Shared-library build restructure and the `trackbench` executable.~~
 5. ~~Migrate local playback/ingestion into Trackbench and retain separate MPD
    and local controllers.~~
-6. Finish the Trackbench tag grid and mutation framework, including the
-   combined metadata/path review and Rename/Move exposure; then add
-   MusicBrainz providers.
+6. Finish the Trackbench tag grid and mutation framework, including
+   destination-artifact publication for combined changed metadata plus paths;
+   then add MusicBrainz providers.
 7. Parallel ReplayGain, then converter/resampler and organized output.
 8. Melody endpoint in Trackbench's MPD authority; hardening, compatibility-shell
    migration, and packaging.

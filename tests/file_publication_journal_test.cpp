@@ -152,6 +152,9 @@ void sameFilesystemStateMachineIsDurableAndOptimistic() {
     require(durable && *durable && (**durable).state == State::complete &&
                 (**durable).target_revision == target,
             "terminal same-filesystem identity must survive restart");
+    auto recent = reopened->load_recent();
+    require(recent && recent->size() == 1U && recent->front() == **durable,
+            "terminal publication evidence must remain visible in recent history");
 }
 
 void crossFilesystemStateMachinePreservesEveryRecoveryBoundary() {
@@ -288,6 +291,10 @@ void reversalRelationsRoundTripAndRequireAnExistingOriginal() {
     auto related = journal.load_reversals(original.id);
     require(related && *related == std::vector{reversal},
             "reverse lookup must retain complete raw and revision evidence");
+    auto recent = journal.load_recent();
+    require(recent && recent->size() == 2U && recent->front() == reversal &&
+                recent->back().id == original.id && recent->back().state == State::complete,
+            "recent publication history must retain newest-first reversal relationships");
 
     auto missing_parent = reversal;
     missing_parent.id = core::StableId::random();

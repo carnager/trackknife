@@ -2,7 +2,9 @@
 
 add_library(
     trackknife_metadata STATIC
+    src/capture_pattern.cpp
     src/document.cpp
+    src/draft_document.cpp
     src/field_suggestions.cpp
     src/flac_mapping.cpp
     src/flac_writer.cpp

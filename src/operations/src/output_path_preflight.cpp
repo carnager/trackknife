@@ -80,6 +80,13 @@ struct DirectoryWalk {
     return path.is_absolute() && path == path.lexically_normal();
 }
 
+[[nodiscard]] std::filesystem::path operation_root_path(std::filesystem::path path) {
+    if (path != path.root_path() && path.filename().empty()) {
+        path = path.parent_path();
+    }
+    return path;
+}
+
 [[nodiscard]] core::LocalSourceRevision revision_from_stat(const struct stat& status) {
     return {
         .device = static_cast<std::uint64_t>(status.st_dev),
@@ -324,9 +331,10 @@ preflight_output_paths(const OutputPathPlan& plan, const core::CancellationToken
                       "Source does not have exactly one hard link");
         }
 
-        const auto operation_root = plan.operations.move_files
-                                        ? std::filesystem::path{plan.destination->root_raw_path}
-                                        : source_path.parent_path();
+        const auto operation_root =
+            plan.operations.move_files
+                ? operation_root_path(std::filesystem::path{plan.destination->root_raw_path})
+                : source_path.parent_path();
         if (!contained_by(operation_root, std::filesystem::path{planned.target_raw_path})) {
             add_issue(planned, OutputPathPreflightIssueKind::filesystem_observation_failed,
                       "Target is no longer lexically beneath its operation root");

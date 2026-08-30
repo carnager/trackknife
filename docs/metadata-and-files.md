@@ -138,6 +138,13 @@ snapshot. Preserve provenance rather than flattening immediately.
 4. current Trackbench-only annotation/statistic for its namespace;
 5. cached playlist snapshot when the source cannot be read.
 
+Per ADR-0066, FFmpeg's generic `track`, `disc`, and `album_artist` probe keys
+are explicit stream projections of semantic fields, not proof of native tag
+identity. When TagLib already exposes the corresponding embedded semantic
+property, the secondary projection is omitted; the same rule removes affected
+persisted stream duplicates on restore. A genuinely embedded freeform `TRACK`,
+`DISC`, or `ALBUM_ARTIST` property remains independently visible and mutable.
+
 ReplayGain has its own rules in `replaygain.md`. A user must be able to inspect
 the source of an effective value and choose the write target.
 
@@ -342,14 +349,27 @@ formatting: functions and optional-section brackets do not apply. `%%` ignores
 a captured portion, and filename mode can traverse parent directories when the
 pattern includes separators.
 
-Implement this as a distinct, versioned capture-pattern parser. Sources include:
+**Trackbench decision (ADR-0068):** `tkcapture-1` is a distinct versioned,
+whole-input grammar. `%field%` captures an exact value, repeated fields append
+ordered values, `%%` captures and discards a portion, and a backslash quotes the
+next Unicode scalar. Captures may be empty so present-empty remains distinct
+from missing. The bounded matcher returns unmatched, unique, or ambiguous and
+never chooses a greedy parse. Sources include:
 
 - full path or filename;
 - a title-format expression evaluated per item;
 - existing field(s).
 
-The preview must reveal ambiguous matches, unmatched input, repeated delimiters,
-and every captured value. Never silently guess when several parses are possible.
+Filename mode removes the final extension and includes one parent component per
+literal `/` in the pattern; full-path mode retains both. Field mode applies the
+pattern to every ordered value, and formatted mode evaluates `tkfmt-1` against
+the current chain state. One action can therefore replace several target cells,
+all visible in the ordinary immutable preview. Adapter-mapped names become
+semantic fields; every other spelling remains a visibly exact native field, so
+capture cannot recreate separator-derived aliases. Ambiguous or unmatched
+input, missing sources, invalid UTF-8, and limits block the complete preview.
+Reversible migration 20 persists action code 16 with exact capture dialect and
+source kind.
 
 ## Saved bulk transformation chains
 
@@ -450,8 +470,15 @@ unsupported. Per ADR-0066, translated `$unset` and `$delete` actions address
 the exact adapter-exposed native name, with format-defined case handling and no
 separator aliasing. A hand-authored **Remove field** action remains semantic.
 Migration 19 persists exact-native removal and carries the same address through
-the operation journal. Full chain interchange, grouped numbering, richer match
-dialects, and the separately versioned capture-pattern parser remain future
+the operation journal. ADR-0068 adds the separate `tkcapture-1` multi-target
+action and schema 20 saved-chain representation. Per ADR-0070, the editor also
+projects representable typed cleanup actions into a deterministic **Raw
+script** tab. Valid raw edits immediately regenerate the typed action list;
+invalid text blocks Preview and Save, while typed-only actions make Raw mode
+read-only with an exact step diagnostic. The typed actions remain the saved
+authority, so pasted whitespace and spelling are canonicalized after reload.
+Dirty name, typed, pasted, and raw edits require Save or explicit discard. Full
+chain interchange, grouped numbering, and richer match dialects remain future
 slices.
 
 ## Artwork
@@ -473,14 +500,15 @@ APIC; MP4 uses `covr`. Exact mappings belong to adapter specs/tests.
 
 ## Filesystem rename, copy, and move
 
-**Trackbench decision (ADRs 0054–0055):** rename/move belongs to the same typed
-preparation plan as optional tag persistence and qualified ReplayGain storage.
+**Trackbench decision (ADRs 0054–0055 and 0069):** rename/move belongs to the
+same typed preparation plan as optional tag persistence and qualified ReplayGain storage.
 The tagging workspace will expose independent Save tags, Rename files, Move
 files, and ReplayGain choices only as each operation gains a real immutable
-preview and journaled Apply path. Checked scripts and manual edits produce the
-final in-memory metadata context before path evaluation; if Save tags is off,
-the preview must distinguish values used for naming from values actually
-written.
+preview and journaled Apply path. When Save tags is on, checked scripts and
+manual edits produce the final in-memory metadata context before path
+evaluation. When Save tags is off, Rename/Move instead uses only the captured,
+revision-qualified source tags: manual drafts remain visible but excluded, and
+automatic chains are not evaluated for the path plan.
 
 A versioned output-layout profile stores separate relative-directory and
 basename `tkfmt-1` expressions plus its sanitization-policy version. An absolute
@@ -545,9 +573,9 @@ and records idempotent operation evidence. Ordered relocation records are
 replayed over load and replace-all snapshots only when path bytes and revision
 both match, so delayed A snapshots converge through A→B→C while a different
 file reusing A remains A. The visible list model follows the same guarded update
-and retains its current-row anchor. Same-filesystem undo, cross-filesystem
-verified copy, active-playback reconciliation, batching, and workspace choices
-remain unavailable.
+and retains its current-row anchor. Later ADRs add same-filesystem undo,
+cross-filesystem verified copy, active-playback reconciliation, batching, and
+workspace choices over this callback.
 
 **Trackbench decision (ADR-0060):** a same-filesystem undo is a second durable
 publication record linked to its completed forward operation. It locks and
@@ -558,7 +586,7 @@ all-occurrence callback. Dependent failure restores B; a crash after callback
 success leaves A and replays the idempotent reverse record at startup. Rolled-
 back attempts may retry, while a completed reversal makes repeated undo a
 verified no-op. Directories created for the forward target are never removed.
-The core undo exists, but operation history UI remains unavailable.
+ADR-0067 exposes this qualified undo through preparation-operation history.
 
 **Trackbench decision (ADR-0061):** cross-filesystem path-only Move now copies
 through the exact journal-derived target sibling with a bounded buffer,
@@ -570,7 +598,8 @@ the exact original is unlinked and its parent synced. Startup recovery can
 adopt an exact copy that preceded its transition, infer publication or source
 removal on either side of their journal boundaries, and replay dependent state.
 Unexpected identities or content remain visible for reconciliation. Cross-
-filesystem undo, batching, and workspace controls remain unavailable.
+filesystem undo remains unavailable; ADR-0063 adds batching and ADR-0067 adds
+workspace controls.
 
 **Trackbench decision (ADR-0062):** local audition captures exact revisions for
 the current decoder and its prepared gapless continuation. The file-publication
@@ -581,7 +610,7 @@ revision; exact recovery replay is a no-op, while a reused path is left alone
 and reported. Audio advances before the durable ADR-0059 list/cache transaction
 and is inversely compensated if that transaction fails, allowing the executor's
 filesystem rollback to restore one coherent source state. Cross-filesystem
-undo and workspace controls remain unavailable.
+undo remains unavailable; ADR-0067 adds workspace controls.
 
 **Trackbench decision (ADR-0063):** one entirely ready filesystem review now
 enters a bounded 1–8-worker Apply job and returns ordered results for every
@@ -592,7 +621,25 @@ root serialize until successful in-batch evidence establishes each required
 path; unrelated and already-established targets may publish concurrently.
 Progress delivery and completed counts are serialized, cancellation stops new
 admission, and in-flight executors reach their journaled safe boundary.
-Workspace controls and cross-filesystem undo remain unavailable.
+ADR-0067 adds workspace controls; cross-filesystem undo remains unavailable.
+
+**Trackbench decision (ADRs 0067 and 0069):** Properties retains tag effects,
+pure paths, and live filesystem preflight in one immutable preparation review.
+It materializes the final manual-plus-automatic metadata draft only when Save
+tags participates. Rename and Move
+are enabled only with their saved profile dependencies and the real
+file-publication service. With Save tags off, path expressions see the actual
+source-tag snapshot and cannot receive a manual or automatic synthetic value;
+the core rejects such a malformed plan. Path-only Apply first persists the
+captured workspace, then uses the bounded ADR-0063 job and
+the composed active-player plus all-occurrence dependent callback; progress,
+partial results, cancellation, visible-source refresh, and fresh-preview retry
+remain explicit. Changed tags plus Rename/Move stays blocked because the
+qualified executors cannot yet prepare one changed artifact directly at the
+destination. Startup recovers both filesystem state machines, presents their
+records beside metadata operations, and offers linked same-filesystem undo when
+no non-rolled-back reversal exists. Cross-filesystem moves remain visible but
+truthfully non-undoable.
 
 ### Plan pipeline
 

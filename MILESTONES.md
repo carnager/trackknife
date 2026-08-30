@@ -787,16 +787,52 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   freeform native fields. Imported `$delete`/`$unset` rules retain exact native
   identity through preview, FLAC preparation, commit journaling, and recovery;
   a real round trip proves `ALBUM ARTIST` can be removed without touching
-  conventional `ALBUMARTIST`.
+  conventional `ALBUMARTIST`. The TagLib-plus-FFmpeg intake merge also keeps
+  FFmpeg's generic `track`, `disc`, and `album_artist` projections from becoming
+  duplicate editable native fields when the authoritative embedded semantic
+  property is already present; affected saved stream projections are cleaned
+  on restore without removing a real embedded freeform property.
 - Done: the tagging workspace now has a dedicated **Operations** side-panel
   page. **Save tags** is a real independent choice, while Rename, Move, and
-  ReplayGain are visible but capability-gated. Reusable naming layouts and
-  raw-path move destinations load, create, update, and remove through the
-  serialized persistence worker without a separate settings window.
-- Next: generalize the immutable review for final metadata plus file paths,
-  enable Rename/Move, and bind it to bounded publication Apply and visible
-  source reconciliation. The capture-pattern grammar and native chain
-  interchange follow that vertical slice.
+  ReplayGain were initially visible but capability-gated. Reusable naming
+  layouts and raw-path move destinations load, create, update, and remove
+  through the serialized persistence worker without a separate settings
+  window.
+- Done: ADR-0067 generalizes that boundary into one immutable preparation
+  review. Exact tag context, raw/sanitized targets, fresh filesystem
+  classification, and blockers remain together. Qualified
+  path-only Rename/Move now persists the captured workspace and reaches the
+  two-worker ADR-0063 Apply surface with ordered progress, cancellation,
+  partial results, visible/player reconciliation, and mandatory fresh-preview
+  retry. Startup recovers both file-publication state machines and presents
+  their bounded recent evidence beside metadata history; same-filesystem moves
+  expose linked undo, while cross-filesystem moves remain truthfully
+  non-undoable. Changed tags plus paths fail closed until a direct destination-
+  artifact writer can implement ADR-0054's one-publication guarantee.
+- Done: ADR-0068 and reversible migration 20 add independent `tkcapture-1`
+  compilation and bounded whole-source matching with explicit unmatched,
+  unique, and ambiguous outcomes. One typed saved action captures several
+  fields from a filename/parent suffix, full path, current `tkfmt-1` scalar, or
+  every ordered value of an existing semantic/freeform field. Later actions see
+  all results; preview and staging remain atomic. Properties exposes all four
+  sources and offscreen coverage saves, reloads, previews, and stages a
+  multi-field filename pattern.
+- Done: ADR-0069 corrects the path-only authority boundary. With **Save tags**
+  off, Rename/Move materializes only the captured revision-qualified source
+  tags; manual drafts stay in the workspace but are excluded, checked automatic
+  chains do not run, and the Qt-free preparation planner rejects any synthetic
+  metadata context. Offscreen coverage proves two fake titles cannot affect the
+  reviewed or applied pathname.
+- Done: ADR-0070 adds a live **Raw script** tab for the bounded cleanup subset.
+  Representable typed rules round-trip to canonical editable source, valid raw
+  changes immediately rebuild the typed list, diagnostics gate Preview/Save,
+  unsupported typed steps fail visibly into read-only raw mode, and dirty edits
+  require explicit Save or discard. Typed actions remain the persisted
+  authority, so no schema migration or opaque script execution is introduced.
+- Next: add native transformation-chain interchange, then qualify another
+  preservation-proven writer or the combined
+  destination-artifact path without weakening the immutable preparation
+  boundary. Artwork management remains required for the M5 exit.
 
 ### Exit criteria
 

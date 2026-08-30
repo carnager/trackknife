@@ -147,6 +147,17 @@ void independentTogglesPreserveDirectoryExtensionAndRawFilename() {
     CHECK(moved && moved->sources[0].raw_basename.empty());
     CHECK(moved && moved->sources[0].target_raw_path ==
                        std::string{"/library/Ignored/Sorted/"} + invalid_filename);
+
+    auto trailing_destination = destination();
+    trailing_destination.root_raw_path += '/';
+    const auto moved_below_trailing_root =
+        plan_output_paths(move_items, {.rename_files = false, .move_files = true}, layout(),
+                          std::move(trailing_destination));
+    CHECK(moved_below_trailing_root.has_value());
+    CHECK(moved_below_trailing_root && moved_below_trailing_root->ready());
+    CHECK(moved_below_trailing_root &&
+          moved_below_trailing_root->sources[0].target_raw_path ==
+              std::string{"/library/Ignored/Sorted/"} + invalid_filename);
 }
 
 void linuxSanitizationAndTechnicalContextAreExact() {

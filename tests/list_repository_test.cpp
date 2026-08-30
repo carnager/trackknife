@@ -101,7 +101,7 @@ void list_documents_round_trip_transactionally() {
         }
         require(opened.has_value(), "list repository must create and migrate a new database");
         auto repository = std::move(*opened);
-        require(repository.schema_version() == 19U, "state repository schema must be explicit");
+        require(repository.schema_version() == 20U, "state repository schema must be explicit");
         require(repository.replace_all(expected).has_value(),
                 "valid list documents must commit in one transaction");
         require(repository.load_all() == expected,
@@ -239,6 +239,30 @@ void metadata_transformation_chains_round_trip_transactionally() {
                             .condition = "$not(%totaldiscs%)",
                             .match_mode = metadata::MetadataFieldMatchMode::exact_native,
                         },
+                        metadata::MetadataCaptureValuesAction{
+                            .dialect = {},
+                            .source_kind = metadata::MetadataCaptureSourceKind::filename,
+                            .source = {},
+                            .pattern = "%tracknumber%. %title%",
+                        },
+                        metadata::MetadataCaptureValuesAction{
+                            .dialect = {},
+                            .source_kind = metadata::MetadataCaptureSourceKind::full_path,
+                            .source = {},
+                            .pattern = "%directory%/%title%.flac",
+                        },
+                        metadata::MetadataCaptureValuesAction{
+                            .dialect = {},
+                            .source_kind = metadata::MetadataCaptureSourceKind::formatted,
+                            .source = "%artist% — %title%",
+                            .pattern = "%displayartist% — %displaytitle%",
+                        },
+                        metadata::MetadataCaptureValuesAction{
+                            .dialect = {},
+                            .source_kind = metadata::MetadataCaptureSourceKind::field,
+                            .source = "Comment",
+                            .pattern = "%note%",
+                        },
                     },
             },
         .automatic = true,
@@ -315,7 +339,23 @@ void metadata_transformation_chains_round_trip_transactionally() {
                 require_action<metadata::MetadataRemoveFieldIfAction>(
                     chain, 15U, "conditional-remove action") ==
                     require_action<metadata::MetadataRemoveFieldIfAction>(
-                        expected.chain, 15U, "expected conditional-remove action"),
+                        expected.chain, 15U, "expected conditional-remove action") &&
+                require_action<metadata::MetadataCaptureValuesAction>(chain, 16U,
+                                                                      "capture action") ==
+                    require_action<metadata::MetadataCaptureValuesAction>(
+                        expected.chain, 16U, "expected capture action") &&
+                require_action<metadata::MetadataCaptureValuesAction>(chain, 17U,
+                                                                      "full-path capture action") ==
+                    require_action<metadata::MetadataCaptureValuesAction>(
+                        expected.chain, 17U, "expected full-path capture action") &&
+                require_action<metadata::MetadataCaptureValuesAction>(chain, 18U,
+                                                                      "formatted capture action") ==
+                    require_action<metadata::MetadataCaptureValuesAction>(
+                        expected.chain, 18U, "expected formatted capture action") &&
+                require_action<metadata::MetadataCaptureValuesAction>(chain, 19U,
+                                                                      "field capture action") ==
+                    require_action<metadata::MetadataCaptureValuesAction>(
+                        expected.chain, 19U, "expected field capture action"),
             "explicit action kinds and exact ordered payloads must round trip");
 
         auto conflicting = expected;
@@ -338,7 +378,11 @@ void metadata_transformation_chains_round_trip_transactionally() {
                     require_action<metadata::MetadataRemoveFieldIfAction>(
                         loaded->front().chain, 15U, "reopened conditional-remove action") ==
                         require_action<metadata::MetadataRemoveFieldIfAction>(
-                            expected.chain, 15U, "expected reopened conditional-remove action"),
+                            expected.chain, 15U, "expected reopened conditional-remove action") &&
+                    require_action<metadata::MetadataCaptureValuesAction>(
+                        loaded->front().chain, 19U, "reopened capture action") ==
+                        require_action<metadata::MetadataCaptureValuesAction>(
+                            expected.chain, 19U, "expected reopened capture action"),
                 "typed numeric and conditional transformations must survive restart");
         auto updated = expected;
         updated.chain.name = "Exact cleanup v2";
@@ -412,7 +456,7 @@ void output_layout_and_destination_profiles_round_trip_transactionally() {
         auto opened = persistence::ListRepository::open(database_path);
         require(opened.has_value(), "output-profile repository must open");
         auto repository = std::move(*opened);
-        require(repository.schema_version() == 19U,
+        require(repository.schema_version() == 20U,
                 "output profiles must survive the explicit schema-18 migration");
         require(repository.upsert_output_layout_profile(expected_layout).has_value() &&
                     repository.upsert_destination_profile(expected_destination).has_value(),
@@ -1006,7 +1050,7 @@ void committed_source_relocation_rekeys_every_occurrence_and_stale_snapshot() {
                 repository.load_all() == loaded,
             "a persisted target collision must reject the complete relocation transaction");
     auto reopened = persistence::ListRepository::open(database_path);
-    require(reopened && reopened->schema_version() == 19U && reopened->load_all() == loaded,
+    require(reopened && reopened->schema_version() == 20U && reopened->load_all() == loaded,
             "relocation evidence and resolved paths must survive reopening schema 18");
 
     cleanup();
