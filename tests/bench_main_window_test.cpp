@@ -1208,10 +1208,9 @@ void BenchMainWindowTest::preparationSidePanelEditsReusableOutputProfiles() {
         {}, {}, {}, {}, output_store);
     properties->show();
 
-    QTabWidget* side_panel = nullptr;
-    QTRY_VERIFY((side_panel = properties->findChild<QTabWidget*>(
+    QWidget* side_panel = nullptr;
+    QTRY_VERIFY((side_panel = properties->findChild<QWidget*>(
                      QStringLiteral("bench-metadata-side-panel"))) != nullptr);
-    side_panel->setCurrentIndex(1);
     auto* save_tags =
         properties->findChild<QCheckBox*>(QStringLiteral("bench-preparation-save-tags"));
     auto* rename_files =
@@ -1290,6 +1289,15 @@ void BenchMainWindowTest::preparationSidePanelEditsReusableOutputProfiles() {
     QCOMPARE(destination_combo->count(), 1);
     QCOMPARE(destination_combo->currentText(), QStringLiteral("Library"));
 
+    auto* layout_manage =
+        properties->findChild<QPushButton*>(QStringLiteral("bench-output-layout-manage"));
+    auto* layout_manager =
+        properties->findChild<QDialog*>(QStringLiteral("bench-output-layout-manager"));
+    QVERIFY(layout_manage != nullptr);
+    QVERIFY(layout_manager != nullptr);
+    QVERIFY(!layout_manager->isVisible());
+    QTest::mouseClick(layout_manage, Qt::LeftButton);
+    QTRY_VERIFY(layout_manager->isVisible());
     QTest::mouseClick(layout_new, Qt::LeftButton);
     layout_name->setText(QStringLiteral("Artist folders"));
     layout_directory->setText(QStringLiteral("%artist%"));
@@ -1300,6 +1308,14 @@ void BenchMainWindowTest::preparationSidePanelEditsReusableOutputProfiles() {
     QCOMPARE(layout_combo->count(), 2);
     QCOMPARE(layout_combo->currentText(), QStringLiteral("Artist folders"));
 
+    auto* destination_manage =
+        properties->findChild<QPushButton*>(QStringLiteral("bench-destination-manage"));
+    auto* destination_manager =
+        properties->findChild<QDialog*>(QStringLiteral("bench-destination-manager"));
+    QVERIFY(destination_manage != nullptr);
+    QVERIFY(destination_manager != nullptr);
+    QTest::mouseClick(destination_manage, Qt::LeftButton);
+    QTRY_VERIFY(destination_manager->isVisible());
     QTest::mouseClick(destination_new, Qt::LeftButton);
     destination_name->setText(QStringLiteral("Archive"));
     destination_root->setFocus();
@@ -1764,7 +1780,7 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     QTRY_VERIFY(properties->findChild<QDialog*>(QStringLiteral("bench-metadata-transformation")) ==
                 nullptr);
     auto* script_panel =
-        properties->findChild<QWidget*>(QStringLiteral("bench-metadata-transformation-panel"));
+        properties->findChild<QWidget*>(QStringLiteral("bench-metadata-side-panel"));
     auto* script_list =
         properties->findChild<QListWidget*>(QStringLiteral("bench-metadata-transformation-list"));
     auto* script_status =
@@ -3249,8 +3265,8 @@ void BenchMainWindowTest::metadataPropertiesFileSelectionDrivesIndividualAndBulk
     QVERIFY2(summary->text().contains(QStringLiteral("2 of 2 files selected")),
              qPrintable(QStringLiteral("unexpected summary: %1").arg(summary->text())));
     QVERIFY(summary->text().contains(QStringLiteral("2 sources")));
-    QVERIFY(read_only->text().startsWith(QStringLiteral("In-memory draft only")));
-    QVERIFY(read_only->text().contains(QStringLiteral("file writing is not enabled")));
+    QVERIFY2(read_only->text().contains(QStringLiteral("No pending edits")),
+             qPrintable(QStringLiteral("unexpected status: %1").arg(read_only->text())));
     QCOMPARE(buttons->standardButtons(), QDialogButtonBox::Close);
     QVERIFY(buttons->button(QDialogButtonBox::Apply) == nullptr);
     QCOMPARE(files->selectionBehavior(), QAbstractItemView::SelectRows);

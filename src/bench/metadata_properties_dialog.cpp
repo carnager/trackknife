@@ -19,7 +19,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFormLayout>
-#include <QGroupBox>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
@@ -2282,8 +2282,8 @@ class PreparationPlanDialog final : public QDialog {
         layout->addWidget(summary);
 
         auto* explanation = new QLabel(
-            plan->ready() ? QStringLiteral("Every enabled effect was freshly revalidated. This "
-                                           "immutable review is ready for explicit Apply.")
+            plan->ready() ? QStringLiteral("Everything below was just revalidated against the "
+                                           "files on disk. Apply performs exactly these changes.")
                           : QStringLiteral("Apply is blocked. Hover rows for exact path, revision, "
                                            "adapter, preservation, and filesystem details."),
             this);
@@ -2356,7 +2356,7 @@ class PreparationPlanDialog final : public QDialog {
             auto* apply_button = buttons->addButton(QDialogButtonBox::Apply);
             apply_button->setObjectName(QStringLiteral("bench-metadata-write-plan-apply"));
             apply_button->setToolTip(
-                QStringLiteral("Commit every enabled effect from this immutable review"));
+                QStringLiteral("Apply exactly the reviewed changes"));
             connect(apply_button, &QPushButton::clicked, this,
                     [plan = std::move(plan), apply = std::move(apply)] { apply(plan); });
         }
@@ -2850,200 +2850,282 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
     read_only_->setObjectName(QStringLiteral("bench-metadata-read-only"));
     read_only_->setAccessibleName(QStringLiteral("Metadata write capability"));
     read_only_->setTextFormat(Qt::PlainText);
-    root_layout_->addWidget(read_only_);
+    read_only_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 
-    auto* side_tabs = new QTabWidget(this);
-    side_tabs->setObjectName(QStringLiteral("bench-metadata-side-panel"));
-    side_tabs->setMinimumWidth(270);
-    side_tabs->setMaximumWidth(390);
-    transformation_panel_ = side_tabs;
+    auto* side_panel = new QWidget(this);
+    side_panel->setObjectName(QStringLiteral("bench-metadata-side-panel"));
+    side_panel->setMinimumWidth(260);
+    side_panel->setMaximumWidth(380);
+    transformation_panel_ = side_panel;
     transformation_panel_->hide();
+    auto* side_layout = new QVBoxLayout(side_panel);
+    side_layout->setContentsMargins(8, 8, 8, 8);
+    side_layout->setSpacing(6);
 
-    auto* transformation_group = new QWidget(side_tabs);
-    transformation_group->setObjectName(QStringLiteral("bench-metadata-transformation-panel"));
-    auto* transformation_layout = new QVBoxLayout(transformation_group);
-    transformation_layout->setContentsMargins(8, 8, 8, 8);
-    transformation_layout->setSpacing(6);
-    auto* transformation_help = new QLabel(
-        QStringLiteral("Checked scripts are included whenever this tag draft is previewed and "
-                       "applied. The checked state is saved."),
-        transformation_group);
-    transformation_help->setObjectName(QStringLiteral("bench-metadata-transformation-help"));
-    transformation_help->setWordWrap(true);
-    transformation_layout->addWidget(transformation_help);
-    transformation_list_ = new QListWidget(transformation_group);
+    const auto section_heading = [side_panel](const QString& text, const QString& object_name,
+                                              const QString& tool_tip) {
+        auto* heading = new QLabel(text, side_panel);
+        heading->setObjectName(object_name);
+        auto heading_font = heading->font();
+        heading_font.setBold(true);
+        heading->setFont(heading_font);
+        heading->setToolTip(tool_tip);
+        return heading;
+    };
+
+    side_layout->addWidget(section_heading(
+        QStringLiteral("When you apply"), QStringLiteral("bench-preparation-actions-heading"),
+        QStringLiteral("Every checked action is revalidated together in one preview before "
+                       "anything is written")));
+    save_tags_check_ = new QCheckBox(QStringLiteral("Save tags"), side_panel);
+    save_tags_check_->setObjectName(QStringLiteral("bench-preparation-save-tags"));
+    save_tags_check_->setChecked(true);
+    save_tags_check_->setToolTip(
+        QStringLiteral("Write the drafted tag edits into the files"));
+    side_layout->addWidget(save_tags_check_);
+    rename_files_check_ = new QCheckBox(QStringLiteral("Rename files"), side_panel);
+    rename_files_check_->setObjectName(QStringLiteral("bench-preparation-rename-files"));
+    rename_files_check_->setEnabled(false);
+    rename_files_check_->setToolTip(QStringLiteral("Choose a naming layout first"));
+    side_layout->addWidget(rename_files_check_);
+    auto* rename_row = new QHBoxLayout;
+    rename_row->setContentsMargins(22, 0, 0, 0);
+    rename_row->setSpacing(4);
+    output_layout_combo_ = new QComboBox(side_panel);
+    output_layout_combo_->setObjectName(QStringLiteral("bench-output-layout-profile"));
+    output_layout_combo_->setAccessibleName(QStringLiteral("Saved naming layout"));
+    output_layout_combo_->setPlaceholderText(QStringLiteral("None saved yet"));
+    rename_row->addWidget(output_layout_combo_, 1);
+    auto* manage_layouts_button = new QPushButton(QStringLiteral("Edit…"), side_panel);
+    manage_layouts_button->setObjectName(QStringLiteral("bench-output-layout-manage"));
+    manage_layouts_button->setToolTip(
+        QStringLiteral("Create, change, or remove naming layouts"));
+    rename_row->addWidget(manage_layouts_button);
+    side_layout->addLayout(rename_row);
+    move_files_check_ = new QCheckBox(QStringLiteral("Move files"), side_panel);
+    move_files_check_->setObjectName(QStringLiteral("bench-preparation-move-files"));
+    move_files_check_->setEnabled(false);
+    move_files_check_->setToolTip(
+        QStringLiteral("Choose a naming layout and a destination first"));
+    side_layout->addWidget(move_files_check_);
+    auto* move_row = new QHBoxLayout;
+    move_row->setContentsMargins(22, 0, 0, 0);
+    move_row->setSpacing(4);
+    destination_combo_ = new QComboBox(side_panel);
+    destination_combo_->setObjectName(QStringLiteral("bench-destination-profile"));
+    destination_combo_->setAccessibleName(QStringLiteral("Saved move destination"));
+    destination_combo_->setPlaceholderText(QStringLiteral("None saved yet"));
+    move_row->addWidget(destination_combo_, 1);
+    auto* manage_destinations_button = new QPushButton(QStringLiteral("Edit…"), side_panel);
+    manage_destinations_button->setObjectName(QStringLiteral("bench-destination-manage"));
+    manage_destinations_button->setToolTip(
+        QStringLiteral("Create, change, or remove move destinations"));
+    move_row->addWidget(manage_destinations_button);
+    side_layout->addLayout(move_row);
+    replaygain_check_ = new QCheckBox(QStringLiteral("ReplayGain"), side_panel);
+    replaygain_check_->setObjectName(QStringLiteral("bench-preparation-replaygain"));
+    replaygain_check_->setEnabled(false);
+    replaygain_check_->setToolTip(QStringLiteral("ReplayGain analysis is planned for M7"));
+    side_layout->addWidget(replaygain_check_);
+    output_profile_status_ = new QLabel(QStringLiteral("Loading output profiles…"), side_panel);
+    output_profile_status_->setObjectName(QStringLiteral("bench-output-profile-status"));
+    output_profile_status_->setWordWrap(true);
+    side_layout->addWidget(output_profile_status_);
+
+    auto* section_separator = new QFrame(side_panel);
+    section_separator->setFrameShape(QFrame::HLine);
+    section_separator->setFrameShadow(QFrame::Sunken);
+    side_layout->addWidget(section_separator);
+
+    side_layout->addWidget(section_heading(
+        QStringLiteral("Scripts"), QStringLiteral("bench-metadata-scripts-heading"),
+        QStringLiteral("Checked scripts run automatically whenever this draft is previewed and "
+                       "applied; the checked state is saved")));
+    transformation_list_ = new QListWidget(side_panel);
     transformation_list_->setObjectName(QStringLiteral("bench-metadata-transformation-list"));
     transformation_list_->setAccessibleName(QStringLiteral("Saved tagging scripts"));
     transformation_list_->setSelectionMode(QAbstractItemView::SingleSelection);
     transformation_list_->setAlternatingRowColors(true);
     transformation_list_->setEnabled(false);
-    transformation_layout->addWidget(transformation_list_, 1);
-    transformation_status_ =
-        new QLabel(QStringLiteral("Loading saved scripts…"), transformation_group);
+    side_layout->addWidget(transformation_list_, 1);
+    transformation_status_ = new QLabel(QStringLiteral("Loading saved scripts…"), side_panel);
     transformation_status_->setObjectName(QStringLiteral("bench-metadata-transformation-status"));
     transformation_status_->setWordWrap(true);
-    transformation_layout->addWidget(transformation_status_);
-    transform_button_ =
-        new QPushButton(QStringLiteral("Open script editor…"), transformation_group);
+    side_layout->addWidget(transformation_status_);
+    transform_button_ = new QPushButton(QStringLiteral("Open script editor…"), side_panel);
     transform_button_->setObjectName(QStringLiteral("bench-metadata-transform"));
     transform_button_->setToolTip(
         QStringLiteral("Open the selected saved script, or create a new one"));
     transform_button_->setEnabled(false);
-    transformation_layout->addWidget(transform_button_);
-    side_tabs->addTab(transformation_group, QStringLiteral("Scripts"));
+    side_layout->addWidget(transform_button_);
 
-    auto* operations_panel = new QWidget(side_tabs);
-    operations_panel->setObjectName(QStringLiteral("bench-preparation-operations-panel"));
-    auto* operations_layout = new QVBoxLayout(operations_panel);
-    operations_layout->setContentsMargins(8, 8, 8, 8);
-    operations_layout->setSpacing(6);
-    auto* operations_help = new QLabel(
-        QStringLiteral("Choose what one immutable preparation review will do. Draft metadata can "
-                       "name files without being written; tag writes combined with a path change "
-                       "remain blocked until one destination artifact is qualified."),
-        operations_panel);
-    operations_help->setObjectName(QStringLiteral("bench-preparation-operations-help"));
-    operations_help->setWordWrap(true);
-    operations_layout->addWidget(operations_help);
-    save_tags_check_ = new QCheckBox(QStringLiteral("Save tags"), operations_panel);
-    save_tags_check_->setObjectName(QStringLiteral("bench-preparation-save-tags"));
-    save_tags_check_->setChecked(true);
-    operations_layout->addWidget(save_tags_check_);
-    rename_files_check_ = new QCheckBox(QStringLiteral("Rename files"), operations_panel);
-    rename_files_check_->setObjectName(QStringLiteral("bench-preparation-rename-files"));
-    rename_files_check_->setEnabled(false);
-    rename_files_check_->setToolTip(QStringLiteral("Select a saved naming layout first"));
-    operations_layout->addWidget(rename_files_check_);
-    move_files_check_ = new QCheckBox(QStringLiteral("Move files"), operations_panel);
-    move_files_check_->setObjectName(QStringLiteral("bench-preparation-move-files"));
-    move_files_check_->setEnabled(false);
-    move_files_check_->setToolTip(
-        QStringLiteral("Select a saved naming layout and move destination first"));
-    operations_layout->addWidget(move_files_check_);
-    replaygain_check_ = new QCheckBox(QStringLiteral("ReplayGain"), operations_panel);
-    replaygain_check_->setObjectName(QStringLiteral("bench-preparation-replaygain"));
-    replaygain_check_->setEnabled(false);
-    replaygain_check_->setToolTip(QStringLiteral("ReplayGain analysis is planned for M7"));
-    operations_layout->addWidget(replaygain_check_);
-
-    auto* layout_group = new QGroupBox(QStringLiteral("Naming layout"), operations_panel);
-    layout_group->setObjectName(QStringLiteral("bench-output-layout-editor"));
-    auto* layout_form = new QFormLayout(layout_group);
-    layout_form->setContentsMargins(6, 8, 6, 6);
-    output_layout_combo_ = new QComboBox(layout_group);
-    output_layout_combo_->setObjectName(QStringLiteral("bench-output-layout-profile"));
-    output_layout_combo_->setAccessibleName(QStringLiteral("Saved naming layout"));
-    layout_form->addRow(QStringLiteral("Saved:"), output_layout_combo_);
-    output_layout_name_ = new QLineEdit(layout_group);
+    auto* layout_manager = new QDialog(this);
+    layout_manager->setObjectName(QStringLiteral("bench-output-layout-manager"));
+    layout_manager->setWindowTitle(QStringLiteral("Naming layouts"));
+    layout_manager->setModal(false);
+    layout_manager->setMinimumWidth(460);
+    auto* layout_manager_box = new QVBoxLayout(layout_manager);
+    auto* layout_manager_hint = new QLabel(
+        QStringLiteral("Changes the layout currently selected in Track properties. "
+                       "“New” starts a blank layout."),
+        layout_manager);
+    layout_manager_hint->setWordWrap(true);
+    layout_manager_box->addWidget(layout_manager_hint);
+    auto* layout_form = new QFormLayout;
+    output_layout_name_ = new QLineEdit(layout_manager);
     output_layout_name_->setObjectName(QStringLiteral("bench-output-layout-name"));
     output_layout_name_->setPlaceholderText(QStringLiteral("For example: Album folders"));
     layout_form->addRow(QStringLiteral("Name:"), output_layout_name_);
-    output_directory_expression_ = new QLineEdit(layout_group);
+    output_directory_expression_ = new QLineEdit(layout_manager);
     output_directory_expression_->setObjectName(
         QStringLiteral("bench-output-layout-directory-expression"));
     output_directory_expression_->setPlaceholderText(
         QStringLiteral("For example: %album artist%/%album%"));
     layout_form->addRow(QStringLiteral("Folders:"), output_directory_expression_);
-    output_basename_expression_ = new QLineEdit(layout_group);
+    output_basename_expression_ = new QLineEdit(layout_manager);
     output_basename_expression_->setObjectName(
         QStringLiteral("bench-output-layout-basename-expression"));
     output_basename_expression_->setPlaceholderText(
         QStringLiteral("For example: %tracknumber% - %title%"));
     layout_form->addRow(QStringLiteral("Filename:"), output_basename_expression_);
+    layout_manager_box->addLayout(layout_form);
     auto* layout_buttons = new QHBoxLayout;
-    output_layout_new_button_ = new QPushButton(QStringLiteral("New"), layout_group);
+    output_layout_new_button_ = new QPushButton(QStringLiteral("New"), layout_manager);
     output_layout_new_button_->setObjectName(QStringLiteral("bench-output-layout-new"));
-    output_layout_save_button_ = new QPushButton(QStringLiteral("Save"), layout_group);
+    output_layout_new_button_->setAutoDefault(false);
+    output_layout_save_button_ = new QPushButton(QStringLiteral("Save"), layout_manager);
     output_layout_save_button_->setObjectName(QStringLiteral("bench-output-layout-save"));
-    output_layout_remove_button_ = new QPushButton(QStringLiteral("Remove"), layout_group);
+    output_layout_save_button_->setAutoDefault(false);
+    output_layout_remove_button_ = new QPushButton(QStringLiteral("Remove"), layout_manager);
     output_layout_remove_button_->setObjectName(QStringLiteral("bench-output-layout-remove"));
+    output_layout_remove_button_->setAutoDefault(false);
     layout_buttons->addWidget(output_layout_new_button_);
     layout_buttons->addWidget(output_layout_save_button_);
     layout_buttons->addWidget(output_layout_remove_button_);
-    layout_form->addRow(layout_buttons);
-    operations_layout->addWidget(layout_group);
+    layout_buttons->addStretch(1);
+    auto* layout_manager_close = new QPushButton(QStringLiteral("Close"), layout_manager);
+    layout_manager_close->setObjectName(QStringLiteral("bench-output-layout-manager-close"));
+    layout_manager_close->setAutoDefault(false);
+    layout_buttons->addWidget(layout_manager_close);
+    layout_manager_box->addLayout(layout_buttons);
+    connect(layout_manager_close, &QPushButton::clicked, layout_manager, &QDialog::close);
+    connect(manage_layouts_button, &QPushButton::clicked, layout_manager, [layout_manager] {
+        layout_manager->show();
+        layout_manager->raise();
+        layout_manager->activateWindow();
+    });
 
-    auto* destination_group = new QGroupBox(QStringLiteral("Move destination"), operations_panel);
-    destination_group->setObjectName(QStringLiteral("bench-destination-editor"));
-    auto* destination_form = new QFormLayout(destination_group);
-    destination_form->setContentsMargins(6, 8, 6, 6);
-    destination_combo_ = new QComboBox(destination_group);
-    destination_combo_->setObjectName(QStringLiteral("bench-destination-profile"));
-    destination_combo_->setAccessibleName(QStringLiteral("Saved move destination"));
-    destination_form->addRow(QStringLiteral("Saved:"), destination_combo_);
-    destination_name_ = new QLineEdit(destination_group);
+    auto* destination_manager = new QDialog(this);
+    destination_manager->setObjectName(QStringLiteral("bench-destination-manager"));
+    destination_manager->setWindowTitle(QStringLiteral("Move destinations"));
+    destination_manager->setModal(false);
+    destination_manager->setMinimumWidth(460);
+    auto* destination_manager_box = new QVBoxLayout(destination_manager);
+    auto* destination_manager_hint = new QLabel(
+        QStringLiteral("Changes the destination currently selected in Track properties. "
+                       "“New” starts a blank destination."),
+        destination_manager);
+    destination_manager_hint->setWordWrap(true);
+    destination_manager_box->addWidget(destination_manager_hint);
+    auto* destination_form = new QFormLayout;
+    destination_name_ = new QLineEdit(destination_manager);
     destination_name_->setObjectName(QStringLiteral("bench-destination-name"));
     destination_name_->setPlaceholderText(QStringLiteral("For example: Music library"));
     destination_form->addRow(QStringLiteral("Name:"), destination_name_);
     auto* root_row = new QHBoxLayout;
-    destination_root_ = new QLineEdit(destination_group);
+    destination_root_ = new QLineEdit(destination_manager);
     destination_root_->setObjectName(QStringLiteral("bench-destination-root"));
     destination_root_->setPlaceholderText(QStringLiteral("Choose an absolute folder"));
-    destination_browse_button_ = new QPushButton(QStringLiteral("Browse…"), destination_group);
+    destination_browse_button_ = new QPushButton(QStringLiteral("Browse…"), destination_manager);
     destination_browse_button_->setObjectName(QStringLiteral("bench-destination-browse"));
     root_row->addWidget(destination_root_, 1);
     root_row->addWidget(destination_browse_button_);
     destination_form->addRow(QStringLiteral("Root:"), root_row);
+    destination_manager_box->addLayout(destination_form);
     auto* destination_buttons = new QHBoxLayout;
-    destination_new_button_ = new QPushButton(QStringLiteral("New"), destination_group);
+    destination_new_button_ = new QPushButton(QStringLiteral("New"), destination_manager);
     destination_new_button_->setObjectName(QStringLiteral("bench-destination-new"));
-    destination_save_button_ = new QPushButton(QStringLiteral("Save"), destination_group);
+    destination_new_button_->setAutoDefault(false);
+    destination_save_button_ = new QPushButton(QStringLiteral("Save"), destination_manager);
     destination_save_button_->setObjectName(QStringLiteral("bench-destination-save"));
-    destination_remove_button_ = new QPushButton(QStringLiteral("Remove"), destination_group);
+    destination_save_button_->setAutoDefault(false);
+    destination_remove_button_ = new QPushButton(QStringLiteral("Remove"), destination_manager);
     destination_remove_button_->setObjectName(QStringLiteral("bench-destination-remove"));
+    destination_remove_button_->setAutoDefault(false);
     destination_buttons->addWidget(destination_new_button_);
     destination_buttons->addWidget(destination_save_button_);
     destination_buttons->addWidget(destination_remove_button_);
-    destination_form->addRow(destination_buttons);
-    operations_layout->addWidget(destination_group);
-    output_profile_status_ =
-        new QLabel(QStringLiteral("Loading output profiles…"), operations_panel);
-    output_profile_status_->setObjectName(QStringLiteral("bench-output-profile-status"));
-    output_profile_status_->setWordWrap(true);
-    operations_layout->addWidget(output_profile_status_);
-    operations_layout->addStretch(1);
-    side_tabs->addTab(operations_panel, QStringLiteral("Operations"));
+    destination_buttons->addStretch(1);
+    auto* destination_manager_close = new QPushButton(QStringLiteral("Close"), destination_manager);
+    destination_manager_close->setObjectName(QStringLiteral("bench-destination-manager-close"));
+    destination_manager_close->setAutoDefault(false);
+    destination_buttons->addWidget(destination_manager_close);
+    destination_manager_box->addLayout(destination_buttons);
+    connect(destination_manager_close, &QPushButton::clicked, destination_manager,
+            &QDialog::close);
+    connect(manage_destinations_button, &QPushButton::clicked, destination_manager,
+            [destination_manager] {
+                destination_manager->show();
+                destination_manager->raise();
+                destination_manager->activateWindow();
+            });
 
     loading_ = new QLabel(QStringLiteral("Preparing metadata grid…"), this);
     loading_->setObjectName(QStringLiteral("bench-metadata-loading"));
     loading_->setAlignment(Qt::AlignCenter);
     root_layout_->addWidget(loading_, 1);
 
-    buttons_ = new QDialogButtonBox(QDialogButtonBox::Close, this);
-    buttons_->setObjectName(QStringLiteral("bench-metadata-buttons"));
-    undo_button_ = buttons_->addButton(QStringLiteral("Undo"), QDialogButtonBox::ActionRole);
-    undo_button_->setObjectName(QStringLiteral("bench-metadata-undo"));
-    undo_button_->setEnabled(false);
-    redo_button_ = buttons_->addButton(QStringLiteral("Redo"), QDialogButtonBox::ActionRole);
-    redo_button_->setObjectName(QStringLiteral("bench-metadata-redo"));
-    redo_button_->setEnabled(false);
-    discard_button_ =
-        buttons_->addButton(QStringLiteral("Discard draft"), QDialogButtonBox::ResetRole);
-    discard_button_->setObjectName(QStringLiteral("bench-metadata-discard"));
-    discard_button_->setEnabled(false);
-    add_field_button_ =
-        buttons_->addButton(QStringLiteral("Add field…"), QDialogButtonBox::ActionRole);
+    grid_tools_ = new QWidget(this);
+    grid_tools_->setObjectName(QStringLiteral("bench-metadata-grid-tools"));
+    grid_tools_->hide();
+    auto* grid_tools_layout = new QHBoxLayout(grid_tools_);
+    grid_tools_layout->setContentsMargins(0, 0, 0, 0);
+    grid_tools_layout->setSpacing(6);
+    add_field_button_ = new QPushButton(QStringLiteral("Add field…"), grid_tools_);
     add_field_button_->setObjectName(QStringLiteral("bench-metadata-add-field"));
     add_field_button_->setToolTip(QStringLiteral("Add an arbitrary metadata field (Insert)"));
     add_field_button_->setEnabled(false);
-    remove_field_button_ =
-        buttons_->addButton(QStringLiteral("Remove field"), QDialogButtonBox::ActionRole);
+    grid_tools_layout->addWidget(add_field_button_);
+    remove_field_button_ = new QPushButton(QStringLiteral("Remove field"), grid_tools_);
     remove_field_button_->setObjectName(QStringLiteral("bench-metadata-remove-field"));
     remove_field_button_->setToolTip(
         QStringLiteral("Remove the selected fields from the selected files (Delete)"));
     remove_field_button_->setEnabled(false);
-    edit_values_button_ =
-        buttons_->addButton(QStringLiteral("Edit values…"), QDialogButtonBox::ActionRole);
+    grid_tools_layout->addWidget(remove_field_button_);
+    edit_values_button_ = new QPushButton(QStringLiteral("Edit values…"), grid_tools_);
     edit_values_button_->setObjectName(QStringLiteral("bench-metadata-edit-values"));
     edit_values_button_->setToolTip(
         QStringLiteral("Edit the exact ordered value list (Ctrl+Enter)"));
     edit_values_button_->setEnabled(false);
+    grid_tools_layout->addWidget(edit_values_button_);
+    grid_tools_layout->addStretch(1);
+    undo_button_ = new QPushButton(QStringLiteral("Undo"), grid_tools_);
+    undo_button_->setObjectName(QStringLiteral("bench-metadata-undo"));
+    undo_button_->setToolTip(QStringLiteral("Undo the last draft edit (Ctrl+Z)"));
+    undo_button_->setShortcut(QKeySequence::Undo);
+    undo_button_->setEnabled(false);
+    grid_tools_layout->addWidget(undo_button_);
+    redo_button_ = new QPushButton(QStringLiteral("Redo"), grid_tools_);
+    redo_button_->setObjectName(QStringLiteral("bench-metadata-redo"));
+    redo_button_->setToolTip(QStringLiteral("Redo the last undone draft edit (Ctrl+Shift+Z)"));
+    redo_button_->setShortcut(QKeySequence::Redo);
+    redo_button_->setEnabled(false);
+    grid_tools_layout->addWidget(redo_button_);
+    discard_button_ = new QPushButton(QStringLiteral("Discard"), grid_tools_);
+    discard_button_->setObjectName(QStringLiteral("bench-metadata-discard"));
+    discard_button_->setToolTip(QStringLiteral("Throw away every pending draft edit"));
+    discard_button_->setEnabled(false);
+    grid_tools_layout->addWidget(discard_button_);
+
+    buttons_ = new QDialogButtonBox(QDialogButtonBox::Close, this);
+    buttons_->setObjectName(QStringLiteral("bench-metadata-buttons"));
     preview_plan_button_ =
-        buttons_->addButton(QStringLiteral("Preview preparation…"), QDialogButtonBox::ActionRole);
+        buttons_->addButton(QStringLiteral("Preview changes…"), QDialogButtonBox::ActionRole);
     preview_plan_button_->setObjectName(QStringLiteral("bench-metadata-preview-write-plan"));
-    preview_plan_button_->setToolTip(
-        QStringLiteral("Freshly revalidate every enabled metadata and file-path effect"));
+    preview_plan_button_->setToolTip(QStringLiteral(
+        "Revalidate every enabled change against the files and review it before applying"));
     preview_plan_button_->setEnabled(false);
+    preview_plan_button_->setDefault(true);
     connect(buttons_, &QDialogButtonBox::rejected, this, &QDialog::close);
     connect(undo_button_, &QPushButton::clicked, this, [this] {
         if (grid_model_ != nullptr) {
@@ -3141,15 +3223,9 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
             QString::fromStdString(core::escape_raw_path(destination_root_raw_path_)));
         updateOutputProfileButtons();
     });
-    connect(save_tags_check_, &QCheckBox::toggled, this, [this](const bool enabled) {
+    connect(save_tags_check_, &QCheckBox::toggled, this, [this] {
         invalidateWritePlan();
-        if (!enabled) {
-            read_only_->setText(QStringLiteral(
-                "Tag edits remain in memory but are excluded from Rename/Move while Save tags is "
-                "off; paths use the current source tags"));
-        } else if (grid_model_ != nullptr) {
-            updateDraftState(draft_count_, undo_button_->isEnabled(), redo_button_->isEnabled());
-        }
+        updateDraftState(draft_count_, undo_button_->isEnabled(), redo_button_->isEnabled());
     });
     for (auto* path_choice : {rename_files_check_, move_files_check_}) {
         connect(path_choice, &QCheckBox::toggled, this, [this] {
@@ -3169,7 +3245,14 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
     apply_progress_timer_->setInterval(50);
     connect(apply_progress_timer_, &QTimer::timeout, this,
             &MetadataPropertiesDialog::updateApplyProgress);
-    root_layout_->addWidget(buttons_);
+    auto* footer = new QWidget(this);
+    footer->setObjectName(QStringLiteral("bench-metadata-footer"));
+    auto* footer_layout = new QHBoxLayout(footer);
+    footer_layout->setContentsMargins(0, 0, 0, 0);
+    footer_layout->setSpacing(8);
+    footer_layout->addWidget(read_only_, 1);
+    footer_layout->addWidget(buttons_);
+    root_layout_->addWidget(footer);
     loadTransformationCatalog();
     loadOutputProfiles();
 
@@ -3350,18 +3433,28 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
     fields_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
     fields_->setColumnWidth(0, 190);
 
+    auto* fields_pane = new QWidget(splitter);
+    fields_pane->setObjectName(QStringLiteral("bench-metadata-fields-pane"));
+    auto* fields_pane_layout = new QVBoxLayout(fields_pane);
+    fields_pane_layout->setContentsMargins(0, 0, 0, 0);
+    fields_pane_layout->setSpacing(4);
+    grid_tools_->setParent(fields_pane);
+    fields_pane_layout->addWidget(grid_tools_);
+    fields_pane_layout->addWidget(fields_, 1);
+    grid_tools_->show();
+
     splitter->addWidget(file_list_);
-    splitter->addWidget(fields_);
-    splitter->setStretchFactor(0, 3);
-    splitter->setStretchFactor(1, 2);
-    splitter->setSizes({340, 220});
+    splitter->addWidget(fields_pane);
+    splitter->setStretchFactor(0, 1);
+    splitter->setStretchFactor(1, 3);
+    splitter->setSizes({170, 390});
     content_splitter->addWidget(splitter);
     content_splitter->addWidget(transformation_panel_);
     transformation_panel_->show();
     content_splitter->setStretchFactor(0, 1);
     content_splitter->setStretchFactor(1, 0);
     content_splitter->setSizes({760, 260});
-    root_layout_->insertWidget(root_layout_->indexOf(buttons_), content_splitter, 1);
+    root_layout_->insertWidget(root_layout_->count() - 1, content_splitter, 1);
 
     selection_debounce_ = new QTimer(this);
     selection_debounce_->setSingleShot(true);
@@ -3458,12 +3551,13 @@ void MetadataPropertiesDialog::updateDraftState(const int patch_count, const boo
                                                                    : QStringLiteral("changes")));
     read_only_->setText(
         save_tags_check_ != nullptr && !save_tags_check_->isChecked()
-            ? QStringLiteral("In-memory draft excluded · Save tags is off, so Rename/Move uses "
-                             "the current source tags · %1")
-                  .arg(revision_summary_)
-            : QStringLiteral("In-memory draft only · file writing is not enabled until a fresh "
-                             "ready plan is explicitly applied · %1")
-                  .arg(revision_summary_));
+            ? QStringLiteral(
+                  "Save tags is off · tag edits stay in the draft and Rename/Move uses the "
+                  "file's current tags")
+            : (patch_count == 0
+                   ? QStringLiteral("No pending edits")
+                   : QStringLiteral("Draft only · nothing is written until you preview and "
+                                    "apply")));
     undo_button_->setEnabled(can_undo);
     redo_button_->setEnabled(can_redo);
     discard_button_->setEnabled(patch_count > 0);
@@ -4110,10 +4204,9 @@ void MetadataPropertiesDialog::previewWritePlan() {
             ? QStringLiteral("Planning Rename/Move strictly from current source tags, then "
                              "freshly preflighting every path…")
         : automatic_action_count == 0U
-            ? QStringLiteral("Planning final metadata and freshly preflighting every "
-                             "enabled file path…")
-            : QStringLiteral("Evaluating %1 checked automatic %2 in a temporary draft, "
-                             "then building one immutable preparation…")
+            ? QStringLiteral("Rechecking every enabled change against the files…")
+            : QStringLiteral("Running %1 checked %2, then rechecking every enabled "
+                             "change…")
                   .arg(automatic_action_count)
                   .arg(automatic_action_count == 1U ? QStringLiteral("step")
                                                     : QStringLiteral("steps")));
@@ -4316,7 +4409,7 @@ void MetadataPropertiesDialog::startMetadataApply(
     applying_file_paths_ = false;
     apply_committed_ = false;
     updateWritePlanButton();
-    read_only_->setText(QStringLiteral("Applying the immutable write plan on bounded workers…"));
+    read_only_->setText(QStringLiteral("Applying tag changes…"));
 
     auto* dialog = new MetadataApplyDialog(
         *plan->metadata, [this] { apply_cancellation_.request_cancellation(); }, this);
@@ -4382,7 +4475,7 @@ void MetadataPropertiesDialog::startFileApply(
     apply_committed_ = false;
     updateWritePlanButton();
     read_only_->setText(
-        QStringLiteral("Publishing the immutable file-path review on bounded workers…"));
+        QStringLiteral("Applying file renames and moves…"));
 
     auto* dialog = new FilePublicationApplyDialog(
         *plan->path_preflight, [this] { apply_cancellation_.request_cancellation(); }, this);

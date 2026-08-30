@@ -191,6 +191,7 @@ class MetadataPropertiesDialog final : public QDialog {
     QPushButton* edit_values_button_{nullptr};
     QPushButton* transform_button_{nullptr};
     QWidget* transformation_panel_{nullptr};
+    QWidget* grid_tools_{nullptr};
     QListWidget* transformation_list_{nullptr};
     QLabel* transformation_status_{nullptr};
     QCheckBox* save_tags_check_{nullptr};
