@@ -50,6 +50,14 @@ using FilePublicationDependentStateCommitter =
     const FilePublicationDependentStateCommitter& dependent_state_committer,
     const core::CancellationToken& cancellation = {});
 
+// Copies one ready cross-filesystem source into an executor-owned sibling,
+// verifies exact bytes, publishes without replacement, advances dependent
+// state, and only then removes the still-locked original source.
+[[nodiscard]] core::Result<FilePublicationCommitResult> commit_cross_filesystem_publication(
+    const OutputPathPreflight& preflight, std::size_t source_index, FilePublicationJournal& journal,
+    const FilePublicationDependentStateCommitter& dependent_state_committer,
+    const core::CancellationToken& cancellation = {});
+
 enum class FilePublicationRecoveryOutcome : std::uint8_t {
     completed,
     rolled_back,
@@ -65,10 +73,19 @@ struct FilePublicationRecoveryResult {
                            const FilePublicationRecoveryResult&) = default;
 };
 
-// Recovers incomplete same-filesystem records. Cross-filesystem records are
-// intentionally left for the separate copy-publication executor.
+// Recovers incomplete same-filesystem records and leaves cross-filesystem
+// records for their distinct prepared-copy/source-removal state machine.
 [[nodiscard]] core::Result<std::vector<FilePublicationRecoveryResult>>
 recover_same_filesystem_publications(
+    FilePublicationJournal& journal,
+    const FilePublicationDependentStateCommitter& dependent_state_committer,
+    const core::CancellationToken& cancellation = {});
+
+// Recovers exact prepared, published, dependent-committed, and source-removed
+// cross-filesystem boundaries. Ambiguous evidence is retained for manual
+// reconciliation and is never deleted by inference.
+[[nodiscard]] core::Result<std::vector<FilePublicationRecoveryResult>>
+recover_cross_filesystem_publications(
     FilePublicationJournal& journal,
     const FilePublicationDependentStateCommitter& dependent_state_committer,
     const core::CancellationToken& cancellation = {});

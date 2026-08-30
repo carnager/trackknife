@@ -751,9 +751,18 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   restores the forward target, rolled-back attempts can retry, completed undo
   is idempotent, and a post-callback crash reuses ordinary startup recovery.
   The real list/cache callback proves ordered A→B→A convergence.
-- Next: implement cross-filesystem verified-copy publication and active-
-  playback reconciliation before enabling workspace operation choices. The
-  capture-pattern grammar and chain import/export follow that vertical slice.
+- Done: ADR-0061 executes the cross-filesystem path. A bounded copy into the
+  journal-derived target sibling preserves ownership, permissions, timestamps,
+  and bounded extended attributes; syncs and byte-verifies it against the
+  locked source; publishes without replacement; commits every ADR-0059 list and
+  cache relocation; and only then identity-removes the original. Exact target
+  rollback, cancellation cleanup, and startup recovery cover prepared,
+  published, dependent-committed, and source-removed crash boundaries on real
+  distinct device identities. Ambiguous evidence is retained rather than
+  deleted.
+- Next: implement active-playback path reconciliation, then bounded batch
+  execution and workspace operation choices. The capture-pattern grammar and
+  chain import/export follow that vertical slice.
 
 ### Exit criteria
 

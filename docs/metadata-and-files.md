@@ -527,6 +527,19 @@ back attempts may retry, while a completed reversal makes repeated undo a
 verified no-op. Directories created for the forward target are never removed.
 The core undo exists, but operation history UI remains unavailable.
 
+**Trackbench decision (ADR-0061):** cross-filesystem path-only Move now copies
+through the exact journal-derived target sibling with a bounded buffer,
+preserves and verifies ownership, permissions, timestamps, and bounded Linux
+extended attributes, syncs the candidate, and compares every byte with the
+still-locked source. The sibling is published only through a no-replace rename;
+the ADR-0059 all-occurrence transaction then advances durable references before
+the exact original is unlinked and its parent synced. Startup recovery can
+adopt an exact copy that preceded its transition, infer publication or source
+removal on either side of their journal boundaries, and replay dependent state.
+Unexpected identities or content remain visible for reconciliation. Active
+playback reconciliation, cross-filesystem undo, batching, and workspace
+controls remain unavailable.
+
 ### Plan pipeline
 
 ```text

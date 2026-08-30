@@ -30,7 +30,9 @@ preview (ADR-0052), and exact-value matching plus selection-order numbering
 (ADR-0054), and versioned output-profile persistence plus pure path planning
 (ADR-0055), plus fresh filesystem preflight and a durable file-publication state
 machine (ADR-0056), plus journaled same-filesystem file publication and recovery
-(ADR-0057), are accepted in ADRs through 0058.
+(ADR-0057), revision-qualified all-occurrence relocation (ADR-0059), linked
+same-filesystem undo (ADR-0060), and verified cross-filesystem publication
+(ADR-0061), are accepted in ADRs through 0061.
 Backend selection is not a capability claim; protocol and file behavior still
 require fixtures and measurements.
 
@@ -318,8 +320,11 @@ local, mapped-local, writable, and decodable sources before offering actions.
   versus cross-filesystem copy without mutation. Migration 14 durably separates
   target preparation/publication, dependent-state commit, and source removal.
   ADR-0057 qualifies locked descriptor-relative no-replace rename, exact
-  rollback, and idempotent startup recovery; concrete dependent path state,
-  undo, cross-filesystem copy, batching, and UI exposure remain to qualify.
+  rollback, and idempotent startup recovery; ADR-0059 supplies concrete guarded
+  dependent path state, ADR-0060 adds linked same-filesystem undo, and ADR-0061
+  adds bounded metadata-preserving verified cross-filesystem copy, no-replace
+  publication, source removal, and recovery. Active-playback reconciliation,
+  batching, cross-filesystem undo, and UI exposure remain to qualify.
 - **State:** SQLite with explicit reversible development migrations, including
   normalized ordered schema-1 metadata transformation definitions owned by the
   serialized persistence worker, including their automatic tagging policy

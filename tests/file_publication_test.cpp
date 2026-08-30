@@ -15,6 +15,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <sys/stat.h>
+#include <sys/xattr.h>
 #include <utility>
 #include <vector>
 
@@ -34,8 +36,9 @@ void require(const bool condition, const std::string_view message) {
 
 class TemporaryDirectory final {
   public:
-    TemporaryDirectory()
-        : path_{std::filesystem::temp_directory_path() /
+    explicit TemporaryDirectory(
+        const std::filesystem::path& root = std::filesystem::temp_directory_path())
+        : path_{root /
                 ("trackknife-file-publication-executor-" + core::StableId::random().to_string())} {
         require(std::filesystem::create_directory(path_),
                 "temporary publication directory must be created");
@@ -65,8 +68,9 @@ std::string read_file(const std::filesystem::path& path) {
     return {std::istreambuf_iterator<char>{stream}, std::istreambuf_iterator<char>{}};
 }
 
-operations::OutputPathPreflight preflight(const std::filesystem::path& source,
-                                          const std::filesystem::path& target) {
+operations::OutputPathPreflight
+preflight_for(const std::filesystem::path& source, const std::filesystem::path& target,
+              const operations::OutputPathPublicationKind expected_kind) {
     auto revision = core::observe_local_source_revision(source.native());
     require(revision.has_value(), "publication source revision must be observable");
     operations::PlannedOutputPathSource planned{
@@ -83,21 +87,49 @@ operations::OutputPathPreflight preflight(const std::filesystem::path& source,
     };
     operations::OutputPathPlan plan{
         .layout = {},
-        .destination = std::nullopt,
-        .operations = {.rename_files = true, .move_files = false},
+        .destination = expected_kind == operations::OutputPathPublicationKind::cross_filesystem_copy
+                           ? std::optional<operations::DestinationProfile>{{
+                                 .schema_version = 1U,
+                                 .name = "cross-filesystem test",
+                                 .root_raw_path = "/dev/shm",
+                                 .containment_policy = {"lexical-beneath-root", 1U},
+                             }}
+                           : std::nullopt,
+        .operations =
+            {
+                .rename_files = true,
+                .move_files =
+                    expected_kind == operations::OutputPathPublicationKind::cross_filesystem_copy,
+            },
         .sources = {planned},
         .issues = {},
     };
     auto checked = operations::preflight_output_paths(plan);
     if (!checked) {
         std::cerr << checked.error().message << '\n';
+    } else if (!checked->ready()) {
+        for (const auto& issue : checked->issues) {
+            std::cerr << issue.message << " [" << issue.source_raw_path << " -> "
+                      << issue.target_raw_path << "]\n";
+        }
     }
     require(checked.has_value() && checked->ready(),
             "publication fixture must pass fresh preflight");
-    require(checked->sources.front().publication ==
-                operations::OutputPathPublicationKind::same_filesystem_rename,
-            "publication fixture must be a same-filesystem rename");
+    require(checked->sources.front().publication == expected_kind,
+            "publication fixture must have the expected filesystem topology");
     return std::move(*checked);
+}
+
+operations::OutputPathPreflight preflight(const std::filesystem::path& source,
+                                          const std::filesystem::path& target) {
+    return preflight_for(source, target,
+                         operations::OutputPathPublicationKind::same_filesystem_rename);
+}
+
+operations::OutputPathPreflight cross_preflight(const std::filesystem::path& source,
+                                                const std::filesystem::path& target) {
+    return preflight_for(source, target,
+                         operations::OutputPathPublicationKind::cross_filesystem_copy);
 }
 
 persistence::SqliteFilePublicationJournal open_journal(const TemporaryDirectory& directory,
@@ -679,6 +711,239 @@ void changedUndoTopologyCreatesNoReverseJournal() {
             "an occupied original path must block undo without journal or filesystem mutation");
 }
 
+void crossFilesystemCopyPublishesExactBytesBeforeRemovingSource() {
+    TemporaryDirectory source_directory;
+    TemporaryDirectory target_directory{"/dev/shm"};
+    const auto source = source_directory.path() / "source.flac";
+    const auto target = target_directory.path() / "Artist" / "Album" / "target.flac";
+    std::string bytes((1024U * 1024U) + 37U, 'a');
+    bytes.replace(1024U * 1024U, 17U, "cross-device-tail");
+    write_file(source, bytes);
+    require(::chmod(source.c_str(), 0640) == 0, "copy source permissions must be set");
+    constexpr std::string_view attribute_name{"user.trackknife-copy-test"};
+    constexpr std::string_view attribute_value{"preserved-cross-filesystem-xattr"};
+    const bool xattrs_supported =
+        ::setxattr(source.c_str(), attribute_name.data(), attribute_value.data(),
+                   attribute_value.size(), 0) == 0;
+    struct stat source_status{};
+    require(::stat(source.c_str(), &source_status) == 0,
+            "copy source filesystem metadata must be observed");
+    const auto checked = cross_preflight(source, target);
+    auto journal = open_journal(source_directory, "cross-success.sqlite3");
+    std::size_t callback_count = 0U;
+    const auto committed = operations::commit_cross_filesystem_publication(
+        checked, 0U, journal,
+        [&](const operations::FilePublicationCommitResult& result) -> core::Result<void> {
+            ++callback_count;
+            require(std::filesystem::exists(source) && read_file(target) == bytes,
+                    "dependent state must run after target publication and before source removal");
+            require(result.source_revision.device != result.target_revision.device &&
+                        result.occurrence_indexes == (std::vector<std::size_t>{2U, 7U}),
+                    "cross-device callback must receive both exact revision identities");
+            return {};
+        });
+    if (!committed) {
+        std::cerr << committed.error().message << '\n';
+    }
+    require(committed.has_value() && callback_count == 1U && !std::filesystem::exists(source) &&
+                read_file(target) == bytes,
+            "verified cross-filesystem publication must leave only the exact target");
+    struct stat target_status{};
+    require(::stat(target.c_str(), &target_status) == 0 &&
+                target_status.st_uid == source_status.st_uid &&
+                target_status.st_gid == source_status.st_gid &&
+                (target_status.st_mode & 0777) == 0640,
+            "verified copy must preserve source ownership and permissions");
+    if (xattrs_supported) {
+        std::string value(attribute_value.size(), '\0');
+        const auto read =
+            ::getxattr(target.c_str(), attribute_name.data(), value.data(), value.size());
+        require(read == static_cast<ssize_t>(attribute_value.size()) && value == attribute_value,
+                "verified copy must preserve source extended attributes");
+    }
+    const auto record = journal.load(committed->journal_id);
+    require(record && *record && (**record).state == State::complete &&
+                !std::filesystem::exists((**record).prepared_raw_path),
+            "successful copy must retain complete evidence and no prepared sibling");
+}
+
+void crossFilesystemDependentFailureRemovesOnlyThePublishedCopy() {
+    TemporaryDirectory source_directory;
+    TemporaryDirectory target_directory{"/dev/shm"};
+    const auto source = source_directory.path() / "source.flac";
+    const auto target = target_directory.path() / "target.flac";
+    write_file(source, "cross rollback bytes");
+    const auto checked = cross_preflight(source, target);
+    auto journal = open_journal(source_directory, "cross-rollback.sqlite3");
+    const auto committed = operations::commit_cross_filesystem_publication(
+        checked, 0U, journal,
+        [](const operations::FilePublicationCommitResult&) -> core::Result<void> {
+            return std::unexpected(core::Error{.code = core::ErrorCode::database,
+                                               .message = "injected cross dependent failure",
+                                               .context = {}});
+        });
+    require(!committed && committed.error().code == core::ErrorCode::database &&
+                read_file(source) == "cross rollback bytes" && !std::filesystem::exists(target) &&
+                journal.load_incomplete()->empty(),
+            "dependent failure must preserve the original and remove only its published copy");
+}
+
+void crossFilesystemRecoveryReplaysDependentStateThenRemovesSource() {
+    TemporaryDirectory source_directory;
+    TemporaryDirectory target_directory{"/dev/shm"};
+    const auto source = source_directory.path() / "source.flac";
+    const auto target = target_directory.path() / "target.flac";
+    write_file(source, "cross dependent replay");
+    const auto checked = cross_preflight(source, target);
+    auto durable = open_journal(source_directory, "cross-dependent-replay.sqlite3");
+    FailingOnceTransitionJournal failing{durable, State::dependent_state_committed};
+    std::size_t callback_count = 0U;
+    const auto callback =
+        [&](const operations::FilePublicationCommitResult&) -> core::Result<void> {
+        ++callback_count;
+        return {};
+    };
+    const auto interrupted =
+        operations::commit_cross_filesystem_publication(checked, 0U, failing, callback);
+    require(!interrupted && interrupted.error().code == core::ErrorCode::database &&
+                callback_count == 1U && std::filesystem::exists(source) &&
+                read_file(target) == "cross dependent replay",
+            "post-dependent journal failure must retain both copies at its safe boundary");
+    const auto incomplete = durable.load_incomplete();
+    require(incomplete && incomplete->size() == 1U &&
+                incomplete->front().state == State::target_published,
+            "interrupted cross publication must remain replayable");
+    const auto recovered = operations::recover_cross_filesystem_publications(durable, callback);
+    require(recovered && recovered->size() == 1U &&
+                recovered->front().outcome ==
+                    operations::FilePublicationRecoveryOutcome::completed &&
+                callback_count == 2U && !std::filesystem::exists(source) &&
+                read_file(target) == "cross dependent replay",
+            "recovery must replay dependent state before removing the source");
+}
+
+void crossFilesystemRecoveryAdoptsOnlyAnExactUnrecordedPreparedCopy() {
+    TemporaryDirectory source_directory;
+    TemporaryDirectory target_directory{"/dev/shm"};
+    const auto source = source_directory.path() / "source.flac";
+    const auto target = target_directory.path() / "target.flac";
+    write_file(source, "exact unrecorded prepared copy");
+    const auto checked = cross_preflight(source, target);
+    auto journal = open_journal(source_directory, "cross-adopt-prepared.sqlite3");
+    auto record =
+        operations::make_file_publication_journal_record(checked, 0U, core::StableId::random());
+    require(record && journal.create(*record),
+            "planned prepared-copy recovery record must be durable");
+    std::filesystem::copy_file(source, record->prepared_raw_path);
+    std::filesystem::permissions(record->prepared_raw_path,
+                                 std::filesystem::status(source).permissions());
+    std::filesystem::last_write_time(record->prepared_raw_path,
+                                     std::filesystem::last_write_time(source));
+    std::size_t callback_count = 0U;
+    const auto recovered = operations::recover_cross_filesystem_publications(
+        journal, [&](const operations::FilePublicationCommitResult&) -> core::Result<void> {
+            ++callback_count;
+            return {};
+        });
+    require(recovered && recovered->size() == 1U &&
+                recovered->front().outcome ==
+                    operations::FilePublicationRecoveryOutcome::completed &&
+                callback_count == 1U && !std::filesystem::exists(source) &&
+                !std::filesystem::exists(record->prepared_raw_path) &&
+                read_file(target) == "exact unrecorded prepared copy",
+            "recovery must verify, adopt, publish, and complete an exact prepared sibling");
+
+    const auto ambiguous_source = source_directory.path() / "ambiguous-source.flac";
+    const auto ambiguous_target = target_directory.path() / "ambiguous-target.flac";
+    write_file(ambiguous_source, "original bytes");
+    const auto ambiguous_checked = cross_preflight(ambiguous_source, ambiguous_target);
+    auto ambiguous_journal = open_journal(source_directory, "cross-ambiguous-prepared.sqlite3");
+    auto ambiguous_record = operations::make_file_publication_journal_record(
+        ambiguous_checked, 0U, core::StableId::random());
+    require(ambiguous_record && ambiguous_journal.create(*ambiguous_record),
+            "ambiguous prepared-copy recovery record must be durable");
+    write_file(ambiguous_record->prepared_raw_path, "different bytes");
+    const auto ambiguous = operations::recover_cross_filesystem_publications(
+        ambiguous_journal, successful_dependent_commit);
+    require(ambiguous && ambiguous->size() == 1U &&
+                ambiguous->front().outcome ==
+                    operations::FilePublicationRecoveryOutcome::needs_reconciliation &&
+                read_file(ambiguous_source) == "original bytes" &&
+                read_file(ambiguous_record->prepared_raw_path) == "different bytes" &&
+                !std::filesystem::exists(ambiguous_target),
+            "recovery must retain a differing unrecorded sibling for reconciliation");
+}
+
+void crossFilesystemRecoveryInfersPublishedAndRemovedBoundaries() {
+    TemporaryDirectory source_directory;
+    TemporaryDirectory target_directory{"/dev/shm"};
+    const auto source = source_directory.path() / "source.flac";
+    const auto target = target_directory.path() / "target.flac";
+    write_file(source, "published boundary");
+    const auto checked = cross_preflight(source, target);
+    auto published_journal = open_journal(source_directory, "cross-published-boundary.sqlite3");
+    auto record =
+        operations::make_file_publication_journal_record(checked, 0U, core::StableId::random());
+    require(record && published_journal.create(*record),
+            "cross publication boundary record must be durable");
+    std::filesystem::copy_file(source, record->prepared_raw_path);
+    std::filesystem::permissions(record->prepared_raw_path,
+                                 std::filesystem::status(source).permissions());
+    std::filesystem::last_write_time(record->prepared_raw_path,
+                                     std::filesystem::last_write_time(source));
+    const auto prepared_revision = core::observe_local_source_revision(record->prepared_raw_path);
+    require(prepared_revision &&
+                published_journal.transition(record->id, {.expected_state = State::planned,
+                                                          .state = State::target_prepared,
+                                                          .prepared_revision = *prepared_revision,
+                                                          .target_revision = std::nullopt,
+                                                          .failure = std::nullopt}),
+            "prepared target evidence must be durable before publication");
+    std::filesystem::rename(record->prepared_raw_path, target);
+    std::size_t callback_count = 0U;
+    const auto recovered_published = operations::recover_cross_filesystem_publications(
+        published_journal,
+        [&](const operations::FilePublicationCommitResult&) -> core::Result<void> {
+            ++callback_count;
+            return {};
+        });
+    require(recovered_published && recovered_published->size() == 1U &&
+                recovered_published->front().outcome ==
+                    operations::FilePublicationRecoveryOutcome::completed &&
+                callback_count == 1U && !std::filesystem::exists(source) &&
+                read_file(target) == "published boundary",
+            "recovery must infer a sibling rename completed before its journal transition");
+
+    const auto removed_source = source_directory.path() / "removed-source.flac";
+    const auto removed_target = target_directory.path() / "removed-target.flac";
+    write_file(removed_source, "removed boundary");
+    const auto removed_checked = cross_preflight(removed_source, removed_target);
+    auto removed_journal = open_journal(source_directory, "cross-removed-boundary.sqlite3");
+    FailingOnceTransitionJournal failing{removed_journal, State::source_removed};
+    callback_count = 0U;
+    const auto interrupted = operations::commit_cross_filesystem_publication(
+        removed_checked, 0U, failing,
+        [&](const operations::FilePublicationCommitResult&) -> core::Result<void> {
+            ++callback_count;
+            return {};
+        });
+    require(!interrupted && interrupted.error().code == core::ErrorCode::database &&
+                callback_count == 1U && !std::filesystem::exists(removed_source) &&
+                read_file(removed_target) == "removed boundary",
+            "source-removal journal failure must retain the completed physical topology");
+    const auto recovered_removed = operations::recover_cross_filesystem_publications(
+        removed_journal, [&](const operations::FilePublicationCommitResult&) -> core::Result<void> {
+            ++callback_count;
+            return {};
+        });
+    require(recovered_removed && recovered_removed->size() == 1U &&
+                recovered_removed->front().outcome ==
+                    operations::FilePublicationRecoveryOutcome::completed &&
+                callback_count == 1U && !std::filesystem::exists(removed_source) &&
+                read_file(removed_target) == "removed boundary",
+            "recovery must infer an already removed source without replaying dependent state");
+}
+
 void cancellationBeforeCommitCreatesNoJournal() {
     TemporaryDirectory directory;
     const auto source = directory.path() / "source.flac";
@@ -712,6 +977,11 @@ int main() {
     failedUndoRestoresPublishedTargetAndCanBeRetried();
     undoJournalBoundaryRecoversByReplayingDependentState();
     changedUndoTopologyCreatesNoReverseJournal();
+    crossFilesystemCopyPublishesExactBytesBeforeRemovingSource();
+    crossFilesystemDependentFailureRemovesOnlyThePublishedCopy();
+    crossFilesystemRecoveryReplaysDependentStateThenRemovesSource();
+    crossFilesystemRecoveryAdoptsOnlyAnExactUnrecordedPreparedCopy();
+    crossFilesystemRecoveryInfersPublishedAndRemovedBoundaries();
     cancellationBeforeCommitCreatesNoJournal();
     std::cout << "file publication executor tests passed\n";
     return 0;
