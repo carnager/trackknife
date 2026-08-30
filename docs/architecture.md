@@ -32,7 +32,8 @@ preview (ADR-0052), and exact-value matching plus selection-order numbering
 machine (ADR-0056), plus journaled same-filesystem file publication and recovery
 (ADR-0057), revision-qualified all-occurrence relocation (ADR-0059), linked
 same-filesystem undo (ADR-0060), and verified cross-filesystem publication
-(ADR-0061), are accepted in ADRs through 0061.
+(ADR-0061), plus revision-qualified active-playback relocation (ADR-0062), are
+accepted in ADRs through 0062.
 Backend selection is not a capability claim; protocol and file behavior still
 require fixtures and measurements.
 
@@ -323,8 +324,10 @@ local, mapped-local, writable, and decodable sources before offering actions.
   rollback, and idempotent startup recovery; ADR-0059 supplies concrete guarded
   dependent path state, ADR-0060 adds linked same-filesystem undo, and ADR-0061
   adds bounded metadata-preserving verified cross-filesystem copy, no-replace
-  publication, source removal, and recovery. Active-playback reconciliation,
-  batching, cross-filesystem undo, and UI exposure remain to qualify.
+  publication, source removal, and recovery. ADR-0062 adds a serialized exact-
+  revision audio-binding barrier and compensates it if the durable list/cache
+  transaction fails. Batching, cross-filesystem undo, and UI exposure remain
+  to qualify.
 - **State:** SQLite with explicit reversible development migrations, including
   normalized ordered schema-1 metadata transformation definitions owned by the
   serialized persistence worker, including their automatic tagging policy

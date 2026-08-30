@@ -536,9 +536,19 @@ the ADR-0059 all-occurrence transaction then advances durable references before
 the exact original is unlinked and its parent synced. Startup recovery can
 adopt an exact copy that preceded its transition, infer publication or source
 removal on either side of their journal boundaries, and replay dependent state.
-Unexpected identities or content remain visible for reconciliation. Active
-playback reconciliation, cross-filesystem undo, batching, and workspace
-controls remain unavailable.
+Unexpected identities or content remain visible for reconciliation. Cross-
+filesystem undo, batching, and workspace controls remain unavailable.
+
+**Trackbench decision (ADR-0062):** local audition captures exact revisions for
+the current decoder and its prepared gapless continuation. The file-publication
+callback serializes an exact source-to-target re-key on the audio worker without
+reopening the decoder, flushing PCM, seeking, or reconnecting PipeWire. Already
+queued load/continuation intents follow the target and require its published
+revision; exact recovery replay is a no-op, while a reused path is left alone
+and reported. Audio advances before the durable ADR-0059 list/cache transaction
+and is inversely compensated if that transaction fails, allowing the executor's
+filesystem rollback to restore one coherent source state. Batching,
+cross-filesystem undo, and workspace controls remain unavailable.
 
 ### Plan pipeline
 

@@ -760,9 +760,15 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   published, dependent-committed, and source-removed crash boundaries on real
   distinct device identities. Ambiguous evidence is retained rather than
   deleted.
-- Next: implement active-playback path reconciliation, then bounded batch
-  execution and workspace operation choices. The capture-pattern grammar and
-  chain import/export follow that vertical slice.
+- Done: ADR-0062 revision-qualifies the current decoder, prepared gapless-next
+  decoder, and already queued local-audition source intents. The serialized
+  publication barrier re-keys exact bindings without reopening, seeking,
+  flushing, or reconnecting audio; exact replay is a no-op, stale identities
+  are refused, and durable list/cache failure reverses the ephemeral player
+  binding before filesystem rollback.
+- Next: implement bounded batch execution, then workspace operation choices.
+  The capture-pattern grammar and chain import/export follow that vertical
+  slice.
 
 ### Exit criteria
 

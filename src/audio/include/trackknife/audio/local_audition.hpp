@@ -5,12 +5,14 @@
 #include "trackknife/audio/local_playback.hpp"
 #include "trackknife/audio/pipewire_output.hpp"
 #include "trackknife/core/error.hpp"
+#include "trackknife/core/local_sources.hpp"
 #include "trackknife/core/result.hpp"
 #include "trackknife/formats/decoder.hpp"
 
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -58,12 +60,14 @@ struct LocalAuditionConfig {
 struct LocalAuditionSnapshot {
     LocalAuditionState state{LocalAuditionState::empty};
     std::string raw_path;
+    std::optional<core::LocalSourceRevision> source_revision;
     formats::AudioSourceSelection selection;
     std::optional<formats::SampleRange> segment;
     // Queued gapless continuation and the count of consumed takeovers; the
     // count increments exactly when raw_path flips to the queued source and
     // position/end rebase to the new track.
     std::string next_raw_path;
+    std::optional<core::LocalSourceRevision> next_source_revision;
     formats::AudioSourceSelection next_selection;
     std::optional<formats::SampleRange> next_segment;
     std::uint64_t chain_transitions{0U};
@@ -91,6 +95,29 @@ struct LocalAuditionSnapshot {
 
     friend bool operator==(const LocalAuditionSnapshot&, const LocalAuditionSnapshot&) = default;
 };
+
+struct LocalAuditionSourceRelocation {
+    std::string source_raw_path;
+    std::string target_raw_path;
+    core::LocalSourceRevision source_revision;
+    core::LocalSourceRevision target_revision;
+
+    friend bool operator==(const LocalAuditionSourceRelocation&,
+                           const LocalAuditionSourceRelocation&) = default;
+};
+
+struct LocalAuditionSourceRelocationResult {
+    std::size_t active_sources_relocated{0U};
+    std::size_t queued_sources_relocated{0U};
+    std::size_t pending_commands_relocated{0U};
+    std::size_t revision_conflicts{0U};
+    bool already_applied{false};
+
+    friend bool operator==(const LocalAuditionSourceRelocationResult&,
+                           const LocalAuditionSourceRelocationResult&) = default;
+};
+
+using LocalAuditionDependentStateCommitter = std::function<core::Result<void>()>;
 
 // Owns every blocking local-audio operation on one serialized worker. Public
 // commands only enqueue bounded work and are safe to invoke from the UI thread.
@@ -148,6 +175,20 @@ class LocalAuditionService final {
     // system default. A loaded source reconnects in place, preserving its
     // position, volume, and play/pause state.
     [[nodiscard]] core::Result<void> set_output_target(std::optional<std::string> target);
+    // Revision-qualifies and synchronously re-keys active, gapless-next, and
+    // already queued source intents without reopening a decoder or disturbing
+    // transport. This is a mutation-worker barrier for a file-publication
+    // dependent-state transaction; never call it from the UI thread.
+    [[nodiscard]] core::Result<LocalAuditionSourceRelocationResult>
+    relocate_source_and_wait(LocalAuditionSourceRelocation relocation);
+    // Publication callback composition: re-key audio first, run the durable
+    // list/cache transaction while the new binding is visible, and compensate
+    // the ephemeral audio change if that transaction fails. Recovery may
+    // replay the whole idempotent sequence. Never call this from the UI thread.
+    [[nodiscard]] core::Result<LocalAuditionSourceRelocationResult>
+    commit_source_relocation_and_wait(
+        LocalAuditionSourceRelocation relocation,
+        const LocalAuditionDependentStateCommitter& dependent_state_committer);
     [[nodiscard]] core::Result<void> clear();
 
   private:
