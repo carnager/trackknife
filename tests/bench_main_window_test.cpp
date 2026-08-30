@@ -1698,6 +1698,17 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     QVERIFY(undo != nullptr);
     QVERIFY(redo != nullptr);
     QVERIFY(write_plan != nullptr);
+    auto* empty_script_list =
+        properties->findChild<QListWidget*>(QStringLiteral("bench-metadata-transformation-list"));
+    auto* empty_script_status = properties->findChild<QLabel*>(
+        QStringLiteral("bench-metadata-transformation-status"));
+    QVERIFY(empty_script_list != nullptr);
+    QVERIFY(empty_script_status != nullptr);
+    QTRY_COMPARE(empty_script_list->count(), 0);
+    QCOMPARE(empty_script_list->property("bench-empty-state-text").toString(),
+             QStringLiteral("No saved scripts yet"));
+    QTRY_VERIFY(empty_script_status->text().isEmpty());
+    QVERIFY(!empty_script_status->isVisible());
     QTRY_VERIFY(transform->isEnabled());
     QTest::mouseClick(transform, Qt::LeftButton);
 

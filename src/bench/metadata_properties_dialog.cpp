@@ -40,6 +40,8 @@
 #include <QMessageBox>
 #include <QModelIndex>
 #include <QPersistentModelIndex>
+#include <QPainter>
+#include <QPaintEvent>
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
@@ -77,6 +79,31 @@ constexpr auto properties_content_splitter_key =
     "workspace/metadata-properties-content-splitter-v1";
 constexpr auto properties_metadata_splitter_key =
     "workspace/metadata-properties-metadata-splitter-v1";
+
+class EmptyStateListWidget final : public QListWidget {
+  public:
+    explicit EmptyStateListWidget(QString empty_state, QWidget* parent)
+        : QListWidget(parent), empty_state_(std::move(empty_state)) {
+        setProperty("bench-empty-state-text", empty_state_);
+    }
+
+  protected:
+    void paintEvent(QPaintEvent* event) override {
+        QListWidget::paintEvent(event);
+        if (count() != 0 || empty_state_.isEmpty()) {
+            return;
+        }
+        QPainter painter{viewport()};
+        painter.setClipRegion(event->region());
+        painter.setPen(palette().color(isEnabled() ? QPalette::Active : QPalette::Disabled,
+                                       QPalette::PlaceholderText));
+        painter.drawText(viewport()->rect().adjusted(16, 16, -16, -16),
+                         Qt::AlignCenter | Qt::TextWordWrap, empty_state_);
+    }
+
+  private:
+    QString empty_state_;
+};
 
 } // namespace
 
@@ -215,7 +242,8 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
         QStringLiteral("Scripts"), QStringLiteral("bench-metadata-scripts-heading"),
         QStringLiteral("Checked scripts run automatically whenever this draft is previewed and "
                        "applied; the checked state is saved")));
-    transformation_list_ = new QListWidget(side_panel);
+    transformation_list_ =
+        new EmptyStateListWidget(QStringLiteral("No saved scripts yet"), side_panel);
     transformation_list_->setObjectName(QStringLiteral("bench-metadata-transformation-list"));
     transformation_list_->setAccessibleName(QStringLiteral("Saved tagging scripts"));
     transformation_list_->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -1001,12 +1029,14 @@ void MetadataPropertiesDialog::rebuildTransformationCatalogControls(
     } else if (transformation_list_->count() > 0) {
         transformation_list_->setCurrentRow(0);
     }
+    const auto has_saved_scripts = !transformation_catalog_.empty();
+    transformation_status_->setVisible(has_saved_scripts);
     transformation_status_->setText(
-        transformation_catalog_.empty()
-            ? QStringLiteral("No saved scripts yet. Open the editor to create one.")
-            : QStringLiteral("%1 of %2 checked · run in the order shown")
+        has_saved_scripts
+            ? QStringLiteral("%1 of %2 checked · run in the order shown")
                   .arg(automatic_count)
-                  .arg(transformation_catalog_.size()));
+                  .arg(transformation_catalog_.size())
+            : QString{});
     updateTransformationButton();
     updateWritePlanButton();
 }
