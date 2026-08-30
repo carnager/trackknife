@@ -370,7 +370,7 @@ shows the original and final document plus optionally each intermediate step.
 Do not serialize executable host-language code; persist declarative action data
 and formatting source.
 
-**Trackbench decision (ADRs 0048–0053, M5 transformation slices):** schema 1
+**Trackbench decision (ADRs 0048–0053 and 0064, M5 transformation slices):** schema 1
 chains are Qt-free ordered declarative data evaluated against the selected
 items' current staged draft. The first actions set exact values, remove a
 field, trim/lowercase/uppercase each existing value without flattening the
@@ -418,6 +418,13 @@ start and optional minimum-width zero padding. It neither infers groups nor
 writes `TOTALTRACKS`; grouped/title-format numbering must later preview its
 boundaries and totals explicitly. Reversible migration 12 stores these three
 typed actions under stable codes without reinterpreting older definitions.
+Per ADR-0064, **Keep first characters of each value** exposes exact prefix
+extraction without requiring a formatting expression. Its bounded positive
+count is measured in Unicode scalar values and defaults to 4 in the editor;
+each value is transformed independently, short and empty values remain exact,
+and a missing target stays missing. It is not a date parser, but `DATE` with a
+count of 4 turns `2024-08-30` into `2024`. Reversible migration 17 stores this
+typed action under stable code 14 without reinterpreting older definitions.
 Import/export, grouped numbering, richer match dialects, and the separately
 versioned capture-pattern parser remain future slices.
 

@@ -315,6 +315,23 @@ apply_action(const PreparedAction& prepared, WorkingDocument& document,
                     value.insert(0U, static_cast<std::size_t>(action.padding) - value.size(), '0');
                 }
                 document[prepared.canonical_field] = {std::move(value)};
+            } else if constexpr (std::is_same_v<Action, MetadataKeepFirstCharactersAction>) {
+                const auto found = document.find(prepared.canonical_field);
+                if (found == document.end()) {
+                    return {};
+                }
+                for (auto& value : found->second) {
+                    auto end = core::unicodeByteOffset(value, action.character_count);
+                    if (!end) {
+                        auto error = std::move(end.error());
+                        error.context.push_back(
+                            {.key = "action", .value = std::to_string(action_index)});
+                        error.context.push_back(
+                            {.key = "item", .value = std::to_string(item_index)});
+                        return std::unexpected(std::move(error));
+                    }
+                    value.resize(*end);
+                }
             } else if constexpr (std::is_same_v<Action, MetadataFormatValueAction>) {
                 if (!prepared.program) {
                     return std::unexpected(transformation_error(
@@ -494,6 +511,15 @@ prepare_chain(const MetadataTransformationChain& chain,
                     core::ErrorCode::invalid_argument,
                     "metadata numbering requires a start from 1 to 1000000000 and padding from "
                     "0 to 32",
+                    action_index));
+            }
+        } else if (const auto* keep = std::get_if<MetadataKeepFirstCharactersAction>(&action)) {
+            if (keep->character_count == 0U ||
+                keep->character_count > limits.maximum_character_count) {
+                return std::unexpected(transformation_error(
+                    core::ErrorCode::invalid_argument,
+                    "metadata keep-first transformation requires a character count from 1 to " +
+                        std::to_string(limits.maximum_character_count),
                     action_index));
             }
         } else if (const auto* format = std::get_if<MetadataFormatValueAction>(&action)) {

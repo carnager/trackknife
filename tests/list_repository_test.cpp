@@ -101,7 +101,7 @@ void list_documents_round_trip_transactionally() {
         }
         require(opened.has_value(), "list repository must create and migrate a new database");
         auto repository = std::move(*opened);
-        require(repository.schema_version() == 16U, "state repository schema must be explicit");
+        require(repository.schema_version() == 17U, "state repository schema must be explicit");
         require(repository.replace_all(expected).has_value(),
                 "valid list documents must commit in one transaction");
         require(repository.load_all() == expected,
@@ -229,6 +229,8 @@ void metadata_transformation_chains_round_trip_transactionally() {
                             .replacement_values = {"Alternative", "Indie"}},
                         metadata::MetadataNumberSelectedItemsAction{
                             .target_field = "Track Number", .start = 7U, .padding = 2U},
+                        metadata::MetadataKeepFirstCharactersAction{.target_field = "Date",
+                                                                    .character_count = 4U},
                     },
             },
         .automatic = true,
@@ -297,7 +299,11 @@ void metadata_transformation_chains_round_trip_transactionally() {
                 require_action<metadata::MetadataNumberSelectedItemsAction>(chain, 13U,
                                                                             "number action") ==
                     require_action<metadata::MetadataNumberSelectedItemsAction>(
-                        expected.chain, 13U, "expected number action"),
+                        expected.chain, 13U, "expected number action") &&
+                require_action<metadata::MetadataKeepFirstCharactersAction>(chain, 14U,
+                                                                            "keep-first action") ==
+                    require_action<metadata::MetadataKeepFirstCharactersAction>(
+                        expected.chain, 14U, "expected keep-first action"),
             "explicit action kinds and exact ordered payloads must round trip");
 
         auto conflicting = expected;
@@ -306,17 +312,28 @@ void metadata_transformation_chains_round_trip_transactionally() {
         require(!conflict && conflict.error().code == core::ErrorCode::conflict &&
                     repository.load_metadata_transformation_chains()->size() == 1U,
                 "an exact duplicate saved name must preserve the preceding transaction");
-
-        auto updated = expected;
-        updated.chain.name = "Exact cleanup v2";
-        updated.chain.actions = {
-            metadata::MetadataJoinValuesAction{.target_field = "Artist", .separator = "; "}};
-        require(repository.upsert_metadata_transformation_chain(updated).has_value(),
-                "upserting one stable identity must replace its chain atomically");
     }
     {
         auto reopened = persistence::ListRepository::open(database_path);
         require(reopened.has_value(), "transformation repository must reopen");
+        auto loaded = reopened->load_metadata_transformation_chains();
+        require(loaded.has_value() && loaded->size() == 1U &&
+                    loaded->front().chain.actions.size() == expected.chain.actions.size() &&
+                    require_action<metadata::MetadataKeepFirstCharactersAction>(
+                        loaded->front().chain, 14U, "reopened keep-first action") ==
+                        require_action<metadata::MetadataKeepFirstCharactersAction>(
+                            expected.chain, 14U, "expected reopened keep-first action"),
+                "typed keep-first transformations must survive restart");
+        auto updated = expected;
+        updated.chain.name = "Exact cleanup v2";
+        updated.chain.actions = {
+            metadata::MetadataJoinValuesAction{.target_field = "Artist", .separator = "; "}};
+        require(reopened->upsert_metadata_transformation_chain(updated).has_value(),
+                "upserting one stable identity must replace its chain atomically");
+    }
+    {
+        auto reopened = persistence::ListRepository::open(database_path);
+        require(reopened.has_value(), "updated transformation repository must reopen");
         auto loaded = reopened->load_metadata_transformation_chains();
         require(loaded.has_value() && loaded->size() == 1U &&
                     loaded->front().chain.name == "Exact cleanup v2" && loaded->front().automatic &&
@@ -379,8 +396,8 @@ void output_layout_and_destination_profiles_round_trip_transactionally() {
         auto opened = persistence::ListRepository::open(database_path);
         require(opened.has_value(), "output-profile repository must open");
         auto repository = std::move(*opened);
-        require(repository.schema_version() == 16U,
-                "output profiles must survive the explicit schema-16 migration");
+        require(repository.schema_version() == 17U,
+                "output profiles must survive the explicit schema-17 migration");
         require(repository.upsert_output_layout_profile(expected_layout).has_value() &&
                     repository.upsert_destination_profile(expected_destination).has_value(),
                 "validated output and destination profiles must persist atomically");
@@ -973,8 +990,8 @@ void committed_source_relocation_rekeys_every_occurrence_and_stale_snapshot() {
                 repository.load_all() == loaded,
             "a persisted target collision must reject the complete relocation transaction");
     auto reopened = persistence::ListRepository::open(database_path);
-    require(reopened && reopened->schema_version() == 16U && reopened->load_all() == loaded,
-            "relocation evidence and resolved paths must survive reopening schema 16");
+    require(reopened && reopened->schema_version() == 17U && reopened->load_all() == loaded,
+            "relocation evidence and resolved paths must survive reopening schema 17");
 
     cleanup();
 }

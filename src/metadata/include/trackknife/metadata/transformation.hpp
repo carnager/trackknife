@@ -121,12 +121,23 @@ struct MetadataNumberSelectedItemsAction {
                            const MetadataNumberSelectedItemsAction&) = default;
 };
 
+// Keeps at most the first character_count Unicode scalar values of every
+// existing value. Shorter and empty values are retained exactly; a missing
+// target field remains missing.
+struct MetadataKeepFirstCharactersAction {
+    std::string target_field;
+    std::uint32_t character_count{1U};
+
+    friend bool operator==(const MetadataKeepFirstCharactersAction&,
+                           const MetadataKeepFirstCharactersAction&) = default;
+};
+
 using MetadataTransformationAction =
     std::variant<MetadataSetValuesAction, MetadataAddValuesAction, MetadataRemoveFieldAction,
                  MetadataTransformValuesAction, MetadataFormatValueAction, MetadataCopyFieldAction,
                  MetadataSplitValuesAction, MetadataJoinValuesAction,
                  MetadataRemoveMatchingValuesAction, MetadataReplaceMatchingValuesAction,
-                 MetadataNumberSelectedItemsAction>;
+                 MetadataNumberSelectedItemsAction, MetadataKeepFirstCharactersAction>;
 
 struct MetadataTransformationChain {
     std::uint32_t schema_version{1U};
@@ -174,6 +185,7 @@ struct MetadataTransformationLimits {
     std::size_t field_name_bytes{1'024U};
     std::size_t chain_name_bytes{1'024U};
     std::size_t action_text_bytes{1U * 1'024U * 1'024U};
+    std::uint32_t maximum_character_count{1'000'000U};
 };
 
 // Validates all persisted chain data, including action payloads and compiled

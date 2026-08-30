@@ -772,6 +772,11 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   filesystem dispatch on at most 1–8 workers. Shared reviewed missing-directory
   prefixes serialize only until successful batch evidence establishes them;
   independent file I/O then proceeds in parallel.
+- Done: ADR-0064 and reversible migration 17 expose bounded Unicode-scalar
+  prefix extraction as a typed saved metadata action. **Keep first characters
+  of each value** defaults to 4, retains short/empty and multi-value states,
+  and follows the same explicit preview, staging, and checked automatic-chain
+  path as the other schema-1 actions.
 - Done: the tagging workspace now has a dedicated **Operations** side-panel
   page. **Save tags** is a real independent choice, while Rename, Move, and
   ReplayGain are visible but capability-gated. Reusable naming layouts and

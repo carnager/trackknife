@@ -582,7 +582,8 @@ class MetadataTransformationDialog final : public QDialog {
              QStringLiteral("Join with exact separator"), QStringLiteral("Format with tkfmt-1"),
              QStringLiteral("Remove exact matching values"),
              QStringLiteral("Replace exact matching values"),
-             QStringLiteral("Number by selected-file order")});
+             QStringLiteral("Number by selected-file order"),
+             QStringLiteral("Keep first characters of each value")});
         target_ = new QLineEdit(this);
         target_->setObjectName(QStringLiteral("bench-metadata-transformation-target"));
         target_->setPlaceholderText(QStringLiteral("For example: Title or ALBUM ARTIST"));
@@ -624,12 +625,19 @@ class MetadataTransformationDialog final : public QDialog {
             QStringLiteral("bench-metadata-transformation-number-padding"));
         number_padding_->setRange(0, 32);
         number_padding_->setValue(0);
+        character_count_label_ = new QLabel(QStringLiteral("Characters to keep:"), this);
+        character_count_ = new QSpinBox(this);
+        character_count_->setObjectName(
+            QStringLiteral("bench-metadata-transformation-character-count"));
+        character_count_->setRange(1, 1'000'000);
+        character_count_->setValue(4);
         step_form->addRow(QStringLiteral("New step:"), kind_);
         step_form->addRow(QStringLiteral("Target field:"), target_);
         step_form->addRow(input_label_, input_);
         step_form->addRow(replacement_label_, replacement_);
         step_form->addRow(number_start_label_, number_start_);
         step_form->addRow(number_padding_label_, number_padding_);
+        step_form->addRow(character_count_label_, character_count_);
         layout->addLayout(step_form);
 
         auto* add_row = new QHBoxLayout;
@@ -834,6 +842,12 @@ class MetadataTransformationDialog final : public QDialog {
                                      .arg(field)
                                      .arg(typed.start)
                                      .arg(typed.padding);
+                } else if constexpr (std::is_same_v<Action,
+                                                    metadata::MetadataKeepFirstCharactersAction>) {
+                    return QStringLiteral("%1. Keep the first %3 characters of each value of %2")
+                        .arg(index + 1U)
+                        .arg(field)
+                        .arg(typed.character_count);
                 } else if constexpr (std::is_same_v<Action, metadata::MetadataFormatValueAction>) {
                     return QStringLiteral("%1. Format %2 as %3")
                         .arg(index + 1U)
@@ -1099,6 +1113,9 @@ class MetadataTransformationDialog final : public QDialog {
         number_start_->setVisible(has_numbering);
         number_padding_label_->setVisible(has_numbering);
         number_padding_->setVisible(has_numbering);
+        const auto keeps_first = kind == 14;
+        character_count_label_->setVisible(keeps_first);
+        character_count_->setVisible(keeps_first);
         if (kind == 7) {
             input_label_->setText(QStringLiteral("Source field:"));
             input_->setPlaceholderText(QStringLiteral("For example: Artist"));
@@ -1204,6 +1221,12 @@ class MetadataTransformationDialog final : public QDialog {
                 .padding = static_cast<std::uint32_t>(number_padding_->value()),
             });
             break;
+        case 14:
+            actions_.push_back(metadata::MetadataKeepFirstCharactersAction{
+                .target_field = target,
+                .character_count = static_cast<std::uint32_t>(character_count_->value()),
+            });
+            break;
         default:
             return;
         }
@@ -1270,6 +1293,7 @@ class MetadataTransformationDialog final : public QDialog {
         replacement_->setEnabled(editing_enabled);
         number_start_->setEnabled(editing_enabled);
         number_padding_->setEnabled(editing_enabled);
+        character_count_->setEnabled(editing_enabled);
         add_->setEnabled(editing_enabled && actions_.size() < 256U);
         steps_->setEnabled(editing_enabled);
         remove_->setEnabled(editing_enabled && valid);
@@ -1385,6 +1409,8 @@ class MetadataTransformationDialog final : public QDialog {
     QSpinBox* number_start_{nullptr};
     QLabel* number_padding_label_{nullptr};
     QSpinBox* number_padding_{nullptr};
+    QLabel* character_count_label_{nullptr};
+    QSpinBox* character_count_{nullptr};
     QPushButton* add_{nullptr};
     QListWidget* steps_{nullptr};
     QPushButton* remove_{nullptr};

@@ -204,6 +204,57 @@ void capitalizationNoOpCountsPresentAndMissingTargets() {
     CHECK(preview->unchanged_missing_cell_count == 1U);
 }
 
+void keepFirstCharactersUsesUnicodeAndRetainsShortValues() {
+    using namespace trackknife::metadata;
+    auto selected = StagedMetadataSelection::create({
+        StagedMetadataSource{
+            .raw_path = "/music/date-one.flac",
+            .source_revision = std::nullopt,
+            .baseline =
+                MetadataDocument{
+                    .fields = {field("DATE", {"2024-08-30", "ééééé"})},
+                    .unsupported_native_objects = {},
+                },
+        },
+        StagedMetadataSource{
+            .raw_path = "/music/date-two.flac",
+            .source_revision = std::nullopt,
+            .baseline =
+                MetadataDocument{
+                    .fields = {field("DATE", {"1999"})},
+                    .unsupported_native_objects = {},
+                },
+        },
+    });
+    CHECK(selected.has_value());
+    if (!selected) {
+        return;
+    }
+    const StagedMetadataPatchSet draft;
+    const std::array items{std::size_t{0U}, std::size_t{1U}};
+    const MetadataTransformationChain chain{
+        .schema_version = 1U,
+        .name = "Keep year",
+        .actions = {MetadataKeepFirstCharactersAction{
+            .target_field = "Date",
+            .character_count = 4U,
+        }},
+    };
+    CHECK(validate_metadata_transformation_chain(chain).has_value());
+    const auto preview = plan_metadata_transformation(*selected, draft, items, chain);
+    CHECK(preview.has_value());
+    if (!preview) {
+        return;
+    }
+    CHECK(preview->changed_item_count == 1U);
+    CHECK(preview->cells.size() == 1U);
+    CHECK(preview->cells.front().before ==
+          (std::optional<std::vector<std::string>>{{"2024-08-30", "ééééé"}}));
+    CHECK(preview->cells.front().after ==
+          (std::optional<std::vector<std::string>>{{"2024", "éééé"}}));
+    CHECK(preview->unchanged_present_cell_count == 1U);
+}
+
 void exactMatchingAndSelectionNumberingComposeInOrder() {
     using namespace trackknife::metadata;
     const auto baseline = selection();
@@ -342,6 +393,15 @@ void plansRejectInvalidDialectInputLimitsAndCancellation() {
         });
     CHECK(!invalid_number_padding);
 
+    const auto invalid_keep_count =
+        metadata::validate_metadata_transformation_chain(metadata::MetadataTransformationChain{
+            .schema_version = 1U,
+            .name = "Invalid keep count",
+            .actions = {metadata::MetadataKeepFirstCharactersAction{.target_field = "Date",
+                                                                    .character_count = 0U}},
+        });
+    CHECK(!invalid_keep_count);
+
     const metadata::MetadataTransformationChain bounded{
         .schema_version = 1U,
         .name = {},
@@ -374,6 +434,7 @@ int main() {
     orderedChainsSeeEarlierActionsAndCurrentDraft();
     exactAddCopySplitAndJoinPreserveOrderedState();
     capitalizationNoOpCountsPresentAndMissingTargets();
+    keepFirstCharactersUsesUnicodeAndRetainsShortValues();
     exactMatchingAndSelectionNumberingComposeInOrder();
     plansRejectInvalidDialectInputLimitsAndCancellation();
     return failures == 0 ? 0 : 1;

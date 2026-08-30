@@ -90,7 +90,9 @@ separately sized window and moves transformation file/step diagnostics beneath
 expandable Field/Old/New change rows without changing exact preview semantics.
 ADR-0053 fixes case-sensitive complete-value remove/replace semantics and
 bounded consecutive numbering in captured file order while explicitly
-deferring group resets and `TOTALTRACKS`. ADR-0054 fixes the shared preparation-
+deferring group resets and `TOTALTRACKS`. ADR-0064 adds exact bounded Unicode-
+scalar prefix extraction as an exposed saved action without treating it as a
+date parser. ADR-0054 fixes the shared preparation-
 plan shape and separates reusable relative output layouts from explicit
 destination roots so rename/move, ReplayGain, and conversion can share one
 review vocabulary. ADR-0055 fixes the persisted schema-1 profile contracts,

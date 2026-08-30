@@ -1321,6 +1321,13 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
                                          &metadata::MetadataField::canonical_name);
     QVERIFY(title != read->document.fields.end());
     title->values = {"chain Title"};
+    read->document.fields.push_back(metadata::MetadataField{
+        .canonical_name = "date",
+        .native_name = "DATE",
+        .values = {"2024-08-30"},
+        .qualifier = {},
+        .provenance = metadata::FieldProvenance::embedded,
+    });
 
     const MetadataPropertiesSource source{
         .source =
@@ -1401,6 +1408,8 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
         dialog->findChild<QSpinBox*>(QStringLiteral("bench-metadata-transformation-number-start"));
     auto* number_padding = dialog->findChild<QSpinBox*>(
         QStringLiteral("bench-metadata-transformation-number-padding"));
+    auto* character_count = dialog->findChild<QSpinBox*>(
+        QStringLiteral("bench-metadata-transformation-character-count"));
     auto* add =
         dialog->findChild<QPushButton*>(QStringLiteral("bench-metadata-transformation-add"));
     auto* preview =
@@ -1417,16 +1426,18 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     QVERIFY(input != nullptr);
     QVERIFY(number_start != nullptr);
     QVERIFY(number_padding != nullptr);
+    QVERIFY(character_count != nullptr);
     QVERIFY(add != nullptr);
     QVERIFY(preview != nullptr);
     QVERIFY(stage != nullptr);
     QVERIFY(preview_table != nullptr);
     QVERIFY(preview_summary != nullptr);
-    QCOMPARE(kind->count(), 14);
+    QCOMPARE(kind->count(), 15);
     QCOMPARE(kind->itemText(6), QStringLiteral("Capitalize first character"));
     QCOMPARE(kind->itemText(11), QStringLiteral("Remove exact matching values"));
     QCOMPARE(kind->itemText(12), QStringLiteral("Replace exact matching values"));
     QCOMPARE(kind->itemText(13), QStringLiteral("Number by selected-file order"));
+    QCOMPARE(kind->itemText(14), QStringLiteral("Keep first characters of each value"));
     target->setText(QStringLiteral("custom"));
     QTRY_VERIFY(target_completer->model()->rowCount() > 0);
     QCOMPARE(target_completer->model()->index(0, 0).data().toString(),
@@ -1454,6 +1465,10 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     target->setText(QStringLiteral("Track Number"));
     number_start->setValue(7);
     number_padding->setValue(2);
+    QTest::mouseClick(add, Qt::LeftButton);
+    kind->setCurrentIndex(14);
+    target->setText(QStringLiteral("Date"));
+    QCOMPARE(character_count->value(), 4);
     QTest::mouseClick(add, Qt::LeftButton);
 
     auto* save_as = dialog->findChild<QPushButton*>(
@@ -1510,10 +1525,12 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     QVERIFY(preview_summary != nullptr);
     QCOMPARE(saved->count(), 2);
     QCOMPARE(saved->currentIndex(), 1);
-    QCOMPARE(steps->count(), 4);
+    QCOMPARE(steps->count(), 5);
+    QVERIFY(steps->item(4)->text().contains(
+        QStringLiteral("Keep the first 4 characters of each value of Date")));
     QTest::mouseClick(preview, Qt::LeftButton);
     QTRY_VERIFY_WITH_TIMEOUT(preview_table->model() != nullptr, 5'000);
-    QTRY_COMPARE(preview_table->model()->rowCount(), 3);
+    QTRY_COMPARE(preview_table->model()->rowCount(), 4);
     QCOMPARE(preview_table->model()->headerData(0, Qt::Horizontal).toString(),
              QStringLiteral("Field"));
     QCOMPARE(preview_table->model()->headerData(1, Qt::Horizontal).toString(),
@@ -1527,6 +1544,9 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
              QStringLiteral("First Artist; Second Artist — Chain Title"));
     QCOMPARE(preview_table->model()->index(2, 0).data().toString(), QStringLiteral("Track Number"));
     QCOMPARE(preview_table->model()->index(2, 2).data().toString(), QStringLiteral("07"));
+    QCOMPARE(preview_table->model()->index(3, 0).data().toString(), QStringLiteral("Date"));
+    QCOMPARE(preview_table->model()->index(3, 1).data().toString(), QStringLiteral("2024-08-30"));
+    QCOMPARE(preview_table->model()->index(3, 2).data().toString(), QStringLiteral("2024"));
     const auto first_change = preview_table->model()->index(0, 0);
     QCOMPARE(preview_table->model()->rowCount(first_change), 1);
     QCOMPARE(preview_table->model()->index(0, 0, first_change).data().toString(),
@@ -1536,7 +1556,7 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
                 .data()
                 .toString()
                 .contains(QStringLiteral("step 2")));
-    QVERIFY(preview_summary->text().contains(QStringLiteral("3 final cell changes")));
+    QVERIFY(preview_summary->text().contains(QStringLiteral("4 final cell changes")));
     QVERIFY(stage->isEnabled());
     QTest::mouseClick(stage, Qt::LeftButton);
     QTRY_VERIFY(properties->findChild<QDialog*>(QStringLiteral("bench-metadata-transformation")) ==
@@ -1545,10 +1565,12 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     const auto title_column = grid_model->fieldColumn(QStringLiteral("title"));
     const auto comment_column = grid_model->fieldColumn(QStringLiteral("comment"));
     const auto track_number_column = grid_model->fieldColumn(QStringLiteral("track number"));
+    const auto date_column = grid_model->fieldColumn(QStringLiteral("date"));
     QVERIFY(title_column.has_value());
     QVERIFY(comment_column.has_value());
     QVERIFY(track_number_column.has_value());
-    QCOMPARE(grid_model->patches().patch_count(), std::size_t{3U});
+    QVERIFY(date_column.has_value());
+    QCOMPARE(grid_model->patches().patch_count(), std::size_t{4U});
     QCOMPARE(grid_model->index(0, *title_column).data(metadata_cell_values_role).toStringList(),
              (QStringList{QStringLiteral("Chain Title")}));
     QCOMPARE(grid_model->index(0, *comment_column).data(metadata_cell_values_role).toStringList(),
@@ -1556,13 +1578,15 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     QCOMPARE(
         grid_model->index(0, *track_number_column).data(metadata_cell_values_role).toStringList(),
         (QStringList{QStringLiteral("07")}));
+    QCOMPARE(grid_model->index(0, *date_column).data(metadata_cell_values_role).toStringList(),
+             (QStringList{QStringLiteral("2024")}));
 
     QTRY_VERIFY(undo->isEnabled());
     QTest::mouseClick(undo, Qt::LeftButton);
     QCOMPARE(grid_model->patches().patch_count(), std::size_t{0U});
     QTRY_VERIFY(redo->isEnabled());
     QTest::mouseClick(redo, Qt::LeftButton);
-    QCOMPARE(grid_model->patches().patch_count(), std::size_t{3U});
+    QCOMPARE(grid_model->patches().patch_count(), std::size_t{4U});
 
     QTest::mouseClick(undo, Qt::LeftButton);
     QCOMPARE(grid_model->patches().patch_count(), std::size_t{0U});
@@ -1583,7 +1607,7 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     auto* plan_table =
         plan_dialog->findChild<QTableView*>(QStringLiteral("bench-metadata-write-plan-table"));
     QVERIFY(plan_table != nullptr);
-    QCOMPARE(plan_table->model()->rowCount(), 4);
+    QCOMPARE(plan_table->model()->rowCount(), 5);
     QStringList planned_fields;
     for (auto row = 0; row < plan_table->model()->rowCount(); ++row) {
         planned_fields.push_back(
@@ -1593,6 +1617,7 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     QVERIFY(planned_fields.contains(QStringLiteral("title")));
     QVERIFY(planned_fields.contains(QStringLiteral("comment")));
     QVERIFY(planned_fields.contains(QStringLiteral("track number")));
+    QVERIFY(planned_fields.contains(QStringLiteral("date")));
     QVERIFY(plan_dialog->findChild<QPushButton*>(
                 QStringLiteral("bench-metadata-write-plan-apply")) != nullptr);
     auto* plan_buttons = plan_dialog->findChild<QDialogButtonBox*>(
@@ -1608,7 +1633,7 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     plan_table =
         plan_dialog->findChild<QTableView*>(QStringLiteral("bench-metadata-write-plan-table"));
     QVERIFY(plan_table != nullptr);
-    QCOMPARE(plan_table->model()->rowCount(), 4);
+    QCOMPARE(plan_table->model()->rowCount(), 5);
     QCOMPARE(grid_model->patches().patch_count(), std::size_t{1U});
     plan_buttons = plan_dialog->findChild<QDialogButtonBox*>(
         QStringLiteral("bench-metadata-write-plan-buttons"));
