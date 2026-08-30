@@ -4,6 +4,8 @@ qt_add_library(
     trackknife_bench_ui STATIC
     bench_main_window.cpp
     bench_main_window.hpp
+    file_publication_apply_dialog.cpp
+    file_publication_apply_dialog.hpp
     local_list_model.cpp
     local_list_model.hpp
     metadata_apply_dialog.cpp
