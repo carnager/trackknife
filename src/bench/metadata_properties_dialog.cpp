@@ -36,6 +36,7 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QStandardItemModel>
 #include <QSplitter>
 #include <QStringListModel>
 #include <QStyledItemDelegate>
@@ -731,19 +732,52 @@ class MetadataTransformationDialog final : public QDialog {
         auto* step_form = new QFormLayout;
         kind_ = new QComboBox(this);
         kind_->setObjectName(QStringLiteral("bench-metadata-transformation-kind"));
-        kind_->addItems(
-            {QStringLiteral("Set one literal value"), QStringLiteral("Add one literal value"),
-             QStringLiteral("Remove field"), QStringLiteral("Trim each value"),
-             QStringLiteral("Lowercase each value"), QStringLiteral("Uppercase each value"),
-             QStringLiteral("Capitalize first character"), QStringLiteral("Copy another field"),
-             QStringLiteral("Split by exact separator"),
-             QStringLiteral("Join with exact separator"), QStringLiteral("Format with tkfmt-1"),
-             QStringLiteral("Remove exact matching values"),
-             QStringLiteral("Replace exact matching values"),
-             QStringLiteral("Number by selected-file order"),
-             QStringLiteral("Keep first characters of each value"),
-             QStringLiteral("Remove field when condition matches"),
-             QStringLiteral("Capture fields with tkcapture-1")});
+        // Kinds are grouped under unselectable headers; the row index therefore
+        // no longer matches the action kind, which lives in the item data.
+        const auto add_kind_header = [this](const QString& text) {
+            kind_->addItem(text);
+            auto* model = qobject_cast<QStandardItemModel*>(kind_->model());
+            auto* item = model->item(kind_->count() - 1);
+            item->setFlags(Qt::NoItemFlags);
+            auto header_font = item->font();
+            header_font.setBold(true);
+            item->setFont(header_font);
+        };
+        const auto add_kind = [this](const QString& text, const int kind,
+                                     const QString& tool_tip = {}) {
+            kind_->addItem(text, kind);
+            if (!tool_tip.isEmpty()) {
+                kind_->setItemData(kind_->count() - 1, tool_tip, Qt::ToolTipRole);
+            }
+        };
+        add_kind_header(QStringLiteral("Set values"));
+        add_kind(QStringLiteral("Set one literal value"), 0);
+        add_kind(QStringLiteral("Add one literal value"), 1);
+        add_kind(QStringLiteral("Copy another field"), 7);
+        add_kind(QStringLiteral("Format with tkfmt-1"), 10,
+                 QStringLiteral("Build the value from an expression, "
+                                "for example %artist% — %title%"));
+        add_kind(QStringLiteral("Number by selected-file order"), 13);
+        add_kind(QStringLiteral("Capture fields with tkcapture-1"), 16,
+                 QStringLiteral("Extract several fields at once from the filename, the full "
+                                "path, formatted text, or another field"));
+        add_kind_header(QStringLiteral("Clean up values"));
+        add_kind(QStringLiteral("Trim each value"), 3);
+        add_kind(QStringLiteral("Lowercase each value"), 4);
+        add_kind(QStringLiteral("Uppercase each value"), 5);
+        add_kind(QStringLiteral("Capitalize first character"), 6);
+        add_kind(QStringLiteral("Keep first characters of each value"), 14);
+        add_kind_header(QStringLiteral("Split & join"));
+        add_kind(QStringLiteral("Split by exact separator"), 8);
+        add_kind(QStringLiteral("Join with exact separator"), 9);
+        add_kind_header(QStringLiteral("Remove & replace"));
+        add_kind(QStringLiteral("Remove field"), 2);
+        add_kind(QStringLiteral("Remove field when condition matches"), 15,
+                 QStringLiteral("The field is removed when the expression is non-empty, "
+                                "for example $not(%totaldiscs%)"));
+        add_kind(QStringLiteral("Remove exact matching values"), 11);
+        add_kind(QStringLiteral("Replace exact matching values"), 12);
+        kind_->setCurrentIndex(1);
         target_label_ = new QLabel(QStringLiteral("Target field:"), this);
         target_ = new QLineEdit(this);
         target_->setObjectName(QStringLiteral("bench-metadata-transformation-target"));
@@ -916,7 +950,12 @@ class MetadataTransformationDialog final : public QDialog {
             buttons_->addButton(QStringLiteral("Add to draft"), QDialogButtonBox::AcceptRole);
         stage_button_->setObjectName(QStringLiteral("bench-metadata-transformation-stage"));
         stage_button_->setEnabled(false);
-        stage_button_->setDefault(true);
+        // No default button: Enter inside the step-entry fields adds a step
+        // instead of accidentally staging and closing the dialog.
+        stage_button_->setAutoDefault(false);
+        if (auto* close_button = buttons_->button(QDialogButtonBox::Close)) {
+            close_button->setAutoDefault(false);
+        }
         auto* footer_row = new QHBoxLayout;
         footer_row->setSpacing(8);
         footer_row->addWidget(catalog_status_, 1);
@@ -950,6 +989,9 @@ class MetadataTransformationDialog final : public QDialog {
         connect(save_as_, &QPushButton::clicked, this, [this] { saveCurrent(true); });
         connect(delete_saved_, &QPushButton::clicked, this, [this] { deleteSaved(); });
         connect(add_, &QPushButton::clicked, this, [this] { addStep(); });
+        for (auto* step_editor : {target_, input_, replacement_, capture_argument_}) {
+            connect(step_editor, &QLineEdit::returnPressed, this, [this] { addStep(); });
+        }
         connect(import_, &QPushButton::clicked, this, [this] { importRules(); });
         connect(raw_source_, &QPlainTextEdit::textChanged, this,
                 [this] { updateRawTranslation(); });
@@ -1484,8 +1526,15 @@ class MetadataTransformationDialog final : public QDialog {
         });
     }
 
+    // The action kind is stored as item data; header rows have none and are
+    // not selectable.
+    [[nodiscard]] int currentStepKind() const {
+        const auto kind_data = kind_->currentData();
+        return kind_data.isValid() ? kind_data.toInt() : -1;
+    }
+
     void updateInputForKind() {
-        const auto kind = kind_->currentIndex();
+        const auto kind = currentStepKind();
         const auto captures = kind == 16;
         target_label_->setVisible(!captures);
         target_->setVisible(!captures);
@@ -1541,14 +1590,15 @@ class MetadataTransformationDialog final : public QDialog {
     }
 
     void addStep() {
+        const auto kind = currentStepKind();
         const auto field = target_->text().trimmed();
-        if (kind_->currentIndex() != 16 && field.isEmpty()) {
+        if (kind != 16 && field.isEmpty()) {
             summary_->setText(QStringLiteral("Enter a target field before adding the step."));
             target_->setFocus(Qt::OtherFocusReason);
             return;
         }
         const auto target = encode_utf8(field);
-        switch (kind_->currentIndex()) {
+        switch (kind) {
         case 0:
             actions_.push_back(metadata::MetadataSetValuesAction{
                 .target_field = target, .values = {encode_utf8(input_->text())}});
@@ -1683,7 +1733,7 @@ class MetadataTransformationDialog final : public QDialog {
         target_->clear();
         input_->clear();
         replacement_->clear();
-        if (kind_->currentIndex() == 16) {
+        if (kind == 16) {
             input_->setFocus(Qt::OtherFocusReason);
         } else {
             target_->setFocus(Qt::OtherFocusReason);

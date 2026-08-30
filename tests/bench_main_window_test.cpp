@@ -1642,14 +1642,20 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     QVERIFY(stage != nullptr);
     QVERIFY(preview_table != nullptr);
     QVERIFY(preview_summary != nullptr);
-    QCOMPARE(kind->count(), 17);
-    QCOMPARE(kind->itemText(6), QStringLiteral("Capitalize first character"));
-    QCOMPARE(kind->itemText(11), QStringLiteral("Remove exact matching values"));
-    QCOMPARE(kind->itemText(12), QStringLiteral("Replace exact matching values"));
-    QCOMPARE(kind->itemText(13), QStringLiteral("Number by selected-file order"));
-    QCOMPARE(kind->itemText(14), QStringLiteral("Keep first characters of each value"));
-    QCOMPARE(kind->itemText(15), QStringLiteral("Remove field when condition matches"));
-    QCOMPARE(kind->itemText(16), QStringLiteral("Capture fields with tkcapture-1"));
+    // 17 step kinds under 4 unselectable group headers; kinds are found by
+    // name because the row index no longer matches the action kind.
+    QCOMPARE(kind->count(), 21);
+    for (const auto& kind_name :
+         {QStringLiteral("Capitalize first character"),
+          QStringLiteral("Remove exact matching values"),
+          QStringLiteral("Replace exact matching values"),
+          QStringLiteral("Number by selected-file order"),
+          QStringLiteral("Keep first characters of each value"),
+          QStringLiteral("Remove field when condition matches"),
+          QStringLiteral("Capture fields with tkcapture-1")}) {
+        QVERIFY2(kind->findText(kind_name) >= 0, qPrintable(kind_name));
+    }
+    QVERIFY(!kind->model()->flags(kind->model()->index(0, 0)).testFlag(Qt::ItemIsSelectable));
 
     QTimer::singleShot(0, dialog, [dialog] {
         auto* importer =
@@ -1737,7 +1743,7 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
              QStringLiteral("CUSTOM_FIELD"));
     target->clear();
 
-    kind->setCurrentIndex(6);
+    kind->setCurrentIndex(kind->findText(QStringLiteral("Capitalize first character")));
     target->setText(QStringLiteral("Album Artist"));
     QTest::mouseClick(add, Qt::LeftButton);
     QTRY_VERIFY_WITH_TIMEOUT(preview_table->model() != nullptr, 5'000);
@@ -1746,19 +1752,19 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
         QStringLiteral("every existing Album Artist value already starts with its uppercase "
                        "form")));
 
-    kind->setCurrentIndex(6);
+    kind->setCurrentIndex(kind->findText(QStringLiteral("Capitalize first character")));
     target->setText(QStringLiteral("Title"));
     QTest::mouseClick(add, Qt::LeftButton);
-    kind->setCurrentIndex(10);
+    kind->setCurrentIndex(kind->findText(QStringLiteral("Format with tkfmt-1")));
     target->setText(QStringLiteral("Comment"));
     input->setText(QStringLiteral("%artist% — %title%"));
     QTest::mouseClick(add, Qt::LeftButton);
-    kind->setCurrentIndex(13);
+    kind->setCurrentIndex(kind->findText(QStringLiteral("Number by selected-file order")));
     target->setText(QStringLiteral("Track Number"));
     number_start->setValue(7);
     number_padding->setValue(2);
     QTest::mouseClick(add, Qt::LeftButton);
-    kind->setCurrentIndex(14);
+    kind->setCurrentIndex(kind->findText(QStringLiteral("Keep first characters of each value")));
     target->setText(QStringLiteral("Date"));
     QCOMPARE(character_count->value(), 4);
     QTest::mouseClick(add, Qt::LeftButton);
@@ -1998,7 +2004,7 @@ void BenchMainWindowTest::metadataCapturePatternSavesReloadsAndStagesAllFields()
     QVERIFY(add != nullptr);
     QVERIFY(steps != nullptr);
     QVERIFY(save_as != nullptr);
-    kind->setCurrentIndex(16);
+    kind->setCurrentIndex(kind->findText(QStringLiteral("Capture fields with tkcapture-1")));
     QCOMPARE(source_kind->count(), 4);
     source_kind->setCurrentIndex(0);
     QVERIFY(!source_argument->isVisible());
