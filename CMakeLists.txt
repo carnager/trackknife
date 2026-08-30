@@ -69,7 +69,6 @@ if(TRACKKNIFE_BUILD_UI)
     add_subdirectory(src/qtmodels)
     add_subdirectory(src/quick)
     add_subdirectory(src/ui)
-    add_subdirectory(src/app)
     add_subdirectory(src/bench)
 endif()
 

@@ -51,10 +51,10 @@ The initial workspace is intentionally conventional:
   (ADR-0025). In Trackbench the search field sits at the right edge of the
   Track Lists tab strip and is present only while **MPD Queue** is active.
   Typing opens a transient panel anchored below that field; it overlays the
-  workspace without replacing or switching the active tab. The standalone
-  compatibility shell can commit a query with `Shift+Enter` to an independent
-  named result tab; migrating committed search tabs into unified Trackbench
-  remains follow-up work.
+  workspace without replacing or switching the active tab. Committed
+  `Shift+Enter` search-result tabs existed only in the retired standalone
+  shell (ADR-0071); reintroducing them in unified Trackbench remains
+  follow-up work.
 - Live search presents release-aware album groups and individual tracks in one
   compact result list. Every result occupies one fixed-height line with
   ellipsized text; album rows contain a small aspect-preserving square cover

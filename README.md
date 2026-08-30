@@ -5,8 +5,9 @@ separate MPD/Melody and local-file authorities (ADR-0058). MPD Queue and Local
 Queue tabs share one visual language and complete track-view layout engine;
 the active tab switches the sidebar, transport, and MPD/PipeWire output
 selector. Local tagging and filesystem operations remain unavailable for MPD
-rows. The standalone **Trackknife** MPD client remains as a compatibility shell
-during migration.
+rows. The former standalone **Trackknife** MPD client was retired once
+Trackbench reached parity (ADR-0071); Trackbench is the only shipped workspace
+executable.
 
 The buildable foundation, `tkfmt-1` engine, asynchronous MPD backbone, M3 Qt
 workspace, and Trackbench's local FFmpeg/PipeWire playback workspace
@@ -18,14 +19,13 @@ safe file-operation workspace. Start with
 ## Current development handoff
 
 M5 is active. The implementation and documentation are accepted through
-ADR-0070 and SQLite schema 20. With Save tags off, path-only Rename/Move now
+ADR-0071 and SQLite schema 20. With Save tags off, path-only Rename/Move now
 uses only captured revision-qualified source tags; neither manual drafts nor
 checked automatic transformations can create a filename that misrepresents the
 file. The transformation editor also provides canonical Raw script editing for
 the bounded cleanup subset with live typed translation and Save/discard dirty
-protection. The development build, complete 45/45 development test suite, and
-targeted clang-tidy build for the changed metadata/operations/Trackbench
-targets pass; full sanitizer validation remains to be rerun for this
+protection. The development build and the complete 43/43 development test suite pass;
+clang-tidy and full sanitizer validation remain to be rerun for this
 continuation point.
 
 The next vertical slice is the one named at the end of M5 in
@@ -38,8 +38,8 @@ capability-gated until M7.
 For a fresh coding session, ADR-0058 is authoritative over older descriptions
 of Trackknife and Trackbench as permanently separate applications. Trackbench
 is the primary combined workspace; MPD Queue and Local Queue remain distinct
-authorities selected by the active primary tab. The `trackknife` executable is
-only the compatibility shell during migration.
+authorities selected by the active primary tab. The former `trackknife`
+compatibility shell was retired in ADR-0071.
 
 ## Build
 
@@ -55,29 +55,10 @@ cmake --build --preset dev
 ctest --preset dev
 ```
 
-The MPD client executable is a pure Qt Widgets workspace with a tabbed left
-Library pane for server navigation and playlists,
-live/scratch/search-result tabs, optional dock panels, a compact
-two-row top player with current-track metadata and right-aligned search, an
-album-grouped queue, and status-bar queue-summary/mode/output controls. Typing
-opens a transient mixed album/track search surface; each result has append,
-add-next, and replace-queue actions usable by mouse, focused action cells, or
-Enter. Append is the default action, Right advances to add-next and then
-replace, and `Ctrl+Enter` directly replaces. `Down` enters results, typing or
-Backspace continues editing the query, `Up` returns to it, and `Escape` returns
-to the previous work surface. `Shift+Enter` preserves the query as a separate
-result tab from either focus location. Use **Connect** or `Ctrl+K` to start the
-asynchronous live MPD/Melody session. Queue, search, folders, outputs, playback
-modes, ReplayGain, and queue mutations are bound to the typed session
-controller. Saved profiles are switchable from the Server menu, and the profile
-marked for automatic connection is restored on startup. Passwords remain session-only until
-desktop secret-service storage is implemented:
-
-```sh
-./build/dev/src/app/trackknife
-```
-
-Trackbench is the primary executable with MPD and local queue contexts:
+Trackbench is the only workspace executable, with MPD and local queue
+contexts; the **MPD Queue** context hosts the MPD/Melody client workspace
+(`docs/ui-workspace.md`) and the **Local Queue** context hosts local playback
+and preparation:
 
 ```sh
 ./build/dev/src/bench/trackbench [files or folders…]

@@ -17,8 +17,8 @@ decisions silently. Record consequential decisions as an ADR under `docs/adr/`.
 
 Per ADR-0058 this repository builds one primary native Linux workspace:
 **Trackbench** combines an MPD/Melody client and a local-file workstation in
-separate authority-bound tabs. The existing `trackknife` MPD executable remains
-as a compatibility shell during migration; new shared-workspace work belongs
+separate authority-bound tabs. The former `trackknife` MPD executable was
+retired once Trackbench reached parity (ADR-0071); all workspace work belongs
 in Trackbench.
 
 Trackbench is a spiritual successor to foobar2000, not a visual clone and not

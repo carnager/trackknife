@@ -2,12 +2,6 @@
 
 qt_add_library(
     trackknife_ui STATIC
-    format_sandbox.cpp
-    format_sandbox.hpp
-    library_tree_editor_dialog.cpp
-    library_tree_editor_dialog.hpp
-    main_window.cpp
-    main_window.hpp
     mpd_connection_dialog.cpp
     mpd_connection_dialog.hpp
     server_library_tree_model.cpp

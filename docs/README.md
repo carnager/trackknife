@@ -2,14 +2,14 @@
 
 This directory is the handoff package for humans and coding agents beginning
 work on the Trackknife project, whose primary product is the unified
-**Trackbench** MPD/Melody and local-file workspace (ADR-0058). The standalone
-**Trackknife** MPD client remains as a compatibility shell during migration.
+**Trackbench** MPD/Melody and local-file workspace (ADR-0058). The former
+standalone **Trackknife** MPD client was retired in ADR-0071.
 
 The ordered delivery plan is [`../MILESTONES.md`](../MILESTONES.md).
 
 ## Current continuation point
 
-M5 is active, implementation is accepted through ADR-0070, and the persistence
+M5 is active, implementation is accepted through ADR-0071, and the persistence
 schema is version 20. Path-only Rename/Move now derives strictly from captured
 revision-qualified source tags, never manual drafts or automatic chains, when
 Save tags is off. The transformation editor also exposes a canonical Raw script
@@ -21,11 +21,12 @@ Start metadata and file-operation work with
 [`adr/0067-immutable-preparation-review-and-file-publication-ui.md`](adr/0067-immutable-preparation-review-and-file-publication-ui.md),
 [`adr/0068-versioned-metadata-capture-patterns.md`](adr/0068-versioned-metadata-capture-patterns.md),
 [`adr/0069-source-tag-authority-for-path-only-preparation.md`](adr/0069-source-tag-authority-for-path-only-preparation.md),
+[`adr/0070-canonical-raw-transformation-editor.md`](adr/0070-canonical-raw-transformation-editor.md),
 and
-[`adr/0070-canonical-raw-transformation-editor.md`](adr/0070-canonical-raw-transformation-editor.md).
-The development build, complete 45/45 development test suite, and targeted
-clang-tidy build for the changed metadata/operations/Trackbench targets pass.
-Full sanitizer validation remains to be rerun for this continuation point.
+[`adr/0071-retire-trackknife-compatibility-shell.md`](adr/0071-retire-trackknife-compatibility-shell.md).
+The development build and the complete 43/43 development test suite pass.
+Clang-tidy and full sanitizer validation remain to be rerun for this
+continuation point.
 
 The next implementation slice is native transformation-chain interchange,
 followed by another preservation-proven writer or combined changed-content/
@@ -38,8 +39,8 @@ ADR-0058 supersedes ADR-0025's permanent process split. If an older feature
 document still describes Trackbench as unable to speak MPD, read that as a
 historical description of the local authority: the primary Trackbench process
 hosts both authorities, while local mutation services remain structurally
-unavailable to MPD rows. The standalone Trackknife executable remains a
-compatibility shell during migration.
+unavailable to MPD rows. The former standalone Trackknife executable was
+retired in ADR-0071.
 
 ## Reading order
 

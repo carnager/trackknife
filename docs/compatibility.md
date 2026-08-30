@@ -2,14 +2,14 @@
 
 ADR-0058 makes Trackbench the primary workspace for two authority-bound
 contexts: MPD/Melody server work and foobar2000-inspired local-file work. The
-standalone Trackknife MPD executable remains a compatibility shell during
-migration. Compatibility requirements attach to the authority and adapter, not
-to a permanent process split.
+former standalone Trackknife MPD executable was retired in ADR-0071.
+Compatibility requirements attach to the authority and adapter, not to a
+permanent process split.
 
 ## MPD compatibility
 
-Trackbench's MPD authority, and the compatibility Trackknife shell while it
-remains, target the documented MPD protocol. They discover commands and tag
+Trackbench's MPD authority targets the documented MPD protocol. It discovers
+commands and tag
 types at connection time and must work with stock MPD without Melody
 extensions. The server remains authoritative for its database, current queue,
 playback, mixer/options, outputs, and stored playlists.
@@ -87,8 +87,8 @@ legacy/custom spelling as an alias of a conventional field.
 
 ## Rich source references: retained lesson
 
-A playlist and library need more than a path. Both Trackbench authorities and
-the compatibility shell use one shared logical record:
+A playlist and library need more than a path. Both Trackbench authorities use
+one shared logical record:
 
 ```text
 TrackRef

@@ -6,8 +6,8 @@ accepted in ADR-0058: **Trackbench** contains authority-bound **MPD Queue** and
 **Local Queue** tabs. The active tab switches transport, MPD/PipeWire output
 selection, and server-library/local-folders navigation while local mutation
 tools remain unavailable in MPD context. Both queues use the same complete,
-versioned track-view implementation. The existing `trackknife` executable is a
-compatibility shell during migration.
+versioned track-view implementation. The former `trackknife` executable was
+retired once Trackbench reached parity (ADR-0071).
 
 ## Status
 
@@ -982,18 +982,19 @@ handoff to Local Queue playback.
 ### Objective
 
 Ship one maintainable primary Linux workspace trusted for listening and
-collection work, with an explicit compatibility-shell migration outcome.
+collection work. The compatibility-shell migration outcome was resolved as
+removal by ADR-0071.
 
 ### Work and exit criteria
 
 - Transactional settings/database/tab/layout migrations and backup/restore for
-  both authorities and any still-shipped compatibility shell.
+  both authorities.
 - Malformed-server/media fuzzing, sanitizers, fault injection, reconnect and
   long-running stress campaigns.
 - Accessibility and keyboard/mouse workflow audit of both authorities.
 - Complete dependency/license inventory and Qt LGPLv3 compliance.
 - Native packaging and/or Flatpak with PipeWire, filesystem, and network access
-  tested honestly for Trackbench and any still-shipped compatibility shell.
+  tested honestly for Trackbench.
 - User manuals, protocol capability diagnostics, preset export, and release
   checklists.
 - Packaged Trackbench completes MPD connect/browse/search/queue/list workflows

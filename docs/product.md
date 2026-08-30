@@ -21,8 +21,7 @@ available commands.
 Trackbench's MPD authority is a joy to use every day: connect, browse, search,
 listen, choose outputs, and shape queues without friction. Its basic form was
 finished and validated against stock MPD and Melody before being merged into
-Trackbench; the standalone Trackknife executable remains a compatibility shell
-during migration.
+Trackbench; the standalone Trackknife executable was retired in ADR-0071.
 
 Trackbench takes new music from download or rip to a well-organized
 collection: audition it, group it by album, identify and tag it with

@@ -48,7 +48,7 @@ require fixtures and measurements.
 ## System shape
 
 One repository builds a unified Trackbench workspace over shared internal
-libraries. The standalone Trackknife MPD shell remains during migration.
+libraries. The former standalone Trackknife MPD shell was retired in ADR-0071.
 
 ```text
 Trackbench: MPD Queue context       Trackbench: Local Queue context
@@ -84,9 +84,8 @@ Local source --> playback: FFmpeg --> gain/DSP --> PipeWire
 
 MPD is the primary library and live-queue authority for its context. Trackbench
 persists authority-qualified profiles, workspace/list state, presets, jobs, and
-journals in SQLite. The compatibility shell retains its existing client state
-during migration; neither store becomes a mandatory mirror of the MPD database
-or a local library index.
+journals in SQLite. Neither store becomes a mandatory mirror of the MPD
+database or a local library index.
 
 ## Suggested modules
 
@@ -223,8 +222,7 @@ plus one primary Trackbench shell: authority-bound MPD connection,
 server-browser/search, queue tabs, and outputs alongside the composed-panel
 renderer, folder navigation, local list tabs, tag grid, previews,
 preparation-operation history and metadata/file reconciliation evidence, and
-job center. The compatibility Trackknife shell reuses the MPD components during
-migration.
+job center.
 Panel layout
 owns only placement and sizing of registered instances, never application
 state. ADR-0052 hosts each captured metadata Properties task as a temporary
@@ -391,8 +389,8 @@ combining their queues or controllers:
    destination-artifact publication for combined changed metadata plus paths;
    then add MusicBrainz providers.
 7. Parallel ReplayGain, then converter/resampler and organized output.
-8. Melody endpoint in Trackbench's MPD authority; hardening, compatibility-shell
-   migration, and packaging.
+8. Melody endpoint in Trackbench's MPD authority; hardening and packaging
+   (the compatibility shell was retired in ADR-0071).
 
 Do not build a local library index, plugin SDK, or elaborate theme system
 before both authority experiences are excellent.

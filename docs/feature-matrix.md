@@ -6,8 +6,8 @@ operations — is active. ADR-0009 records the MPD-client-first product
 direction, ADR-0010 defines queue/list tabs, ADR-0020 rejects a mixed playback
 queue, and ADR-0058 supersedes ADR-0025's permanent process split with one
 primary **Trackbench** workspace containing authority-bound MPD Queue and Local
-Queue tabs. The standalone **Trackknife** MPD executable remains a compatibility
-shell during migration. Milestone numbers follow the restructured
+Queue tabs. The former standalone **Trackknife** MPD executable was retired in
+ADR-0071. Milestone numbers follow the restructured
 `MILESTONES.md` (tagging M5, MusicBrainz M6,
 ReplayGain M7, converter M8, Melody endpoint M9, release M10).
 

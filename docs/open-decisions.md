@@ -5,9 +5,9 @@ ADR-0025's permanent process split: Trackbench is the primary workspace and
 hosts authority-bound MPD Queue and Local Queue tabs. The active primary tab
 switches the server-library/local-folders sidebar, MPD/PipeWire output selector,
 transport controller, row type, and available commands. The queues never mix,
-and local operations remain unavailable to MPD rows. The standalone Trackknife
-executable is a compatibility shell while committed search/stored-playlist tabs,
-profile ownership, and packaging entry points finish migrating.
+and local operations remain unavailable to MPD rows. The former standalone
+Trackknife executable was retired in ADR-0071; committed search and
+stored-playlist tabs remain unmigrated open work.
 
 ## Resolved for M2–M3
 
@@ -123,10 +123,10 @@ saved action.
 
 1. Migrate committed search and stored-playlist tabs into Trackbench without
    weakening MPD/local authority selection.
-2. Settle connection-profile ownership and migration between the compatibility
-   shell and Trackbench.
-3. Decide the compatibility shell's packaging and eventual launcher/removal
-   story only after equivalent Trackbench surfaces are proven.
+2. Resolved by ADR-0071: connection profiles stay in the shared SQLite store
+   Trackbench owns; no shell migration is needed.
+3. Resolved by ADR-0071: the compatibility shell was removed rather than
+   packaged.
 
 ## Needed before M5–M8
 
