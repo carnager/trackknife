@@ -106,8 +106,9 @@ repair.
 - Current and gapless-prepared local playback follow successful publication,
   recovery replay, and same-filesystem undo without a transport restart.
 - File-publication callbacks must use the composed boundary when Trackbench's
-  local player is alive, then apply the same committed result to visible list
-  models. The forthcoming bounded file job owns that application wiring.
+  local player is alive. ADR-0063 provides the bounded job boundary; workspace
+  wiring must supply the composed callback and apply committed results to
+  visible list models.
 - Commands already admitted before the barrier follow publication. New user
   commands remain the responsibility of the operation coordinator and current
   visible model; the UI must not submit a stale pre-publication snapshot as a

@@ -5,6 +5,7 @@ find_package(Threads REQUIRED)
 add_library(
     trackknife_operations STATIC
     src/file_publication.cpp
+    src/file_publication_apply.cpp
     src/file_publication_journal.cpp
     src/metadata_apply.cpp
     src/metadata_commit.cpp

@@ -88,6 +88,15 @@ target_link_libraries(
 add_test(NAME file-publication COMMAND trackknife_file_publication_tests)
 set_tests_properties(file-publication PROPERTIES TIMEOUT 30)
 
+add_executable(trackknife_file_publication_apply_tests file_publication_apply_test.cpp)
+target_link_libraries(
+    trackknife_file_publication_apply_tests
+    PRIVATE Trackknife::Operations Trackknife::Persistence Threads::Threads
+            trackknife_project_options trackknife_project_warnings
+)
+add_test(NAME file-publication-apply COMMAND trackknife_file_publication_apply_tests)
+set_tests_properties(file-publication-apply PROPERTIES TIMEOUT 30)
+
 add_executable(trackknife_metadata_commit_tests metadata_commit_test.cpp)
 target_link_libraries(
     trackknife_metadata_commit_tests

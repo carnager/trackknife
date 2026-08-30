@@ -547,8 +547,19 @@ queued load/continuation intents follow the target and require its published
 revision; exact recovery replay is a no-op, while a reused path is left alone
 and reported. Audio advances before the durable ADR-0059 list/cache transaction
 and is inversely compensated if that transaction fails, allowing the executor's
-filesystem rollback to restore one coherent source state. Batching,
-cross-filesystem undo, and workspace controls remain unavailable.
+filesystem rollback to restore one coherent source state. Cross-filesystem
+undo and workspace controls remain unavailable.
+
+**Trackbench decision (ADR-0063):** one entirely ready filesystem review now
+enters a bounded 1–8-worker Apply job and returns ordered results for every
+physical source, including explicit no-change, failure, and cancellation
+states. Each admitted source receives a fresh single-source preflight before
+same/cross-filesystem dispatch. Sources sharing a reviewed missing-directory
+root serialize until successful in-batch evidence establishes each required
+path; unrelated and already-established targets may publish concurrently.
+Progress delivery and completed counts are serialized, cancellation stops new
+admission, and in-flight executors reach their journaled safe boundary.
+Workspace controls and cross-filesystem undo remain unavailable.
 
 ### Plan pipeline
 

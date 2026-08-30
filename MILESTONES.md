@@ -766,9 +766,15 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   flushing, or reconnecting audio; exact replay is a no-op, stale identities
   are refused, and durable list/cache failure reverses the ephemeral player
   binding before filesystem rollback.
-- Next: implement bounded batch execution, then workspace operation choices.
-  The capture-pattern grammar and chain import/export follow that vertical
-  slice.
+- Done: ADR-0063 adds the bounded file-publication Apply job. One ready review
+  produces ordered no-op/commit/failure/cancellation results, serialized
+  monotonic progress, fresh per-source admission, and automatic same/cross-
+  filesystem dispatch on at most 1–8 workers. Shared reviewed missing-directory
+  prefixes serialize only until successful batch evidence establishes them;
+  independent file I/O then proceeds in parallel.
+- Next: wire Save tags/Rename/Move/ReplayGain choices and file-preview Apply
+  into the tagging workspace. The capture-pattern grammar and chain
+  import/export follow that vertical slice.
 
 ### Exit criteria
 
