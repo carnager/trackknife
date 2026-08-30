@@ -6,6 +6,7 @@
 #include "bench/metadata_dialog_helpers.hpp"
 #include "bench/metadata_grid_model.hpp"
 #include "bench/metadata_rule_script_import_dialog.hpp"
+#include "bench/metadata_scalar_delegate.hpp"
 #include "bench/metadata_transformation_dialog.hpp"
 #include "bench/metadata_transformation_preview_model.hpp"
 #include "trackknife/metadata/draft_document.hpp"
@@ -83,47 +84,6 @@ struct FilePublicationApplyProgressState {
 
 
 
-class MetadataScalarDelegate final : public QStyledItemDelegate {
-  public:
-    using QStyledItemDelegate::QStyledItemDelegate;
-
-    [[nodiscard]] QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem&,
-                                        const QModelIndex& index) const override {
-        if (index.column() <= 0) {
-            return nullptr;
-        }
-        auto* editor = new QLineEdit(parent);
-        editor->setFrame(false);
-        return editor;
-    }
-
-    void setEditorData(QWidget* editor, const QModelIndex& index) const override {
-        auto* line = qobject_cast<QLineEdit*>(editor);
-        if (line == nullptr) {
-            return;
-        }
-        const auto values = index.data(metadata_cell_values_role).toStringList();
-        if (values.size() == 1) {
-            line->setText(values.front());
-            line->selectAll();
-        } else {
-            line->clear();
-            line->setPlaceholderText(
-                values.empty()
-                    ? QStringLiteral("Type a value")
-                    : QStringLiteral("Type to replace %1 exact values").arg(values.size()));
-        }
-        line->setModified(false);
-    }
-
-    void setModelData(QWidget* editor, QAbstractItemModel* model,
-                      const QModelIndex& index) const override {
-        auto* line = qobject_cast<QLineEdit*>(editor);
-        if (line != nullptr && line->isModified()) {
-            model->setData(index, line->text(), Qt::EditRole);
-        }
-    }
-};
 
 class MetadataWritePlanModel final : public QAbstractTableModel {
   public:
@@ -1567,7 +1527,7 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
     fields_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     fields_->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
                              QAbstractItemView::AnyKeyPressed);
-    fields_->setItemDelegate(new MetadataScalarDelegate(fields_));
+    fields_->setItemDelegate(createMetadataScalarDelegate(fields_));
     fields_->installEventFilter(this);
     fields_->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     fields_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
