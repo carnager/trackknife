@@ -6,6 +6,8 @@ qt_add_library(
     bench_main_window.hpp
     local_list_model.cpp
     local_list_model.hpp
+    metadata_exact_value_dialog.cpp
+    metadata_exact_value_dialog.hpp
     metadata_grid_model.cpp
     metadata_grid_model.hpp
     metadata_properties_dialog.cpp
