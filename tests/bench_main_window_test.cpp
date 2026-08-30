@@ -1622,8 +1622,6 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
         dialog->findChild<QListWidget*>(QStringLiteral("bench-metadata-transformation-steps"));
     auto* remove =
         dialog->findChild<QPushButton*>(QStringLiteral("bench-metadata-transformation-remove"));
-    auto* preview =
-        dialog->findChild<QPushButton*>(QStringLiteral("bench-metadata-transformation-preview"));
     auto* stage =
         dialog->findChild<QPushButton*>(QStringLiteral("bench-metadata-transformation-stage"));
     auto* preview_table =
@@ -1641,7 +1639,6 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     QVERIFY(import_script != nullptr);
     QVERIFY(steps != nullptr);
     QVERIFY(remove != nullptr);
-    QVERIFY(preview != nullptr);
     QVERIFY(stage != nullptr);
     QVERIFY(preview_table != nullptr);
     QVERIFY(preview_summary != nullptr);
@@ -1743,7 +1740,6 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     kind->setCurrentIndex(6);
     target->setText(QStringLiteral("Album Artist"));
     QTest::mouseClick(add, Qt::LeftButton);
-    QTest::mouseClick(preview, Qt::LeftButton);
     QTRY_VERIFY_WITH_TIMEOUT(preview_table->model() != nullptr, 5'000);
     QCOMPARE(preview_table->model()->rowCount(), 0);
     QTRY_VERIFY(preview_summary->text().contains(
@@ -1802,8 +1798,6 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
                      QStringLiteral("bench-metadata-transformation"))) != nullptr);
     saved = dialog->findChild<QComboBox*>(QStringLiteral("bench-metadata-transformation-saved"));
     steps = dialog->findChild<QListWidget*>(QStringLiteral("bench-metadata-transformation-steps"));
-    preview =
-        dialog->findChild<QPushButton*>(QStringLiteral("bench-metadata-transformation-preview"));
     stage = dialog->findChild<QPushButton*>(QStringLiteral("bench-metadata-transformation-stage"));
     preview_table =
         dialog->findChild<QTreeView*>(QStringLiteral("bench-metadata-transformation-table"));
@@ -1811,7 +1805,6 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
         dialog->findChild<QLabel*>(QStringLiteral("bench-metadata-transformation-summary"));
     QVERIFY(saved != nullptr);
     QVERIFY(steps != nullptr);
-    QVERIFY(preview != nullptr);
     QVERIFY(stage != nullptr);
     QVERIFY(preview_table != nullptr);
     QVERIFY(preview_summary != nullptr);
@@ -1820,7 +1813,6 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     QCOMPARE(steps->count(), 5);
     QVERIFY(steps->item(4)->text().contains(
         QStringLiteral("Keep the first 4 characters of each value of Date")));
-    QTest::mouseClick(preview, Qt::LeftButton);
     QTRY_VERIFY_WITH_TIMEOUT(preview_table->model() != nullptr, 5'000);
     QTRY_COMPARE(preview_table->model()->rowCount(), 4);
     QCOMPARE(preview_table->model()->headerData(0, Qt::Horizontal).toString(),
@@ -2034,18 +2026,14 @@ void BenchMainWindowTest::metadataCapturePatternSavesReloadsAndStagesAllFields()
     QTRY_VERIFY((dialog = properties->findChild<QDialog*>(
                      QStringLiteral("bench-metadata-transformation"))) != nullptr);
     steps = dialog->findChild<QListWidget*>(QStringLiteral("bench-metadata-transformation-steps"));
-    auto* preview =
-        dialog->findChild<QPushButton*>(QStringLiteral("bench-metadata-transformation-preview"));
     auto* stage =
         dialog->findChild<QPushButton*>(QStringLiteral("bench-metadata-transformation-stage"));
     auto* table =
         dialog->findChild<QTreeView*>(QStringLiteral("bench-metadata-transformation-table"));
     QVERIFY(steps != nullptr);
-    QVERIFY(preview != nullptr);
     QVERIFY(stage != nullptr);
     QVERIFY(table != nullptr);
     QCOMPARE(steps->count(), 1);
-    QTest::mouseClick(preview, Qt::LeftButton);
     QTRY_VERIFY_WITH_TIMEOUT(table->model() != nullptr, 5'000);
     QCOMPARE(table->model()->rowCount(), 4);
     QStringList fields;

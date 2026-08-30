@@ -682,53 +682,48 @@ class MetadataTransformationDialog final : public QDialog {
           store_(std::move(store)), initially_selected_(initially_selected),
           preview_initially_selected_(preview_initially_selected) {
         setObjectName(QStringLiteral("bench-metadata-transformation"));
-        setWindowTitle(QStringLiteral("Metadata transformation[*]"));
+        setWindowTitle(QStringLiteral("Tagging script editor[*]"));
         setWindowModality(Qt::WindowModal);
         setAttribute(Qt::WA_DeleteOnClose);
-        resize(880, 650);
+        resize(1'080, 620);
 
         auto* layout = new QVBoxLayout(this);
         layout->setContentsMargins(10, 8, 10, 8);
         layout->setSpacing(6);
-        auto* explanation = new QLabel(
-            QStringLiteral("Build an ordered chain. Each step sees the result of every earlier "
-                           "step; nothing enters the metadata draft until you preview and stage "
-                           "the final changes."),
-            this);
-        explanation->setWordWrap(true);
-        layout->addWidget(explanation);
 
-        auto* saved_form = new QFormLayout;
+        auto* catalog_row = new QHBoxLayout;
+        catalog_row->setSpacing(6);
+        catalog_row->addWidget(new QLabel(QStringLiteral("Script:"), this));
         saved_ = new QComboBox(this);
         saved_->setObjectName(QStringLiteral("bench-metadata-transformation-saved"));
-        saved_->addItem(QStringLiteral("New unsaved chain"));
-        saved_form->addRow(QStringLiteral("Saved chain:"), saved_);
-        layout->addLayout(saved_form);
-        auto* saved_row = new QHBoxLayout;
+        saved_->addItem(QStringLiteral("New script"));
+        catalog_row->addWidget(saved_, 1);
         save_ = new QPushButton(QStringLiteral("Save"), this);
         save_->setObjectName(QStringLiteral("bench-metadata-transformation-save"));
         save_as_ = new QPushButton(QStringLiteral("Save as new"), this);
         save_as_->setObjectName(QStringLiteral("bench-metadata-transformation-save-as-new"));
-        delete_saved_ = new QPushButton(QStringLiteral("Delete saved"), this);
+        delete_saved_ = new QPushButton(QStringLiteral("Delete"), this);
         delete_saved_->setObjectName(QStringLiteral("bench-metadata-transformation-delete"));
-        saved_row->addWidget(save_);
-        saved_row->addWidget(save_as_);
-        saved_row->addWidget(delete_saved_);
-        saved_row->addStretch(1);
-        layout->addLayout(saved_row);
-        catalog_status_ = new QLabel(this);
-        catalog_status_->setObjectName(
-            QStringLiteral("bench-metadata-transformation-catalog-status"));
-        catalog_status_->setWordWrap(true);
-        layout->addWidget(catalog_status_);
+        catalog_row->addWidget(save_);
+        catalog_row->addWidget(save_as_);
+        catalog_row->addWidget(delete_saved_);
+        layout->addLayout(catalog_row);
 
+        auto* content = new QSplitter(Qt::Horizontal, this);
+        content->setObjectName(QStringLiteral("bench-metadata-transformation-splitter"));
+        content->setChildrenCollapsible(false);
+
+        auto* editor_pane = new QWidget(content);
+        auto* editor_layout = new QVBoxLayout(editor_pane);
+        editor_layout->setContentsMargins(0, 0, 0, 0);
+        editor_layout->setSpacing(6);
         auto* name_form = new QFormLayout;
-        name_ = new QLineEdit(QStringLiteral("Ad hoc transformation"), this);
+        name_ = new QLineEdit(QStringLiteral("Untitled script"), this);
         name_->setObjectName(QStringLiteral("bench-metadata-transformation-name"));
-        name_form->addRow(QStringLiteral("Chain name:"), name_);
-        layout->addLayout(name_form);
+        name_form->addRow(QStringLiteral("Name:"), name_);
+        editor_layout->addLayout(name_form);
 
-        editor_tabs_ = new QTabWidget(this);
+        editor_tabs_ = new QTabWidget(editor_pane);
         editor_tabs_->setObjectName(QStringLiteral("bench-metadata-transformation-editor-tabs"));
         auto* rules_page = new QWidget(editor_tabs_);
         auto* rules_layout = new QVBoxLayout(rules_page);
@@ -846,19 +841,17 @@ class MetadataTransformationDialog final : public QDialog {
         order_row->addWidget(down_);
         order_row->addStretch(1);
         rules_layout->addLayout(order_row);
-        editor_tabs_->addTab(rules_page, QStringLiteral("Typed rules"));
+        rules_page->setToolTip(QStringLiteral(
+            "Steps run in order; each step sees the result of every earlier step"));
+        editor_tabs_->addTab(rules_page, QStringLiteral("Steps"));
 
         auto* raw_page = new QWidget(editor_tabs_);
         auto* raw_layout = new QVBoxLayout(raw_page);
         raw_layout->setContentsMargins(6, 6, 6, 6);
-        auto* raw_explanation = new QLabel(
-            QStringLiteral("Edit the bounded cleanup-script subset directly. Valid source is "
-                           "compiled into the typed rules used by preview and Apply; arbitrary "
-                           "script is never executed."),
-            raw_page);
-        raw_explanation->setWordWrap(true);
-        raw_layout->addWidget(raw_explanation);
         raw_source_ = new QPlainTextEdit(raw_page);
+        raw_source_->setToolTip(
+            QStringLiteral("Valid source compiles into the steps on the Steps tab; arbitrary "
+                           "script is never executed"));
         raw_source_->setObjectName(QStringLiteral("bench-metadata-transformation-raw-source"));
         raw_source_->setPlaceholderText(
             QStringLiteral("$if($eq(%totaldiscs%,1),$delete(discnumber)$delete(totaldiscs))"));
@@ -871,20 +864,26 @@ class MetadataTransformationDialog final : public QDialog {
         raw_diagnostics_->setMaximumHeight(110);
         raw_layout->addWidget(raw_diagnostics_);
         editor_tabs_->addTab(raw_page, QStringLiteral("Raw script"));
-        layout->addWidget(editor_tabs_, 2);
+        editor_layout->addWidget(editor_tabs_, 1);
+        content->addWidget(editor_pane);
 
-        auto* preview_row = new QHBoxLayout;
-        preview_row->addStretch(1);
-        preview_button_ = new QPushButton(QStringLiteral("Preview final changes"), this);
-        preview_button_->setObjectName(QStringLiteral("bench-metadata-transformation-preview"));
-        preview_row->addWidget(preview_button_);
-        layout->addLayout(preview_row);
-
-        summary_ = new QLabel(QStringLiteral("Add at least one step to preview."), this);
+        auto* preview_pane = new QWidget(content);
+        auto* preview_layout = new QVBoxLayout(preview_pane);
+        preview_layout->setContentsMargins(0, 0, 0, 0);
+        preview_layout->setSpacing(6);
+        auto* preview_heading = new QLabel(QStringLiteral("Preview"), preview_pane);
+        auto preview_heading_font = preview_heading->font();
+        preview_heading_font.setBold(true);
+        preview_heading->setFont(preview_heading_font);
+        preview_heading->setToolTip(
+            QStringLiteral("Updates automatically as you edit; nothing enters the draft until "
+                           "you add the previewed changes"));
+        preview_layout->addWidget(preview_heading);
+        summary_ = new QLabel(QStringLiteral("Add a step to see a preview."), preview_pane);
         summary_->setObjectName(QStringLiteral("bench-metadata-transformation-summary"));
         summary_->setWordWrap(true);
-        layout->addWidget(summary_);
-        table_ = new QTreeView(this);
+        preview_layout->addWidget(summary_);
+        table_ = new QTreeView(preview_pane);
         table_->setObjectName(QStringLiteral("bench-metadata-transformation-table"));
         table_->setAlternatingRowColors(true);
         table_->setWordWrap(false);
@@ -899,16 +898,30 @@ class MetadataTransformationDialog final : public QDialog {
         table_->setIndentation(18);
         table_->header()->setSectionResizeMode(QHeaderView::Interactive);
         table_->header()->setStretchLastSection(true);
-        table_->setColumnWidth(0, 190);
-        table_->setColumnWidth(1, 280);
-        layout->addWidget(table_, 2);
+        table_->setColumnWidth(0, 150);
+        table_->setColumnWidth(1, 200);
+        preview_layout->addWidget(table_, 1);
+        content->addWidget(preview_pane);
+        content->setStretchFactor(0, 0);
+        content->setStretchFactor(1, 1);
+        content->setSizes({460, 600});
+        layout->addWidget(content, 1);
 
+        catalog_status_ = new QLabel(this);
+        catalog_status_->setObjectName(
+            QStringLiteral("bench-metadata-transformation-catalog-status"));
+        catalog_status_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
         buttons_ = new QDialogButtonBox(QDialogButtonBox::Close, this);
         stage_button_ =
-            buttons_->addButton(QStringLiteral("Stage changes"), QDialogButtonBox::AcceptRole);
+            buttons_->addButton(QStringLiteral("Add to draft"), QDialogButtonBox::AcceptRole);
         stage_button_->setObjectName(QStringLiteral("bench-metadata-transformation-stage"));
         stage_button_->setEnabled(false);
-        layout->addWidget(buttons_);
+        stage_button_->setDefault(true);
+        auto* footer_row = new QHBoxLayout;
+        footer_row->setSpacing(8);
+        footer_row->addWidget(catalog_status_, 1);
+        footer_row->addWidget(buttons_);
+        layout->addLayout(footer_row);
 
         connect(kind_, &QComboBox::currentIndexChanged, this, [this] { updateInputForKind(); });
         connect(capture_source_, &QComboBox::currentIndexChanged, this,
@@ -925,10 +938,9 @@ class MetadataTransformationDialog final : public QDialog {
             });
         });
         connect(name_, &QLineEdit::textChanged, this, [this] {
-            invalidatePreview();
             if (!loading_definition_) {
                 catalog_status_->setText(
-                    QStringLiteral("Unsaved chain-name change · click Save to keep it"));
+                    QStringLiteral("Unsaved name change · Save to keep it"));
             }
             updateActions();
         });
@@ -945,7 +957,11 @@ class MetadataTransformationDialog final : public QDialog {
         connect(up_, &QPushButton::clicked, this, [this] { moveStep(-1); });
         connect(down_, &QPushButton::clicked, this, [this] { moveStep(1); });
         connect(steps_, &QListWidget::currentRowChanged, this, [this] { updateActions(); });
-        connect(preview_button_, &QPushButton::clicked, this, [this] { startPreview(); });
+        preview_timer_ = new QTimer(this);
+        preview_timer_->setObjectName(QStringLiteral("bench-metadata-transformation-preview-timer"));
+        preview_timer_->setSingleShot(true);
+        preview_timer_->setInterval(400);
+        connect(preview_timer_, &QTimer::timeout, this, [this] { startPreview(); });
         connect(stage_button_, &QPushButton::clicked, this, [this] { stagePreview(); });
         connect(buttons_, &QDialogButtonBox::rejected, this, &QDialog::close);
         connect(&watcher_, &QFutureWatcherBase::finished, this, [this] { finishPreview(); });
@@ -968,14 +984,14 @@ class MetadataTransformationDialog final : public QDialog {
         if (planning_) {
             close_requested_ = true;
             cancellation_.request_cancellation();
-            summary_->setText(QStringLiteral("Cancelling transformation preview…"));
+            summary_->setText(QStringLiteral("Cancelling preview…"));
             event->ignore();
             return;
         }
         if (hasUnsavedChanges()) {
             const auto answer = QMessageBox::warning(
                 this, QStringLiteral("Discard unsaved script changes?"),
-                QStringLiteral("This transformation differs from its saved version. Save it before "
+                QStringLiteral("This script differs from its saved version. Save it before "
                                "closing, or explicitly discard the changes."),
                 QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Cancel);
             if (answer != QMessageBox::Discard) {
@@ -1197,7 +1213,7 @@ class MetadataTransformationDialog final : public QDialog {
         });
         const QSignalBlocker blocker{saved_};
         saved_->clear();
-        saved_->addItem(QStringLiteral("New unsaved chain"));
+        saved_->addItem(QStringLiteral("New script"));
         auto selected_index = 0;
         for (std::size_t index = 0U; index < catalog_.size(); ++index) {
             const auto& entry = catalog_[index];
@@ -1215,12 +1231,12 @@ class MetadataTransformationDialog final : public QDialog {
     void loadSaved() {
         if (!store_.load) {
             catalog_status_->setText(
-                QStringLiteral("Saved chains are unavailable in this session."));
+                QStringLiteral("Saved scripts are unavailable in this session."));
             updateActions();
             return;
         }
         catalog_busy_ = true;
-        catalog_status_->setText(QStringLiteral("Loading saved chains…"));
+        catalog_status_->setText(QStringLiteral("Loading saved scripts…"));
         updateActions();
         const QPointer<MetadataTransformationDialog> self{this};
         store_.load([self](std::vector<persistence::SavedMetadataTransformationChain> chains,
@@ -1231,7 +1247,7 @@ class MetadataTransformationDialog final : public QDialog {
             self->catalog_busy_ = false;
             if (!error.isEmpty()) {
                 self->catalog_status_->setText(
-                    QStringLiteral("Could not load saved chains · %1").arg(error));
+                    QStringLiteral("Could not load saved scripts · %1").arg(error));
                 self->updateActions();
                 return;
             }
@@ -1250,8 +1266,8 @@ class MetadataTransformationDialog final : public QDialog {
             self->catalog_status_->setText(QStringLiteral("%1 saved %2 available")
                                                .arg(self->catalog_.size())
                                                .arg(self->catalog_.size() == 1U
-                                                        ? QStringLiteral("chain")
-                                                        : QStringLiteral("chains")));
+                                                        ? QStringLiteral("script")
+                                                        : QStringLiteral("scripts")));
         });
     }
 
@@ -1262,14 +1278,14 @@ class MetadataTransformationDialog final : public QDialog {
         loading_definition_ = true;
         if (index <= 0 || static_cast<std::size_t>(index) > catalog_.size()) {
             selected_saved_.reset();
-            name_->setText(QStringLiteral("Ad hoc transformation"));
+            name_->setText(QStringLiteral("Untitled script"));
             actions_.clear();
             invalidatePreview();
             rebuildSteps(-1);
             clean_chain_ = currentChain();
             refreshRawFromActions();
             loading_definition_ = false;
-            catalog_status_->setText(QStringLiteral("Editing a new unsaved chain"));
+            catalog_status_->setText(QStringLiteral("Editing a new script"));
             return;
         }
         const auto& selected = catalog_[static_cast<std::size_t>(index) - 1U];
@@ -1282,7 +1298,7 @@ class MetadataTransformationDialog final : public QDialog {
         refreshRawFromActions();
         loading_definition_ = false;
         catalog_status_->setText(
-            QStringLiteral("Loaded saved chain · %1").arg(display_utf8(selected.chain.name)));
+            QStringLiteral("Loaded script · %1").arg(display_utf8(selected.chain.name)));
     }
 
     [[nodiscard]] metadata::MetadataTransformationChain currentChain() const {
@@ -1370,8 +1386,8 @@ class MetadataTransformationDialog final : public QDialog {
         }
         raw_diagnostics_->setPlainText(diagnostics.join(QChar{'\n'}));
         catalog_status_->setText(
-            raw_valid_ ? QStringLiteral("Unsaved raw-script changes · click Save to keep them")
-                       : QStringLiteral("Raw script has errors · fix them before preview or Save"));
+            raw_valid_ ? QStringLiteral("Unsaved changes · Save to keep them")
+                       : QStringLiteral("Raw script has errors · the preview and Save wait until they are fixed"));
         updateActions();
     }
 
@@ -1380,14 +1396,14 @@ class MetadataTransformationDialog final : public QDialog {
             return;
         }
         if (name_->text().trimmed().isEmpty()) {
-            catalog_status_->setText(QStringLiteral("Enter a non-empty chain name before saving."));
+            catalog_status_->setText(QStringLiteral("Enter a script name before saving."));
             name_->setFocus(Qt::OtherFocusReason);
             return;
         }
         auto chain = currentChain();
         if (const auto valid = metadata::validate_metadata_transformation_chain(chain); !valid) {
             catalog_status_->setText(
-                QStringLiteral("Cannot save chain · %1").arg(display_utf8(valid.error().message)));
+                QStringLiteral("Cannot save script · %1").arg(display_utf8(valid.error().message)));
             return;
         }
         persistence::SavedMetadataTransformationChain saved_chain{
@@ -1403,7 +1419,7 @@ class MetadataTransformationDialog final : public QDialog {
             }
         }
         catalog_busy_ = true;
-        catalog_status_->setText(QStringLiteral("Saving chain…"));
+        catalog_status_->setText(QStringLiteral("Saving…"));
         updateActions();
         const QPointer<MetadataTransformationDialog> self{this};
         auto retained_chain = saved_chain;
@@ -1415,7 +1431,7 @@ class MetadataTransformationDialog final : public QDialog {
             self->catalog_busy_ = false;
             if (!error.isEmpty()) {
                 self->catalog_status_->setText(
-                    QStringLiteral("Could not save chain · %1").arg(error));
+                    QStringLiteral("Could not save script · %1").arg(error));
                 self->updateActions();
                 return;
             }
@@ -1431,7 +1447,7 @@ class MetadataTransformationDialog final : public QDialog {
             self->raw_modified_ = false;
             self->updateActions();
             self->catalog_status_->setText(
-                QStringLiteral("Saved chain · %1").arg(display_utf8(saved_chain.chain.name)));
+                QStringLiteral("Saved · %1").arg(display_utf8(saved_chain.chain.name)));
         });
     }
 
@@ -1441,7 +1457,7 @@ class MetadataTransformationDialog final : public QDialog {
         }
         const auto id = *selected_saved_;
         catalog_busy_ = true;
-        catalog_status_->setText(QStringLiteral("Deleting saved chain…"));
+        catalog_status_->setText(QStringLiteral("Deleting saved script…"));
         updateActions();
         const QPointer<MetadataTransformationDialog> self{this};
         store_.remove(id, [self, id](QString error) {
@@ -1451,20 +1467,20 @@ class MetadataTransformationDialog final : public QDialog {
             self->catalog_busy_ = false;
             if (!error.isEmpty()) {
                 self->catalog_status_->setText(
-                    QStringLiteral("Could not delete saved chain · %1").arg(error));
+                    QStringLiteral("Could not delete saved script · %1").arg(error));
                 self->updateActions();
                 return;
             }
             std::erase_if(self->catalog_, [id](const auto& entry) { return entry.id == id; });
             self->selected_saved_.reset();
             self->repopulateSaved();
-            self->name_->setText(QStringLiteral("Ad hoc transformation"));
+            self->name_->setText(QStringLiteral("Untitled script"));
             self->actions_.clear();
             self->invalidatePreview();
             self->rebuildSteps(-1);
             self->clean_chain_ = self->currentChain();
             self->refreshRawFromActions();
-            self->catalog_status_->setText(QStringLiteral("Saved chain deleted"));
+            self->catalog_status_->setText(QStringLiteral("Saved script deleted"));
         });
     }
 
@@ -1663,7 +1679,7 @@ class MetadataTransformationDialog final : public QDialog {
         rebuildSteps(static_cast<int>(actions_.size()) - 1);
         refreshRawFromActions();
         catalog_status_->setText(
-            QStringLiteral("Unsaved typed-rule changes · click Save to keep them"));
+            QStringLiteral("Unsaved changes · Save to keep them"));
         target_->clear();
         input_->clear();
         replacement_->clear();
@@ -1684,7 +1700,7 @@ class MetadataTransformationDialog final : public QDialog {
         rebuildSteps(std::min(row, static_cast<int>(actions_.size()) - 1));
         refreshRawFromActions();
         catalog_status_->setText(
-            QStringLiteral("Unsaved typed-rule changes · click Save to keep them"));
+            QStringLiteral("Unsaved changes · Save to keep them"));
     }
 
     void importRules() {
@@ -1739,20 +1755,30 @@ class MetadataTransformationDialog final : public QDialog {
         rebuildSteps(destination);
         refreshRawFromActions();
         catalog_status_->setText(
-            QStringLiteral("Unsaved typed-rule changes · click Save to keep them"));
+            QStringLiteral("Unsaved changes · Save to keep them"));
     }
 
-    void invalidatePreview() {
+    void clearPreview() {
         preview_.reset();
         if (auto* model = table_->model()) {
             table_->setModel(nullptr);
             model->deleteLater();
         }
         stage_button_->setEnabled(false);
+    }
+
+    // Invalidation schedules a fresh debounced preview whenever the current
+    // script could produce one, so the preview pane tracks edits by itself.
+    void invalidatePreview() {
+        clearPreview();
         if (!planning_) {
-            summary_->setText(actions_.empty()
-                                  ? QStringLiteral("Add at least one step to preview.")
-                                  : QStringLiteral("Preview required after chain changes."));
+            summary_->setText(actions_.empty() ? QStringLiteral("Add a step to see a preview.")
+                                               : QStringLiteral("Updating preview…"));
+        }
+        if (!actions_.empty() && (!raw_modified_ || raw_valid_)) {
+            preview_timer_->start();
+        } else {
+            preview_timer_->stop();
         }
     }
 
@@ -1788,16 +1814,19 @@ class MetadataTransformationDialog final : public QDialog {
         remove_->setEnabled(editing_enabled && valid);
         up_->setEnabled(editing_enabled && valid && row > 0);
         down_->setEnabled(editing_enabled && valid && row + 1 < steps_->count());
-        preview_button_->setEnabled(editing_enabled && raw_ready && !actions_.empty());
         stage_button_->setEnabled(editing_enabled && preview_ != nullptr &&
                                   !preview_->cells.empty());
     }
 
     void startPreview() {
-        if (planning_ || actions_.empty()) {
+        if (actions_.empty() || (raw_modified_ && !raw_valid_)) {
             return;
         }
-        invalidatePreview();
+        if (planning_) {
+            preview_timer_->start();
+            return;
+        }
+        clearPreview();
         cancellation_.request_cancellation();
         cancellation_ = core::CancellationSource{};
         auto chain = currentChain();
@@ -1806,7 +1835,7 @@ class MetadataTransformationDialog final : public QDialog {
         const auto items = item_indexes_;
         const auto cancellation = cancellation_.token();
         planning_ = true;
-        summary_->setText(QStringLiteral("Evaluating the chain against the current draft…"));
+        summary_->setText(QStringLiteral("Updating preview…"));
         updateActions();
         watcher_.setFuture(QtConcurrent::run(
             [selection, draft, items, chain = std::move(chain), cancellation]() mutable {
@@ -1851,9 +1880,10 @@ class MetadataTransformationDialog final : public QDialog {
         summary_->setText(
             preview_->cells.empty()
                 ? (capitalization_summary.isEmpty()
-                       ? QStringLiteral("The chain produces no changes for the selected files.")
+                       ? QStringLiteral("The script produces no changes for the selected files.")
                        : capitalization_summary)
-                : QStringLiteral("%1 final cell %2 across %3 selected %4 · review before staging")
+                : QStringLiteral("%1 final cell %2 across %3 selected %4 · add to draft when "
+                                 "ready")
                       .arg(preview_->cells.size())
                       .arg(preview_->cells.size() == 1U ? QStringLiteral("change")
                                                         : QStringLiteral("changes"))
@@ -1870,7 +1900,8 @@ class MetadataTransformationDialog final : public QDialog {
         if (!stage_(*preview_)) {
             invalidatePreview();
             summary_->setText(QStringLiteral(
-                "The preview is stale or could not fit in the draft. Preview the chain again."));
+                "The preview is stale or could not fit in the draft. It will refresh "
+                "automatically."));
             return;
         }
         accept();
@@ -1927,7 +1958,7 @@ class MetadataTransformationDialog final : public QDialog {
     QPushButton* remove_{nullptr};
     QPushButton* up_{nullptr};
     QPushButton* down_{nullptr};
-    QPushButton* preview_button_{nullptr};
+    QTimer* preview_timer_{nullptr};
     QLabel* summary_{nullptr};
     QTreeView* table_{nullptr};
     QDialogButtonBox* buttons_{nullptr};
