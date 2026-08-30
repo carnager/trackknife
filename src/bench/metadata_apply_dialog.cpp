@@ -39,7 +39,7 @@ class MetadataApplySourceModel final : public QAbstractTableModel {
             rows_.push_back(
                 Row{.state = operations::MetadataApplySourceState::pending,
                     .source = QString::fromStdString(core::escape_raw_path(source.raw_path)),
-                    .detail = QStringLiteral("Waiting for a mutation worker")});
+                    .detail = QStringLiteral("Waiting")});
         }
     }
 
@@ -76,7 +76,7 @@ class MetadataApplySourceModel final : public QAbstractTableModel {
         if (orientation != Qt::Horizontal || role != Qt::DisplayRole) {
             return {};
         }
-        static constexpr std::array labels{"Status", "Physical source", "Details"};
+        static constexpr std::array labels{"Status", "File", "Details"};
         return section >= 0 && section < static_cast<int>(labels.size())
                    ? QString::fromLatin1(labels[static_cast<std::size_t>(section)])
                    : QVariant{};
@@ -90,11 +90,12 @@ class MetadataApplySourceModel final : public QAbstractTableModel {
             rows_[index].detail =
                 issues[index] ? display_utf8(issues[index]->message)
                               : (states[index] == operations::MetadataApplySourceState::running
-                                     ? QStringLiteral("Preparing, verifying, and publishing")
+                                     ? QStringLiteral("Checking the file and saving tags")
                                  : states[index] == operations::MetadataApplySourceState::committed
-                                     ? QStringLiteral("Published and refreshed every occurrence")
+                                     ? QStringLiteral(
+                                           "Tags saved and every matching list entry updated")
                                  : states[index] == operations::MetadataApplySourceState::pending
-                                     ? QStringLiteral("Waiting for a mutation worker")
+                                     ? QStringLiteral("Waiting")
                                      : QString{});
         }
         if (count > 0U) {
@@ -119,12 +120,12 @@ class MetadataApplyDialog final : public QDialog {
                                  QWidget* parent)
         : QDialog(parent), cancel_(std::move(cancel)) {
         setObjectName(QStringLiteral("bench-metadata-apply"));
-        setWindowTitle(QStringLiteral("Apply metadata changes"));
+        setWindowTitle(QStringLiteral("Save tag changes"));
         setWindowModality(Qt::WindowModal);
         setAttribute(Qt::WA_DeleteOnClose);
         resize(900, 420);
         auto* layout = new QVBoxLayout(this);
-        summary_ = new QLabel(QStringLiteral("Applying 0 of %1 physical %2…")
+        summary_ = new QLabel(QStringLiteral("Saving 0 of %1 %2…")
                                   .arg(plan.sources.size())
                                   .arg(plan.sources.size() == 1U ? QStringLiteral("source")
                                                                  : QStringLiteral("sources")),
@@ -173,7 +174,7 @@ class MetadataApplyDialog final : public QDialog {
         model_->update(states, issues);
         progress_->setValue(static_cast<int>(completed));
         summary_->setText(
-            QStringLiteral("Applying %1 of %2 physical %3%4")
+            QStringLiteral("Saving %1 of %2 %3%4")
                 .arg(completed)
                 .arg(states.size())
                 .arg(states.size() == 1U ? QStringLiteral("source") : QStringLiteral("sources"))
@@ -188,7 +189,7 @@ class MetadataApplyDialog final : public QDialog {
         close->setObjectName(QStringLiteral("bench-metadata-apply-close"));
         connect(close, &QPushButton::clicked, this, &QDialog::close);
         if (!result) {
-            summary_->setText(QStringLiteral("Metadata Apply could not start · %1")
+            summary_->setText(QStringLiteral("Could not save tag changes · %1")
                                   .arg(display_utf8(result.error().message)));
             return;
         }
@@ -203,13 +204,13 @@ class MetadataApplyDialog final : public QDialog {
         model_->update(states, issues);
         progress_->setValue(static_cast<int>(result->sources.size()));
         summary_->setText(
-            QStringLiteral("%1 applied · %2 failed · %3 cancelled%4")
+            QStringLiteral("%1 saved · %2 failed · %3 cancelled%4")
                 .arg(result->committed_source_count())
                 .arg(result->failed_source_count())
                 .arg(result->cancelled_source_count())
                 .arg(result->committed_source_count() == result->sources.size()
                          ? QStringLiteral(" · complete")
-                         : QStringLiteral(" · close and re-preview before retrying")));
+                         : QStringLiteral(" · close and review the changes again before retrying")));
     }
 
   protected:
@@ -229,7 +230,8 @@ class MetadataApplyDialog final : public QDialog {
         }
         cancellation_requested_ = true;
         cancel_button_->setEnabled(false);
-        summary_->setText(QStringLiteral("Cancelling after in-flight sources become safe…"));
+        summary_->setText(
+            QStringLiteral("Cancelling after the files already in progress are safe…"));
         if (cancel_) {
             cancel_();
         }

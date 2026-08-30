@@ -60,9 +60,9 @@ QString apply_state_text(const operations::MetadataApplySourceState state) {
     case State::pending:
         return QStringLiteral("Waiting");
     case State::running:
-        return QStringLiteral("Applying");
+        return QStringLiteral("Saving");
     case State::committed:
-        return QStringLiteral("Applied");
+        return QStringLiteral("Saved");
     case State::failed:
         return QStringLiteral("Failed");
     case State::cancelled:
@@ -77,11 +77,11 @@ QString file_apply_state_text(const operations::FilePublicationApplySourceState 
     case State::pending:
         return QStringLiteral("Waiting");
     case State::running:
-        return QStringLiteral("Publishing");
+        return QStringLiteral("Changing");
     case State::unchanged:
         return QStringLiteral("Unchanged");
     case State::committed:
-        return QStringLiteral("Published");
+        return QStringLiteral("Changed");
     case State::failed:
         return QStringLiteral("Failed");
     case State::cancelled:
@@ -96,11 +96,11 @@ QString publication_kind_text(const operations::OutputPathPublicationKind public
     case Kind::no_change:
         return QStringLiteral("No path change");
     case Kind::same_filesystem_rename:
-        return QStringLiteral("Atomic same-filesystem rename");
+        return QStringLiteral("Rename on this filesystem");
     case Kind::cross_filesystem_copy:
-        return QStringLiteral("Verified cross-filesystem move");
+        return QStringLiteral("Copy, verify, then remove the original");
     }
-    return QStringLiteral("Unknown publication");
+    return QStringLiteral("Unknown file operation");
 }
 
 } // namespace trackknife::bench

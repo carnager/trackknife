@@ -959,11 +959,21 @@ void BenchMainWindowTest::metadataReadyPlanAppliesAndRefreshesHistory() {
     auto* apply = plan->findChild<QPushButton*>(QStringLiteral("bench-metadata-write-plan-apply"));
     auto* plan_summary =
         plan->findChild<QLabel*>(QStringLiteral("bench-metadata-write-plan-summary"));
+    auto* plan_table =
+        plan->findChild<QTableView*>(QStringLiteral("bench-metadata-write-plan-table"));
     QVERIFY(apply != nullptr);
     QVERIFY(plan_summary != nullptr);
+    QVERIFY(plan_table != nullptr);
+    QCOMPARE(plan->windowTitle(), QStringLiteral("Review changes"));
     QVERIFY(apply->isEnabled());
+    QVERIFY(plan_summary->text().contains(QStringLiteral("1 tag change")));
+    QVERIFY(plan_summary->text().contains(QStringLiteral("1 file")));
     QVERIFY(plan_summary->text().contains(QStringLiteral("1 ready")));
-    QVERIFY(plan_summary->text().contains(QStringLiteral("0 blocking issues")));
+    QVERIFY(plan_summary->text().contains(QStringLiteral("0 problems")));
+    QCOMPARE(plan_table->model()->headerData(1, Qt::Horizontal).toString(),
+             QStringLiteral("File"));
+    QCOMPARE(plan_table->model()->headerData(5, Qt::Horizontal).toString(),
+             QStringLiteral("Tracks affected"));
     QTest::mouseClick(apply, Qt::LeftButton);
 
     QDialog* apply_dialog = nullptr;
@@ -976,6 +986,7 @@ void BenchMainWindowTest::metadataReadyPlanAppliesAndRefreshesHistory() {
         apply_dialog->findChild<QLabel*>(QStringLiteral("bench-metadata-apply-summary"));
     QVERIFY(apply_table != nullptr);
     QVERIFY(apply_summary != nullptr);
+    QCOMPARE(apply_dialog->windowTitle(), QStringLiteral("Save tag changes"));
     QPushButton* close = nullptr;
     QTRY_VERIFY_WITH_TIMEOUT((close = apply_dialog->findChild<QPushButton*>(
                                   QStringLiteral("bench-metadata-apply-close"))) != nullptr,
@@ -983,8 +994,10 @@ void BenchMainWindowTest::metadataReadyPlanAppliesAndRefreshesHistory() {
     QCOMPARE(apply_table->model()->rowCount(), 1);
     const auto apply_state = apply_table->model()->index(0, 0).data().toString();
     const auto apply_details = apply_table->model()->index(0, 2).data().toString();
-    QVERIFY2(apply_state == QStringLiteral("Applied"), qPrintable(apply_details));
-    QVERIFY(apply_summary->text().contains(QStringLiteral("1 applied")));
+    QCOMPARE(apply_table->model()->headerData(1, Qt::Horizontal).toString(),
+             QStringLiteral("File"));
+    QVERIFY2(apply_state == QStringLiteral("Saved"), qPrintable(apply_details));
+    QVERIFY(apply_summary->text().contains(QStringLiteral("1 saved")));
     QVERIFY(apply_summary->text().contains(QStringLiteral("complete")));
     QTRY_COMPARE(list_model->rows().front().title, std::string{"Applied from ready preview"});
     const auto reread = metadata::read_local_metadata(raw_path);
@@ -1103,7 +1116,7 @@ void BenchMainWindowTest::metadataApplyCancellationPreservesDraftForFreshPreview
     for (int row = 0; row < table->model()->rowCount(); ++row) {
         QCOMPARE(table->model()->index(row, 0).data().toString(), QStringLiteral("Cancelled"));
     }
-    QVERIFY(summary->text().contains(QStringLiteral("0 applied")));
+    QVERIFY(summary->text().contains(QStringLiteral("0 saved")));
     QVERIFY(summary->text().contains(QStringLiteral("3 cancelled")));
     QVERIFY(observed.has_value());
     QCOMPARE(observed->cancelled_source_count(), 3U);
@@ -1609,7 +1622,14 @@ void BenchMainWindowTest::pathOnlyPreparationUsesActualTagsAndAppliesReviewedPla
         review->findChild<QPushButton*>(QStringLiteral("bench-metadata-write-plan-apply"));
     QVERIFY(path_table != nullptr);
     QVERIFY(apply != nullptr);
+    QCOMPARE(review->windowTitle(), QStringLiteral("Review changes"));
     QCOMPARE(path_table->model()->rowCount(), 1);
+    QCOMPARE(path_table->model()->headerData(1, Qt::Horizontal).toString(),
+             QStringLiteral("Current path"));
+    QCOMPARE(path_table->model()->headerData(2, Qt::Horizontal).toString(),
+             QStringLiteral("New path"));
+    QCOMPARE(path_table->model()->headerData(5, Qt::Horizontal).toString(),
+             QStringLiteral("File operation"));
     const auto expected_target =
         media.filePath(QString::fromStdString(*actual_title) + QStringLiteral(".flac"));
     QCOMPARE(path_table->model()->index(0, 2).data().toString(), expected_target);
@@ -1625,6 +1645,19 @@ void BenchMainWindowTest::pathOnlyPreparationUsesActualTagsAndAppliesReviewedPla
     QTRY_VERIFY_WITH_TIMEOUT((close = result->findChild<QPushButton*>(
                                   QStringLiteral("bench-file-publication-apply-close"))) != nullptr,
                              5'000);
+    auto* result_table =
+        result->findChild<QTableView*>(QStringLiteral("bench-file-publication-apply-table"));
+    auto* result_summary =
+        result->findChild<QLabel*>(QStringLiteral("bench-file-publication-apply-summary"));
+    QVERIFY(result_table != nullptr);
+    QVERIFY(result_summary != nullptr);
+    QCOMPARE(result->windowTitle(), QStringLiteral("Change file paths"));
+    QCOMPARE(result_table->model()->headerData(1, Qt::Horizontal).toString(),
+             QStringLiteral("Current path"));
+    QCOMPARE(result_table->model()->headerData(2, Qt::Horizontal).toString(),
+             QStringLiteral("New path"));
+    QCOMPARE(result_table->model()->index(0, 0).data().toString(), QStringLiteral("Changed"));
+    QVERIFY(result_summary->text().contains(QStringLiteral("1 changed")));
     QVERIFY(observed.has_value());
     QCOMPARE(observed->committed_source_count(), 1U);
     QCOMPARE(QString::fromStdString(reviewed_target), expected_target);
@@ -3618,16 +3651,16 @@ void BenchMainWindowTest::metadataPropertiesFileSelectionDrivesIndividualAndBulk
     QVERIFY(write_plan_summary != nullptr);
     QVERIFY(write_plan_table != nullptr);
     QVERIFY(write_plan_buttons != nullptr);
-    QVERIFY(write_plan_summary->text().contains(QStringLiteral("1 staged change")));
-    QVERIFY(write_plan_summary->text().contains(QStringLiteral("1 physical source")));
-    QVERIFY(write_plan_summary->text().contains(QStringLiteral("blocking")));
+    QVERIFY(write_plan_summary->text().contains(QStringLiteral("1 tag change")));
+    QVERIFY(write_plan_summary->text().contains(QStringLiteral("1 file")));
+    QVERIFY(write_plan_summary->text().contains(QStringLiteral("problem")));
     QCOMPARE(write_plan_buttons->standardButtons(), QDialogButtonBox::Close);
     QVERIFY(write_plan_buttons->button(QDialogButtonBox::Apply) == nullptr);
     QCOMPARE(write_plan_table->model()->rowCount(), 1);
     QCOMPARE(write_plan_table->model()->headerData(3, Qt::Horizontal).toString(),
-             QStringLiteral("Fresh original"));
+             QStringLiteral("Current value"));
     QCOMPARE(write_plan_table->model()->headerData(4, Qt::Horizontal).toString(),
-             QStringLiteral("Planned result"));
+             QStringLiteral("New value"));
     QCOMPARE(write_plan_table->model()->index(0, 0).data().toString(), QStringLiteral("Blocked"));
     QCOMPARE(write_plan_table->model()->index(0, 2).data().toString(),
              QStringLiteral("CUSTOM_FIELD"));

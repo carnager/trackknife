@@ -91,22 +91,23 @@ class MetadataWritePlanModel final : public QAbstractTableModel {
                            ? QStringLiteral("(remove)")
                            : display_plan_values(intent.values);
             case 5:
-                return QStringLiteral("File row %1 · %2 source %3")
+                return QStringLiteral("Selected row %1 · file appears in %2 selected %3")
                     .arg(intent.item_index + 1U)
                     .arg(source.occurrence_indexes.size())
-                    .arg(source.occurrence_indexes.size() == 1U ? QStringLiteral("reference")
-                                                                : QStringLiteral("references"));
+                    .arg(source.occurrence_indexes.size() == 1U ? QStringLiteral("row")
+                                                                : QStringLiteral("rows"));
             default:
                 return {};
             }
         }
         if (role == Qt::ToolTipRole) {
-            auto details = QStringLiteral("Fresh adapter: %1\nStaged file row: %2")
+            auto details = QStringLiteral("File format handler: %1\nSelected row: %2")
                                .arg(source.adapter_name.empty() ? QStringLiteral("unavailable")
                                                                 : display_utf8(source.adapter_name))
                                .arg(intent.item_index + 1U);
             if (change.conflicting_intents) {
-                details += QStringLiteral("\nThis field has %1 incompatible logical intents.")
+                details += QStringLiteral("\nThis field has %1 different requested changes for "
+                                          "the same file.")
                                .arg(change.intents.size());
             }
             for (const auto& issue : source.issues) {
@@ -141,15 +142,15 @@ class MetadataWritePlanModel final : public QAbstractTableModel {
         case 0:
             return QStringLiteral("Status");
         case 1:
-            return QStringLiteral("Physical source");
+            return QStringLiteral("File");
         case 2:
             return QStringLiteral("Field");
         case 3:
-            return QStringLiteral("Fresh original");
+            return QStringLiteral("Current value");
         case 4:
-            return QStringLiteral("Planned result");
+            return QStringLiteral("New value");
         case 5:
-            return QStringLiteral("Logical scope");
+            return QStringLiteral("Tracks affected");
         default:
             return {};
         }
@@ -231,7 +232,7 @@ class OutputPathReviewModel final : public QAbstractTableModel {
                                                    : display_utf8(source.raw_basename);
             case 5:
                 return preflight != nullptr ? publication_kind_text(preflight->publication)
-                                            : QStringLiteral("Preflight unavailable");
+                                            : QStringLiteral("Not checked");
             default:
                 return {};
             }
@@ -242,8 +243,8 @@ class OutputPathReviewModel final : public QAbstractTableModel {
                     .arg(QString::fromStdString(core::escape_raw_path(source.source_raw_path)),
                          QString::fromStdString(core::escape_raw_path(source.target_raw_path)));
             if (source.sanitized) {
-                details += QStringLiteral("\nGenerated path text was visibly sanitized with "
-                                          "linux-v1.");
+                details += QStringLiteral(
+                    "\nUnsupported path characters will be replaced in the new path.");
             }
             for (const auto& issue : plan_->output_paths->issues) {
                 if (plan_issue_applies(issue)) {
@@ -283,8 +284,8 @@ class OutputPathReviewModel final : public QAbstractTableModel {
         if (orientation == Qt::Vertical) {
             return section + 1;
         }
-        constexpr std::array headers{"Status",      "Source",       "Target",
-                                     "Raw folders", "Raw filename", "Publication"};
+        constexpr std::array headers{"Status",  "Current path", "New path",
+                                     "Folders", "Filename",     "File operation"};
         return section >= 0 && section < static_cast<int>(headers.size())
                    ? QVariant{QString::fromLatin1(headers[static_cast<std::size_t>(section)])}
                    : QVariant{};
@@ -302,7 +303,7 @@ class PreparationPlanDialog final : public QDialog {
                                    ApplyCallback apply, QWidget* parent)
         : QDialog(parent) {
         setObjectName(QStringLiteral("bench-metadata-write-plan"));
-        setWindowTitle(QStringLiteral("Preparation review"));
+        setWindowTitle(QStringLiteral("Review changes"));
         setWindowModality(Qt::WindowModal);
         setAttribute(Qt::WA_DeleteOnClose);
         resize(1'100, 520);
@@ -317,25 +318,26 @@ class PreparationPlanDialog final : public QDialog {
                                      ? plan->metadata->ready_source_count()
                                      : (plan->ready() ? source_count : 0U);
         auto* summary = new QLabel(
-            QStringLiteral("%1 staged %2 · %3 physical %4 · %5 ready · %6 blocking %7")
+            QStringLiteral("%1 tag %2 · %3 %4 · %5 ready · %6 %7")
                 .arg(plan->metadata_context_change_count)
                 .arg(plan->metadata_context_change_count == 1U ? QStringLiteral("change")
                                                                : QStringLiteral("changes"))
                 .arg(source_count)
-                .arg(source_count == 1U ? QStringLiteral("source") : QStringLiteral("sources"))
+                .arg(source_count == 1U ? QStringLiteral("file") : QStringLiteral("files"))
                 .arg(ready_count)
                 .arg(plan->blocking_issue_count())
-                .arg(plan->blocking_issue_count() == 1U ? QStringLiteral("issue")
-                                                        : QStringLiteral("issues")),
+                .arg(plan->blocking_issue_count() == 1U ? QStringLiteral("problem")
+                                                        : QStringLiteral("problems")),
             this);
         summary->setObjectName(QStringLiteral("bench-metadata-write-plan-summary"));
         layout->addWidget(summary);
 
         auto* explanation = new QLabel(
-            plan->ready() ? QStringLiteral("Everything below was just revalidated against the "
-                                           "files on disk. Apply performs exactly these changes.")
-                          : QStringLiteral("Apply is blocked. Hover rows for exact path, revision, "
-                                           "adapter, preservation, and filesystem details."),
+            plan->ready()
+                ? QStringLiteral("The files were checked again. Apply will make exactly the "
+                                 "changes shown below.")
+                : QStringLiteral("Some changes cannot be applied. Point to a row to see what "
+                                 "needs attention."),
             this);
         explanation->setObjectName(QStringLiteral("bench-metadata-write-plan-explanation"));
         explanation->setWordWrap(true);
@@ -362,7 +364,7 @@ class PreparationPlanDialog final : public QDialog {
                 std::shared_ptr<const metadata::MetadataWritePlan>(plan, &*plan->metadata);
             auto* table = new QTableView(effects);
             table->setObjectName(QStringLiteral("bench-metadata-write-plan-table"));
-            table->setAccessibleName(QStringLiteral("Revalidated metadata changes"));
+            table->setAccessibleName(QStringLiteral("Reviewed tag changes"));
             table->setModel(new MetadataWritePlanModel(metadata_plan, table));
             configure_table(table);
             table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
@@ -371,12 +373,12 @@ class PreparationPlanDialog final : public QDialog {
             table->setColumnWidth(0, 100);
             table->setColumnWidth(2, 150);
             table->setColumnWidth(5, 190);
-            effects->addTab(table, QStringLiteral("Tag writes"));
+            effects->addTab(table, QStringLiteral("Tag changes"));
         }
         if (plan->output_paths) {
             auto* table = new QTableView(effects);
             table->setObjectName(QStringLiteral("bench-output-path-plan-table"));
-            table->setAccessibleName(QStringLiteral("Revalidated file path changes"));
+            table->setAccessibleName(QStringLiteral("Reviewed file path changes"));
             table->setModel(new OutputPathReviewModel(plan, table));
             configure_table(table);
             table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
@@ -405,7 +407,7 @@ class PreparationPlanDialog final : public QDialog {
         if (plan->ready() && apply) {
             auto* apply_button = buttons->addButton(QDialogButtonBox::Apply);
             apply_button->setObjectName(QStringLiteral("bench-metadata-write-plan-apply"));
-            apply_button->setToolTip(QStringLiteral("Apply exactly the reviewed changes"));
+            apply_button->setToolTip(QStringLiteral("Make exactly the changes shown above"));
             connect(apply_button, &QPushButton::clicked, this,
                     [plan = std::move(plan), apply = std::move(apply)] { apply(plan); });
         }

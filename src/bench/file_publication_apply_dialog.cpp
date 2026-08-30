@@ -42,7 +42,7 @@ class FilePublicationApplySourceModel final : public QAbstractTableModel {
                     QString::fromStdString(core::escape_raw_path(source.planned.source_raw_path)),
                 .target =
                     QString::fromStdString(core::escape_raw_path(source.planned.target_raw_path)),
-                .detail = QStringLiteral("Waiting for a mutation worker"),
+                .detail = QStringLiteral("Waiting"),
             });
         }
     }
@@ -82,7 +82,7 @@ class FilePublicationApplySourceModel final : public QAbstractTableModel {
         if (orientation != Qt::Horizontal || role != Qt::DisplayRole) {
             return {};
         }
-        static constexpr std::array labels{"Status", "Source", "Target", "Details"};
+        static constexpr std::array labels{"Status", "Current path", "New path", "Details"};
         return section >= 0 && section < static_cast<int>(labels.size())
                    ? QString::fromLatin1(labels[static_cast<std::size_t>(section)])
                    : QVariant{};
@@ -97,13 +97,14 @@ class FilePublicationApplySourceModel final : public QAbstractTableModel {
                 issues[index]
                     ? display_utf8(issues[index]->message)
                     : (states[index] == operations::FilePublicationApplySourceState::running
-                           ? QStringLiteral("Revalidating and publishing safely")
+                           ? QStringLiteral("Checking and changing the file path")
                        : states[index] == operations::FilePublicationApplySourceState::committed
-                           ? QStringLiteral("Published and reconciled every occurrence")
+                           ? QStringLiteral(
+                                 "File path changed and every matching list entry updated")
                        : states[index] == operations::FilePublicationApplySourceState::unchanged
-                           ? QStringLiteral("Source already has the reviewed path")
+                           ? QStringLiteral("File is already at the reviewed path")
                        : states[index] == operations::FilePublicationApplySourceState::pending
-                           ? QStringLiteral("Waiting for a mutation worker")
+                           ? QStringLiteral("Waiting")
                            : QString{});
         }
         if (count > 0U) {
@@ -130,12 +131,12 @@ class FilePublicationApplyDialog final : public QDialog {
                                         CancelCallback cancel, QWidget* parent)
         : QDialog(parent), cancel_(std::move(cancel)) {
         setObjectName(QStringLiteral("bench-file-publication-apply"));
-        setWindowTitle(QStringLiteral("Apply file path changes"));
+        setWindowTitle(QStringLiteral("Change file paths"));
         setWindowModality(Qt::WindowModal);
         setAttribute(Qt::WA_DeleteOnClose);
         resize(980, 420);
         auto* layout = new QVBoxLayout(this);
-        summary_ = new QLabel(QStringLiteral("Publishing 0 of %1 physical %2…")
+        summary_ = new QLabel(QStringLiteral("Changing 0 of %1 %2…")
                                   .arg(preflight.sources.size())
                                   .arg(preflight.sources.size() == 1U ? QStringLiteral("source")
                                                                       : QStringLiteral("sources")),
@@ -184,7 +185,7 @@ class FilePublicationApplyDialog final : public QDialog {
         model_->update(states, issues);
         progress_->setValue(static_cast<int>(completed));
         summary_->setText(
-            QStringLiteral("Publishing %1 of %2 physical %3%4")
+            QStringLiteral("Changing %1 of %2 %3%4")
                 .arg(completed)
                 .arg(states.size())
                 .arg(states.size() == 1U ? QStringLiteral("source") : QStringLiteral("sources"))
@@ -199,7 +200,7 @@ class FilePublicationApplyDialog final : public QDialog {
         close->setObjectName(QStringLiteral("bench-file-publication-apply-close"));
         connect(close, &QPushButton::clicked, this, &QDialog::close);
         if (!result) {
-            summary_->setText(QStringLiteral("File publication could not start · %1")
+            summary_->setText(QStringLiteral("Could not change file paths · %1")
                                   .arg(display_utf8(result.error().message)));
             return;
         }
@@ -214,7 +215,7 @@ class FilePublicationApplyDialog final : public QDialog {
         model_->update(states, issues);
         progress_->setValue(static_cast<int>(result->sources.size()));
         summary_->setText(
-            QStringLiteral("%1 published · %2 unchanged · %3 failed · %4 cancelled%5")
+            QStringLiteral("%1 changed · %2 unchanged · %3 failed · %4 cancelled%5")
                 .arg(result->committed_source_count())
                 .arg(result->unchanged_source_count())
                 .arg(result->failed_source_count())
@@ -222,7 +223,7 @@ class FilePublicationApplyDialog final : public QDialog {
                 .arg(result->committed_source_count() + result->unchanged_source_count() ==
                              result->sources.size()
                          ? QStringLiteral(" · complete")
-                         : QStringLiteral(" · close and re-preview before retrying")));
+                         : QStringLiteral(" · close and review the changes again before retrying")));
     }
 
   protected:
@@ -242,7 +243,8 @@ class FilePublicationApplyDialog final : public QDialog {
         }
         cancellation_requested_ = true;
         cancel_button_->setEnabled(false);
-        summary_->setText(QStringLiteral("Cancelling after in-flight sources become safe…"));
+        summary_->setText(
+            QStringLiteral("Cancelling after the files already in progress are safe…"));
         if (cancel_) {
             cancel_();
         }
