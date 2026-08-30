@@ -2940,7 +2940,9 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
     transformation_panel_ = side_panel;
     transformation_panel_->hide();
     auto* side_layout = new QVBoxLayout(side_panel);
-    side_layout->setContentsMargins(8, 8, 8, 8);
+    // Only the splitter-facing edge is inset so the panel's right edge lines
+    // up with the footer buttons below it.
+    side_layout->setContentsMargins(8, 0, 0, 0);
     side_layout->setSpacing(6);
 
     const auto section_heading = [side_panel](const QString& text, const QString& object_name,
