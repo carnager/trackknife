@@ -2,6 +2,7 @@
 
 #include "bench/bench_main_window.hpp"
 
+#include "bench/bench_main_window_helpers.hpp"
 #include "bench/local_list_model.hpp"
 #include "bench/metadata_properties_dialog.hpp"
 #include "quick/mpd_output_model.hpp"
@@ -518,52 +519,6 @@ constexpr std::array<std::string_view, 12> default_metadata_fields{
     "Total Tracks", "Disc Number", "Total Discs",  "Genre", "Composer", "Comment",
 };
 
-struct TrackColumnSpec {
-    int logical;
-    const char* id;
-    const char* label;
-    int default_width;
-    int minimum_width;
-};
-
-constexpr std::array<TrackColumnSpec, local_column_count> track_column_specs{{
-    {local_artwork_column, "artwork", "Artwork", 110, 72},
-    {local_artist_column, "artist", "Artist", 150, 72},
-    {local_track_number_column, "track-number", "Track number", 46, 36},
-    {local_title_column, "title", "Title", 220, 96},
-    {local_album_column, "album", "Album", 160, 72},
-    {local_date_column, "date", "Date", 64, 52},
-    {local_length_column, "length", "Length", 68, 56},
-}};
-
-[[nodiscard]] QString trackColumnId(const int logical) {
-    const auto found = std::ranges::find(track_column_specs, logical, &TrackColumnSpec::logical);
-    return found == track_column_specs.end() ? QString{} : QString::fromLatin1(found->id);
-}
-
-[[nodiscard]] int trackColumnLogical(const QString& id) {
-    const auto found = std::ranges::find_if(
-        track_column_specs, [&id](const auto& spec) { return id == QString::fromLatin1(spec.id); });
-    return found == track_column_specs.end() ? -1 : found->logical;
-}
-
-[[nodiscard]] QStringList trackColumnIds() {
-    QStringList ids;
-    ids.reserve(static_cast<qsizetype>(track_column_specs.size()));
-    for (const auto& spec : track_column_specs) {
-        ids.push_back(QString::fromLatin1(spec.id));
-    }
-    return ids;
-}
-
-[[nodiscard]] QString displayText(const std::string& utf8) {
-    return QString::fromUtf8(utf8.data(), static_cast<qsizetype>(utf8.size()));
-}
-
-[[nodiscard]] std::string utf8Bytes(const QString& text) {
-    const auto encoded = text.toUtf8();
-    return {encoded.constData(), static_cast<std::size_t>(encoded.size())};
-}
 
 [[nodiscard]] persistence::LocalMetadataRefresh
 metadata_refresh(const operations::MetadataCommitResult& result) {
@@ -972,12 +927,6 @@ struct PlaybackBufferPreference {
             .config = audio::playback_buffer_preset_config(audio::PlaybackBufferPreset::balanced)};
 }
 
-[[nodiscard]] QString formatTime(const qint64 milliseconds) {
-    const auto total_seconds = std::max<qint64>(milliseconds, 0) / 1'000;
-    return QStringLiteral("%1:%2")
-        .arg(total_seconds / 60)
-        .arg(total_seconds % 60, 2, 10, QLatin1Char('0'));
-}
 
 [[nodiscard]] bool playerActive(const audio::LocalAuditionState state) {
     return state == audio::LocalAuditionState::buffering ||
