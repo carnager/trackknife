@@ -265,6 +265,10 @@ void pastedCleanupScriptGeneratesTypedPreviewedRules() {
     CHECK(two_argument_if.actions.size() == 1U);
     CHECK(two_argument_if.actions.size() == 1U &&
           std::get_if<MetadataRemoveFieldIfAction>(&two_argument_if.actions.front()) != nullptr);
+    const auto* conditional_remove =
+        std::get_if<MetadataRemoveFieldIfAction>(&two_argument_if.actions.front());
+    CHECK(conditional_remove != nullptr &&
+          conditional_remove->match_mode == MetadataFieldMatchMode::exact_native);
 
     const auto four_argument_if =
         import_metadata_rule_script("$if(%date%,$unset(one),$unset(two),$unset(three))");
@@ -298,7 +302,9 @@ $if(%originaldate%,$set(date,$left(%originaldate%,4))$set(originaldate,$left(%or
     const auto imported = import_metadata_rule_script(source);
     CHECK(!imported.has_errors());
     CHECK(imported.actions.size() == 20U);
-    CHECK(std::get_if<MetadataRemoveFieldAction>(&imported.actions[0]) != nullptr);
+    const auto* first_remove = std::get_if<MetadataRemoveFieldAction>(&imported.actions[0]);
+    CHECK(first_remove != nullptr &&
+          first_remove->match_mode == MetadataFieldMatchMode::exact_native);
     CHECK(std::get_if<MetadataRemoveFieldIfAction>(&imported.actions[16]) != nullptr);
     CHECK(std::get_if<MetadataRemoveFieldIfAction>(&imported.actions[17]) != nullptr);
     const auto* date = std::get_if<MetadataFormatValueAction>(&imported.actions[18]);
@@ -391,6 +397,62 @@ $if(%originaldate%,$set(date,$left(%originaldate%,4))$set(originaldate,$left(%or
     CHECK(!recovered_punctuation.has_errors());
     CHECK(recovered_punctuation.actions.size() == 2U);
     CHECK(recovered_punctuation.diagnostics.size() == 2U);
+}
+
+void importedDeleteKeepsSimilarConventionalAndFreeformFieldsSeparate() {
+    using namespace trackknife::metadata;
+    const MetadataDocument document{
+        .fields =
+            {
+                MetadataField{.canonical_name = "albumartist",
+                              .native_name = "ALBUMARTIST",
+                              .values = {"Conventional"},
+                              .qualifier = {},
+                              .provenance = FieldProvenance::embedded},
+                MetadataField{.canonical_name = "album artist",
+                              .native_name = "ALBUM ARTIST",
+                              .values = {"Legacy custom"},
+                              .qualifier = {},
+                              .provenance = FieldProvenance::embedded},
+            },
+        .unsupported_native_objects = {},
+    };
+    auto selection = StagedMetadataSelection::create({StagedMetadataSource{
+        .raw_path = "/music/aliases.flac",
+        .source_revision = std::nullopt,
+        .baseline = document,
+    }});
+    CHECK(selection.has_value());
+    if (!selection) {
+        return;
+    }
+    const auto conventional = selection->field_index("albumartist");
+    const auto legacy = selection->exact_native_field_index("album artist");
+    CHECK(conventional.has_value());
+    CHECK(legacy.has_value());
+    CHECK(conventional != legacy);
+    CHECK(conventional &&
+          selection->cell(0U, *conventional)->values == std::vector<std::string>{"Conventional"});
+    CHECK(legacy &&
+          selection->cell(0U, *legacy)->values == std::vector<std::string>{"Legacy custom"});
+
+    const auto imported = import_metadata_rule_script("$delete(album artist)");
+    CHECK(!imported.has_errors());
+    const MetadataTransformationChain chain{
+        .schema_version = 1U,
+        .name = "Remove legacy custom field",
+        .actions = imported.actions,
+    };
+    const std::array items{std::size_t{0U}};
+    const auto preview =
+        plan_metadata_transformation(*selection, StagedMetadataPatchSet{}, items, chain);
+    CHECK(preview.has_value());
+    CHECK(preview && preview->cells.size() == 1U);
+    CHECK(preview && preview->cells.front().match_mode == MetadataFieldMatchMode::exact_native);
+    CHECK(preview && preview->cells.front().display_field == "album artist");
+    CHECK(preview && preview->cells.front().before ==
+                         std::optional<std::vector<std::string>>{{"Legacy custom"}});
+    CHECK(preview && !preview->cells.front().after);
 }
 
 void exactMatchingAndSelectionNumberingComposeInOrder() {
@@ -583,6 +645,7 @@ int main() {
     capitalizationNoOpCountsPresentAndMissingTargets();
     keepFirstCharactersUsesUnicodeAndRetainsShortValues();
     pastedCleanupScriptGeneratesTypedPreviewedRules();
+    importedDeleteKeepsSimilarConventionalAndFreeformFieldsSeparate();
     exactMatchingAndSelectionNumberingComposeInOrder();
     plansRejectInvalidDialectInputLimitsAndCancellation();
     return failures == 0 ? 0 : 1;

@@ -21,7 +21,7 @@
 namespace trackknife::persistence {
 namespace {
 
-constexpr unsigned current_schema_version = 18U;
+constexpr unsigned current_schema_version = 19U;
 constexpr std::size_t maximum_documents = 1'024U;
 constexpr std::size_t maximum_items_per_document = 1'000'000U;
 constexpr std::size_t maximum_fields_per_item = 4'096U;
@@ -678,6 +678,15 @@ read_optional_revision(sqlite3_stmt* statement, const int first,
             return result;
         }
     }
+    if (version <= 18) {
+        constexpr auto migration =
+            "ALTER TABLE operation_journal_changes ADD COLUMN exact_native_name BLOB;"
+            "UPDATE schema_version SET version = 19;";
+        if (auto result = execute(database, migration); !result) {
+            rollback();
+            return result;
+        }
+    }
     if (auto result = execute(database, "COMMIT"); !result) {
         rollback();
         return result;
@@ -968,12 +977,18 @@ serialize_transformation_action(const metadata::MetadataTransformationAction& ac
                 serialized.values = &typed.values;
             } else if constexpr (std::is_same_v<Action, metadata::MetadataRemoveFieldAction>) {
                 serialized.kind = 2;
+                if (typed.match_mode == metadata::MetadataFieldMatchMode::exact_native) {
+                    serialized.integer_argument = 1U;
+                }
             } else if constexpr (std::is_same_v<Action, metadata::MetadataRemoveFieldIfAction>) {
                 serialized.kind = 15;
                 serialized.argument = typed.condition;
                 serialized.dialect = typed.dialect.dialect;
                 serialized.dialect_version = typed.dialect.dialect_version;
                 serialized.compiler_schema = typed.dialect.compiler_schema;
+                if (typed.match_mode == metadata::MetadataFieldMatchMode::exact_native) {
+                    serialized.integer_argument = 1U;
+                }
             } else if constexpr (std::is_same_v<Action, metadata::MetadataTransformValuesAction>) {
                 switch (typed.transform) {
                 case metadata::MetadataValueTransformKind::trim_ascii:
@@ -2559,11 +2574,10 @@ ListRepository::load_metadata_transformation_chains() const {
             }
             action = metadata::MetadataAddValuesAction{.target_field = target, .values = {}};
             break;
-        case 2:
         case 3:
         case 4:
         case 5:
-        case 10:
+        case 10: {
             if (argument || has_any_dialect || has_any_integer) {
                 return std::unexpected(core::Error{
                     .code = core::ErrorCode::database,
@@ -2571,19 +2585,31 @@ ListRepository::load_metadata_transformation_chains() const {
                     .context = {{"chain_id", chain_id}},
                 });
             }
-            if (kind == 2) {
-                action = metadata::MetadataRemoveFieldAction{.target_field = target};
-            } else {
-                const auto transform = kind == 3 ? metadata::MetadataValueTransformKind::trim_ascii
-                                       : kind == 4 ? metadata::MetadataValueTransformKind::lowercase
-                                       : kind == 5
-                                           ? metadata::MetadataValueTransformKind::uppercase
-                                           : metadata::MetadataValueTransformKind::capitalize_first;
-                action = metadata::MetadataTransformValuesAction{
-                    .target_field = target,
-                    .transform = transform,
-                };
+            const auto transform = kind == 3   ? metadata::MetadataValueTransformKind::trim_ascii
+                                   : kind == 4 ? metadata::MetadataValueTransformKind::lowercase
+                                   : kind == 5
+                                       ? metadata::MetadataValueTransformKind::uppercase
+                                       : metadata::MetadataValueTransformKind::capitalize_first;
+            action = metadata::MetadataTransformValuesAction{
+                .target_field = target,
+                .transform = transform,
+            };
+            break;
+        }
+        case 2:
+            if (argument || has_any_dialect || has_integer_argument_2 ||
+                (has_integer_argument && integer_argument != 1)) {
+                return std::unexpected(core::Error{
+                    .code = core::ErrorCode::database,
+                    .message = "Persisted remove-field action has an invalid match mode",
+                    .context = {{"chain_id", chain_id}},
+                });
             }
+            action = metadata::MetadataRemoveFieldAction{
+                .target_field = target,
+                .match_mode = has_integer_argument ? metadata::MetadataFieldMatchMode::exact_native
+                                                   : metadata::MetadataFieldMatchMode::logical,
+            };
             break;
         case 6:
         case 7:
@@ -2684,7 +2710,8 @@ ListRepository::load_metadata_transformation_chains() const {
         case 15:
             if (!argument || !has_complete_dialect || dialect_version < 0 || compiler_schema < 0 ||
                 dialect_version > std::numeric_limits<std::uint32_t>::max() ||
-                compiler_schema > std::numeric_limits<std::uint32_t>::max() || has_any_integer) {
+                compiler_schema > std::numeric_limits<std::uint32_t>::max() ||
+                has_integer_argument_2 || (has_integer_argument && integer_argument != 1)) {
                 return std::unexpected(core::Error{
                     .code = core::ErrorCode::database,
                     .message = "Persisted conditional-remove action is missing its dialect",
@@ -2700,6 +2727,8 @@ ListRepository::load_metadata_transformation_chains() const {
                         .compiler_schema = static_cast<std::uint32_t>(compiler_schema),
                     },
                 .condition = *argument,
+                .match_mode = has_integer_argument ? metadata::MetadataFieldMatchMode::exact_native
+                                                   : metadata::MetadataFieldMatchMode::logical,
             };
             break;
         default:

@@ -782,6 +782,12 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   generate normal editable typed rules with source-positioned diagnostics;
   conditional removal is directly exposed and persisted with complete
   `tkfmt-1` dialect identity. The pasted source is never executed or saved.
+- Done: ADR-0066 and reversible migration 19 replace separator-derived tag
+  aliases with explicit adapter mappings plus independently addressable
+  freeform native fields. Imported `$delete`/`$unset` rules retain exact native
+  identity through preview, FLAC preparation, commit journaling, and recovery;
+  a real round trip proves `ALBUM ARTIST` can be removed without touching
+  conventional `ALBUMARTIST`.
 - Done: the tagging workspace now has a dedicated **Operations** side-panel
   page. **Save tags** is a real independent choice, while Rename, Move, and
   ReplayGain are visible but capability-gated. Reusable naming layouts and
@@ -873,8 +879,8 @@ quickly and correctly.
 
 Convert whole lists or selections quickly into predictable destinations with
 no partial output. The destination is plain filesystem output — it may be an
-MPD music root, but Trackbench speaks no MPD protocol; requesting a
-database update afterwards is a job for any MPD client, including Trackknife.
+MPD music root, but local publication does not invoke MPD. A database update
+afterwards is a separate explicit command in Trackbench's MPD authority.
 
 ### Work
 
@@ -903,15 +909,15 @@ database update afterwards is a job for any MPD client, including Trackknife.
 - Publishing into an MPD music root works with plain filesystem access and no
   protocol dependency.
 
-## M9 — Melody endpoint and advanced listening (MPD client)
+## M9 — Melody endpoint and advanced listening (MPD authority)
 
 ### Objective
 
 Turn the shared local playback engine into a first-class Melody streaming
-output for the MPD client and add deeper listening features without
-destabilizing it. This milestone reintroduces the shared `audio`/PipeWire
-libraries into the MPD client as a server-controlled output, not as local file
-playback.
+output for Trackbench's MPD authority and add deeper listening features without
+destabilizing either authority. The MPD controller uses the shared
+`audio`/PipeWire libraries as a server-controlled output, not as an implicit
+handoff to Local Queue playback.
 
 ### Work
 
@@ -927,7 +933,7 @@ playback.
 
 ### Exit criteria
 
-- Trackknife appears as an online/offline Melody output and survives daemon,
+- Trackbench appears as an online/offline Melody output and survives daemon,
   network, and application reconnect scenarios without double advancement.
 - Queue/version synchronization and primary-output clock rules pass fixtures
   derived from `../melody`.
@@ -939,32 +945,32 @@ playback.
 
 ### Objective
 
-Ship two maintainable Linux applications trusted for listening and collection
-work.
+Ship one maintainable primary Linux workspace trusted for listening and
+collection work, with an explicit compatibility-shell migration outcome.
 
 ### Work and exit criteria
 
 - Transactional settings/database/tab/layout migrations and backup/restore for
-  both applications.
+  both authorities and any still-shipped compatibility shell.
 - Malformed-server/media fuzzing, sanitizers, fault injection, reconnect and
   long-running stress campaigns.
-- Accessibility and keyboard/mouse workflow audit of both applications.
+- Accessibility and keyboard/mouse workflow audit of both authorities.
 - Complete dependency/license inventory and Qt LGPLv3 compliance.
 - Native packaging and/or Flatpak with PipeWire, filesystem, and network access
-  tested honestly, per application.
+  tested honestly for Trackbench and any still-shipped compatibility shell.
 - User manuals, protocol capability diagnostics, preset export, and release
   checklists.
-- The packaged MPD client completes connect/browse/search/queue/list workflows
-  and the packaged Trackbench completes play/tag/identify/ReplayGain/convert
-  workflows without hidden setup or UI stalls.
+- Packaged Trackbench completes MPD connect/browse/search/queue/list workflows
+  and local play/tag/identify/ReplayGain/convert workflows without hidden setup
+  or UI stalls.
 
 ## Beyond the first releases
 
 Possible later work includes a local-tool-owned library index if direct
-filesystem navigation stops scaling, cross-tool integration (opening a mapped
-server item in Trackbench, triggering an MPD database update after
-publication), autoplaylists and deeper queries, secure CD ripping, internet
-radio, plugins, additional DSP, more format adapters, and a
+filesystem navigation stops scaling, explicit cross-authority integration
+(opening a mapped server item as a local source and offering an MPD database
+update after publication), autoplaylists and deeper queries, secure CD ripping,
+internet radio, plugins, additional DSP, more format adapters, and a
 capability-advertised transactional Melody import/upload destination if such a
 protocol extension is actually implemented. None should bypass the shared
 source, list, job, operation, expression, and performance contracts.

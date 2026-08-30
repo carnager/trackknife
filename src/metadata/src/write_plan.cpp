@@ -172,6 +172,7 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
                 .intents = {},
                 .conflicting_intents = false,
                 .unresolved_non_embedded_target = false,
+                .exact_native_name = field.exact_native_name,
             });
         }
         source.changes[change_position->second].intents.push_back(MetadataWritePlanIntent{
@@ -259,6 +260,33 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
                     change.field_index, std::move(intent_items));
             }
         }
+        for (std::size_t left = 0U; left < source.changes.size(); ++left) {
+            for (std::size_t right = left + 1U; right < source.changes.size(); ++right) {
+                const auto& first = source.changes[left];
+                const auto& second = source.changes[right];
+                if (first.canonical_name != second.canonical_name) {
+                    continue;
+                }
+                if (first.exact_native_name && second.exact_native_name &&
+                    *first.exact_native_name != *second.exact_native_name) {
+                    continue;
+                }
+                if (first.exact_native_name != second.exact_native_name) {
+                    const auto& exact = first.exact_native_name ? first : second;
+                    const auto& logical = first.exact_native_name ? second : first;
+                    const auto identity = resolve_text_property_identity(*exact.exact_native_name);
+                    if (!identity.conventional ||
+                        identity.canonical_name != logical.canonical_name) {
+                        continue;
+                    }
+                }
+                add_issue(source, MetadataWritePlanIssueKind::conflicting_logical_edits,
+                          planner_error(core::ErrorCode::conflict,
+                                        "logical and exact-native edits overlap one physical "
+                                        "metadata field",
+                                        source.raw_path));
+            }
+        }
     }
 
     for (auto& source : plan.sources) {
@@ -292,14 +320,26 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
         }
 
         const auto effective = read->document.effective_fields();
+        const auto effective_native = read->document.effective_native_fields();
         std::unordered_map<std::string, const EffectiveMetadataField*> effective_positions;
         effective_positions.reserve(effective.size());
         for (const auto& field : effective) {
             effective_positions.emplace(field.canonical_name, &field);
         }
         for (auto& change : source.changes) {
-            if (const auto found = effective_positions.find(change.canonical_name);
-                found != effective_positions.end()) {
+            if (change.exact_native_name) {
+                const auto found =
+                    std::ranges::find_if(effective_native, [&change](const auto& field) {
+                        return canonicalize_native_field_name(field.native_name) ==
+                               *change.exact_native_name;
+                    });
+                if (found != effective_native.end()) {
+                    change.original_present = true;
+                    change.native_name = found->native_name;
+                    change.original_values = found->values;
+                }
+            } else if (const auto found = effective_positions.find(change.canonical_name);
+                       found != effective_positions.end()) {
                 change.original_present = true;
                 change.native_name = found->second->native_name;
                 change.original_values = found->second->values;
@@ -319,19 +359,27 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
                                     source.raw_path));
         }
         if (read->adapter_name == "taglib-flac-v1") {
-            std::unordered_set<std::string> changed_fields;
-            changed_fields.reserve(source.changes.size());
+            std::unordered_set<std::string> changed_logical_fields;
+            std::unordered_set<std::string> changed_native_fields;
+            changed_logical_fields.reserve(source.changes.size());
+            changed_native_fields.reserve(source.changes.size());
             for (const auto& change : source.changes) {
-                changed_fields.insert(change.canonical_name);
+                if (change.exact_native_name) {
+                    changed_native_fields.insert(*change.exact_native_name);
+                } else {
+                    changed_logical_fields.insert(change.canonical_name);
+                }
             }
             const auto unrepresentable_untouched =
-                std::ranges::find_if(effective, [&changed_fields](const auto& field) {
-                    return !changed_fields.contains(field.canonical_name) &&
+                std::ranges::find_if(effective_native, [&](const auto& field) {
+                    return !changed_logical_fields.contains(field.canonical_name) &&
+                           !changed_native_fields.contains(
+                               canonicalize_native_field_name(field.native_name)) &&
                            (field.values.empty() ||
                             std::ranges::any_of(field.values,
                                                 [](const auto& value) { return value.empty(); }));
                 });
-            if (unrepresentable_untouched != effective.end()) {
+            if (unrepresentable_untouched != effective_native.end()) {
                 add_issue(
                     source, MetadataWritePlanIssueKind::unsupported_field_mapping,
                     planner_error(
@@ -345,8 +393,23 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
                     continue;
                 }
                 const auto& intent = change.intents.front();
+                if (change.exact_native_name && !change.original_present) {
+                    if (intent.kind == StagedMetadataPatchKind::remove_field) {
+                        add_issue(
+                            source, MetadataWritePlanIssueKind::source_changed,
+                            planner_error(core::ErrorCode::conflict,
+                                          "the exact native metadata field is no longer present",
+                                          source.raw_path),
+                            change.field_index);
+                        continue;
+                    }
+                }
+                const auto mapping_native_name =
+                    change.exact_native_name && change.native_name.empty()
+                        ? std::string_view{change.display_name}
+                        : std::string_view{change.native_name};
                 auto mapping = map_flac_text_field(change.canonical_name, change.display_name,
-                                                   change.native_name, intent.kind, intent.values);
+                                                   mapping_native_name, intent.kind, intent.values);
                 if (!mapping) {
                     auto mapping_error = std::move(mapping.error());
                     mapping_error.context.push_back(

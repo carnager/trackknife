@@ -2,6 +2,8 @@
 
 #include "trackknife/metadata/staged_selection.hpp"
 
+#include "trackknife/metadata/flac_mapping.hpp"
+
 #include <algorithm>
 #include <stdexcept>
 #include <string>
@@ -69,6 +71,37 @@ StagedMetadataSelection::create(std::vector<StagedMetadataSource> sources,
         selection.fields_.push_back(StagedMetadataField{
             .canonical_name = std::move(canonical_name),
             .display_name = std::string{display_name},
+            .exact_native_name = std::nullopt,
+            .state = MetadataSelectionFieldState::missing,
+            .present_item_count = 0U,
+            .representative_item_index = std::nullopt,
+        });
+        first_values.emplace_back(std::nullopt);
+        values_differ.push_back(false);
+        return position;
+    };
+    const auto add_exact_field =
+        [&selection, &first_values, &values_differ, &field_limit_hit,
+         &limits](const std::string_view native_name) -> std::optional<std::size_t> {
+        auto exact_name = canonicalize_native_field_name(native_name);
+        auto canonical_name = canonicalize_field_name(native_name);
+        if (exact_name.empty() || canonical_name.empty()) {
+            return std::nullopt;
+        }
+        if (const auto existing = selection.exact_native_field_positions_.find(exact_name);
+            existing != selection.exact_native_field_positions_.end()) {
+            return existing->second;
+        }
+        if (selection.fields_.size() == limits.fields) {
+            field_limit_hit = true;
+            return std::nullopt;
+        }
+        const auto position = selection.fields_.size();
+        selection.exact_native_field_positions_.emplace(exact_name, position);
+        selection.fields_.push_back(StagedMetadataField{
+            .canonical_name = std::move(canonical_name),
+            .display_name = std::string{native_name},
+            .exact_native_name = std::move(exact_name),
             .state = MetadataSelectionFieldState::missing,
             .present_item_count = 0U,
             .representative_item_index = std::nullopt,
@@ -96,9 +129,12 @@ StagedMetadataSelection::create(std::vector<StagedMetadataSource> sources,
         item.cells.reserve(effective.size());
         item.present_field_indexes.reserve(effective.size());
         for (const auto& field : effective) {
-            const auto position =
-                add_field(field.canonical_name,
-                          field.native_name.empty() ? field.canonical_name : field.native_name);
+            const auto identity = resolve_text_property_identity(field.native_name);
+            const auto position = identity.conventional
+                                      ? add_field(field.canonical_name, field.native_name.empty()
+                                                                            ? field.canonical_name
+                                                                            : field.native_name)
+                                      : add_exact_field(field.native_name);
             if (field_limit_hit) {
                 return limit_error("field", limits.fields);
             }
@@ -187,6 +223,9 @@ StagedMetadataSelection::ensure_missing_field(const std::string_view name,
             .context = {},
         });
     }
+    if (!is_conventional_metadata_field(canonical_name)) {
+        return ensure_exact_native_field(name, display_name, maximum_fields);
+    }
     if (const auto existing = field_positions_.find(canonical_name);
         existing != field_positions_.end()) {
         return existing->second;
@@ -203,10 +242,84 @@ StagedMetadataSelection::ensure_missing_field(const std::string_view name,
     fields_.push_back(StagedMetadataField{
         .canonical_name = std::move(canonical_name),
         .display_name = std::string{display_name.empty() ? name : display_name},
+        .exact_native_name = std::nullopt,
         .state = MetadataSelectionFieldState::missing,
         .present_item_count = 0U,
         .representative_item_index = std::nullopt,
     });
+    return field_index;
+}
+
+core::Result<std::size_t>
+StagedMetadataSelection::ensure_exact_native_field(const std::string_view native_name,
+                                                   const std::string_view display_name,
+                                                   const std::size_t maximum_fields) {
+    auto exact_name = canonicalize_native_field_name(native_name);
+    const auto canonical_name = canonicalize_field_name(native_name);
+    if (exact_name.empty() || canonical_name.empty()) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invalid_argument,
+            .message = "exact native metadata field name is empty",
+            .context = {},
+        });
+    }
+    if (const auto existing = exact_native_field_positions_.find(exact_name);
+        existing != exact_native_field_positions_.end()) {
+        return existing->second;
+    }
+    if (fields_.size() >= maximum_fields) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::limit_exceeded,
+            .message = "staged metadata field limit was exceeded",
+            .context = {{.key = "limit", .value = std::to_string(maximum_fields)}},
+        });
+    }
+
+    auto items = *items_;
+    const auto field_index = fields_.size();
+    StagedMetadataField field{
+        .canonical_name = canonical_name,
+        .display_name = std::string{display_name.empty() ? native_name : display_name},
+        .exact_native_name = exact_name,
+        .state = MetadataSelectionFieldState::missing,
+        .present_item_count = 0U,
+        .representative_item_index = std::nullopt,
+    };
+    std::optional<std::vector<std::string>> first_values;
+    bool values_differ = false;
+    for (std::size_t item_index = 0U; item_index < items.size(); ++item_index) {
+        auto effective = items[item_index].source.baseline.effective_native_field(exact_name);
+        if (!effective) {
+            continue;
+        }
+        items[item_index].cells.emplace(field_index, StagedMetadataCell{
+                                                         .native_name = effective->native_name,
+                                                         .values = effective->values,
+                                                         .provenance = effective->provenance,
+                                                     });
+        items[item_index].present_field_indexes.push_back(field_index);
+        if (!field.representative_item_index) {
+            field.representative_item_index = item_index;
+        }
+        ++field.present_item_count;
+        if (!first_values) {
+            first_values = effective->values;
+        } else if (*first_values != effective->values) {
+            values_differ = true;
+        }
+    }
+    if (field.present_item_count == 0U) {
+        field.state = MetadataSelectionFieldState::missing;
+    } else if (field.present_item_count != items.size()) {
+        field.state = MetadataSelectionFieldState::partial;
+    } else if (values_differ) {
+        field.state = MetadataSelectionFieldState::mixed;
+    } else {
+        field.state = MetadataSelectionFieldState::common;
+    }
+    exact_native_field_positions_.emplace(exact_name, field_index);
+    fields_.push_back(std::move(field));
+    items_ = std::make_shared<const std::vector<Item>>(std::move(items));
     return field_index;
 }
 
@@ -259,6 +372,14 @@ std::optional<std::size_t> StagedMetadataSelection::field_index(const std::strin
     const auto found = field_positions_.find(canonical_name);
     return found == field_positions_.end() ? std::nullopt
                                            : std::optional<std::size_t>{found->second};
+}
+
+std::optional<std::size_t>
+StagedMetadataSelection::exact_native_field_index(const std::string_view native_name) const {
+    const auto exact_name = canonicalize_native_field_name(native_name);
+    const auto found = exact_native_field_positions_.find(exact_name);
+    return found == exact_native_field_positions_.end() ? std::nullopt
+                                                        : std::optional<std::size_t>{found->second};
 }
 
 } // namespace trackknife::metadata

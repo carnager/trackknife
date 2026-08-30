@@ -66,6 +66,9 @@ struct MetadataWritePlanChange {
     std::vector<MetadataWritePlanIntent> intents;
     bool conflicting_intents{false};
     bool unresolved_non_embedded_target{false};
+    // When present, this change addresses only the ASCII-case-folded exact
+    // adapter name. Separator variants sharing canonical_name are untouched.
+    std::optional<std::string> exact_native_name;
 
     friend bool operator==(const MetadataWritePlanChange&,
                            const MetadataWritePlanChange&) = default;

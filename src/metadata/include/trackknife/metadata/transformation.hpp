@@ -17,6 +17,11 @@
 
 namespace trackknife::metadata {
 
+enum class MetadataFieldMatchMode : std::uint8_t {
+    logical,
+    exact_native,
+};
+
 struct MetadataSetValuesAction {
     std::string target_field;
     std::vector<std::string> values;
@@ -35,6 +40,7 @@ struct MetadataAddValuesAction {
 
 struct MetadataRemoveFieldAction {
     std::string target_field;
+    MetadataFieldMatchMode match_mode{MetadataFieldMatchMode::logical};
 
     friend bool operator==(const MetadataRemoveFieldAction&,
                            const MetadataRemoveFieldAction&) = default;
@@ -46,6 +52,7 @@ struct MetadataRemoveFieldIfAction {
     std::string target_field;
     titleformat::DialectVersion dialect;
     std::string condition;
+    MetadataFieldMatchMode match_mode{MetadataFieldMatchMode::logical};
 
     friend bool operator==(const MetadataRemoveFieldIfAction&,
                            const MetadataRemoveFieldIfAction&) = default;
@@ -165,6 +172,7 @@ struct MetadataTransformationCellPreview {
     std::size_t last_action_index{0U};
     std::string canonical_field;
     std::string display_field;
+    MetadataFieldMatchMode match_mode{MetadataFieldMatchMode::logical};
     // Missing is distinct from a present field containing one empty string.
     std::optional<std::vector<std::string>> before;
     std::optional<std::vector<std::string>> after;

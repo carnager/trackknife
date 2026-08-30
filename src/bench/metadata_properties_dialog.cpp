@@ -527,7 +527,8 @@ class MetadataRuleScriptImportDialog final : public QDialog {
                            "supported $unset/$delete, $set, $if, $and/$or, $eq/$ne, $not, and "
                            "$left subset into editable typed rules; it does not store or execute "
                            "the pasted script. Here, $unset generates an actual Remove field "
-                           "rule."),
+                           "rule. Imported removals match the exact native field name, ignoring "
+                           "ASCII case but preserving separators."),
             this);
         explanation->setWordWrap(true);
         layout->addWidget(explanation);
@@ -892,12 +893,20 @@ class MetadataTransformationDialog final : public QDialog {
                         .arg(index + 1U)
                         .arg(field, display_plan_values(typed.values));
                 } else if constexpr (std::is_same_v<Action, metadata::MetadataRemoveFieldAction>) {
-                    return QStringLiteral("%1. Remove %2").arg(index + 1U).arg(field);
+                    return typed.match_mode == metadata::MetadataFieldMatchMode::exact_native
+                               ? QStringLiteral("%1. Remove exact native field %2")
+                                     .arg(index + 1U)
+                                     .arg(field)
+                               : QStringLiteral("%1. Remove %2").arg(index + 1U).arg(field);
                 } else if constexpr (std::is_same_v<Action,
                                                     metadata::MetadataRemoveFieldIfAction>) {
-                    return QStringLiteral("%1. Remove %2 when %3")
-                        .arg(index + 1U)
-                        .arg(field, display_utf8(typed.condition));
+                    return typed.match_mode == metadata::MetadataFieldMatchMode::exact_native
+                               ? QStringLiteral("%1. Remove exact native field %2 when %3")
+                                     .arg(index + 1U)
+                                     .arg(field, display_utf8(typed.condition))
+                               : QStringLiteral("%1. Remove %2 when %3")
+                                     .arg(index + 1U)
+                                     .arg(field, display_utf8(typed.condition));
                 } else if constexpr (std::is_same_v<Action,
                                                     metadata::MetadataTransformValuesAction>) {
                     QString verb;
@@ -3280,10 +3289,17 @@ void MetadataPropertiesDialog::previewWritePlan() {
 
                 auto effective_selection = *selection;
                 for (const auto& cell : preview->cells) {
-                    auto field_index = effective_selection.field_index(cell.canonical_field);
+                    auto field_index =
+                        cell.match_mode == metadata::MetadataFieldMatchMode::exact_native
+                            ? effective_selection.exact_native_field_index(cell.display_field)
+                            : effective_selection.field_index(cell.canonical_field);
                     if (!field_index) {
-                        auto inserted = effective_selection.ensure_missing_field(
-                            cell.canonical_field, cell.display_field);
+                        auto inserted =
+                            cell.match_mode == metadata::MetadataFieldMatchMode::exact_native
+                                ? effective_selection.ensure_exact_native_field(
+                                      cell.display_field, "Exact native: " + cell.display_field)
+                                : effective_selection.ensure_missing_field(cell.canonical_field,
+                                                                           cell.display_field);
                         if (!inserted) {
                             return std::make_shared<WritePlanResult>(
                                 std::unexpected(std::move(inserted.error())));

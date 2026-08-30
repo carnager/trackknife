@@ -364,6 +364,86 @@ void preservesNativeFlacWhileApplyingExactTextChanges(
     CHECK(read_bytes(prepared_path) == prepared_bytes);
 }
 
+void freeformFieldNeverAliasesAConventionalNeighbor(
+    const std::filesystem::path& fixture_directory) {
+    TemporaryDirectory directory;
+    const auto source = materialize(fixture_directory, "rich-metadata-flac.b64",
+                                    directory.path() / "alias-source.flac");
+    const auto read = trackknife::metadata::read_local_metadata(source.native());
+    CHECK(read.has_value());
+    CHECK(read && read->document.effective_native_field("ALBUMARTIST").has_value());
+    CHECK(read && !read->document.effective_native_field("ALBUM ARTIST").has_value());
+    if (!read) {
+        return;
+    }
+
+    auto add_selection = selection_for(*read);
+    CHECK(add_selection.has_value());
+    if (!add_selection) {
+        return;
+    }
+    const auto legacy = add_selection->ensure_exact_native_field("ALBUM ARTIST", "ALBUM ARTIST");
+    CHECK(legacy.has_value());
+    CHECK(legacy && add_selection->field(*legacy).exact_native_name ==
+                        std::optional<std::string>{"album artist"});
+    if (!legacy) {
+        return;
+    }
+    trackknife::metadata::StagedMetadataPatchSet add_patches;
+    CHECK(add_patches.replace_values(*add_selection, 0U, *legacy, {"Legacy custom"}).has_value());
+    auto add_plan = make_plan(*add_selection, add_patches);
+    CHECK(add_plan && add_plan->ready());
+    CHECK(add_plan && add_plan->sources.front().changes.front().exact_native_name ==
+                          std::optional<std::string>{"album artist"});
+    if (!add_plan || !add_plan->ready()) {
+        return;
+    }
+    const auto with_legacy = directory.path() / "with-legacy.flac";
+    const auto added = trackknife::metadata::prepare_flac_metadata_write_copy(
+        add_plan->sources.front(), with_legacy.native());
+    CHECK(added.has_value());
+    if (!added) {
+        return;
+    }
+    CHECK(added->document.effective_values("albumartist") ==
+          std::vector<std::string>{"Album Credit"});
+    CHECK(added->document.effective_values("album artist") ==
+          std::vector<std::string>{"Legacy custom"});
+
+    const auto reread = trackknife::metadata::read_local_metadata(with_legacy.native());
+    CHECK(reread.has_value());
+    if (!reread) {
+        return;
+    }
+    auto remove_selection = selection_for(*reread);
+    CHECK(remove_selection.has_value());
+    if (!remove_selection) {
+        return;
+    }
+    const auto conventional = remove_selection->field_index("albumartist");
+    const auto freeform = remove_selection->exact_native_field_index("album artist");
+    CHECK(conventional.has_value());
+    CHECK(freeform.has_value());
+    CHECK(conventional != freeform);
+    if (!freeform) {
+        return;
+    }
+    trackknife::metadata::StagedMetadataPatchSet remove_patches;
+    CHECK(remove_patches.remove_field(*remove_selection, 0U, *freeform).has_value());
+    auto remove_plan = make_plan(*remove_selection, remove_patches);
+    CHECK(remove_plan && remove_plan->ready());
+    if (!remove_plan || !remove_plan->ready()) {
+        return;
+    }
+    const auto cleaned = directory.path() / "cleaned.flac";
+    const auto removed = trackknife::metadata::prepare_flac_metadata_write_copy(
+        remove_plan->sources.front(), cleaned.native());
+    CHECK(removed.has_value());
+    CHECK(removed && !removed->document.effective_native_field("ALBUM ARTIST").has_value());
+    CHECK(removed && removed->document.effective_values("albumartist") ==
+                         std::vector<std::string>{"Album Credit"});
+}
+
 void preservesEmbeddedArtworkAndDecodedAudio(const std::filesystem::path& fixture_directory) {
     TemporaryDirectory directory;
     const auto source =
@@ -520,6 +600,7 @@ int main(const int argc, char** argv) {
     if (argc == 2) {
         const std::filesystem::path fixture_directory{argv[1]};
         preservesNativeFlacWhileApplyingExactTextChanges(fixture_directory);
+        freeformFieldNeverAliasesAConventionalNeighbor(fixture_directory);
         preservesEmbeddedArtworkAndDecodedAudio(fixture_directory);
         blocksUnrepresentablePlansAndStaleOrCancelledWrites(fixture_directory);
     }

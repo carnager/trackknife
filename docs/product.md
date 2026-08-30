@@ -13,12 +13,16 @@ Linux has mature music servers but lacks a current native desktop client with
 the speed, keyboard fluency, and dense information that made foobar2000 and
 Cantata valuable — and it equally lacks a current native workstation for
 preparing music files. These are two different jobs with different primary
-objects: server queue occurrences versus files on disk. Per ADR-0025 they are
-two applications, not two panes.
+objects: server queue occurrences versus files on disk. ADR-0058 hosts both in
+one Trackbench workspace without mixing their authorities: the active primary
+tab selects the server or local controller, sidebar, transport, outputs, and
+available commands.
 
-The MPD client is a joy to use every day: connect, browse, search, listen,
-choose outputs, and shape queues without friction. Its basic form is finished
-and validated against stock MPD and Melody.
+Trackbench's MPD authority is a joy to use every day: connect, browse, search,
+listen, choose outputs, and shape queues without friction. Its basic form was
+finished and validated against stock MPD and Melody before being merged into
+Trackbench; the standalone Trackknife executable remains a compatibility shell
+during migration.
 
 Trackbench takes new music from download or rip to a well-organized
 collection: audition it, group it by album, identify and tag it with
@@ -36,7 +40,7 @@ feel coherent while retaining separate controllers and mutation capabilities.
 
 ## Priorities
 
-### Priority 1: delightful MPD client (delivered)
+### Priority 1: delightful MPD workspace (delivered baseline)
 
 - Reliable profiles, authentication, reconnect, capability discovery, and
   visible connection state.
@@ -50,9 +54,10 @@ feel coherent while retaining separate controllers and mutation capabilities.
 - A polished default Qt 6 Widgets workspace equally efficient with mouse or
   keyboard.
 
-Melody-specific enhancements remain capability-driven and small. The client
-targets standard MPD behavior; Melody's streaming outputs are exposed through
-the output UI when advertised. The client contains no local file playback.
+Melody-specific enhancements remain capability-driven and small. The MPD
+authority targets standard MPD behavior; Melody's streaming outputs are
+exposed through the output UI when advertised. Local playback remains owned by
+the separate Local Queue authority even though both live in Trackbench.
 
 ### Priority 2: local playback workspace
 
@@ -62,7 +67,7 @@ the output UI when advertised. The client contains no local file playback.
 - Album-grouped, dense, high-performance tabbed track lists over direct
   filesystem navigation — no import step, no library scan.
 - The same tab, shortcut, command-palette, and persistence ergonomics as the
-  MPD client.
+  MPD authority.
 
 ### Priority 3: metadata, MusicBrainz, and ReplayGain
 
@@ -89,11 +94,11 @@ the output UI when advertised. The client contains no local file playback.
 - Complete path/conflict preview and atomic publication, including into an
   MPD music root by plain filesystem access.
 
-### Priority 5: Melody output endpoint (MPD client)
+### Priority 5: Melody output endpoint (MPD authority)
 
-Trackknife can later register as a Melody streaming endpoint and play the
-server-provided stream through the shared local audio engine. This is
-deliberately after both applications' backbones are proven.
+Trackbench can later register its MPD authority as a Melody streaming endpoint
+and play the server-provided stream through the shared local audio engine. This
+is deliberately after both authority backbones are proven.
 
 ## Established requirements
 
@@ -106,12 +111,12 @@ deliberately after both applications' backbones are proven.
 - Trackbench speaks MPD only through the MPD authority. It maintains no local
   library database for now and never implies MPD membership for a local file.
 - Queue/list tabs remain first-class persistent work surfaces in both
-  applications.
+  authorities.
 - Local paths remain raw OS paths internally and need not be valid UTF-8.
 - MusicBrainz identifiers, artist credits, sort names, release/disc identity,
   and related metadata remain intact and influence useful default organization.
 - One versioned, pure `tkfmt-1` language serves display, sorting, grouping, and
-  conversion/file naming in both applications.
+  conversion/file naming in both authorities.
 - FFmpeg is the common decode/encode backbone; PipeWire is the primary local
   output backend.
 - Long work is asynchronous, cancellable, progress-reporting, and bounded.
@@ -182,7 +187,7 @@ changes only through a new version.
 ## MusicBrainz-aware organization
 
 MusicBrainz knowledge is a metadata and organization advantage in both
-applications and a first-class identification feature in Trackbench:
+authorities and a first-class identification feature in Trackbench:
 
 - retain recording, track, release, release-group, artist, work, and disc IDs;
 - retain credited names separately from sort names and canonical identities;
@@ -199,7 +204,7 @@ identification remain explicit network operations.
 
 ## Modern interaction requirements
 
-- Each application's default screen exposes its complete workspace without
+- Trackbench's default screen exposes both authority-bound workspaces without
   layout construction.
 - Every important action is available through a discoverable menu/command
   palette and a direct keyboard path.
@@ -215,8 +220,8 @@ identification remain explicit network operations.
 ## Anti-goals
 
 - Reimplementing or embedding an MPD server.
-- Speaking MPD protocol from Trackbench, or playing local files from the
-  MPD client.
+- Mixing MPD occurrences and local files in one queue, allowing MPD rows to
+  reach local mutation services, or routing commands by guessed path identity.
 - Requiring a library scan or database before Trackbench is useful.
 - Reproducing foobar2000's Windows UI, component ABI, or scripting quirks.
 - Building a streaming-service storefront, DAW, waveform editor, or mastering
@@ -227,7 +232,7 @@ identification remain explicit network operations.
 
 ## Primary users and jobs
 
-### MPD listener (Trackknife)
+### MPD listener (Trackbench MPD Queue)
 
 Connects to a local or remote MPD/Melody server, browses and searches quickly,
 manages several working tabs and the live queue, controls outputs, and expects
@@ -248,10 +253,10 @@ loudness.
 
 ## Definition of excellent first public releases
 
-The MPD client must be a client worth choosing: quick setup, reliable
-sessions, fast browse/search, tabbed working lists, excellent live queue
-control, transport and outputs, and polished keyboard/mouse behavior.
-Trackbench must play album-grouped local music gapless and include the first
+Trackbench's MPD authority must be a client worth choosing: quick setup,
+reliable sessions, fast browse/search, tabbed working lists, excellent live
+queue control, transport and outputs, and polished keyboard/mouse behavior.
+Its local authority must play album-grouped music gapless and include the first
 trustworthy versions of the tag grid, MusicBrainz identification, mass
 ReplayGain scanner, and converter. A local library index, plugin ecosystem,
 Melody endpoint, and unimplemented Melody upload protocol are not release

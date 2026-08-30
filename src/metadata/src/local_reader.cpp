@@ -2,6 +2,8 @@
 
 #include "trackknife/metadata/local_reader.hpp"
 
+#include "trackknife/metadata/flac_mapping.hpp"
+
 #include <fileref.h>
 #include <flacfile.h>
 #include <tfile.h>
@@ -88,7 +90,7 @@ core::Result<LocalMetadataRead> read_local_metadata(const std::string& raw_path,
     for (auto property = properties.cbegin(); property != properties.cend(); ++property) {
         MetadataField field;
         field.native_name = property->first.to8Bit(true);
-        field.canonical_name = canonicalize_field_name(field.native_name);
+        field.canonical_name = resolve_text_property_identity(field.native_name).canonical_name;
         field.provenance = FieldProvenance::embedded;
         if (field.canonical_name.empty() || !add_text_bytes(text_bytes, field.native_name.size())) {
             return std::unexpected(error(core::ErrorCode::limit_exceeded,

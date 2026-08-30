@@ -432,16 +432,39 @@ effective_text(const metadata::MetadataDocument& document) {
     return result;
 }
 
+[[nodiscard]] std::map<std::string, std::vector<std::string>>
+effective_native_text(const metadata::MetadataDocument& document) {
+    std::map<std::string, std::vector<std::string>> result;
+    for (const auto& field : document.effective_native_fields()) {
+        result.emplace(metadata::canonicalize_native_field_name(field.native_name), field.values);
+    }
+    return result;
+}
+
+[[nodiscard]] std::optional<std::vector<std::string>>
+addressed_values(const std::map<std::string, std::vector<std::string>>& fields,
+                 const std::map<std::string, std::vector<std::string>>& native_fields,
+                 const std::string& canonical_name,
+                 const std::optional<std::string>& exact_native_name) {
+    const auto& addressed_fields = exact_native_name ? native_fields : fields;
+    const auto& addressed_name = exact_native_name ? *exact_native_name : canonical_name;
+    const auto found = addressed_fields.find(addressed_name);
+    return found == addressed_fields.end() ? std::nullopt
+                                           : std::optional<std::vector<std::string>>{found->second};
+}
+
 [[nodiscard]] bool planned_fields_match(const metadata::MetadataDocument& document,
                                         const MetadataOperationJournalRecord& record) {
     const auto fields = effective_text(document);
+    const auto native_fields = effective_native_text(document);
     for (const auto& change : record.changes) {
-        const auto found = fields.find(change.canonical_name);
+        const auto values = addressed_values(fields, native_fields, change.canonical_name,
+                                             change.exact_native_name);
         if (change.kind == metadata::StagedMetadataPatchKind::remove_field) {
-            if (found != fields.end()) {
+            if (values) {
                 return false;
             }
-        } else if (found == fields.end() || found->second != change.planned_values) {
+        } else if (!values || *values != change.planned_values) {
             return false;
         }
     }
@@ -452,11 +475,12 @@ effective_text(const metadata::MetadataDocument& document) {
 verify_plan_originals(const metadata::MetadataDocument& document,
                       const metadata::MetadataWritePlanSource& source_plan) {
     const auto fields = effective_text(document);
+    const auto native_fields = effective_native_text(document);
     for (const auto& change : source_plan.changes) {
-        const auto found = fields.find(change.canonical_name);
-        const bool present = found != fields.end();
-        if (present != change.original_present ||
-            (present && found->second != change.original_values)) {
+        const auto values = addressed_values(fields, native_fields, change.canonical_name,
+                                             change.exact_native_name);
+        const bool present = values.has_value();
+        if (present != change.original_present || (present && *values != change.original_values)) {
             return std::unexpected(operation_error(
                 core::ErrorCode::conflict,
                 "fresh metadata differs from the previewed original values", source_plan.raw_path));
@@ -500,9 +524,12 @@ make_journal_record(const metadata::MetadataWritePlanSource& source_plan,
                                 "metadata commit plan contains conflicting logical intents",
                                 source_plan.raw_path, journal_id));
         }
+        const auto mapping_native_name = change.exact_native_name && change.native_name.empty()
+                                             ? std::string_view{change.display_name}
+                                             : std::string_view{change.native_name};
         auto mapping =
             metadata::map_flac_text_field(change.canonical_name, change.display_name,
-                                          change.native_name, intent.kind, intent.values);
+                                          mapping_native_name, intent.kind, intent.values);
         if (!mapping) {
             return std::unexpected(std::move(mapping.error()));
         }
@@ -520,6 +547,7 @@ make_journal_record(const metadata::MetadataWritePlanSource& source_plan,
             .kind = intent.kind,
             .planned_values = intent.values,
             .item_indexes = std::move(item_indexes),
+            .exact_native_name = change.exact_native_name,
         });
     }
     return record;
@@ -680,13 +708,15 @@ verified_commit_result(const MetadataOperationJournalRecord& record,
 [[nodiscard]] bool original_fields_match(const metadata::MetadataDocument& document,
                                          const MetadataOperationJournalRecord& record) {
     const auto fields = effective_text(document);
+    const auto native_fields = effective_native_text(document);
     for (const auto& change : record.changes) {
-        const auto found = fields.find(change.canonical_name);
+        const auto values = addressed_values(fields, native_fields, change.canonical_name,
+                                             change.exact_native_name);
         if (!change.original_present) {
-            if (found != fields.end()) {
+            if (values) {
                 return false;
             }
-        } else if (found == fields.end() || found->second != change.original_values) {
+        } else if (!values || *values != change.original_values) {
             return false;
         }
     }

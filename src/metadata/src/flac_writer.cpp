@@ -384,6 +384,22 @@ verify_flac_binary_preservation(const std::string& source_raw_path,
 
 using EffectiveText = std::map<std::string, std::vector<std::string>>;
 
+struct EffectiveNativeTextField {
+    std::string canonical_name;
+    std::vector<std::string> values;
+
+    friend bool operator==(const EffectiveNativeTextField&,
+                           const EffectiveNativeTextField&) = default;
+};
+
+using EffectiveNativeText = std::map<std::string, EffectiveNativeTextField>;
+
+[[nodiscard]] std::string_view mapping_native_name(const MetadataWritePlanChange& change) noexcept {
+    return change.exact_native_name && change.native_name.empty()
+               ? std::string_view{change.display_name}
+               : std::string_view{change.native_name};
+}
+
 [[nodiscard]] EffectiveText effective_text(const MetadataDocument& document) {
     EffectiveText result;
     for (const auto& field : document.effective_fields()) {
@@ -392,17 +408,54 @@ using EffectiveText = std::map<std::string, std::vector<std::string>>;
     return result;
 }
 
+[[nodiscard]] EffectiveNativeText effective_native_text(const MetadataDocument& document) {
+    EffectiveNativeText result;
+    for (const auto& field : document.effective_native_fields()) {
+        result.emplace(canonicalize_native_field_name(field.native_name),
+                       EffectiveNativeTextField{.canonical_name = field.canonical_name,
+                                                .values = field.values});
+    }
+    return result;
+}
+
 [[nodiscard]] core::Result<void> verify_text_result(const MetadataDocument& before,
                                                     const MetadataDocument& after,
                                                     const MetadataWritePlanSource& source_plan,
                                                     const std::string& prepared_raw_path) {
-    auto expected = effective_text(before);
+    auto expected = effective_native_text(before);
     for (const auto& change : source_plan.changes) {
         const auto& intent = change.intents.front();
-        if (intent.kind == StagedMetadataPatchKind::remove_field) {
-            expected.erase(change.canonical_name);
-        } else {
-            expected[change.canonical_name] = intent.values;
+        if (change.exact_native_name) {
+            expected.erase(*change.exact_native_name);
+            if (intent.kind == StagedMetadataPatchKind::replace_values) {
+                auto mapping =
+                    map_flac_text_field(change.canonical_name, change.display_name,
+                                        mapping_native_name(change), intent.kind, intent.values);
+                if (!mapping) {
+                    return std::unexpected(std::move(mapping.error()));
+                }
+                const auto identity = resolve_text_property_identity(mapping->property_name);
+                expected[canonicalize_native_field_name(mapping->property_name)] =
+                    EffectiveNativeTextField{.canonical_name = identity.canonical_name,
+                                             .values = intent.values};
+            }
+            continue;
+        }
+        std::erase_if(expected, [&change](const auto& entry) {
+            const auto identity = resolve_text_property_identity(entry.first);
+            return identity.conventional && identity.canonical_name == change.canonical_name;
+        });
+        if (intent.kind == StagedMetadataPatchKind::replace_values) {
+            auto mapping =
+                map_flac_text_field(change.canonical_name, change.display_name,
+                                    mapping_native_name(change), intent.kind, intent.values);
+            if (!mapping) {
+                return std::unexpected(std::move(mapping.error()));
+            }
+            const auto identity = resolve_text_property_identity(mapping->property_name);
+            expected[canonicalize_native_field_name(mapping->property_name)] =
+                EffectiveNativeTextField{.canonical_name = identity.canonical_name,
+                                         .values = intent.values};
         }
     }
     if (before.unsupported_native_objects != after.unsupported_native_objects) {
@@ -411,7 +464,7 @@ using EffectiveText = std::map<std::string, std::vector<std::string>>;
                          "prepared FLAC changed unsupported native metadata identities",
                          source_plan.raw_path, prepared_raw_path));
     }
-    if (expected != effective_text(after)) {
+    if (expected != effective_native_text(after)) {
         return std::unexpected(writer_error(core::ErrorCode::conflict,
                                             "prepared FLAC metadata reread differs from the plan",
                                             source_plan.raw_path, prepared_raw_path));
@@ -423,11 +476,24 @@ using EffectiveText = std::map<std::string, std::vector<std::string>>;
                                                        const MetadataWritePlanSource& source_plan,
                                                        const std::string& prepared_raw_path) {
     const auto current = effective_text(before);
+    const auto current_native = effective_native_text(before);
     for (const auto& change : source_plan.changes) {
-        const auto found = current.find(change.canonical_name);
-        const bool present = found != current.end();
-        if (present != change.original_present ||
-            (present && found->second != change.original_values)) {
+        bool present = false;
+        std::vector<std::string> values;
+        if (change.exact_native_name) {
+            const auto found = current_native.find(*change.exact_native_name);
+            present = found != current_native.end();
+            if (present) {
+                values = found->second.values;
+            }
+        } else {
+            const auto found = current.find(change.canonical_name);
+            present = found != current.end();
+            if (present) {
+                values = found->second;
+            }
+        }
+        if (present != change.original_present || (present && values != change.original_values)) {
             return std::unexpected(
                 writer_error(core::ErrorCode::conflict,
                              "fresh FLAC metadata differs from the previewed original values",
@@ -453,7 +519,7 @@ using EffectiveText = std::map<std::string, std::vector<std::string>>;
         }
         const auto& intent = change.intents.front();
         auto mapping = map_flac_text_field(change.canonical_name, change.display_name,
-                                           change.native_name, intent.kind, intent.values);
+                                           mapping_native_name(change), intent.kind, intent.values);
         if (!mapping) {
             auto mapping_error = std::move(mapping.error());
             mapping_error.context.push_back(
@@ -464,7 +530,15 @@ using EffectiveText = std::map<std::string, std::vector<std::string>>;
         std::vector<TagLib::String> aliases;
         for (auto property = properties.cbegin(); property != properties.cend(); ++property) {
             const auto native_name = property->first.to8Bit(true);
-            if (canonicalize_field_name(native_name) == change.canonical_name) {
+            const auto matches =
+                change.exact_native_name
+                    ? canonicalize_native_field_name(native_name) == *change.exact_native_name
+                    : [&] {
+                          const auto identity = resolve_text_property_identity(native_name);
+                          return identity.conventional &&
+                                 identity.canonical_name == change.canonical_name;
+                      }();
+            if (matches) {
                 aliases.push_back(property->first);
             }
         }
@@ -544,7 +618,7 @@ prepare_flac_metadata_write_copy(const MetadataWritePlanSource& source_plan,
                                                 source_plan.raw_path, prepared_raw_path));
         }
         auto mapping = map_flac_text_field(change.canonical_name, change.display_name,
-                                           change.native_name, first.kind, first.values);
+                                           mapping_native_name(change), first.kind, first.values);
         if (!mapping) {
             return std::unexpected(std::move(mapping.error()));
         }

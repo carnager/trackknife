@@ -144,6 +144,22 @@ constexpr std::array conventional_mappings{
 
 } // namespace
 
+TextPropertyIdentity resolve_text_property_identity(const std::string_view native_name) {
+    const auto property_name = uppercase_ascii(native_name);
+    for (const auto& mapping : conventional_mappings) {
+        if (mapping.property_name == property_name) {
+            return TextPropertyIdentity{.canonical_name = std::string{mapping.canonical_name},
+                                        .conventional = true};
+        }
+    }
+    return TextPropertyIdentity{.canonical_name = canonicalize_native_field_name(native_name),
+                                .conventional = false};
+}
+
+bool is_conventional_metadata_field(const std::string_view canonical_name) {
+    return !conventional_name(canonical_name).empty();
+}
+
 core::Result<FlacTextFieldMapping> map_flac_text_field(const std::string_view canonical_name,
                                                        const std::string_view display_name,
                                                        const std::string_view existing_native_name,

@@ -50,6 +50,9 @@ struct StagedMetadataCell {
 struct StagedMetadataField {
     std::string canonical_name;
     std::string display_name;
+    // Present for a freeform field or synthetic exact-native address rather
+    // than an explicitly mapped semantic field.
+    std::optional<std::string> exact_native_name;
     MetadataSelectionFieldState state{MetadataSelectionFieldState::missing};
     std::size_t present_item_count{0U};
     // The first occurrence containing this field. Aggregate presentations can
@@ -100,6 +103,11 @@ class StagedMetadataSelection final {
     [[nodiscard]] core::Result<std::size_t>
     ensure_missing_field(std::string_view name, std::string_view display_name,
                          std::size_t maximum_fields = StagedMetadataSelectionLimits{}.fields);
+    [[nodiscard]] core::Result<std::size_t>
+    ensure_exact_native_field(std::string_view native_name, std::string_view display_name,
+                              std::size_t maximum_fields = StagedMetadataSelectionLimits{}.fields);
+    [[nodiscard]] std::optional<std::size_t>
+    exact_native_field_index(std::string_view native_name) const;
     [[nodiscard]] core::Result<std::vector<StagedMetadataSubsetField>>
     summarize_items(std::span<const std::size_t> item_indexes) const;
 
@@ -113,6 +121,7 @@ class StagedMetadataSelection final {
     std::shared_ptr<const std::vector<Item>> items_{std::make_shared<const std::vector<Item>>()};
     std::vector<StagedMetadataField> fields_;
     std::unordered_map<std::string, std::size_t> field_positions_;
+    std::unordered_map<std::string, std::size_t> exact_native_field_positions_;
     std::size_t distinct_source_count_{0U};
     std::size_t item_revision_count_{0U};
 };

@@ -45,6 +45,7 @@ struct MetadataOperationJournalChange {
     metadata::StagedMetadataPatchKind kind{metadata::StagedMetadataPatchKind::replace_values};
     std::vector<std::string> planned_values;
     std::vector<std::size_t> item_indexes;
+    std::optional<std::string> exact_native_name;
 
     friend bool operator==(const MetadataOperationJournalChange&,
                            const MetadataOperationJournalChange&) = default;

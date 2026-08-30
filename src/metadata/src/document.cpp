@@ -61,8 +61,24 @@ std::string canonicalize_field_name(const std::string_view name) {
     return canonical;
 }
 
+std::string canonicalize_native_field_name(const std::string_view name) {
+    std::string canonical{name};
+    for (auto& character : canonical) {
+        if (character >= 'A' && character <= 'Z') {
+            character = static_cast<char>(character - 'A' + 'a');
+        }
+    }
+    return canonical;
+}
+
 std::vector<std::string> MetadataDocument::effective_values(const std::string_view name) const {
-    const auto canonical = canonicalize_field_name(name);
+    const auto exact_native = canonicalize_native_field_name(name);
+    const auto logical = canonicalize_field_name(name);
+    const auto exact_exists = std::ranges::any_of(fields, [&exact_native](const auto& field) {
+        return field.canonical_name == exact_native &&
+               canonicalize_native_field_name(field.native_name) == exact_native;
+    });
+    const auto& canonical = exact_exists ? exact_native : logical;
     auto selected_precedence = std::numeric_limits<unsigned>::max();
     for (const auto& field : fields) {
         if (field.canonical_name == canonical) {
@@ -123,6 +139,51 @@ std::vector<EffectiveMetadataField> MetadataDocument::effective_fields() const {
         }
     }
     return effective;
+}
+
+std::vector<EffectiveMetadataField> MetadataDocument::effective_native_fields() const {
+    std::vector<EffectiveMetadataField> effective;
+    effective.reserve(fields.size());
+    std::unordered_map<std::string, std::size_t> positions;
+    positions.reserve(fields.size());
+    for (const auto& field : fields) {
+        const auto native_identity = canonicalize_native_field_name(field.native_name);
+        if (native_identity.empty()) {
+            continue;
+        }
+        const auto [position, inserted] = positions.emplace(native_identity, effective.size());
+        if (inserted) {
+            effective.push_back(EffectiveMetadataField{
+                .canonical_name = field.canonical_name,
+                .native_name = field.native_name,
+                .values = field.values,
+                .provenance = field.provenance,
+            });
+            continue;
+        }
+        auto& selected = effective[position->second];
+        if (precedence(field.provenance) > precedence(selected.provenance)) {
+            selected.canonical_name = field.canonical_name;
+            selected.native_name = field.native_name;
+            selected.values = field.values;
+            selected.provenance = field.provenance;
+        } else if (precedence(field.provenance) == precedence(selected.provenance)) {
+            selected.values.insert(selected.values.end(), field.values.begin(), field.values.end());
+        }
+    }
+    return effective;
+}
+
+std::optional<EffectiveMetadataField>
+MetadataDocument::effective_native_field(const std::string_view native_name) const {
+    const auto identity = canonicalize_native_field_name(native_name);
+    auto fields_by_native_name = effective_native_fields();
+    const auto found = std::ranges::find_if(fields_by_native_name, [&identity](const auto& field) {
+        return canonicalize_native_field_name(field.native_name) == identity;
+    });
+    return found == fields_by_native_name.end()
+               ? std::nullopt
+               : std::optional<EffectiveMetadataField>{std::move(*found)};
 }
 
 MusicBrainzIdentity project_musicbrainz(const MetadataDocument& document) {

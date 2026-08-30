@@ -15,6 +15,29 @@ output) are implemented. M4 is complete; active M5 builds the fast metadata and
 safe file-operation workspace. Start with
 [`MILESTONES.md`](MILESTONES.md), then [`docs/README.md`](docs/README.md).
 
+## Current development handoff
+
+M5 is active. The implementation and documentation are accepted through
+ADR-0066 and SQLite schema 19. Trackbench's metadata model now distinguishes
+adapter-mapped semantic fields from independently addressable freeform native
+fields; imported `$delete`/`$unset` rules retain exact-native identity through
+preview, FLAC publication, journaling, and recovery.
+The handoff baseline is 44/44 development tests, 10/10 focused sanitizer tests,
+and a clean full clang-tidy build.
+
+The next vertical slice is the one named at the end of M5 in
+[`MILESTONES.md`](MILESTONES.md): generalize the immutable preparation review
+to final metadata plus file paths, then enable Rename and Move through the
+already implemented planner, fresh preflight, bounded publication Apply, and
+visible source reconciliation. Rename, Move, and ReplayGain remain deliberately
+capability-gated in the Operations panel until their complete paths are ready.
+
+For a fresh coding session, ADR-0058 is authoritative over older descriptions
+of Trackknife and Trackbench as permanently separate applications. Trackbench
+is the primary combined workspace; MPD Queue and Local Queue remain distinct
+authorities selected by the active primary tab. The `trackknife` executable is
+only the compatibility shell during migration.
+
 ## Build
 
 Requirements are CMake 3.28+, Ninja, a C++23 compiler, Qt 6.4+ with Gui,
@@ -81,6 +104,6 @@ cmake --preset release && cmake --build --preset release
 
 ## License
 
-The Trackknife project (both applications) is licensed under the GNU General
-Public License version 3 only
+The Trackknife project and all of its binaries are licensed under the GNU
+General Public License version 3 only
 (`GPL-3.0-only`). See [`LICENSE`](LICENSE).

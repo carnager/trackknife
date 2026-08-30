@@ -29,9 +29,10 @@ struct FieldQualifier {
 };
 
 struct MetadataField {
-    // Lookup identity is Trackbench-owned and stable across backend spelling.
-    // native_name retains the adapter's exact exposed key for inspection and
-    // later format-specific mapping.
+    // Semantic identity is assigned only by an explicit adapter mapping;
+    // otherwise this retains the adapter's case-folded native identity.
+    // native_name always retains the exact exposed key for inspection and
+    // format-specific mutation.
     std::string canonical_name;
     std::string native_name;
     std::vector<std::string> values;
@@ -69,14 +70,24 @@ struct MetadataDocument {
     // winning provenance and its ordered values follow the same precedence as
     // effective_values().
     [[nodiscard]] std::vector<EffectiveMetadataField> effective_fields() const;
+    // Returns one entry per adapter-exposed field spelling, folding ASCII case
+    // only. Separator differences remain distinct so cleanup operations can
+    // address a legacy native key without touching a conventional neighbor.
+    [[nodiscard]] std::vector<EffectiveMetadataField> effective_native_fields() const;
+    [[nodiscard]] std::optional<EffectiveMetadataField>
+    effective_native_field(std::string_view native_name) const;
 
     friend bool operator==(const MetadataDocument&, const MetadataDocument&) = default;
 };
 
-// ASCII lookup folding only: letters become lowercase and space, underscore,
-// and hyphen separators are ignored. UTF-8 bytes and punctuation otherwise
-// remain exact; native_name always retains the adapter spelling.
+// Semantic-name and UI-query normalization only: ASCII letters become
+// lowercase and space, underscore, and hyphen separators are ignored. This
+// function never decides whether two native properties are aliases.
 [[nodiscard]] std::string canonicalize_field_name(std::string_view name);
+
+// Exact adapter-exposed identity folds ASCII case but preserves every
+// separator and punctuation byte.
+[[nodiscard]] std::string canonicalize_native_field_name(std::string_view name);
 
 struct MusicBrainzIdentity {
     std::vector<std::string> artist_ids;

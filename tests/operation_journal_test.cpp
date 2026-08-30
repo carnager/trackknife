@@ -82,6 +82,7 @@ class TemporaryDatabase final {
                     .kind = trackknife::metadata::StagedMetadataPatchKind::replace_values,
                     .planned_values = {"New", "Other", "New"},
                     .item_indexes = {2U, 7U},
+                    .exact_native_name = std::nullopt,
                 },
                 trackknife::operations::MetadataOperationJournalChange{
                     .field_index = 8U,
@@ -92,6 +93,7 @@ class TemporaryDatabase final {
                     .kind = trackknife::metadata::StagedMetadataPatchKind::remove_field,
                     .planned_values = {},
                     .item_indexes = {99U},
+                    .exact_native_name = std::optional<std::string>{"comment"},
                 },
             },
         .failure = std::nullopt,

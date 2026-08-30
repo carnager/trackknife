@@ -14,7 +14,7 @@ workspaces suggests that this separation also costs useful continuity: users
 must switch applications even though queue/list presentation, layout editing,
 and much of the surrounding workspace language are deliberately shared.
 
-The proposed direction is not a return to a mixed queue or an implicit playback
+The accepted direction is not a return to a mixed queue or an implicit playback
 handoff. MPD and local files retain different authorities, capabilities, and
 failure domains. The question is whether tabs and an explicit active context can
 make those boundaries clear inside one Trackbench process without recreating
@@ -76,21 +76,21 @@ switching applications and maintaining two top-level workspace shells.
 
 ### Add MPD commands to Trackbench without an MPD queue tab
 
-Rejected for the proposal. Hidden or menu-only MPD control would make the
+Rejected. Hidden or menu-only MPD control would make the
 active playback authority harder to see and would not provide the integrated
 server library and queue workflow being evaluated.
 
 ### Share only the visual styling of the two queue views
 
-Rejected. Similar-looking parallel implementations would drift. The proposal
+Rejected. Similar-looking parallel implementations would drift. The decision
 requires one layout schema, editor, renderer, persistence contract, and test
 corpus for MPD and local track views.
 
 ## Consequences
 
 - ADR-0025's two-process product boundary and the rule that Trackbench speaks
-  no MPD protocol would be superseded. Its separation of MPD and local queue
-  authorities, and all local-operation safety rules, would remain.
+  no MPD protocol are superseded. Its separation of MPD and local queue
+  authorities, and all local-operation safety rules, remain.
 - The active tab becomes a consequential context switch. Focus restoration,
   keyboard shortcuts, transport state, sidebar selection, async result
   delivery, and output controls need stale-context tests.

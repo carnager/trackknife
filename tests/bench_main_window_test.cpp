@@ -1475,11 +1475,13 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     });
     QTest::mouseClick(import_script, Qt::LeftButton);
     QCOMPARE(steps->count(), 5);
-    QVERIFY(steps->item(0)->text().contains(QStringLiteral("Remove comment")));
+    QVERIFY(steps->item(0)->text().contains(QStringLiteral("Remove exact native field comment")));
     QVERIFY(steps->item(1)->text().contains(
-        QStringLiteral("Remove discnumber when $or($not(%totaldiscs%),$eq(%totaldiscs%,1))")));
+        QStringLiteral("Remove exact native field discnumber when "
+                       "$or($not(%totaldiscs%),$eq(%totaldiscs%,1))")));
     QVERIFY(steps->item(2)->text().contains(
-        QStringLiteral("Remove totaldiscs when $or($not(%totaldiscs%),$eq(%totaldiscs%,1))")));
+        QStringLiteral("Remove exact native field totaldiscs when "
+                       "$or($not(%totaldiscs%),$eq(%totaldiscs%,1))")));
     QVERIFY(steps->item(3)->text().contains(QStringLiteral("Format date as $if(%originaldate%")));
     QVERIFY(steps->item(4)->text().contains(
         QStringLiteral("Keep the first 4 characters of each value of originaldate")));
@@ -1859,6 +1861,7 @@ void BenchMainWindowTest::metadataStartupPresentsReconciliation() {
                 .kind = metadata::StagedMetadataPatchKind::replace_values,
                 .planned_values = {"New"},
                 .item_indexes = {0U},
+                .exact_native_name = std::nullopt,
             }},
             .failure = std::nullopt,
         };
@@ -2522,7 +2525,7 @@ void BenchMainWindowTest::richMetadataValuesAndIdentitiesSurviveListRestart() {
         QCOMPARE(row.album_artist, std::string{"Album Credit"});
         QCOMPARE(row.metadata.effective_values("artist"),
                  (std::vector<std::string>{"First Artist", "Second Artist"}));
-        QCOMPARE(row.metadata.effective_values("custom-field"),
+        QCOMPARE(row.metadata.effective_values("custom_field"),
                  (std::vector<std::string>{"first custom value", "second custom value"}));
         const auto identity = metadata::project_musicbrainz(row.metadata);
         QCOMPARE(identity.recording_ids,

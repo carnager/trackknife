@@ -3,6 +3,7 @@
 #include "trackknife/core/cancellation.hpp"
 #include "trackknife/core/stable_id.hpp"
 #include "trackknife/metadata/document.hpp"
+#include "trackknife/metadata/flac_mapping.hpp"
 #include "trackknife/metadata/local_reader.hpp"
 
 #include <algorithm>
@@ -96,6 +97,12 @@ void fieldLookupPreservesValuesAndAppliesProvenance() {
 
     CHECK(trackknife::metadata::canonicalize_field_name("MusicBrainz_Album-Artist Id") ==
           "musicbrainzalbumartistid");
+    CHECK(trackknife::metadata::resolve_text_property_identity("ALBUMARTIST") ==
+          (trackknife::metadata::TextPropertyIdentity{.canonical_name = "albumartist",
+                                                      .conventional = true}));
+    CHECK(trackknife::metadata::resolve_text_property_identity("ALBUM ARTIST") ==
+          (trackknife::metadata::TextPropertyIdentity{.canonical_name = "album artist",
+                                                      .conventional = false}));
     MetadataDocument document{
         .fields =
             {
@@ -143,7 +150,7 @@ void readsRichFlacAndMusicBrainz(const std::filesystem::path& fixture_directory)
         CHECK(read->source_revision.inode != 0U);
         CHECK(read->document.effective_values("artist") ==
               (std::vector<std::string>{"First Artist", "Second Artist"}));
-        CHECK(read->document.effective_values("custom-field") ==
+        CHECK(read->document.effective_values("custom_field") ==
               (std::vector<std::string>{"first custom value", "second custom value"}));
         CHECK(read->document.first_effective_value("album_artist") ==
               std::optional<std::string>{"Album Credit"});

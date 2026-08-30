@@ -95,10 +95,22 @@ using BackupTransition = operations::MetadataOperationBackupTransition;
            SQLITE_OK;
 }
 
+[[nodiscard]] bool bind_optional_blob(sqlite3_stmt* statement, const int index,
+                                      const std::optional<std::string>& value) {
+    return value ? bind_blob(statement, index, *value)
+                 : sqlite3_bind_null(statement, index) == SQLITE_OK;
+}
+
 [[nodiscard]] std::string column_blob(sqlite3_stmt* statement, const int column) {
     const auto size = sqlite3_column_bytes(statement, column);
     const auto* data = static_cast<const char*>(sqlite3_column_blob(statement, column));
     return data == nullptr || size <= 0 ? std::string{} : std::string{data, data + size};
+}
+
+[[nodiscard]] std::optional<std::string> optional_blob(sqlite3_stmt* statement, const int column) {
+    return sqlite3_column_type(statement, column) == SQLITE_NULL
+               ? std::nullopt
+               : std::optional<std::string>{column_blob(statement, column)};
 }
 
 [[nodiscard]] std::string encode_unsigned(const std::uint64_t value) {
@@ -369,7 +381,7 @@ read_optional_revision(sqlite3_stmt* statement, const int first) {
         }
     }
     std::unordered_set<std::size_t> field_indexes;
-    std::unordered_set<std::string> canonical_names;
+    std::unordered_set<std::string> addressed_names;
     std::size_t total_values = 0U;
     std::size_t total_intents = 0U;
     std::size_t text_bytes = 0U;
@@ -380,10 +392,18 @@ read_optional_revision(sqlite3_stmt* statement, const int first) {
     }
     for (const auto& change : record.changes) {
         if (change.canonical_name.empty() || change.property_name.empty() ||
+            (change.exact_native_name &&
+             (change.exact_native_name->empty() ||
+              metadata::canonicalize_native_field_name(*change.exact_native_name) !=
+                  *change.exact_native_name)) ||
             change.item_indexes.empty() ||
             (!change.original_present && !change.original_values.empty()) ||
             !field_indexes.insert(change.field_index).second ||
-            !canonical_names.insert(change.canonical_name).second ||
+            !addressed_names
+                 .insert(change.exact_native_name
+                             ? std::string{"native:"} + *change.exact_native_name
+                             : std::string{"logical:"} + change.canonical_name)
+                 .second ||
             change.original_values.size() > maximum_values_per_change ||
             change.planned_values.size() > maximum_values_per_change ||
             (change.kind == metadata::StagedMetadataPatchKind::replace_values &&
@@ -402,7 +422,8 @@ read_optional_revision(sqlite3_stmt* statement, const int first) {
         total_values += change.original_values.size() + change.planned_values.size();
         total_intents += change.item_indexes.size();
         if (!add_text(text_bytes, change.canonical_name.size()) ||
-            !add_text(text_bytes, change.property_name.size())) {
+            !add_text(text_bytes, change.property_name.size()) ||
+            (change.exact_native_name && !add_text(text_bytes, change.exact_native_name->size()))) {
             return std::unexpected(
                 invalid_record("Metadata-operation journal text exceeds its limit"));
         }
@@ -503,8 +524,9 @@ read_optional_revision(sqlite3_stmt* statement, const int first) {
 
     auto changes =
         prepare(database,
-                "SELECT position, field_index, canonical_name, property_name, original_present, "
-                "patch_kind FROM operation_journal_changes WHERE journal_id = ? ORDER BY position");
+                "SELECT position, field_index, canonical_name, property_name, exact_native_name, "
+                "original_present, patch_kind FROM operation_journal_changes WHERE journal_id = ? "
+                "ORDER BY position");
     if (!changes || !bind_blob(changes->get(), 1, id)) {
         return std::unexpected(changes ? database_error(database, "Could not bind journal ID")
                                        : std::move(changes.error()));
@@ -517,10 +539,12 @@ read_optional_revision(sqlite3_stmt* statement, const int first) {
         }
         auto position = read_index(changes->get(), 0);
         auto field_index = read_index(changes->get(), 1);
-        const auto kind = sqlite3_column_int(changes->get(), 5);
+        const auto kind = sqlite3_column_int(changes->get(), 6);
         if (!position || !field_index || *position != record.changes.size() || kind < 0 ||
             kind > 1 || !account_column_blob(text_bytes, changes->get(), 2) ||
-            !account_column_blob(text_bytes, changes->get(), 3)) {
+            !account_column_blob(text_bytes, changes->get(), 3) ||
+            (sqlite3_column_type(changes->get(), 4) != SQLITE_NULL &&
+             !account_column_blob(text_bytes, changes->get(), 4))) {
             return std::unexpected(core::Error{
                 .code = core::ErrorCode::database,
                 .message = "Operation journal contains an invalid change",
@@ -531,11 +555,12 @@ read_optional_revision(sqlite3_stmt* statement, const int first) {
             .field_index = *field_index,
             .canonical_name = column_blob(changes->get(), 2),
             .property_name = column_blob(changes->get(), 3),
-            .original_present = sqlite3_column_int(changes->get(), 4) != 0,
+            .original_present = sqlite3_column_int(changes->get(), 5) != 0,
             .original_values = {},
             .kind = static_cast<metadata::StagedMetadataPatchKind>(kind),
             .planned_values = {},
             .item_indexes = {},
+            .exact_native_name = optional_blob(changes->get(), 4),
         });
     }
     if (change_result != SQLITE_DONE) {
@@ -912,8 +937,8 @@ SqliteMetadataOperationJournal::create(const operations::MetadataOperationJourna
     auto change_insert = prepare(
         database,
         "INSERT INTO operation_journal_changes("
-        "journal_id, position, field_index, canonical_name, property_name, original_present, "
-        "patch_kind) VALUES(?, ?, ?, ?, ?, ?, ?)");
+        "journal_id, position, field_index, canonical_name, property_name, exact_native_name, "
+        "original_present, patch_kind) VALUES(?, ?, ?, ?, ?, ?, ?, ?)");
     auto value_insert =
         prepare(database,
                 "INSERT INTO operation_journal_values("
@@ -952,9 +977,10 @@ SqliteMetadataOperationJournal::create(const operations::MetadataOperationJourna
             !bind_index(change_insert->get(), 3, change.field_index) ||
             !bind_blob(change_insert->get(), 4, change.canonical_name) ||
             !bind_blob(change_insert->get(), 5, change.property_name) ||
-            sqlite3_bind_int(change_insert->get(), 6, change.original_present ? 1 : 0) !=
+            !bind_optional_blob(change_insert->get(), 6, change.exact_native_name) ||
+            sqlite3_bind_int(change_insert->get(), 7, change.original_present ? 1 : 0) !=
                 SQLITE_OK ||
-            sqlite3_bind_int(change_insert->get(), 7, static_cast<int>(change.kind)) != SQLITE_OK) {
+            sqlite3_bind_int(change_insert->get(), 8, static_cast<int>(change.kind)) != SQLITE_OK) {
             auto error = database_error(database, "Could not bind operation change");
             rollback();
             return std::unexpected(std::move(error));

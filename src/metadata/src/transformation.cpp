@@ -4,6 +4,7 @@
 
 #include "trackknife/core/unicode.hpp"
 #include "trackknife/metadata/document.hpp"
+#include "trackknife/metadata/flac_mapping.hpp"
 #include "trackknife/titleformat/evaluator.hpp"
 
 #include <algorithm>
@@ -26,9 +27,19 @@ using Values = std::vector<std::string>;
 using OptionalValues = std::optional<Values>;
 using WorkingDocument = std::unordered_map<std::string, Values>;
 
+struct WorkingNativeField {
+    std::string canonical_field;
+    Values values;
+    FieldProvenance provenance{FieldProvenance::embedded};
+    std::size_t order{0U};
+};
+
+using WorkingNativeDocument = std::unordered_map<std::string, WorkingNativeField>;
+
 struct PreparedAction {
     const MetadataTransformationAction* action{nullptr};
     std::string canonical_field;
+    std::string exact_native_field;
     std::string canonical_source_field;
     std::string display_field;
     std::optional<titleformat::Program> program;
@@ -36,7 +47,9 @@ struct PreparedAction {
 
 struct Target {
     std::string canonical_field;
+    std::string exact_native_field;
     std::string display_field;
+    MetadataFieldMatchMode match_mode{MetadataFieldMatchMode::logical};
     std::size_t last_action_index{0U};
 };
 
@@ -74,10 +87,121 @@ struct PreparedChain {
                       action);
 }
 
+[[nodiscard]] MetadataFieldMatchMode field_match_mode(const MetadataTransformationAction& action) {
+    return std::visit(
+        [](const auto& typed) {
+            using Action = std::decay_t<decltype(typed)>;
+            if constexpr (std::is_same_v<Action, MetadataRemoveFieldAction> ||
+                          std::is_same_v<Action, MetadataRemoveFieldIfAction>) {
+                return typed.match_mode;
+            }
+            return MetadataFieldMatchMode::logical;
+        },
+        action);
+}
+
 [[nodiscard]] OptionalValues values_for(const WorkingDocument& document,
                                         const std::string& canonical_field) {
     const auto found = document.find(canonical_field);
     return found == document.end() ? std::nullopt : OptionalValues{found->second};
+}
+
+[[nodiscard]] OptionalValues values_for(const WorkingDocument& document,
+                                        const WorkingNativeDocument& native_document,
+                                        const Target& target) {
+    if (target.match_mode == MetadataFieldMatchMode::logical) {
+        return values_for(document, target.canonical_field);
+    }
+    const auto found = native_document.find(target.exact_native_field);
+    return found == native_document.end() ? std::nullopt : OptionalValues{found->second.values};
+}
+
+[[nodiscard]] unsigned provenance_precedence(const FieldProvenance provenance) noexcept {
+    switch (provenance) {
+    case FieldProvenance::cached_snapshot:
+        return 0U;
+    case FieldProvenance::annotation:
+        return 1U;
+    case FieldProvenance::embedded:
+    case FieldProvenance::stream:
+        return 2U;
+    case FieldProvenance::segment:
+        return 3U;
+    case FieldProvenance::sidecar:
+        return 4U;
+    }
+    return 0U;
+}
+
+void rebuild_logical_field(WorkingDocument& document, const WorkingNativeDocument& native_document,
+                           const std::string& canonical_field) {
+    std::optional<unsigned> selected_precedence;
+    Values values;
+    std::vector<const WorkingNativeField*> fields;
+    fields.reserve(native_document.size());
+    for (const auto& [native_name, field] : native_document) {
+        static_cast<void>(native_name);
+        if (field.canonical_field != canonical_field) {
+            continue;
+        }
+        fields.push_back(&field);
+    }
+    std::ranges::sort(fields, {}, &WorkingNativeField::order);
+    for (const auto* field : fields) {
+        const auto precedence = provenance_precedence(field->provenance);
+        if (!selected_precedence || precedence > *selected_precedence) {
+            selected_precedence = precedence;
+            values = field->values;
+        } else if (precedence == *selected_precedence) {
+            values.insert(values.end(), field->values.begin(), field->values.end());
+        }
+    }
+    if (selected_precedence) {
+        document[canonical_field] = std::move(values);
+    } else {
+        document.erase(canonical_field);
+    }
+}
+
+void apply_draft_to_native(WorkingNativeDocument& native_document, const StagedMetadataField& field,
+                           const StagedMetadataPatch& patch) {
+    const auto next_order = [&native_document] {
+        std::size_t result = 0U;
+        for (const auto& [name, existing] : native_document) {
+            static_cast<void>(name);
+            result = std::max(result, existing.order + 1U);
+        }
+        return result;
+    }();
+    if (field.exact_native_name) {
+        if (patch.kind == StagedMetadataPatchKind::remove_field) {
+            native_document.erase(*field.exact_native_name);
+        } else {
+            const auto existing = native_document.find(*field.exact_native_name);
+            const auto native_canonical =
+                existing == native_document.end()
+                    ? canonicalize_native_field_name(*field.exact_native_name)
+                    : existing->second.canonical_field;
+            native_document[*field.exact_native_name] = WorkingNativeField{
+                .canonical_field = native_canonical,
+                .values = patch.values,
+                .provenance = FieldProvenance::sidecar,
+                .order = next_order,
+            };
+        }
+        return;
+    }
+    std::erase_if(native_document, [&field](const auto& entry) {
+        return entry.second.canonical_field == field.canonical_name;
+    });
+    if (patch.kind == StagedMetadataPatchKind::replace_values) {
+        native_document[field.canonical_name] = WorkingNativeField{
+            .canonical_field = field.canonical_name,
+            .values = patch.values,
+            .provenance = FieldProvenance::sidecar,
+            .order = next_order,
+        };
+    }
 }
 
 [[nodiscard]] std::string trim_ascii(std::string value) {
@@ -222,8 +346,9 @@ evaluate_action_program(const PreparedAction& prepared, const WorkingDocument& d
 
 [[nodiscard]] core::Result<void>
 apply_action(const PreparedAction& prepared, WorkingDocument& document,
-             const std::size_t action_index, const std::size_t item_index,
-             const std::size_t selection_position, const core::CancellationToken& cancellation,
+             WorkingNativeDocument& native_document, const std::size_t action_index,
+             const std::size_t item_index, const std::size_t selection_position,
+             const core::CancellationToken& cancellation,
              const MetadataTransformationLimits& limits) {
     return std::visit(
         [&](const auto& action) -> core::Result<void> {
@@ -241,7 +366,12 @@ apply_action(const PreparedAction& prepared, WorkingDocument& document,
                 }
                 values.insert(values.end(), action.values.begin(), action.values.end());
             } else if constexpr (std::is_same_v<Action, MetadataRemoveFieldAction>) {
-                document.erase(prepared.canonical_field);
+                if (action.match_mode == MetadataFieldMatchMode::exact_native) {
+                    native_document.erase(prepared.exact_native_field);
+                    rebuild_logical_field(document, native_document, prepared.canonical_field);
+                } else {
+                    document.erase(prepared.canonical_field);
+                }
             } else if constexpr (std::is_same_v<Action, MetadataRemoveFieldIfAction>) {
                 auto condition = evaluate_action_program(prepared, document, action_index,
                                                          item_index, cancellation);
@@ -249,7 +379,12 @@ apply_action(const PreparedAction& prepared, WorkingDocument& document,
                     return std::unexpected(std::move(condition.error()));
                 }
                 if (!condition->empty()) {
-                    document.erase(prepared.canonical_field);
+                    if (action.match_mode == MetadataFieldMatchMode::exact_native) {
+                        native_document.erase(prepared.exact_native_field);
+                        rebuild_logical_field(document, native_document, prepared.canonical_field);
+                    } else {
+                        document.erase(prepared.canonical_field);
+                    }
                 }
             } else if constexpr (std::is_same_v<Action, MetadataTransformValuesAction>) {
                 const auto found = document.find(prepared.canonical_field);
@@ -404,6 +539,16 @@ prepare_chain(const MetadataTransformationChain& chain,
         const auto& action = chain.actions[action_index];
         const auto& target = target_field(action);
         const auto canonical = canonicalize_field_name(target);
+        const auto match_mode = field_match_mode(action);
+        if (match_mode != MetadataFieldMatchMode::logical &&
+            match_mode != MetadataFieldMatchMode::exact_native) {
+            return std::unexpected(transformation_error(
+                core::ErrorCode::invalid_argument,
+                "metadata transformation uses an unknown field-match mode", action_index));
+        }
+        const auto exact_native = match_mode == MetadataFieldMatchMode::exact_native
+                                      ? canonicalize_native_field_name(target)
+                                      : std::string{};
         if (target.empty() || target.size() > limits.field_name_bytes || canonical.empty()) {
             return std::unexpected(transformation_error(
                 core::ErrorCode::invalid_argument,
@@ -418,6 +563,7 @@ prepare_chain(const MetadataTransformationChain& chain,
         PreparedAction prepared_action{
             .action = &action,
             .canonical_field = canonical,
+            .exact_native_field = exact_native,
             .canonical_source_field = {},
             .display_field = target,
             .program = std::nullopt,
@@ -610,11 +756,31 @@ prepare_chain(const MetadataTransformationChain& chain,
             prepared_action.program = std::move(*compiled.program);
         }
         result.actions.push_back(std::move(prepared_action));
-        const auto existing =
-            std::ranges::find(result.targets, canonical, &Target::canonical_field);
+        if (std::ranges::any_of(result.targets, [&](const auto& candidate) {
+                if (candidate.canonical_field != canonical || candidate.match_mode == match_mode) {
+                    return false;
+                }
+                const auto& exact_name = match_mode == MetadataFieldMatchMode::exact_native
+                                             ? exact_native
+                                             : candidate.exact_native_field;
+                const auto identity = resolve_text_property_identity(exact_name);
+                return identity.conventional && identity.canonical_name == canonical;
+            })) {
+            return std::unexpected(transformation_error(
+                core::ErrorCode::invalid_argument,
+                "metadata transformation cannot mix logical and exact-native actions for one "
+                "field",
+                action_index));
+        }
+        const auto existing = std::ranges::find_if(result.targets, [&](const auto& candidate) {
+            return candidate.match_mode == match_mode && candidate.canonical_field == canonical &&
+                   candidate.exact_native_field == exact_native;
+        });
         if (existing == result.targets.end()) {
             result.targets.push_back(Target{.canonical_field = canonical,
+                                            .exact_native_field = exact_native,
                                             .display_field = target,
+                                            .match_mode = match_mode,
                                             .last_action_index = action_index});
         } else {
             existing->last_action_index = action_index;
@@ -697,8 +863,20 @@ core::Result<MetadataTransformationPreview> plan_metadata_transformation(
         WorkingDocument document;
         document.reserve(present_fields.size() + (draft_position - item_draft_begin) +
                          targets.size());
+        WorkingNativeDocument native_document;
+        const auto native_fields = selection.source(item_index).baseline.effective_native_fields();
+        native_document.reserve(native_fields.size() + (draft_position - item_draft_begin));
+        for (std::size_t native_index = 0U; native_index < native_fields.size(); ++native_index) {
+            const auto& field = native_fields[native_index];
+            native_document.emplace(canonicalize_native_field_name(field.native_name),
+                                    WorkingNativeField{.canonical_field = field.canonical_name,
+                                                       .values = field.values,
+                                                       .provenance = field.provenance,
+                                                       .order = native_index});
+        }
         std::size_t present_position = 0U;
         auto item_draft_position = item_draft_begin;
+        std::vector<std::string> exact_draft_logical_fields;
         while (present_position < present_fields.size() || item_draft_position < draft_position) {
             const auto baseline_field = present_position < present_fields.size()
                                             ? present_fields[present_position]
@@ -708,9 +886,13 @@ core::Result<MetadataTransformationPreview> plan_metadata_transformation(
                                          : std::numeric_limits<std::size_t>::max();
             if (patch_field <= baseline_field) {
                 const auto& patch = draft_patches[item_draft_position++];
+                const auto& staged_field = selection.field(patch.field_index);
+                apply_draft_to_native(native_document, staged_field, patch);
+                if (staged_field.exact_native_name) {
+                    exact_draft_logical_fields.push_back(staged_field.canonical_name);
+                }
                 if (patch.kind == StagedMetadataPatchKind::replace_values) {
-                    document.emplace(selection.field(patch.field_index).canonical_name,
-                                     patch.values);
+                    document.emplace(staged_field.canonical_name, patch.values);
                 }
                 if (patch_field == baseline_field) {
                     ++present_position;
@@ -719,21 +901,32 @@ core::Result<MetadataTransformationPreview> plan_metadata_transformation(
             }
             const auto field_index = present_fields[present_position++];
             if (const auto* cell = selection.cell(item_index, field_index)) {
-                document.emplace(selection.field(field_index).canonical_name, cell->values);
+                const auto& staged_field = selection.field(field_index);
+                if (!staged_field.exact_native_name) {
+                    document.emplace(staged_field.canonical_name, cell->values);
+                }
             }
+        }
+        std::ranges::sort(exact_draft_logical_fields);
+        exact_draft_logical_fields.erase(
+            std::unique(exact_draft_logical_fields.begin(), exact_draft_logical_fields.end()),
+            exact_draft_logical_fields.end());
+        for (const auto& canonical_field : exact_draft_logical_fields) {
+            rebuild_logical_field(document, native_document, canonical_field);
         }
         std::vector<OptionalValues> before;
         before.reserve(targets.size());
         for (const auto& target : targets) {
-            before.push_back(values_for(document, target.canonical_field));
+            before.push_back(values_for(document, native_document, target));
         }
         for (std::size_t action_index = 0U; action_index < prepared.size(); ++action_index) {
             if (cancellation.is_cancellation_requested()) {
                 return std::unexpected(transformation_error(
                     core::ErrorCode::cancelled, "metadata transformation was cancelled"));
             }
-            if (auto applied = apply_action(prepared[action_index], document, action_index,
-                                            item_index, selection_position, cancellation, limits);
+            if (auto applied =
+                    apply_action(prepared[action_index], document, native_document, action_index,
+                                 item_index, selection_position, cancellation, limits);
                 !applied) {
                 return std::unexpected(std::move(applied.error()));
             }
@@ -741,7 +934,7 @@ core::Result<MetadataTransformationPreview> plan_metadata_transformation(
 
         auto item_changed = false;
         for (std::size_t target_index = 0U; target_index < targets.size(); ++target_index) {
-            auto after = values_for(document, targets[target_index].canonical_field);
+            auto after = values_for(document, native_document, targets[target_index]);
             if (before[target_index] == after) {
                 if (before[target_index]) {
                     ++unchanged_present_cell_count;
@@ -774,6 +967,7 @@ core::Result<MetadataTransformationPreview> plan_metadata_transformation(
                 .last_action_index = targets[target_index].last_action_index,
                 .canonical_field = targets[target_index].canonical_field,
                 .display_field = targets[target_index].display_field,
+                .match_mode = targets[target_index].match_mode,
                 .before = std::move(before[target_index]),
                 .after = std::move(after),
             });

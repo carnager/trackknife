@@ -35,7 +35,8 @@ same-filesystem undo (ADR-0060), and verified cross-filesystem publication
 (ADR-0061), plus revision-qualified active-playback relocation (ADR-0062), are
 joined by bounded file-publication Apply (ADR-0063) and typed keep-first
 metadata transformation (ADR-0064), plus pasted rule-script translation and
-conditional removal (ADR-0065); decisions are accepted through ADR-0065.
+conditional removal (ADR-0065), and explicit semantic/freeform metadata field
+identity (ADR-0066); decisions are accepted through ADR-0066.
 Backend selection is not a capability claim; protocol and file behavior still
 require fixtures and measurements.
 
@@ -76,10 +77,11 @@ Local source --> playback: FFmpeg --> gain/DSP --> PipeWire
              \-> tags / MusicBrainz / ReplayGain / organize / convert plans
 ```
 
-MPD is the primary library and live-queue authority for the client. Each
-application persists its own SQLite state (profiles/workspace/lists for the
-client; lists, presets, jobs, and journals for Trackbench); neither becomes a
-mandatory mirror of the MPD database or a local library index.
+MPD is the primary library and live-queue authority for its context. Trackbench
+persists authority-qualified profiles, workspace/list state, presets, jobs, and
+journals in SQLite. The compatibility shell retains its existing client state
+during migration; neither store becomes a mandatory mirror of the MPD database
+or a local library index.
 
 ## Suggested modules
 
@@ -203,11 +205,12 @@ cannot race the ordinary save debounce.
 Qt Widgets presentation split into a shared component library (virtualized
 track views, tab workspace, transport row, command palette, toasts, settings,
 shortcuts, and the versioned panel- and track-view-layout models/validators)
-plus
-per-application shells: the client's connection setup, server browser/search,
-queue tabs, and outputs; Trackbench's composed-panel renderer, folder
-navigation, local list tabs, tag grid, previews, metadata-operation history and
-reconciliation evidence, and job center. Panel layout
+plus one primary Trackbench shell: authority-bound MPD connection,
+server-browser/search, queue tabs, and outputs alongside the composed-panel
+renderer, folder navigation, local list tabs, tag grid, previews,
+metadata-operation history and reconciliation evidence, and job center. The
+compatibility Trackknife shell reuses the MPD components during migration.
+Panel layout
 owns only placement and sizing of registered instances, never application
 state. ADR-0052 hosts each captured metadata Properties task as a temporary
 protected tab in the Track Lists surface while excluding it from durable list
@@ -313,8 +316,11 @@ local, mapped-local, writable, and decodable sources before offering actions.
   bounded Unicode-scalar keep-first action without assigning it date parsing
   semantics. ADR-0065 translates a bounded Picard-style paste subset into
   ordinary typed actions and adds versioned conditional field removal without
-  adding mutation to `tkfmt-1`. Other format and artwork writes remain disabled
-  until their real preservation tests pass.
+  adding mutation to `tkfmt-1`. ADR-0066 permits semantic aliasing only through
+  explicit adapter tables, exposes other properties as independently mutable
+  freeform native fields, and carries exact-native imported deletion through
+  preview, write, journal, and recovery. Other format and artwork writes remain
+  disabled until their real preservation tests pass.
 - **Loudness:** libebur128 behind Trackknife-owned ReplayGain policy.
 - **Preparation:** ADR-0054 composes tag persistence, qualified ReplayGain
   storage, and filesystem rename/move into one immutable per-source review and
@@ -340,25 +346,29 @@ local, mapped-local, writable, and decodable sources before offering actions.
   normalized ordered schema-1 metadata transformation definitions owned by the
   serialized persistence worker, including their automatic tagging policy
   flags, exact matching payloads, numeric arguments, and dialect-qualified
-  conditions (ADRs 0049–0053 and 0064–0065), plus
-  separately versioned output-layout and raw destination profiles (ADR-0055)
-  and file-publication recovery evidence (ADR-0056).
+  conditions and exact-native removal identity (ADRs 0049–0053 and 0064–0066),
+  plus separately versioned output-layout and raw destination profiles
+  (ADR-0055) and file-publication recovery evidence (ADR-0056).
 - **Local output:** direct PipeWire with a narrow fallback-capable interface.
 
 ## Implementation sequence
 
-Steps 1–6 are complete (M0–M3 plus the M4 engine groundwork). The remaining
-sequence follows the ADR-0025 split:
+Steps 1–5 below were completed while establishing the separate authority
+backbones. ADR-0058 now places them in one primary Trackbench workspace without
+combining their queues or controllers:
 
 1. ~~MPD domain snapshots, session, browse/search, and reconnect tests.~~
 2. ~~Persistent queue/list tabs and the polished client workspace.~~
 3. ~~FFmpeg decode, bounded playback core, PipeWire output, local ingestion.~~
-4. Shared-library build restructure and the `trackbench` executable.
-5. Migrate local playback/ingestion into Trackbench; strip the client's Local
-   domain and return its transport to MPD-only.
-6. Trackbench tag grid and mutation framework, then MusicBrainz providers.
+4. ~~Shared-library build restructure and the `trackbench` executable.~~
+5. ~~Migrate local playback/ingestion into Trackbench and retain separate MPD
+   and local controllers.~~
+6. Finish the Trackbench tag grid and mutation framework, including the
+   combined metadata/path review and Rename/Move exposure; then add
+   MusicBrainz providers.
 7. Parallel ReplayGain, then converter/resampler and organized output.
-8. Melody endpoint in the client; hardening and packaging for both.
+8. Melody endpoint in Trackbench's MPD authority; hardening, compatibility-shell
+   migration, and packaging.
 
 Do not build a local library index, plugin SDK, or elaborate theme system
-before both applications' core experiences are excellent.
+before both authority experiences are excellent.

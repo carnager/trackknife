@@ -565,8 +565,8 @@ class Translator final {
         }
         if (node.text == "unset" && !warned_unset_) {
             warning(node.offset,
-                    "Trackbench translates $unset as an actual Remove field rule; it does not "
-                    "reproduce Picard's separate unset-versus-delete save behavior");
+                    "Trackbench translates $unset as an actual exact-native Remove field rule; "
+                    "it does not reproduce Picard's separate unset-versus-delete save behavior");
             warned_unset_ = true;
         }
         if (condition) {
@@ -574,10 +574,13 @@ class Translator final {
                 .target_field = std::move(*target),
                 .dialect = {},
                 .condition = *condition,
+                .match_mode = MetadataFieldMatchMode::exact_native,
             });
         } else {
-            result_.actions.push_back(
-                MetadataRemoveFieldAction{.target_field = std::move(*target)});
+            result_.actions.push_back(MetadataRemoveFieldAction{
+                .target_field = std::move(*target),
+                .match_mode = MetadataFieldMatchMode::exact_native,
+            });
         }
     }
 

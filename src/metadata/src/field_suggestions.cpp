@@ -3,6 +3,7 @@
 #include "trackknife/metadata/field_suggestions.hpp"
 
 #include "trackknife/metadata/document.hpp"
+#include "trackknife/metadata/flac_mapping.hpp"
 
 #include <algorithm>
 #include <array>
@@ -144,22 +145,30 @@ suggest_metadata_field_names(const std::string_view query,
     ranked.reserve(candidates.size());
     for (std::size_t input_order = 0U; input_order < candidates.size(); ++input_order) {
         const auto& candidate = candidates[input_order];
-        auto canonical_name = canonicalize_field_name(candidate.display_name);
-        if (canonical_name.empty()) {
+        auto match_name = canonicalize_field_name(candidate.display_name);
+        if (match_name.empty()) {
             continue;
         }
-        const auto match = match_rank(canonical_name, canonical_query);
+        const auto match = match_rank(match_name, canonical_query);
         if (!match) {
             continue;
         }
+        const auto property_identity = resolve_text_property_identity(candidate.display_name);
+        const auto exact_native =
+            candidate.kind == Kind::present
+                ? !property_identity.conventional
+                : candidate.kind == Kind::recent && !is_conventional_metadata_field(match_name);
+        auto canonical_name =
+            exact_native ? canonicalize_native_field_name(candidate.display_name) : match_name;
+        auto address = std::string{exact_native ? "native:" : "logical:"} + canonical_name;
         MetadataFieldSuggestion suggestion{
             .display_name = std::string{candidate.display_name},
             .canonical_name = canonical_name,
             .kind = candidate.kind,
         };
-        const auto existing = unique_positions.find(canonical_name);
+        const auto existing = unique_positions.find(address);
         if (existing == unique_positions.end()) {
-            unique_positions.emplace(std::move(canonical_name), ranked.size());
+            unique_positions.emplace(std::move(address), ranked.size());
             ranked.push_back(RankedSuggestion{
                 .suggestion = std::move(suggestion),
                 .match = *match,

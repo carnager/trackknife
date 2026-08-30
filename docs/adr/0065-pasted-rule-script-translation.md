@@ -47,9 +47,10 @@ silently.
   closing parenthesis following a complete rule is ignored with a visible
   warning, allowing recovery from common pasted statement punctuation.
 - `$unset(name)` and `$delete(name)` both generate Trackbench's actual
-  **Remove field** action. The importer explanation and a source-positioned
-  `$unset` warning state this semantic difference before rules can be accepted.
-  Wildcard target names are rejected.
+  **Remove exact native field** action per ADR-0066. ASCII case follows the
+  adapter, while separators and punctuation remain identity. The importer
+  explanation and a source-positioned `$unset` warning state this semantic
+  difference before rules can be accepted. Wildcard target names are rejected.
 - `$set(field,$left(%field%,N))` generates the typed keep-first action. Other
   supported value expressions generate a scalar `tkfmt-1` format action.
   Matching field assignments across `$if` branches become one conditional
@@ -67,6 +68,8 @@ silently.
 - Reversible SQLite migration 18 reserves action code 15 for conditional
   removal and stores its condition plus complete `tkfmt-1` dialect identity.
   Downgrade to schema 17 refuses while a code-15 row remains.
+- Reversible migration 19 adds the exact-native match mode to unconditional
+  and conditional removal without reinterpreting previously saved actions.
 - Import is limited to 1 MiB of valid UTF-8 source, 4,096 syntax nodes, 64
   nesting levels, and 256 generated actions. Translation and chain validation
   are Qt-free. Generated rules still require normal chain preview, optional
@@ -117,7 +120,8 @@ translator makes the stronger Trackbench meaning explicit instead.
 - Unsupported mutation functions and invalid conditional expressions fail
   closed.
 - Persistence restart coverage round-trips action code 15 and its complete
-  dialect identity through schema 18.
+  dialect identity through schema 18; ADR-0066's schema 19 additionally retains
+  the importer's exact-native match mode.
 - Offscreen editor coverage pastes a smaller cleanup sample, observes three
   readable generated rules, replaces the list, and retains the existing saved
   chain preview/stage workflow.

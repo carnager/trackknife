@@ -1,24 +1,21 @@
 # Open decisions
 
-Accepted foundations are recorded in ADRs through 0057. The MPD-client-first
-direction, separate live queue/working-list model, `libmpdclient` boundary,
-and the two-application split (a pure MPD client plus the standalone Trackbench
-tool sharing this repository's libraries) remain accepted. Proposed ADR-0058
-explicitly reopens only that process boundary for evaluation: one Trackbench
-workspace could host authority-bound MPD Queue and Local Queue tabs, with the
-active tab also switching the server-library/local-folders sidebar and the
-MPD-output/PipeWire-output selector. It does not propose a mixed queue or make
-local operations available to MPD rows. Acceptance requires the MPD queue to
-use the exact complete local track-view layout system, plus a migration and
-combined-process prototype; until then, ADR-0025 governs the product.
+Accepted foundations are recorded in ADRs through 0066. ADR-0058 supersedes
+ADR-0025's permanent process split: Trackbench is the primary workspace and
+hosts authority-bound MPD Queue and Local Queue tabs. The active primary tab
+switches the server-library/local-folders sidebar, MPD/PipeWire output selector,
+transport controller, row type, and available commands. The queues never mix,
+and local operations remain unavailable to MPD rows. The standalone Trackknife
+executable is a compatibility shell while committed search/stored-playlist tabs,
+profile ownership, and packaging entry points finish migrating.
 
 ## Resolved for M2–M3
 
 1. Credentials remain session-only until a desktop secret-service adapter is
    selected; ordinary settings and SQLite never receive passwords.
 2. Browse/search pages and artwork are bounded memory caches. Only explicit
-   working-list snapshots survive restart, so Trackknife does not create a
-   competing local library index.
+   working-list snapshots survive restart, so the MPD authority does not create
+   a competing local library index.
 3. Playback modes acknowledge optimistically and reconcile against the next
    authoritative snapshot. Stable-ID queue mutations remain pending until MPD
    confirms them; conflicts refresh instead of replaying the edit.
@@ -42,9 +39,10 @@ ADR-0030 persistent sink/default monitoring with strict explicit-target
 pause/recovery, and ADR-0031 exhaustive container-chapter projection through
 the shared logical segment model. ADR-0032 adds typed decoder selection,
 bounded tracker-subsong enumeration, and an explicit opt-in policy for
-alternate container streams. These contracts move into Trackbench
-unchanged; the ADR-0022
-domain chip and bound dual-domain transport are superseded by ADR-0025.
+alternate container streams. These contracts moved into Trackbench unchanged;
+ADR-0058 reuses the distinct MPD and local controllers behind the active
+primary tab rather than restoring the ADR-0022 domain chip or a mixed
+transport.
 
 ## Resolved M5 read, inspection, and draft foundation
 
@@ -95,36 +93,35 @@ scalar prefix extraction as an exposed saved action without treating it as a
 date parser. ADR-0065 adds a bounded Picard-style paste translator that
 discards source after generating typed rules, plus dialect-qualified
 conditional removal; it does not settle full chain interchange or external
-script compatibility. ADR-0054 fixes the shared preparation-
-plan shape and separates reusable relative output layouts from explicit
+script compatibility. ADR-0066 rejects separator-derived tag aliases: only an
+explicit format mapping creates a semantic field, while freeform native fields
+remain independently visible and mutable. It does not settle the typed native
+identity required by future ID3v2 or MP4 writers. ADR-0054 fixes the shared
+preparation-plan shape and separates reusable relative output layouts from explicit
 destination roots so rename/move, ReplayGain, and conversion can share one
 review vocabulary. ADR-0055 fixes the persisted schema-1 profile contracts,
 exact `linux-v1` sanitization, and the pure lexical planner's revision, alias,
 containment, and collision behavior against an explicit observation snapshot.
 ADR-0056 fixes no-symlink fresh preflight, actual same/cross-filesystem
 classification, and the numeric durable publication boundaries through
-dependent-state commit and source removal. ADR-0057 fixes locked descriptor-
-relative same-filesystem no-replace publication, rollback, and startup replay;
-case-folded aliases remain unsupported. Bind-mount confinement, the concrete
-dependent path transaction, same-filesystem undo, cross-filesystem execution,
-combined content intent,
+dependent-state commit and source removal. ADR-0057 fixes locked
+descriptor-relative same-filesystem no-replace publication, rollback, and
+startup replay. ADR-0059–0063 add the concrete dependent path transaction,
+same-filesystem undo, cross-filesystem execution, active-playback relocation,
+and bounded multi-source Apply. Cross-filesystem undo, combined content intent,
 portable/custom sanitization and Unicode normalization, grouped numbering,
-richer match dialects, native chain interchange, the separate capture-pattern grammar,
-other exact format writers, artwork mutation, and sidecars remain open M5
-decisions and capability work.
+richer match dialects, native chain interchange, the separate capture-pattern
+grammar, other exact format writers, artwork mutation, and sidecars remain open
+M5 decisions and capability work.
 
-## Needed during M4 (application split)
+## Needed to finish the unified workspace migration
 
-1. Shared-library layout and target boundaries for `core`, `titleformat`,
-   `formats`, `audio`, the PipeWire adapter, persistence infrastructure, and
-   reusable Widgets components.
-2. The SQLite migration policy for persisted MPD-client lists that contain
-   local raw-path rows (drop, export to Trackbench, or both).
-3. Local-path containment implementation and behavior for symlinks/bind
-   mounts.
-4. Shared UI budget measurements on large local folders.
-5. Album-grouping fallback rules for local files lacking MusicBrainz tags,
-   and cover-art source precedence (embedded art versus folder images).
+1. Migrate committed search and stored-playlist tabs into Trackbench without
+   weakening MPD/local authority selection.
+2. Settle connection-profile ownership and migration between the compatibility
+   shell and Trackbench.
+3. Decide the compatibility shell's packaging and eventual launcher/removal
+   story only after equivalent Trackbench surfaces are proven.
 
 ## Needed before M5–M8
 
@@ -144,8 +141,8 @@ decisions and capability work.
 
 - Whether a local-tool-owned library index is ever needed ("no database for
   now, maybe later").
-- Cross-tool integration: opening a mapped server item in Trackbench and
-  triggering an MPD database update after publication.
+- Cross-authority conveniences: opening a mapped server item as an explicit
+  local source and offering an explicit MPD database update after publication.
 - Deeper query/autoplaylist language.
 - Plugin ABI/distribution.
 - A transactional Melody import/upload protocol and destination adapter; no

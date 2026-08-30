@@ -3,6 +3,7 @@
 #include "bench/metadata_grid_model.hpp"
 
 #include "trackknife/core/local_sources.hpp"
+#include "trackknife/metadata/flac_mapping.hpp"
 
 #include <QApplication>
 #include <QBrush>
@@ -267,7 +268,13 @@ Qt::ItemFlags MetadataGridModel::flags(const QModelIndex& index) const {
 std::optional<int> MetadataGridModel::fieldColumn(const QString& name) const {
     const auto encoded = name.toUtf8();
     const std::string_view bytes{encoded.constData(), static_cast<std::size_t>(encoded.size())};
-    const auto field_index = selection_->field_index(bytes);
+    const auto native_first = !metadata::resolve_text_property_identity(bytes).conventional;
+    auto field_index =
+        native_first ? selection_->exact_native_field_index(bytes) : selection_->field_index(bytes);
+    if (!field_index) {
+        field_index = native_first ? selection_->field_index(bytes)
+                                   : selection_->exact_native_field_index(bytes);
+    }
     if (!field_index || *field_index >= static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         return std::nullopt;
     }
@@ -408,24 +415,60 @@ bool MetadataGridModel::stageTransformation(
         return false;
     }
 
-    std::set<std::pair<std::size_t, std::string>> addressed_fields;
+    using FieldAddress = std::pair<metadata::MetadataFieldMatchMode, std::string>;
+    const auto address_for = [](const metadata::MetadataTransformationCellPreview& cell) {
+        return FieldAddress{
+            cell.match_mode,
+            cell.match_mode == metadata::MetadataFieldMatchMode::exact_native
+                ? metadata::canonicalize_native_field_name(cell.display_field)
+                : cell.canonical_field,
+        };
+    };
+    std::set<std::pair<std::size_t, FieldAddress>> addressed_fields;
     for (const auto& cell : preview.cells) {
         if (cell.item_index >= selection_->item_count() || cell.canonical_field.empty() ||
             metadata::canonicalize_field_name(cell.display_field) != cell.canonical_field ||
-            !addressed_fields.emplace(cell.item_index, cell.canonical_field).second) {
+            (cell.match_mode != metadata::MetadataFieldMatchMode::logical &&
+             cell.match_mode != metadata::MetadataFieldMatchMode::exact_native) ||
+            !addressed_fields.emplace(cell.item_index, address_for(cell)).second) {
             emit editRejected(QStringLiteral("Transformation preview contains an invalid cell"));
             return false;
         }
-        const auto field_index = selection_->field_index(cell.canonical_field);
-        if (!field_index) {
-            if (cell.before) {
-                emit editRejected(
-                    QStringLiteral("The metadata draft changed after transformation preview"));
-                return false;
-            }
+    }
+
+    auto extended_selection = std::make_shared<metadata::StagedMetadataSelection>(*selection_);
+    std::map<FieldAddress, std::size_t> field_indexes;
+    for (const auto& cell : preview.cells) {
+        const auto address = address_for(cell);
+        if (field_indexes.contains(address)) {
             continue;
         }
-        const auto current = project_cell(*selection_, patches_, cell.item_index, *field_index);
+        auto field_index = cell.match_mode == metadata::MetadataFieldMatchMode::exact_native
+                               ? extended_selection->exact_native_field_index(cell.display_field)
+                               : extended_selection->field_index(cell.canonical_field);
+        if (!field_index) {
+            auto inserted = cell.match_mode == metadata::MetadataFieldMatchMode::exact_native
+                                ? extended_selection->ensure_exact_native_field(
+                                      cell.display_field, "Exact native: " + cell.display_field)
+                                : extended_selection->ensure_missing_field(cell.canonical_field,
+                                                                           cell.display_field);
+            if (!inserted) {
+                emit editRejected(display_utf8(inserted.error().message));
+                return false;
+            }
+            field_index = *inserted;
+        }
+        field_indexes.emplace(address, *field_index);
+    }
+
+    for (const auto& cell : preview.cells) {
+        const auto found = field_indexes.find(address_for(cell));
+        if (found == field_indexes.end()) {
+            emit editRejected(QStringLiteral("Transformation preview contains an invalid cell"));
+            return false;
+        }
+        const auto current =
+            project_cell(*extended_selection, patches_, cell.item_index, found->second);
         const auto current_values = current.present
                                         ? std::optional<std::vector<std::string>>{*current.values}
                                         : std::nullopt;
@@ -436,28 +479,9 @@ bool MetadataGridModel::stageTransformation(
         }
     }
 
-    auto extended_selection = std::make_shared<metadata::StagedMetadataSelection>(*selection_);
-    std::map<std::string, std::size_t> field_indexes;
-    for (const auto& cell : preview.cells) {
-        if (field_indexes.contains(cell.canonical_field)) {
-            continue;
-        }
-        auto field_index = extended_selection->field_index(cell.canonical_field);
-        if (!field_index) {
-            auto inserted =
-                extended_selection->ensure_missing_field(cell.canonical_field, cell.display_field);
-            if (!inserted) {
-                emit editRejected(display_utf8(inserted.error().message));
-                return false;
-            }
-            field_index = *inserted;
-        }
-        field_indexes.emplace(cell.canonical_field, *field_index);
-    }
-
     auto checked_patches = patches_;
     for (const auto& cell : preview.cells) {
-        const auto found = field_indexes.find(cell.canonical_field);
+        const auto found = field_indexes.find(address_for(cell));
         if (found == field_indexes.end()) {
             emit editRejected(QStringLiteral("Transformation preview contains an invalid cell"));
             return false;
@@ -486,7 +510,7 @@ bool MetadataGridModel::stageTransformation(
     std::vector<DraftRequest> requests;
     requests.reserve(preview.cells.size());
     for (const auto& cell : preview.cells) {
-        const auto found = field_indexes.find(cell.canonical_field);
+        const auto found = field_indexes.find(address_for(cell));
         if (found == field_indexes.end()) {
             emit editRejected(QStringLiteral("Transformation preview contains an invalid cell"));
             return false;
@@ -847,7 +871,13 @@ std::optional<int> MetadataAggregateModel::fieldRow(const QString& name) const {
     }
     const auto encoded = name.toUtf8();
     const std::string_view bytes{encoded.constData(), static_cast<std::size_t>(encoded.size())};
-    const auto field_index = grid_model_->selection().field_index(bytes);
+    const auto native_first = !metadata::resolve_text_property_identity(bytes).conventional;
+    auto field_index = native_first ? grid_model_->selection().exact_native_field_index(bytes)
+                                    : grid_model_->selection().field_index(bytes);
+    if (!field_index) {
+        field_index = native_first ? grid_model_->selection().field_index(bytes)
+                                   : grid_model_->selection().exact_native_field_index(bytes);
+    }
     if (!field_index || *field_index >= static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         return std::nullopt;
     }

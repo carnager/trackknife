@@ -7,6 +7,33 @@ work on the Trackknife project, whose primary product is the unified
 
 The ordered delivery plan is [`../MILESTONES.md`](../MILESTONES.md).
 
+## Current continuation point
+
+M5 is active, implementation is accepted through ADR-0066, and the persistence
+schema is version 19. The latest completed slice replaces spelling-derived tag
+aliases with explicit adapter mappings and separately mutable freeform native
+fields. Start metadata work with
+[`metadata-and-files.md`](metadata-and-files.md),
+[`adr/0065-pasted-rule-script-translation.md`](adr/0065-pasted-rule-script-translation.md),
+and
+[`adr/0066-explicit-semantic-and-freeform-field-identity.md`](adr/0066-explicit-semantic-and-freeform-field-identity.md).
+The handoff baseline is 44/44 development tests, 10/10 focused sanitizer tests,
+and a clean full clang-tidy build.
+
+The next implementation slice is to combine final metadata and planned paths
+in one immutable review, then expose Rename and Move through the existing
+ADR-0054–0063 planning, preflight, publication, recovery, and reconciliation
+core. The exact current completion list and next marker live under **M5 — Fast
+tag workspace and safe file operations** in
+[`../MILESTONES.md`](../MILESTONES.md).
+
+ADR-0058 supersedes ADR-0025's permanent process split. If an older feature
+document still describes Trackbench as unable to speak MPD, read that as a
+historical description of the local authority: the primary Trackbench process
+hosts both authorities, while local mutation services remain structurally
+unavailable to MPD rows. The standalone Trackknife executable remains a
+compatibility shell during migration.
+
 ## Reading order
 
 1. [`product.md`](product.md) — identity, principles, scope, and priorities.

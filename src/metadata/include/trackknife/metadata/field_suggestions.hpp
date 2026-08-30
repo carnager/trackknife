@@ -37,9 +37,10 @@ struct MetadataFieldSuggestion {
 [[nodiscard]] std::span<const MetadataFieldSuggestionCandidate>
 metadata_field_suggestion_catalog() noexcept;
 
-// Deterministic ASCII-aware ranking over canonical field identities. Exact,
-// prefix, substring, and ordered-subsequence matches are returned in that
-// order; separator spelling does not affect matching.
+// Deterministic ASCII-aware discovery ranking. Exact, prefix, substring, and
+// ordered-subsequence matches are returned in that order; separator spelling
+// does not affect matching, but present freeform and semantic addresses remain
+// distinct results.
 [[nodiscard]] std::vector<MetadataFieldSuggestion>
 suggest_metadata_field_names(std::string_view query,
                              std::span<const MetadataFieldSuggestionCandidate> candidates,

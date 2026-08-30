@@ -2,11 +2,11 @@
 
 ## Application scope
 
-This document specifies Trackbench capabilities. Per ADR-0025, all tagging,
-artwork, MusicBrainz, file rename/move/copy, ReplayGain, and conversion work
-belongs to Trackbench, the standalone local-file workstation. The Trackknife
-client only reads and displays metadata reported by the server and performs no
-local file operations.
+This document specifies Trackbench's Local Queue authority. Per ADR-0058, all
+tagging, artwork, MusicBrainz, file rename/move/copy, ReplayGain, and conversion
+work remains structurally limited to local-file rows. Trackbench's MPD Queue
+authority and the compatibility Trackknife shell only read metadata reported by
+the server and cannot reach local file operations.
 
 ## Metadata is a typed, multi-source model
 
@@ -22,27 +22,29 @@ MetadataDocument
   unknown/native objects: retained by format adapter where possible
 
 Field
-  canonical lookup name
-  original/native name or frame identity
+  explicit semantic name, when the adapter recognizes one
+  exact native property/frame/atom identity
   ordered values: [string]
   language/description qualifiers where the format supports them
   provenance: cached snapshot | annotation | embedded | stream | segment | sidecar
 ```
 
-Field lookup for title formatting is case-insensitive. Writes should preserve
-unknown native data and the original representation when it is safe. The UI
-may present conventional names (`Artist`, `Album Artist`) while permitting
-arbitrary custom fields.
+Semantic field lookup for title formatting is case-insensitive. Freeform native
+fields retain their format-defined identity and are displayed, editable, and
+removable without being aliased to a similar semantic field. Writes should
+preserve unknown native data and the original representation when it is safe.
 
 Technical properties—codec, duration, sample rate, channels, bit depth,
 encoder, container, bitrate—are read-only decoder/container information, not
 ordinary editable tags. Playback statistics and Trackbench-only annotations
 also have distinct provenance.
 
-**Trackbench decision (ADRs 0033, 0043–0047, M5 baseline):** the Qt-free document
-and conservative TagLib property reader are implemented. Canonical lookup lowercases
-ASCII letters and ignores spaces, underscores, and hyphens while retaining the
-adapter's native exposed key. Reads preserve ordered repeated values, project
+**Trackbench decision (ADRs 0033, 0043–0047, and 0066, M5 baseline):** the
+Qt-free document and conservative TagLib property reader are implemented.
+ADR-0066 supersedes separator-derived aliasing: only an explicit adapter table
+creates a semantic field, while every unrecognized exposed property retains a
+case-folded native identity without losing separators or punctuation. Reads
+preserve ordered repeated values, project
 the initial MusicBrainz identity set, inventory unsupported native objects, and
 carry a raw-path filesystem revision. Native FLAC now has an independent
 Vorbis-comment text writer that creates only a distinct prepared copy, rejects
@@ -81,8 +83,11 @@ Do not assume the same logical field maps identically everywhere. For example,
 foobar2000 historically maps common ID3 fields to native frames (`TITLE` to
 `TIT2`, `ARTIST` to `TPE1`, `ALBUM ARTIST` to `TPE2`, track/total track to a
 combined `TRCK`, disc/total discs to `TPOS`) and uses user-defined frames for
-many non-native names. Trackbench needs a documented mapping table per adapter
-and interoperability fixtures with other taggers/players.
+many non-native names. A `TXXX` description that resembles a conventional
+field is still a separate native object; no spelling heuristic may map it to
+`TPE2` or another standard frame. Trackbench needs a documented mapping table
+and typed native identity per adapter, plus interoperability fixtures with
+other taggers/players.
 
 ### Native FLAC text mapping (`taglib-flac-v1`)
 
@@ -113,9 +118,11 @@ added fields is:
 
 Arbitrary additions retain their entered separators and uppercase ASCII
 letters. Invalid Xiph keys, invalid UTF-8, exact empty values, and artwork keys
-are blocked rather than sanitized or reinterpreted. Replacing/removing one
-logical field removes all separator/case aliases of that canonical identity
-before installing the planned key and ordered values.
+are blocked rather than sanitized or reinterpreted. The mapping table is exact
+apart from Vorbis-comment ASCII case: `ALBUMARTIST` is semantic
+`albumartist`, while `ALBUM ARTIST` is a separate freeform property. A logical
+edit removes/replaces only explicitly mapped native properties for that
+semantic field. A freeform edit addresses only its exact native key.
 
 ## Reading and merge precedence
 
@@ -289,10 +296,11 @@ ReplayGain records appear in the same inspection workspace because users
 reason about them as metadata. Analysis remains a separate PCM job with its own
 algorithm/provenance and cannot be faked as an ordinary text-field edit.
 
-Server items live in the Trackknife client, which displays their metadata but
-offers no file-write actions. Trackbench edits only files it opened from disk;
-opening a mapped server item in Trackbench is a deferred cross-tool
-convenience (ADR-0025), not an eligibility rule inside the client.
+Server items live in Trackbench's MPD Queue authority, which displays their
+metadata but offers no file-write actions. Trackbench edits only sources
+explicitly opened under its Local Queue authority; opening a mapped server item
+as a local source is a deferred cross-authority convenience (ADR-0058), not an
+eligibility rule for mutation.
 
 Edits are staged in memory. A staged document must record the source revision
 (file identity, size, mtime, and preferably tag hash). If a file changes before
@@ -370,7 +378,7 @@ shows the original and final document plus optionally each intermediate step.
 Do not serialize executable host-language code; persist declarative action data
 and formatting source.
 
-**Trackbench decision (ADRs 0048–0053 and 0064–0065, M5 transformation
+**Trackbench decision (ADRs 0048–0053 and 0064–0066, M5 transformation
 slices):** schema 1 chains are Qt-free ordered declarative data evaluated
 against the selected items' current staged draft. The first actions set exact
 values, remove a field, trim/lowercase/uppercase each existing value without
@@ -404,9 +412,10 @@ Per ADR-0052, Properties is a temporary protected `Tags · N tracks` workspace
 tab rather than a separately sized top-level window. Its transformation preview
 shows Field/Old/New at the top level and retains affected-file plus producing-
 step diagnostics as an expandable child beneath each exact changed cell.
-Transformation target fields reuse the ranked canonical completion behavior
-over field names actually present in the selected tags; completion is guidance
-only, and arbitrary new target names remain valid.
+Transformation target fields reuse ranked completion over names actually
+present in the selected tags. Separator-insensitive ranking is discovery only:
+distinct semantic and freeform results retain distinct mutation addresses.
+Arbitrary new target names remain valid.
 Per ADR-0053, remove-matching and replace-matching compare complete values by
 case-sensitive valid-UTF-8 byte equality, with no normalization, substring,
 glob, regular-expression, or locale behavior. Remove deletes every match and
@@ -437,8 +446,13 @@ across true/false branches collapse into one conditional value rule, while a
 self-prefix cleanup guarded by the same field remains a no-op when absent and
 becomes a normal keep-first rule. Picard's `comment:` default-comment target
 maps visibly to Trackbench's conventional `COMMENT`; wildcard deletion remains
-unsupported. Full chain interchange, grouped numbering, richer match dialects,
-and the separately versioned capture-pattern parser remain future slices.
+unsupported. Per ADR-0066, translated `$unset` and `$delete` actions address
+the exact adapter-exposed native name, with format-defined case handling and no
+separator aliasing. A hand-authored **Remove field** action remains semantic.
+Migration 19 persists exact-native removal and carries the same address through
+the operation journal. Full chain interchange, grouped numbering, richer match
+dialects, and the separately versioned capture-pattern parser remain future
+slices.
 
 ## Artwork
 
@@ -624,10 +638,10 @@ remains a language function but is not a substitute for path safety.
 - Use explicit overwrite/skip/rename/error conflict policy; default to error.
 - Journal completed steps durably enough to resume or reverse after a crash.
 - Update persisted paths, Trackbench list references, preparation selections,
-  statistics, sidecars, and active playback references as one logical
-  transaction. Trackbench speaks no MPD protocol; if a destination happens to
-  be an MPD music root, requesting a server update afterwards is a job for any
-  MPD client, including Trackknife (ADR-0025).
+  statistics, sidecars, and active local-playback references as one logical
+  transaction. If a destination happens to be an MPD music root, a database
+  update is a separate explicit command in the MPD authority; it is never part
+  of or inferred by the local publication transaction (ADR-0058).
 - If the persistence update fails after filesystem success, keep a
   reconciliation record; do not pretend the operation rolled back when it did
   not.
@@ -680,9 +694,9 @@ Proposed sidecar requirements:
 - conflict behavior when source and sidecar are changed independently;
 - opt-in export/import and cleanup.
 
-Trackbench maintains no library database for now (ADR-0025); a future local
-index may cache the same data for speed but is not the only copy when the user
-expects portable persistence.
+Trackbench maintains no local library database for now (ADR-0058); a future
+local index may cache the same data for speed but is not the only copy when the
+user expects portable persistence.
 
 ## Tests
 

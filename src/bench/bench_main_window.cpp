@@ -13,6 +13,7 @@
 #include "trackknife/formats/artwork.hpp"
 #include "trackknife/formats/cue_sheet.hpp"
 #include "trackknife/formats/probe.hpp"
+#include "trackknife/metadata/flac_mapping.hpp"
 #include "trackknife/metadata/local_reader.hpp"
 #include "trackknife/operations/metadata_commit.hpp"
 #include "trackknife/persistence/operation_journal.hpp"
@@ -853,7 +854,8 @@ void append_metadata_value(metadata::MetadataDocument& document, std::string nat
     if (value.empty()) {
         return;
     }
-    const auto canonical_name = metadata::canonicalize_field_name(native_name);
+    const auto canonical_name =
+        metadata::resolve_text_property_identity(native_name).canonical_name;
     if (canonical_name.empty()) {
         return;
     }
@@ -871,7 +873,8 @@ void prepend_metadata_value(metadata::MetadataDocument& document, std::string na
     if (value.empty()) {
         return;
     }
-    const auto canonical_name = metadata::canonicalize_field_name(native_name);
+    const auto canonical_name =
+        metadata::resolve_text_property_identity(native_name).canonical_name;
     if (canonical_name.empty()) {
         return;
     }
@@ -903,7 +906,8 @@ void append_missing_probed_metadata(metadata::MetadataDocument& document,
         primary_names.insert(field.canonical_name);
     }
     for (const auto& tag : tags) {
-        const auto canonical_name = metadata::canonicalize_field_name(tag.name);
+        const auto canonical_name =
+            metadata::resolve_text_property_identity(tag.name).canonical_name;
         if (!primary_names.contains(canonical_name)) {
             append_metadata_value(document, tag.name, tag.value, metadata::FieldProvenance::stream);
         }
@@ -3817,7 +3821,10 @@ BenchMainWindow::ListTab* BenchMainWindow::addListTab(persistence::ListDocument 
         row.duration_ms = item.duration_ms;
         row.source_revision = item.source_revision;
         for (const auto& field : item.fields) {
-            const auto canonical_name = metadata::canonicalize_field_name(field.name);
+            const auto canonical_name =
+                field.name.empty()
+                    ? metadata::resolve_text_property_identity(field.native_name).canonical_name
+                    : field.name;
             if (!canonical_name.empty()) {
                 row.metadata.fields.push_back(metadata::MetadataField{
                     .canonical_name = canonical_name,

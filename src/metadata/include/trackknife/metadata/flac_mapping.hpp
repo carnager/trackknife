@@ -5,6 +5,7 @@
 #include "trackknife/core/result.hpp"
 #include "trackknife/metadata/staged_patch.hpp"
 
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -16,6 +17,19 @@ struct FlacTextFieldMapping {
 
     friend bool operator==(const FlacTextFieldMapping&, const FlacTextFieldMapping&) = default;
 };
+
+struct TextPropertyIdentity {
+    std::string canonical_name;
+    bool conventional{false};
+
+    friend bool operator==(const TextPropertyIdentity&, const TextPropertyIdentity&) = default;
+};
+
+// Resolves only repository-owned, explicitly enumerated property mappings.
+// Unknown names retain their case-folded native spelling, including spaces,
+// underscores, hyphens, and punctuation; similarity never creates an alias.
+[[nodiscard]] TextPropertyIdentity resolve_text_property_identity(std::string_view native_name);
+[[nodiscard]] bool is_conventional_metadata_field(std::string_view canonical_name);
 
 // Resolves one Trackbench field to the exact Xiph-comment key used by the
 // native FLAC adapter. Existing native spelling wins; known newly added fields

@@ -1,21 +1,23 @@
 # Compatibility and inspiration
 
-Since ADR-0025 the repository builds two applications: Trackknife, the pure
-MPD/Melody client, and Trackbench, the foobar2000-inspired local-file
-workstation. The MPD/Melody sections below describe Trackknife; the
-foobar2000-derived sections describe Trackbench.
+ADR-0058 makes Trackbench the primary workspace for two authority-bound
+contexts: MPD/Melody server work and foobar2000-inspired local-file work. The
+standalone Trackknife MPD executable remains a compatibility shell during
+migration. Compatibility requirements attach to the authority and adapter, not
+to a permanent process split.
 
 ## MPD compatibility
 
-Trackknife's primary interoperability target is the documented MPD protocol.
-It discovers commands and tag types at connection time and must work with stock
-MPD without Melody extensions. The server remains authoritative for its
-database, current queue, playback, mixer/options, outputs, and stored playlists.
+Trackbench's MPD authority, and the compatibility Trackknife shell while it
+remains, target the documented MPD protocol. They discover commands and tag
+types at connection time and must work with stock MPD without Melody
+extensions. The server remains authoritative for its database, current queue,
+playback, mixer/options, outputs, and stored playlists.
 
-Melody is a first-class server target because it speaks MPD. Trackknife may use
-advertised Melody additions such as richer output state and exclusive output
-handoff, but those additions remain capability-gated and cannot change stock
-MPD behavior. Protocol fixtures name whether they come from official MPD
+Melody is a first-class server target because it speaks MPD. The MPD authority
+may use advertised Melody additions such as richer output state and exclusive
+output handoff, but those additions remain capability-gated and cannot change
+stock MPD behavior. Protocol fixtures name whether they come from official MPD
 documentation, stock MPD, or the local `../melody` implementation.
 
 **Trackknife decision:** an `idle` event invalidates cached state; it does not
@@ -31,13 +33,13 @@ the high-value outcomes: tabbed playlist/working surfaces, fast interaction,
 gapless local playback, ReplayGain, broad formats, powerful metadata workflows,
 configurable views, conversion, and predictable bulk operations. It does not
 reproduce foobar2000's UI, component ABI, private configuration formats, or
-scripting quirks. Trackknife's reference points are different: Cantata's
+scripting quirks. The MPD authority's reference points are different: Cantata's
 interaction density and MPD/Melody protocol compatibility, not foobar2000.
 
 ## Formatting language: no external compatibility promise
 
 ADR-0008 replaces the former 1:1 foobar2000 title-formatting target. The
-shared `tkfmt-1` language, used by both applications, uses the familiar
+shared `tkfmt-1` language, used by both authorities, uses the familiar
 `%field%` and `$function(arguments)` shape also used by MusicBrainz Picard,
 but the project's own specification and executable corpus are normative.
 
@@ -57,7 +59,7 @@ Consequences:
 
 Foobar-style query syntax is deferred rather than a compatibility requirement.
 MPD's advertised search/filter behavior serves the initial client. Any later
-query language in either application needs its own versioned specification;
+query language in either authority needs its own versioned specification;
 formatting expressions and queries remain different languages.
 
 ## Metadata and workflow parity
@@ -79,12 +81,14 @@ implementation details.
 
 The ADR-0065 paste importer helps migrate a small documented cleanup subset by
 translating it into Trackbench's versioned models. It does not make the
-external language or source text canonical.
+external language or source text canonical. Per ADR-0066, imported deletion
+targets the exact adapter-exposed native name; Trackbench does not interpret a
+legacy/custom spelling as an alias of a conventional field.
 
 ## Rich source references: retained lesson
 
-A playlist and library need more than a path. Both applications use one shared
-logical record:
+A playlist and library need more than a path. Both Trackbench authorities and
+the compatibility shell use one shared logical record:
 
 ```text
 TrackRef
@@ -100,8 +104,8 @@ TrackRef
 A path or MPD queue position is mutable data, not identity. When a local move
 or rename succeeds in Trackbench, its lists, local playback, statistics, and
 sidecar references follow one logical transaction. Updating the MPD database
-remains a separate visible server operation for any MPD client, including
-Trackknife.
+remains a separate visible server-authority operation and is never an implicit
+part of a local publication.
 
 Metadata precedence is:
 

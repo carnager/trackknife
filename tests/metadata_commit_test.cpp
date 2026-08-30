@@ -532,6 +532,7 @@ interrupted_record(const metadata::MetadataWritePlanSource& plan, const core::St
                     .kind = change.intents.front().kind,
                     .planned_values = change.intents.front().values,
                     .item_indexes = std::move(item_indexes),
+                    .exact_native_name = change.exact_native_name,
                 },
             },
         .failure = std::nullopt,

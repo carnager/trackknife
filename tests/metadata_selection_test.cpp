@@ -185,7 +185,10 @@ void selectionStatesAreDeterministicAndSparse() {
     CHECK(mood && extended.cell(0U, *mood) == nullptr);
     CHECK(mood && extended.cell(1U, *mood) == nullptr);
     const auto same_mood = extended.ensure_missing_field("m_o-o d", "Ignored duplicate");
-    CHECK(same_mood == mood);
+    CHECK(same_mood.has_value());
+    CHECK(same_mood != mood);
+    CHECK(same_mood &&
+          extended.field(*same_mood).exact_native_name == std::optional<std::string>{"m_o-o d"});
     const auto empty_field = extended.ensure_missing_field(" _- ", "Empty");
     CHECK(!empty_field.has_value());
     const auto field_limit = extended.ensure_missing_field("Energy", "Energy", 8U);
@@ -236,6 +239,7 @@ void fieldSuggestionsAreFuzzyDeterministicAndOpenEnded() {
         MetadataFieldSuggestionCandidate{"Title", MetadataFieldSuggestionKind::conventional},
         MetadataFieldSuggestionCandidate{"TITLE", MetadataFieldSuggestionKind::present},
         MetadataFieldSuggestionCandidate{"Album Artist", MetadataFieldSuggestionKind::conventional},
+        MetadataFieldSuggestionCandidate{"ALBUM ARTIST", MetadataFieldSuggestionKind::present},
         MetadataFieldSuggestionCandidate{"MusicBrainz Track Id",
                                          MetadataFieldSuggestionKind::musicbrainz},
         MetadataFieldSuggestionCandidate{"MusicBrainz Release Track Id",
@@ -249,8 +253,11 @@ void fieldSuggestionsAreFuzzyDeterministicAndOpenEnded() {
     CHECK(exact[0U].kind == MetadataFieldSuggestionKind::present);
 
     const auto fuzzy = suggest_metadata_field_names("alb art", candidates);
-    CHECK(fuzzy.size() == 1U);
-    CHECK(fuzzy[0U].display_name == "Album Artist");
+    CHECK(fuzzy.size() == 2U);
+    CHECK(fuzzy[0U].display_name == "ALBUM ARTIST");
+    CHECK(fuzzy[0U].canonical_name == "album artist");
+    CHECK(fuzzy[1U].display_name == "Album Artist");
+    CHECK(fuzzy[1U].canonical_name == "albumartist");
 
     const auto musicbrainz = suggest_metadata_field_names("mb track", candidates);
     CHECK(musicbrainz.size() == 2U);
@@ -261,7 +268,7 @@ void fieldSuggestionsAreFuzzyDeterministicAndOpenEnded() {
     CHECK(initial.size() == 3U);
     CHECK(initial[0U].display_name == "CUSTOM_FIELD");
     CHECK(initial[1U].display_name == "TITLE");
-    CHECK(initial[2U].display_name == "Mood");
+    CHECK(initial[2U].display_name == "ALBUM ARTIST");
     CHECK(suggest_metadata_field_names("no such field", candidates).empty());
     CHECK(suggest_metadata_field_names("title", candidates, 0U).empty());
 
