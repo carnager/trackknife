@@ -8,6 +8,7 @@
 #include "trackknife/operations/preparation_plan.hpp"
 #include "trackknife/persistence/list_repository.hpp"
 
+#include <QByteArray>
 #include <QDialog>
 #include <QFutureWatcher>
 #include <QPointer>
@@ -34,6 +35,7 @@ class QInputDialog;
 class QLineEdit;
 class QListWidget;
 class QPushButton;
+class QSplitter;
 class QTableView;
 class QTimer;
 class QVBoxLayout;
@@ -86,6 +88,14 @@ struct OutputProfileStore {
     std::function<void(core::StableId, Completion)> remove_destination;
 };
 
+struct MetadataDialogLayoutStore {
+    using LoadCompletion = std::function<void(QByteArray, QString)>;
+    using Completion = std::function<void(QString)>;
+
+    std::function<void(QString, LoadCompletion)> load;
+    std::function<void(QString, QByteArray, Completion)> save;
+};
+
 struct MetadataApplyProgressState;
 struct FilePublicationApplyProgressState;
 
@@ -102,7 +112,8 @@ class MetadataPropertiesDialog final : public QDialog {
                              OutputProfileStore output_profile_store = {},
                              FilePublicationPlanApplierFactory file_plan_applier_factory = {},
                              FilePublicationApplyObserver file_apply_observer = {},
-                             QWidget* parent = nullptr);
+                             QWidget* parent = nullptr,
+                             MetadataDialogLayoutStore layout_store = {});
     ~MetadataPropertiesDialog() override;
 
   private:
@@ -153,6 +164,8 @@ class MetadataPropertiesDialog final : public QDialog {
     void editCurrentValues();
     void promptTransformation(std::optional<core::StableId> initially_selected = std::nullopt,
                               bool preview_initially_selected = false);
+    void restoreLayoutState();
+    void persistLayoutState();
     bool eventFilter(QObject* watched, QEvent* event) override;
     void closeEvent(QCloseEvent* event) override;
 
@@ -169,6 +182,7 @@ class MetadataPropertiesDialog final : public QDialog {
     OutputProfileStore output_profile_store_;
     FilePublicationPlanApplierFactory file_plan_applier_factory_;
     FilePublicationApplyObserver file_apply_observer_;
+    MetadataDialogLayoutStore layout_store_;
     std::vector<persistence::SavedMetadataTransformationChain> transformation_catalog_;
     std::vector<persistence::SavedOutputLayoutProfile> output_layout_catalog_;
     std::vector<persistence::SavedDestinationProfile> destination_catalog_;
@@ -218,6 +232,8 @@ class MetadataPropertiesDialog final : public QDialog {
     MetadataAggregateModel* aggregate_model_{nullptr};
     QTableView* fields_{nullptr};
     QTableView* file_list_{nullptr};
+    QSplitter* content_splitter_{nullptr};
+    QSplitter* metadata_splitter_{nullptr};
     QTimer* selection_debounce_{nullptr};
     QTimer* apply_progress_timer_{nullptr};
     QPointer<QDialog> exact_values_dialog_;
@@ -229,6 +245,8 @@ class MetadataPropertiesDialog final : public QDialog {
     std::shared_ptr<FilePublicationApplyProgressState> file_apply_progress_state_;
     QString selection_summary_;
     QString revision_summary_;
+    QByteArray pending_content_splitter_state_;
+    QByteArray pending_metadata_splitter_state_;
     std::size_t loaded_item_count_{0U};
     std::size_t loaded_source_count_{0U};
     std::size_t loaded_field_count_{0U};
@@ -248,6 +266,7 @@ class MetadataPropertiesDialog final : public QDialog {
     bool apply_running_{false};
     bool applying_file_paths_{false};
     bool apply_committed_{false};
+    bool layout_state_saved_{false};
 };
 
 } // namespace trackknife::bench

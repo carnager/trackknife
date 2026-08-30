@@ -4,6 +4,7 @@
 
 #include <QMetaObject>
 #include <QPointer>
+#include <QSettings>
 #include <QString>
 #include <QThread>
 
@@ -21,6 +22,18 @@ namespace {
 
 [[nodiscard]] QString errorText(const core::Error& error) {
     return QString::fromStdString(error.message);
+}
+
+[[nodiscard]] QString settingsErrorText(const QSettings::Status status) {
+    switch (status) {
+    case QSettings::NoError:
+        return {};
+    case QSettings::AccessError:
+        return QStringLiteral("Settings storage could not be accessed");
+    case QSettings::FormatError:
+        return QStringLiteral("Settings storage has an invalid format");
+    }
+    return QStringLiteral("Settings storage failed");
 }
 
 // The system Qt libraries are not ThreadSanitizer-instrumented, so their
@@ -343,6 +356,40 @@ void ListPersistenceService::removeDestinationProfile(core::StableId id,
             return;
         }
         invokeQueued(self, [callback = std::move(callback), error]() mutable { callback(error); });
+    });
+}
+
+void ListPersistenceService::loadUiState(QString key, UiStateCallback callback) {
+    const QPointer self{this};
+    invokeQueued(worker_, [self, key = std::move(key), callback = std::move(callback)]() mutable {
+        QSettings settings;
+        auto value = settings.value(key).toByteArray();
+        auto error = settingsErrorText(settings.status());
+        if (!self || !callback) {
+            return;
+        }
+        invokeQueued(self, [callback = std::move(callback), value = std::move(value),
+                            error = std::move(error)]() mutable {
+            callback(std::move(value), std::move(error));
+        });
+    });
+}
+
+void ListPersistenceService::saveUiState(QString key, QByteArray value,
+                                         CompletionCallback callback) {
+    const QPointer self{this};
+    invokeQueued(worker_, [self, key = std::move(key), value = std::move(value),
+                           callback = std::move(callback)]() mutable {
+        QSettings settings;
+        settings.setValue(key, value);
+        settings.sync();
+        auto error = settingsErrorText(settings.status());
+        if (!self || !callback) {
+            return;
+        }
+        invokeQueued(self, [callback = std::move(callback), error = std::move(error)]() mutable {
+            callback(std::move(error));
+        });
     });
 }
 

@@ -56,6 +56,9 @@
 namespace trackknife::bench {
 namespace {
 
+constexpr auto transformation_geometry_key = "workspace/metadata-transformation-geometry-v1";
+constexpr auto transformation_splitter_key = "workspace/metadata-transformation-splitter-v1";
+
 class MetadataTransformationDialog final : public QDialog {
   public:
     using StageCallback =
@@ -68,12 +71,14 @@ class MetadataTransformationDialog final : public QDialog {
                                  StageCallback stage, MetadataTransformationStore store,
                                  QWidget* parent,
                                  std::optional<core::StableId> initially_selected = std::nullopt,
-                                 const bool preview_initially_selected = false)
+                                 const bool preview_initially_selected = false,
+                                 MetadataDialogLayoutStore layout_store = {})
         : QDialog(parent), watcher_(this), selection_(std::move(selection)),
           draft_(std::move(draft)), item_indexes_(std::move(item_indexes)),
           track_labels_(std::move(track_labels)), stage_(std::move(stage)),
           store_(std::move(store)), initially_selected_(initially_selected),
-          preview_initially_selected_(preview_initially_selected) {
+          preview_initially_selected_(preview_initially_selected),
+          layout_store_(std::move(layout_store)) {
         setObjectName(QStringLiteral("bench-metadata-transformation"));
         setWindowTitle(QStringLiteral("Tagging script editor[*]"));
         setWindowModality(Qt::WindowModal);
@@ -102,11 +107,11 @@ class MetadataTransformationDialog final : public QDialog {
         catalog_row->addWidget(delete_saved_);
         layout->addLayout(catalog_row);
 
-        auto* content = new QSplitter(Qt::Horizontal, this);
-        content->setObjectName(QStringLiteral("bench-metadata-transformation-splitter"));
-        content->setChildrenCollapsible(false);
+        content_splitter_ = new QSplitter(Qt::Horizontal, this);
+        content_splitter_->setObjectName(QStringLiteral("bench-metadata-transformation-splitter"));
+        content_splitter_->setChildrenCollapsible(false);
 
-        auto* editor_pane = new QWidget(content);
+        auto* editor_pane = new QWidget(content_splitter_);
         auto* editor_layout = new QVBoxLayout(editor_pane);
         editor_layout->setContentsMargins(0, 0, 0, 0);
         editor_layout->setSpacing(6);
@@ -291,9 +296,9 @@ class MetadataTransformationDialog final : public QDialog {
         raw_layout->addWidget(raw_diagnostics_);
         editor_tabs_->addTab(raw_page, QStringLiteral("Raw script"));
         editor_layout->addWidget(editor_tabs_, 1);
-        content->addWidget(editor_pane);
+        content_splitter_->addWidget(editor_pane);
 
-        auto* preview_pane = new QWidget(content);
+        auto* preview_pane = new QWidget(content_splitter_);
         auto* preview_layout = new QVBoxLayout(preview_pane);
         preview_layout->setContentsMargins(0, 0, 0, 0);
         preview_layout->setSpacing(6);
@@ -327,11 +332,11 @@ class MetadataTransformationDialog final : public QDialog {
         table_->setColumnWidth(0, 150);
         table_->setColumnWidth(1, 200);
         preview_layout->addWidget(table_, 1);
-        content->addWidget(preview_pane);
-        content->setStretchFactor(0, 0);
-        content->setStretchFactor(1, 1);
-        content->setSizes({460, 600});
-        layout->addWidget(content, 1);
+        content_splitter_->addWidget(preview_pane);
+        content_splitter_->setStretchFactor(0, 0);
+        content_splitter_->setStretchFactor(1, 1);
+        content_splitter_->setSizes({460, 600});
+        layout->addWidget(content_splitter_, 1);
 
         catalog_status_ = new QLabel(this);
         catalog_status_->setObjectName(
@@ -404,6 +409,7 @@ class MetadataTransformationDialog final : public QDialog {
         updateInputForKind();
         updateActions();
         loadSaved();
+        restoreLayoutState();
     }
 
     ~MetadataTransformationDialog() override {
@@ -433,10 +439,40 @@ class MetadataTransformationDialog final : public QDialog {
                 return;
             }
         }
+        persistLayoutState();
         QDialog::closeEvent(event);
     }
 
   private:
+    void restoreLayoutState() {
+        if (!layout_store_.load) {
+            return;
+        }
+        const QPointer self{this};
+        layout_store_.load(QString::fromLatin1(transformation_geometry_key),
+                           [self](QByteArray state, const QString& error) {
+                               if (self && error.isEmpty() && !state.isEmpty()) {
+                                   static_cast<void>(self->restoreGeometry(state));
+                               }
+                           });
+        layout_store_.load(QString::fromLatin1(transformation_splitter_key),
+                           [self](QByteArray state, const QString& error) {
+                               if (self && error.isEmpty() && !state.isEmpty()) {
+                                   static_cast<void>(self->content_splitter_->restoreState(state));
+                               }
+                           });
+    }
+
+    void persistLayoutState() {
+        if (layout_state_saved_ || !layout_store_.save) {
+            return;
+        }
+        layout_state_saved_ = true;
+        layout_store_.save(QString::fromLatin1(transformation_geometry_key), saveGeometry(), {});
+        layout_store_.save(QString::fromLatin1(transformation_splitter_key),
+                           content_splitter_->saveState(), {});
+    }
+
     [[nodiscard]] QStringList targetFieldSuggestions(const QString& query) const {
         const auto encoded = query.toUtf8();
         const auto suggestions = metadata::suggest_metadata_field_names(
@@ -1358,6 +1394,7 @@ class MetadataTransformationDialog final : public QDialog {
     MetadataTransformationStore store_;
     std::optional<core::StableId> initially_selected_;
     bool preview_initially_selected_{false};
+    MetadataDialogLayoutStore layout_store_;
     std::vector<persistence::SavedMetadataTransformationChain> catalog_;
     std::optional<core::StableId> selected_saved_;
     std::vector<metadata::MetadataTransformationAction> actions_;
@@ -1405,12 +1442,14 @@ class MetadataTransformationDialog final : public QDialog {
     QTreeView* table_{nullptr};
     QDialogButtonBox* buttons_{nullptr};
     QPushButton* stage_button_{nullptr};
+    QSplitter* content_splitter_{nullptr};
     bool planning_{false};
     bool catalog_busy_{false};
     bool close_requested_{false};
     bool loading_definition_{false};
     bool raw_modified_{false};
     bool raw_valid_{false};
+    bool layout_state_saved_{false};
 };
 
 } // namespace
@@ -1420,10 +1459,12 @@ QDialog* createMetadataTransformationDialog(
     metadata::StagedMetadataPatchSet draft, std::vector<std::size_t> item_indexes,
     QStringList track_labels, MetadataTransformationStageCallback stage,
     MetadataTransformationStore store, QWidget* parent,
-    std::optional<core::StableId> initially_selected, const bool preview_initially_selected) {
+    std::optional<core::StableId> initially_selected, const bool preview_initially_selected,
+    MetadataDialogLayoutStore layout_store) {
     return new MetadataTransformationDialog(
         std::move(selection), std::move(draft), std::move(item_indexes), std::move(track_labels),
-        std::move(stage), std::move(store), parent, initially_selected, preview_initially_selected);
+        std::move(stage), std::move(store), parent, initially_selected, preview_initially_selected,
+        std::move(layout_store));
 }
 
 } // namespace trackknife::bench

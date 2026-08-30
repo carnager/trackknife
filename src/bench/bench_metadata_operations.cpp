@@ -799,7 +799,30 @@ void BenchMainWindow::showMetadataProperties() {
                 requestMetadataOperationHistoryReload();
             }
         },
-        tabs_);
+        tabs_,
+        MetadataDialogLayoutStore{
+            .load =
+                [persistence_service](QString key,
+                                      MetadataDialogLayoutStore::LoadCompletion completion) {
+                    if (!persistence_service) {
+                        completion({}, QStringLiteral("Trackbench persistence is unavailable"));
+                        return;
+                    }
+                    persistence_service->loadUiState(std::move(key), std::move(completion));
+                },
+            .save =
+                [persistence_service](QString key, QByteArray value,
+                                      MetadataDialogLayoutStore::Completion completion) {
+                    if (!persistence_service) {
+                        if (completion) {
+                            completion(QStringLiteral("Trackbench persistence is unavailable"));
+                        }
+                        return;
+                    }
+                    persistence_service->saveUiState(std::move(key), std::move(value),
+                                                     std::move(completion));
+                },
+        });
     properties->setWindowFlags(Qt::Widget);
     properties->setProperty("bench-special-tab", QStringLiteral("metadata-properties"));
     const auto tab_title =

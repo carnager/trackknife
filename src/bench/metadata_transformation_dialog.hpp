@@ -26,6 +26,6 @@ using MetadataTransformationStageCallback =
     QStringList track_labels, MetadataTransformationStageCallback stage,
     MetadataTransformationStore store, QWidget* parent,
     std::optional<core::StableId> initially_selected = std::nullopt,
-    bool preview_initially_selected = false);
+    bool preview_initially_selected = false, MetadataDialogLayoutStore layout_store = {});
 
 } // namespace trackknife::bench

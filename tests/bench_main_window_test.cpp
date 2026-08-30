@@ -35,6 +35,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QLabel>
@@ -157,6 +158,7 @@ class BenchMainWindowTest final : public QObject {
     void committedMetadataRefreshesDuplicatesAndPreservesCueOverlay();
     void metadataReadyPlanAppliesAndRefreshesHistory();
     void metadataApplyCancellationPreservesDraftForFreshPreview();
+    void metadataDialogLayoutsPersistAsynchronously();
     void metadataTransformationChainPreviewsAndStagesOneUndo();
     void metadataCapturePatternSavesReloadsAndStagesAllFields();
     void preparationSidePanelEditsReusableOutputProfiles();
@@ -1112,6 +1114,108 @@ void BenchMainWindowTest::metadataApplyCancellationPreservesDraftForFreshPreview
         aggregate_model->data(aggregate_model->index(*title_row, 2), Qt::EditRole).toString(),
         QStringLiteral("Cancelled batch title"));
     delete properties;
+}
+
+void BenchMainWindowTest::metadataDialogLayoutsPersistAsynchronously() {
+    const MetadataPropertiesSource source{
+        .source =
+            metadata::StagedMetadataSource{
+                .raw_path = "/music/layout-fixture.flac",
+                .source_revision = std::nullopt,
+                .baseline = metadata::MetadataDocument{},
+            },
+        .track_label = QStringLiteral("Layout fixture"),
+    };
+    QHash<QString, QByteArray> saved_states;
+    const MetadataDialogLayoutStore layout_store{
+        .load =
+            [this, &saved_states](QString key,
+                                  MetadataDialogLayoutStore::LoadCompletion completion) {
+                const auto state = saved_states.value(key);
+                QTimer::singleShot(0, this, [completion = std::move(completion), state]() mutable {
+                    completion(state, {});
+                });
+            },
+        .save =
+            [&saved_states](QString key, QByteArray value,
+                            MetadataDialogLayoutStore::Completion completion) {
+                saved_states.insert(std::move(key), std::move(value));
+                if (completion) {
+                    completion({});
+                }
+            },
+    };
+    const auto create_properties = [&] {
+        return new MetadataPropertiesDialog(
+            1U,
+            [source](const std::size_t index) -> std::optional<MetadataPropertiesSource> {
+                return index == 0U ? std::optional{source} : std::nullopt;
+            },
+            {}, {}, {}, {}, {}, {}, {}, nullptr, layout_store);
+    };
+
+    auto* first = create_properties();
+    first->show();
+    QSplitter* first_content = nullptr;
+    QSplitter* first_metadata = nullptr;
+    QTRY_VERIFY((first_content = first->findChild<QSplitter*>(
+                     QStringLiteral("bench-metadata-content-splitter"))) != nullptr);
+    QTRY_VERIFY((first_metadata = first->findChild<QSplitter*>(
+                     QStringLiteral("bench-metadata-splitter"))) != nullptr);
+    first->resize(930, 570);
+    first_content->setSizes({610, 300});
+    first_metadata->setSizes({125, 405});
+
+    auto* transform = first->findChild<QPushButton*>(QStringLiteral("bench-metadata-transform"));
+    QVERIFY(transform != nullptr);
+    QTRY_VERIFY(transform->isEnabled());
+    QTest::mouseClick(transform, Qt::LeftButton);
+    QDialog* first_editor = nullptr;
+    QTRY_VERIFY((first_editor = first->findChild<QDialog*>(
+                     QStringLiteral("bench-metadata-transformation"))) != nullptr);
+    auto* first_editor_splitter = first_editor->findChild<QSplitter*>(
+        QStringLiteral("bench-metadata-transformation-splitter"));
+    QVERIFY(first_editor_splitter != nullptr);
+    first_editor->resize(970, 720);
+    first_editor_splitter->setSizes({365, 585});
+    QVERIFY(first_editor->close());
+    QTRY_VERIFY(first->findChild<QDialog*>(QStringLiteral("bench-metadata-transformation")) ==
+                nullptr);
+    QVERIFY(first->close());
+    QTRY_COMPARE(saved_states.size(), 5);
+
+    auto* second = create_properties();
+    second->show();
+    QSplitter* second_content = nullptr;
+    QSplitter* second_metadata = nullptr;
+    QTRY_VERIFY((second_content = second->findChild<QSplitter*>(
+                     QStringLiteral("bench-metadata-content-splitter"))) != nullptr);
+    QTRY_VERIFY((second_metadata = second->findChild<QSplitter*>(
+                     QStringLiteral("bench-metadata-splitter"))) != nullptr);
+    QTRY_COMPARE(second->height(), 570);
+    QTRY_COMPARE(
+        second_content->saveState(),
+        saved_states.value(QStringLiteral("workspace/metadata-properties-content-splitter-v1")));
+    QTRY_COMPARE(
+        second_metadata->saveState(),
+        saved_states.value(QStringLiteral("workspace/metadata-properties-metadata-splitter-v1")));
+
+    transform = second->findChild<QPushButton*>(QStringLiteral("bench-metadata-transform"));
+    QVERIFY(transform != nullptr);
+    QTRY_VERIFY(transform->isEnabled());
+    QTest::mouseClick(transform, Qt::LeftButton);
+    QDialog* second_editor = nullptr;
+    QTRY_VERIFY((second_editor = second->findChild<QDialog*>(
+                     QStringLiteral("bench-metadata-transformation"))) != nullptr);
+    auto* second_editor_splitter = second_editor->findChild<QSplitter*>(
+        QStringLiteral("bench-metadata-transformation-splitter"));
+    QVERIFY(second_editor_splitter != nullptr);
+    QTRY_COMPARE(second_editor->height(), 720);
+    QTRY_COMPARE(
+        second_editor_splitter->saveState(),
+        saved_states.value(QStringLiteral("workspace/metadata-transformation-splitter-v1")));
+    QVERIFY(second_editor->close());
+    QVERIFY(second->close());
 }
 
 void BenchMainWindowTest::preparationSidePanelEditsReusableOutputProfiles() {

@@ -4,6 +4,7 @@
 
 #include "trackknife/persistence/list_repository.hpp"
 
+#include <QByteArray>
 #include <QObject>
 
 #include <filesystem>
@@ -27,6 +28,7 @@ class ListPersistenceService final : public QObject {
   public:
     using WorkspaceCallback = std::function<void(PersistedWorkspace, QString)>;
     using CompletionCallback = std::function<void(QString)>;
+    using UiStateCallback = std::function<void(QByteArray, QString)>;
     using TransformationChainsCallback =
         std::function<void(std::vector<persistence::SavedMetadataTransformationChain>, QString)>;
     using OutputProfilesCallback =
@@ -56,6 +58,8 @@ class ListPersistenceService final : public QObject {
     void saveDestinationProfile(persistence::SavedDestinationProfile profile,
                                 CompletionCallback callback = {});
     void removeDestinationProfile(core::StableId id, CompletionCallback callback = {});
+    void loadUiState(QString key, UiStateCallback callback);
+    void saveUiState(QString key, QByteArray value, CompletionCallback callback = {});
 
     // Window shutdown is the only blocking persistence boundary. Database work
     // still runs on the service thread and the call guarantees durable edits.

@@ -70,6 +70,15 @@
 #include <vector>
 
 namespace trackknife::bench {
+namespace {
+
+constexpr auto properties_geometry_key = "workspace/metadata-properties-geometry-v1";
+constexpr auto properties_content_splitter_key =
+    "workspace/metadata-properties-content-splitter-v1";
+constexpr auto properties_metadata_splitter_key =
+    "workspace/metadata-properties-metadata-splitter-v1";
+
+} // namespace
 
 MetadataPropertiesDialog::MetadataPropertiesDialog(
     const std::size_t requested_item_count, MetadataPropertiesSourceReader source_reader,
@@ -77,7 +86,8 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
     MetadataWritePlanApplierFactory plan_applier_factory, MetadataApplyObserver apply_observer,
     MetadataTransformationStore transformation_store, OutputProfileStore output_profile_store,
     FilePublicationPlanApplierFactory file_plan_applier_factory,
-    FilePublicationApplyObserver file_apply_observer, QWidget* parent)
+    FilePublicationApplyObserver file_apply_observer, QWidget* parent,
+    MetadataDialogLayoutStore layout_store)
     : QDialog(parent), selection_watcher_(this), write_plan_watcher_(this),
       metadata_apply_watcher_(this), file_apply_watcher_(this),
       source_reader_(std::move(source_reader)),
@@ -86,13 +96,14 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
       transformation_store_(std::move(transformation_store)),
       output_profile_store_(std::move(output_profile_store)),
       file_plan_applier_factory_(std::move(file_plan_applier_factory)),
-      file_apply_observer_(std::move(file_apply_observer)),
+      file_apply_observer_(std::move(file_apply_observer)), layout_store_(std::move(layout_store)),
       requested_item_count_(requested_item_count) {
     setObjectName(QStringLiteral("bench-metadata-properties"));
     setWindowTitle(QStringLiteral("Track properties"));
     setModal(false);
     setAttribute(Qt::WA_DeleteOnClose);
     resize(1'020, 620);
+    restoreLayoutState();
 
     root_layout_ = new QVBoxLayout(this);
     root_layout_->setContentsMargins(10, 8, 10, 8);
@@ -552,6 +563,57 @@ MetadataPropertiesDialog::~MetadataPropertiesDialog() {
     }
 }
 
+void MetadataPropertiesDialog::restoreLayoutState() {
+    if (!layout_store_.load) {
+        return;
+    }
+    const QPointer self{this};
+    layout_store_.load(QString::fromLatin1(properties_geometry_key),
+                       [self](QByteArray state, const QString& error) {
+                           if (self && error.isEmpty() && !state.isEmpty()) {
+                               static_cast<void>(self->restoreGeometry(state));
+                           }
+                       });
+    layout_store_.load(QString::fromLatin1(properties_content_splitter_key),
+                       [self](QByteArray state, const QString& error) {
+                           if (!self || !error.isEmpty() || state.isEmpty()) {
+                               return;
+                           }
+                           self->pending_content_splitter_state_ = std::move(state);
+                           if (self->content_splitter_ != nullptr) {
+                               static_cast<void>(self->content_splitter_->restoreState(
+                                   self->pending_content_splitter_state_));
+                           }
+                       });
+    layout_store_.load(QString::fromLatin1(properties_metadata_splitter_key),
+                       [self](QByteArray state, const QString& error) {
+                           if (!self || !error.isEmpty() || state.isEmpty()) {
+                               return;
+                           }
+                           self->pending_metadata_splitter_state_ = std::move(state);
+                           if (self->metadata_splitter_ != nullptr) {
+                               static_cast<void>(self->metadata_splitter_->restoreState(
+                                   self->pending_metadata_splitter_state_));
+                           }
+                       });
+}
+
+void MetadataPropertiesDialog::persistLayoutState() {
+    if (layout_state_saved_ || !layout_store_.save) {
+        return;
+    }
+    layout_state_saved_ = true;
+    layout_store_.save(QString::fromLatin1(properties_geometry_key), saveGeometry(), {});
+    if (content_splitter_ != nullptr) {
+        layout_store_.save(QString::fromLatin1(properties_content_splitter_key),
+                           content_splitter_->saveState(), {});
+    }
+    if (metadata_splitter_ != nullptr) {
+        layout_store_.save(QString::fromLatin1(properties_metadata_splitter_key),
+                           metadata_splitter_->saveState(), {});
+    }
+}
+
 void MetadataPropertiesDialog::captureSources() {
     constexpr auto capture_budget_ms = 4;
     if (capture_index_ >= requested_item_count_) {
@@ -635,14 +697,14 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
                                   .arg(item_count - revision_count);
     updateDraftState(0, false, false);
 
-    auto* content_splitter = new QSplitter(Qt::Horizontal, this);
-    content_splitter->setObjectName(QStringLiteral("bench-metadata-content-splitter"));
-    content_splitter->setChildrenCollapsible(false);
-    auto* splitter = new QSplitter(Qt::Vertical, content_splitter);
-    splitter->setObjectName(QStringLiteral("bench-metadata-splitter"));
-    splitter->setChildrenCollapsible(false);
+    content_splitter_ = new QSplitter(Qt::Horizontal, this);
+    content_splitter_->setObjectName(QStringLiteral("bench-metadata-content-splitter"));
+    content_splitter_->setChildrenCollapsible(false);
+    metadata_splitter_ = new QSplitter(Qt::Vertical, content_splitter_);
+    metadata_splitter_->setObjectName(QStringLiteral("bench-metadata-splitter"));
+    metadata_splitter_->setChildrenCollapsible(false);
 
-    file_list_ = new QTableView(splitter);
+    file_list_ = new QTableView(metadata_splitter_);
     file_list_->setObjectName(QStringLiteral("bench-metadata-files"));
     file_list_->setAccessibleName(QStringLiteral("Files included in metadata edit"));
     grid_model_ = new MetadataGridModel(std::move(selection), std::move(track_labels_), file_list_);
@@ -672,7 +734,7 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
                 }
             });
 
-    fields_ = new QTableView(splitter);
+    fields_ = new QTableView(metadata_splitter_);
     fields_->setObjectName(QStringLiteral("bench-metadata-fields"));
     fields_->setAccessibleName(QStringLiteral("Metadata fields with original and draft values"));
     aggregate_model_ = new MetadataAggregateModel(grid_model_, fields_);
@@ -696,7 +758,7 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
     fields_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
     fields_->setColumnWidth(0, 190);
 
-    auto* fields_pane = new QWidget(splitter);
+    auto* fields_pane = new QWidget(metadata_splitter_);
     fields_pane->setObjectName(QStringLiteral("bench-metadata-fields-pane"));
     auto* fields_pane_layout = new QVBoxLayout(fields_pane);
     fields_pane_layout->setContentsMargins(0, 0, 0, 0);
@@ -706,18 +768,24 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
     fields_pane_layout->addWidget(fields_, 1);
     grid_tools_->show();
 
-    splitter->addWidget(file_list_);
-    splitter->addWidget(fields_pane);
-    splitter->setStretchFactor(0, 1);
-    splitter->setStretchFactor(1, 3);
-    splitter->setSizes({170, 390});
-    content_splitter->addWidget(splitter);
-    content_splitter->addWidget(transformation_panel_);
+    metadata_splitter_->addWidget(file_list_);
+    metadata_splitter_->addWidget(fields_pane);
+    metadata_splitter_->setStretchFactor(0, 1);
+    metadata_splitter_->setStretchFactor(1, 3);
+    metadata_splitter_->setSizes({170, 390});
+    if (!pending_metadata_splitter_state_.isEmpty()) {
+        static_cast<void>(metadata_splitter_->restoreState(pending_metadata_splitter_state_));
+    }
+    content_splitter_->addWidget(metadata_splitter_);
+    content_splitter_->addWidget(transformation_panel_);
     transformation_panel_->show();
-    content_splitter->setStretchFactor(0, 1);
-    content_splitter->setStretchFactor(1, 0);
-    content_splitter->setSizes({760, 260});
-    root_layout_->insertWidget(root_layout_->count() - 1, content_splitter, 1);
+    content_splitter_->setStretchFactor(0, 1);
+    content_splitter_->setStretchFactor(1, 0);
+    content_splitter_->setSizes({760, 260});
+    if (!pending_content_splitter_state_.isEmpty()) {
+        static_cast<void>(content_splitter_->restoreState(pending_content_splitter_state_));
+    }
+    root_layout_->insertWidget(root_layout_->count() - 1, content_splitter_, 1);
 
     selection_debounce_ = new QTimer(this);
     selection_debounce_->setSingleShot(true);
@@ -2136,7 +2204,7 @@ void MetadataPropertiesDialog::promptTransformation(
             updateSelectionProjection();
             return true;
         },
-        transformation_store_, this, initially_selected, preview_initially_selected);
+        transformation_store_, this, initially_selected, preview_initially_selected, layout_store_);
     transformation_dialog_ = dialog;
     updateTransformationButton();
     connect(dialog, &QDialog::finished, this, [this, dialog, initially_selected] {
@@ -2187,11 +2255,13 @@ void MetadataPropertiesDialog::closeEvent(QCloseEvent* event) {
     }
     if (apply_committed_) {
         write_plan_cancellation_.request_cancellation();
+        persistLayoutState();
         event->accept();
         return;
     }
     if (draft_count_ == 0 || grid_model_ == nullptr) {
         write_plan_cancellation_.request_cancellation();
+        persistLayoutState();
         event->accept();
         return;
     }
@@ -2204,6 +2274,7 @@ void MetadataPropertiesDialog::closeEvent(QCloseEvent* event) {
     if (answer == QMessageBox::Discard) {
         write_plan_cancellation_.request_cancellation();
         static_cast<void>(grid_model_->discardAll());
+        persistLayoutState();
         event->accept();
     } else {
         event->ignore();
