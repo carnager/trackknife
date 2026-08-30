@@ -15,21 +15,22 @@ decisions silently. Record consequential decisions as an ADR under `docs/adr/`.
 
 ## Product identity
 
-Per ADR-0025 this repository builds two native Linux applications sharing
-internal libraries and one visual language:
-
-- **Trackknife**, a pure MPD/Melody client with tabbed queue/list management.
-- **Trackbench**, a local-file workstation — playback, album grouping,
-  tagging, MusicBrainz, ReplayGain, conversion, resampling — with no library
-  database for now.
+Per ADR-0058 this repository builds one primary native Linux workspace:
+**Trackbench** combines an MPD/Melody client and a local-file workstation in
+separate authority-bound tabs. The existing `trackknife` MPD executable remains
+as a compatibility shell during migration; new shared-workspace work belongs
+in Trackbench.
 
 Trackbench is a spiritual successor to foobar2000, not a visual clone and not
 an attempt to run foobar2000 components. Preserve the ideas that make
 foobar2000 valuable: powerful metadata operations, predictable automation,
 broad format support, gapless playback, ReplayGain, speed, and user ownership.
 Replace dated, modal, or obscure interaction patterns with a modern and
-coherent UI. Neither application depends on the other at runtime; Trackbench
-speaks no MPD protocol, and the client plays no local files.
+coherent UI. The active primary tab is the authority switch: MPD Queue uses the
+server session, library, transport, and outputs; Local Queue uses raw local
+files, local playback, PipeWire, and preparation tools. Never mix the two row
+types in one queue or expose local tagging/filesystem mutation commands in MPD
+context.
 
 ## Non-negotiable behavior
 

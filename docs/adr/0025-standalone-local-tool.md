@@ -1,6 +1,6 @@
 # ADR-0025: Split local file work into a standalone application
 
-- Status: accepted
+- Status: superseded in part by ADR-0058
 - Date: 2026-08-29
 - Owners: Trackknife project
 - Supersedes: the single-application scope of ADR-0009; the in-client Local
@@ -133,3 +133,12 @@ happen later if a real external consumer appears.
   window again;
 - a local library index becomes necessary for Trackbench's performance
   goals.
+
+## Supersession note
+
+ADR-0058 accepts the revisit condition demonstrated by the two shells in daily
+use. Trackbench now hosts separate MPD Queue and Local Queue authorities behind
+an explicit active-tab context. The safety separation in this ADR remains:
+MPD rows never enter local mutation plans, and local rows never become MPD
+queue occurrences implicitly. The process boundary and the rule that
+Trackbench links no MPD adapter are superseded.

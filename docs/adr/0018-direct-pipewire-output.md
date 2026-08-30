@@ -87,4 +87,5 @@ quiescence makes the lifetime boundary explicit.
 
 - typed channel layouts enable correct multichannel negotiation;
 - measured hardware/graph behavior establishes latency and buffer presets;
-- device-clock timing and device hotplug enter the Local audition service.
+- device-clock timing enters the Local audition service; device hotplug is
+  resolved by ADR-0030.

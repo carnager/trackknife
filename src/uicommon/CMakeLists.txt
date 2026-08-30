@@ -4,15 +4,21 @@ qt_add_library(
     trackknife_ui_common STATIC
     command_palette.cpp
     command_palette.hpp
+    line_slider.cpp
+    line_slider.hpp
     list_persistence_service.cpp
     list_persistence_service.hpp
     local_folder_tree_model.cpp
     local_folder_tree_model.hpp
+    panel_layout.cpp
+    panel_layout.hpp
     queue_item_delegate.cpp
     queue_item_delegate.hpp
     queue_table_view.cpp
     queue_table_view.hpp
     track_row_roles.hpp
+    track_view_layout.cpp
+    track_view_layout.hpp
 )
 add_library(Trackknife::UiCommon ALIAS trackknife_ui_common)
 

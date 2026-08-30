@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <filesystem>
 #include <string>
+#include <sys/stat.h>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -183,6 +185,46 @@ std::string escape_raw_path(const std::string_view raw_path) {
         }
     }
     return escaped;
+}
+
+Result<LocalSourceRevision> observe_local_source_revision(const std::string& raw_path) {
+    const auto failure = [&raw_path](const ErrorCode code, std::string message) {
+        return std::unexpected(Error{
+            .code = code,
+            .message = std::move(message),
+            .context = {{.key = "path", .value = escape_raw_path(raw_path)}},
+        });
+    };
+    if (raw_path.empty()) {
+        return failure(ErrorCode::invalid_argument, "local source path is empty");
+    }
+    if (raw_path.find('\0') != std::string::npos) {
+        return failure(ErrorCode::invalid_argument, "local source path contains a NUL byte");
+    }
+
+    struct stat observed{};
+    if (::stat(raw_path.c_str(), &observed) != 0) {
+        const auto observed_error = errno;
+        const auto code = observed_error == ENOENT || observed_error == ENOTDIR
+                              ? ErrorCode::not_found
+                              : ErrorCode::io;
+        return failure(code,
+                       "local source could not be observed: " +
+                           std::error_code{observed_error, std::generic_category()}.message());
+    }
+    if (!S_ISREG(observed.st_mode)) {
+        return failure(ErrorCode::unsupported, "local source is not a regular file");
+    }
+    if (observed.st_size < 0) {
+        return failure(ErrorCode::io, "local source reported a negative size");
+    }
+    return LocalSourceRevision{
+        .device = static_cast<std::uint64_t>(observed.st_dev),
+        .inode = static_cast<std::uint64_t>(observed.st_ino),
+        .size = static_cast<std::uint64_t>(observed.st_size),
+        .modification_time_seconds = static_cast<std::int64_t>(observed.st_mtim.tv_sec),
+        .modification_time_nanoseconds = static_cast<std::int64_t>(observed.st_mtim.tv_nsec),
+    };
 }
 
 Result<ContainedLocalSource> revalidate_contained_source(const std::string& raw_root,

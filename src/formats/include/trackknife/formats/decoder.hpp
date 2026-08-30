@@ -38,6 +38,17 @@ struct SampleRange {
     friend bool operator==(const SampleRange&, const SampleRange&) = default;
 };
 
+// Selects one logical decoder source inside a physical file. Stream indexes
+// are FFmpeg container-stream indexes, while subsong indexes are interpreted
+// only by demuxers that advertise a codec-native subsong option. Empty means
+// the ordinary best audio stream and the demuxer's default song.
+struct AudioSourceSelection {
+    std::optional<int> stream_index;
+    std::optional<int> subsong_index;
+
+    friend bool operator==(const AudioSourceSelection&, const AudioSourceSelection&) = default;
+};
+
 class AudioDecoder final {
   public:
     AudioDecoder(AudioDecoder&&) noexcept;
@@ -49,12 +60,19 @@ class AudioDecoder final {
     [[nodiscard]] static core::Result<AudioDecoder> open(std::string raw_path,
                                                          core::CancellationToken cancellation = {});
     [[nodiscard]] static core::Result<AudioDecoder>
+    open_selected(std::string raw_path, AudioSourceSelection selection,
+                  core::CancellationToken cancellation = {});
+    [[nodiscard]] static core::Result<AudioDecoder>
     open_segment(std::string raw_path, SampleRange range,
                  core::CancellationToken cancellation = {});
+    [[nodiscard]] static core::Result<AudioDecoder>
+    open_selected_segment(std::string raw_path, AudioSourceSelection selection, SampleRange range,
+                          core::CancellationToken cancellation = {});
 
     [[nodiscard]] const PcmFormat& output_format() const noexcept;
     [[nodiscard]] std::optional<std::int64_t> duration_samples() const noexcept;
     [[nodiscard]] const SampleRange& sample_range() const noexcept;
+    [[nodiscard]] const AudioSourceSelection& source_selection() const noexcept;
     [[nodiscard]] core::Result<void> seek_to_sample(std::int64_t target_sample);
     [[nodiscard]] core::Result<std::optional<PcmChunk>> next_chunk();
 

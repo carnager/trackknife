@@ -144,6 +144,14 @@
       "rationale": "Queue presentation uses the same language with host-provided fields."
     },
     {
+      "id": "metadata-transformation.working-document",
+      "host": "metadata_transform",
+      "source": "$join(artist, / ) — %title%",
+      "fields": { "artist": ["One", "Two"], "title": "Earlier step" },
+      "expected": "One / Two — Earlier step",
+      "rationale": "The transformation host uses ordinary metadata and explicit ordered multi-value access; assignment remains outside the language."
+    },
+    {
       "id": "info.separate-namespace",
       "host": "track",
       "source": "$info(codec) $info(sample_rate) Hz",

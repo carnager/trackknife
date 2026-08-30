@@ -9,12 +9,110 @@ target_link_libraries(
 )
 add_test(NAME core-primitives COMMAND trackknife_core_tests)
 
+add_executable(trackknife_metadata_reader_tests metadata_reader_test.cpp)
+target_link_libraries(
+    trackknife_metadata_reader_tests
+    PRIVATE Trackknife::Metadata trackknife_project_options trackknife_project_warnings
+)
+add_test(
+    NAME metadata-reader
+    COMMAND trackknife_metadata_reader_tests "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
+)
+
+add_executable(trackknife_metadata_selection_tests metadata_selection_test.cpp)
+target_link_libraries(
+    trackknife_metadata_selection_tests
+    PRIVATE Trackknife::Metadata trackknife_project_options trackknife_project_warnings
+)
+add_test(NAME metadata-selection COMMAND trackknife_metadata_selection_tests)
+
+add_executable(trackknife_metadata_patch_tests metadata_patch_test.cpp)
+target_link_libraries(
+    trackknife_metadata_patch_tests
+    PRIVATE Trackknife::Metadata trackknife_project_options trackknife_project_warnings
+)
+add_test(NAME metadata-patch COMMAND trackknife_metadata_patch_tests)
+
+add_executable(trackknife_metadata_transformation_tests metadata_transformation_test.cpp)
+target_link_libraries(
+    trackknife_metadata_transformation_tests
+    PRIVATE Trackknife::Metadata trackknife_project_options trackknife_project_warnings
+)
+add_test(NAME metadata-transformation COMMAND trackknife_metadata_transformation_tests)
+
+add_executable(trackknife_metadata_write_plan_tests metadata_write_plan_test.cpp)
+target_link_libraries(
+    trackknife_metadata_write_plan_tests
+    PRIVATE Trackknife::Metadata trackknife_project_options trackknife_project_warnings
+)
+add_test(NAME metadata-write-plan COMMAND trackknife_metadata_write_plan_tests)
+
+add_executable(trackknife_metadata_flac_writer_tests metadata_flac_writer_test.cpp)
+target_link_libraries(
+    trackknife_metadata_flac_writer_tests
+    PRIVATE Trackknife::Metadata Trackknife::Formats trackknife_project_options
+            trackknife_project_warnings
+)
+add_test(
+    NAME metadata-flac-writer
+    COMMAND trackknife_metadata_flac_writer_tests "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
+)
+
 add_executable(trackknife_list_repository_tests list_repository_test.cpp)
 target_link_libraries(
     trackknife_list_repository_tests
     PRIVATE Trackknife::Persistence trackknife_project_options trackknife_project_warnings
 )
 add_test(NAME list-repository COMMAND trackknife_list_repository_tests)
+
+add_executable(trackknife_operation_journal_tests operation_journal_test.cpp)
+target_link_libraries(
+    trackknife_operation_journal_tests
+    PRIVATE Trackknife::Persistence trackknife_project_options trackknife_project_warnings
+)
+add_test(NAME operation-journal COMMAND trackknife_operation_journal_tests)
+
+add_executable(trackknife_file_publication_journal_tests file_publication_journal_test.cpp)
+target_link_libraries(
+    trackknife_file_publication_journal_tests
+    PRIVATE Trackknife::Persistence trackknife_project_options trackknife_project_warnings
+)
+add_test(NAME file-publication-journal COMMAND trackknife_file_publication_journal_tests)
+
+add_executable(trackknife_file_publication_tests file_publication_test.cpp)
+target_link_libraries(
+    trackknife_file_publication_tests
+    PRIVATE Trackknife::Operations Trackknife::Persistence trackknife_project_options
+            trackknife_project_warnings
+)
+add_test(NAME file-publication COMMAND trackknife_file_publication_tests)
+set_tests_properties(file-publication PROPERTIES TIMEOUT 30)
+
+add_executable(trackknife_metadata_commit_tests metadata_commit_test.cpp)
+target_link_libraries(
+    trackknife_metadata_commit_tests
+    PRIVATE Trackknife::Operations Trackknife::Persistence Threads::Threads
+            trackknife_project_options trackknife_project_warnings
+)
+add_test(
+    NAME metadata-commit
+    COMMAND trackknife_metadata_commit_tests "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
+)
+set_tests_properties(metadata-commit PROPERTIES TIMEOUT 30)
+
+add_executable(trackknife_output_path_plan_tests output_path_plan_test.cpp)
+target_link_libraries(
+    trackknife_output_path_plan_tests
+    PRIVATE Trackknife::Operations trackknife_project_options trackknife_project_warnings
+)
+add_test(NAME output-path-plan COMMAND trackknife_output_path_plan_tests)
+
+add_executable(trackknife_output_path_preflight_tests output_path_preflight_test.cpp)
+target_link_libraries(
+    trackknife_output_path_preflight_tests
+    PRIVATE Trackknife::Operations trackknife_project_options trackknife_project_warnings
+)
+add_test(NAME output-path-preflight COMMAND trackknife_output_path_preflight_tests)
 
 add_executable(trackknife_mpd_domain_tests mpd_domain_test.cpp)
 target_link_libraries(
@@ -47,13 +145,23 @@ add_test(
     COMMAND trackknife_formats_probe_tests "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
 )
 
+add_executable(trackknife_cue_sheet_tests cue_sheet_test.cpp)
+target_link_libraries(
+    trackknife_cue_sheet_tests
+    PRIVATE Trackknife::Formats trackknife_project_options trackknife_project_warnings
+)
+add_test(NAME cue-sheet COMMAND trackknife_cue_sheet_tests)
+
 add_executable(trackknife_local_playback_tests local_playback_test.cpp)
 target_link_libraries(
     trackknife_local_playback_tests
     PRIVATE Trackknife::Audio Threads::Threads trackknife_project_options
             trackknife_project_warnings
 )
-add_test(NAME local-playback COMMAND trackknife_local_playback_tests)
+add_test(
+    NAME local-playback
+    COMMAND trackknife_local_playback_tests "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
+)
 
 add_executable(trackknife_local_audition_tests local_audition_test.cpp)
 target_link_libraries(
@@ -132,6 +240,31 @@ add_test(
 )
 
 if(TRACKKNIFE_BUILD_UI)
+    qt_add_executable(trackknife_panel_layout_tests panel_layout_test.cpp)
+    target_link_libraries(
+        trackknife_panel_layout_tests
+        PRIVATE Trackknife::UiCommon Qt6::Test trackknife_project_options
+                trackknife_project_warnings
+    )
+    add_test(NAME panel-layout COMMAND trackknife_panel_layout_tests)
+
+    qt_add_executable(trackknife_track_view_layout_tests track_view_layout_test.cpp)
+    target_link_libraries(
+        trackknife_track_view_layout_tests
+        PRIVATE Trackknife::UiCommon Qt6::Test trackknife_project_options
+                trackknife_project_warnings
+    )
+    add_test(NAME track-view-layout COMMAND trackknife_track_view_layout_tests)
+
+    qt_add_executable(trackknife_queue_table_view_tests queue_table_view_test.cpp)
+    target_link_libraries(
+        trackknife_queue_table_view_tests
+        PRIVATE Trackknife::UiCommon Qt6::Test trackknife_project_options
+                trackknife_project_warnings
+    )
+    add_test(NAME queue-table-view COMMAND trackknife_queue_table_view_tests)
+    set_tests_properties(queue-table-view PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
     qt_add_executable(trackknife_paged_model_tests paged_track_model_test.cpp)
     target_link_libraries(
         trackknife_paged_model_tests
@@ -172,9 +305,13 @@ if(TRACKKNIFE_BUILD_UI)
     set_tests_properties(server-library-tree-model PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     qt_add_executable(trackknife_bench_main_window_tests bench_main_window_test.cpp)
+    target_compile_definitions(
+        trackknife_bench_main_window_tests
+        PRIVATE TRACKKNIFE_AUDIO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
+    )
     target_link_libraries(
         trackknife_bench_main_window_tests
-        PRIVATE Trackknife::BenchUi Qt6::Test trackknife_project_options
+        PRIVATE Trackknife::BenchUi Trackknife::MpdUi Qt6::Test trackknife_project_options
                 trackknife_project_warnings
     )
     add_test(NAME bench-main-window COMMAND trackknife_bench_main_window_tests)

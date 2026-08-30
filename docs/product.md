@@ -2,12 +2,10 @@
 
 ## One sentence
 
-The Trackknife project builds two fast, modern Qt 6 applications that share
-one codebase and visual language: **Trackknife**, a keyboard-fluent tabbed
-client for MPD and Melody, and **Trackbench**, a foobar2000-inspired
-workstation for local files with
-playback, album grouping, tagging, MusicBrainz support, ReplayGain,
-conversion, and resampling.
+The Trackknife project builds **Trackbench**, a fast modern Qt 6 workspace with
+separate MPD/Melody and local-file authorities: server library and queue work,
+plus foobar2000-inspired local playback, album grouping, tagging, MusicBrainz
+support, ReplayGain, conversion, and resampling.
 
 ## Product thesis
 
@@ -25,17 +23,16 @@ and validated against stock MPD and Melody.
 Trackbench takes new music from download or rip to a well-organized
 collection: audition it, group it by album, identify and tag it with
 MusicBrainz support, analyze ReplayGain, convert or resample it, and publish
-it into an organized destination — which may be an MPD music root, reached by
-plain filesystem access, never by protocol. The key inspiration is still
+it into an organized destination. The key inspiration is still
 foobar2000, but with the tabbed working-list approach and a primary focus on
 performance and user experience. It maintains no library database for now;
 it grows from direct filesystem navigation, and an index may be reconsidered
 later if real use demands it.
 
-Both applications share internal libraries — the `tkfmt-1` expression engine,
+Both authorities share internal libraries — the `tkfmt-1` expression engine,
 the FFmpeg decode boundary, the bounded playback core, the PipeWire adapter,
 persistence infrastructure, and reusable Widgets components — so they look and
-feel like siblings while never depending on each other at runtime.
+feel coherent while retaining separate controllers and mutation capabilities.
 
 ## Priorities
 
@@ -71,7 +68,7 @@ the output UI when advertised. The client contains no local file playback.
 
 - A non-modal, spreadsheet-like tag workspace built for many tracks and fields.
 - Type-to-add fields, fast fuzzy field lookup, direct keyboard navigation,
-  multi-cell paste, saved field layouts, and bulk transformations.
+  saved field layouts, and bulk transformations.
 - Arbitrary ordered multi-value metadata and complete MusicBrainz identifier/
   sort metadata preservation.
 - Online MusicBrainz identification and metadata proposals with provenance and
@@ -100,16 +97,14 @@ deliberately after both applications' backbones are proven.
 
 ## Established requirements
 
-- Two native Linux Qt 6 Widgets applications; Wine is not part of the product
-  story.
-- Neither application depends on the other at runtime; shared behavior lives
-  in shared internal libraries.
+- One primary native Linux Qt 6 Widgets workspace; Wine is not part of the
+  product story. The standalone MPD executable is retained during migration.
 - Standard MPD compatibility before optional Melody extensions.
 - MPD is authoritative for its database, current queue, stored playlists,
   transport, and outputs. The MPD client is one of potentially several
   connected clients and reconciles server truth.
-- Trackbench speaks no MPD protocol and maintains no library database for
-  now; it never implies MPD membership for a local file.
+- Trackbench speaks MPD only through the MPD authority. It maintains no local
+  library database for now and never implies MPD membership for a local file.
 - Queue/list tabs remain first-class persistent work surfaces in both
   applications.
 - Local paths remain raw OS paths internally and need not be valid UTF-8.
@@ -126,12 +121,11 @@ deliberately after both applications' backbones are proven.
 
 ## Product principles
 
-### Two tools, one language
+### Two authorities, one language
 
-Each application does one job completely. They share visual design,
-interaction grammar, shortcuts, the expression language, and quality gates, so
-moving between them costs nothing — but neither carries the other's
-complexity.
+Each authority does one job completely. They share visual design, interaction
+grammar, shortcuts, the expression language, and quality gates, while the
+active tab keeps transport and mutation ownership explicit.
 
 ### Tabs are working memory
 
@@ -212,9 +206,8 @@ identification remain explicit network operations.
 - Track rows support multi-selection, drag reorder, add-next/end, remove,
   crop, copy/move between tabs, sort, reverse, randomize, and total duration.
 - The tag editor behaves like a purpose-built data grid: type a field name,
-  move by keyboard, paste rectangular data, and apply actions to a selection.
-  It does not require clicking every target cell or hunting through a giant
-  fixed dropdown.
+  move by keyboard, and apply actions to a selection. It does not require
+  clicking every target cell or hunting through a giant fixed dropdown.
 - Long tasks live in a job center rather than modal progress dialogs.
 - Transient errors appear as non-blocking toasts, retain successful work, and
   support retrying only failures.

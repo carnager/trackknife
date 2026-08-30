@@ -2,13 +2,12 @@
 
 ## Application scope
 
-Per ADR-0025 the surfaces in this document split across two applications. The
-MPD workspace — connection, browse/search, live queue, stored playlists,
-transport, outputs — belongs to Trackknife, the client. Local surfaces — the
-Local Folders tree, local lists, and local transport behavior — belong to
-Trackbench, the standalone local-file workstation. Trackbench reuses the same
-shared Widgets components, performance budgets, and interaction grammar
-described here, so those sections are reattributed rather than duplicated.
+Per ADR-0058 these surfaces share one Trackbench shell while retaining distinct
+authorities. Selecting **MPD Queue** binds the sidebar, transport, and output
+selector to MPD; selecting **Local Queue** or another local list binds them to
+local folders, local playback, and PipeWire. Local preparation commands are
+unavailable in MPD context. Both queue types use the exact same declarative
+track-view layout schema, renderer, editor, and preset path.
 
 ## Product promise
 
@@ -33,10 +32,10 @@ The initial workspace is intentionally conventional:
 
 ```text
 +---------------------------------------------------------------------+
-| controls | cover | title / artist — album            Search field  |
+| controls | cover | title / artist — album                          |
 | elapsed   ================= seek =================   volume --      |
 +----------------------+----------------------------------------------+
-| Library tree         | Queue / working-list/search tabs             |
+| Library tree         | Queue / working-list tabs       Search field |
 | MPD server library   |                                              |
 |                      | live MPD queue, scratch lists, and           |
 |                      | search results / server playlists           |
@@ -49,23 +48,28 @@ The initial workspace is intentionally conventional:
 - Library navigation starts on the left with one default domain: **MPD**
   browses server folders, artists, albums, playlists, and advertised
   dimensions. Local-file navigation and preparation now live in Trackbench
-  (ADR-0025). Typing in the global top-right
-  field opens a transient panel anchored below that field; it overlays the
-  workspace without replacing or switching the active tab. Pressing
-  `Shift+Enter` commits that query to a named, closable result tab. Every
-  committed search keeps its own result snapshot without replacing the live
-  queue or another working list.
+  (ADR-0025). In Trackbench the search field sits at the right edge of the
+  Track Lists tab strip and is present only while **MPD Queue** is active.
+  Typing opens a transient panel anchored below that field; it overlays the
+  workspace without replacing or switching the active tab. The standalone
+  compatibility shell can commit a query with `Shift+Enter` to an independent
+  named result tab; migrating committed search tabs into unified Trackbench
+  remains follow-up work.
 - Live search presents release-aware album groups and individual tracks in one
-  compact result list. Album rows use a cover placeholder followed by bounded,
-  serial asynchronous artwork loading. Append, add-next, and replace-queue
-  actions appear at the end of every result row. They work by mouse, by moving focus to an action and
-  pressing Enter, or directly with Enter for the default append and
+  compact result list. Every result occupies one fixed-height line with
+  ellipsized text; album rows contain a small aspect-preserving square cover
+  placeholder followed by bounded, serial asynchronous artwork loading.
+  Append, add-next, and replace-queue actions appear at the end of every result
+  row. They work by mouse, by moving focus to an action and pressing Enter, or
+  directly with Enter for the default append and
   `Ctrl+Enter` for replace. Append is selected by default; one Right movement
-  advances to add-next and the next to replace.
+  advances to add-next and the next to replace, and the active keyboard action
+  has an explicit focus marker.
   Printable typing or Backspace while results have focus resumes editing at the
   end of the query. `Down` moves from the query into results, `Up` returns from
   the first result, and `Escape` closes the panel and focuses the unchanged work
-  surface without discarding the query.
+  surface without discarding the query. Moving focus outside the search field
+  and result surface also dismisses the panel without stealing the new focus.
 - Album search results sort chronologically by release year, with undated
   releases last and deterministic date/artist/title fallbacks. Track results
   use a stable release-friendly order: album-artist sort name (falling back
@@ -89,28 +93,38 @@ The initial workspace is intentionally conventional:
 - The default track presentation is grouped albums with cover art and readable
   track rows.
 - A plain, information-dense columns preset is one action away.
-- The compact Cantata-informed top player keeps transport, small artwork,
-  two-line title/artist/album information, and global search above a wide seek
-  slider and small volume slider. The transport controls MPD alone; the
-  domain chip and bound dual-domain transport of ADR-0022 are superseded by
-  the application split (ADR-0025), and Trackbench carries its own
-  single-domain transport built from the same shared row. The bottom status
-  bar keeps queue count and total duration left and context-sensitive list
-  actions, modes, ReplayGain, and icon-only outputs right.
+- The compact Cantata-informed top player keeps transport and two-line
+  artist/title and album/date information above a wide seek slider and small
+  volume slider. In the unified Trackbench shell, tab selection binds this row
+  to MPD or local playback. The bottom status bar keeps selection/queue context
+  left and exposes Repeat, Random, Single, Consume, and advertised ReplayGain
+  controls at right only in MPD context.
+- Trackbench keeps this player chrome visually quiet: the metadata block is
+  centered over its seek rail, and one compact application-menu button replaces
+  a permanently visible menu bar without removing or duplicating its actions.
+- Trackbench's status bar summarizes the current local selection. One selected
+  track shows artist/title, release/date, and duration; a multi-track selection
+  shows its count and combined known duration.
 - The live queue groups consecutive tracks by album using restrained header
   rows with a compact asynchronously loaded cover, album artist, album, date,
-  and aggregate duration. Dense track rows reserve that distinct artwork/status
+  and aggregate duration. A group header is omitted when the group contains
+  only one track; its cover remains as a small inline image in the ordinary
+  track row. Dense track rows reserve that distinct artwork/status
   gutter for playback state, followed by one indented text block containing the
   two-digit track-number prefix and title, plus duration, instead of repeating
   album-level metadata.
   The playing row uses a restrained playback tint and outline, while selection
   retains the stronger system highlight. Clicking an album header selects every
-  contiguous track represented by that header.
+  contiguous track represented by that header. Unmodified `Home` and `End`
+  select and reveal the first and last queue occurrence respectively.
+- In MPD context the row menu repeats play, append, add-next, remove, crop, and
+  advertised priority choices for the current selection. Priority labels expose
+  their numeric MPD values and mark a uniform selected value.
 - Common playback modes remain visible as compact one-click controls. Boolean
   modes toggle directly; MPD multi-state playback modes cycle with their current
   state visible and the next state explained by the tooltip. ReplayGain keeps a
-  compact current-mode indicator and an output-style choice popup because it is
-  changed less often.
+  compact `RG: current mode` indicator and an output-style choice popup because
+  it is changed less often.
 - The job center is unobtrusive when idle and obvious during long-running
   work — in Trackbench, scans, conversion, tagging, and file operations.
 - Transient failures use non-modal, self-dismissed toasts. They do not replace
@@ -153,11 +167,21 @@ work surface. Opening local files does the same in Trackbench.
 
 ## Panel and layout system
 
-Use a `QMainWindow` with native dock panels, toolbars, tab containers, and
-model/view track tables. Save and restore versioned window/dock/toolbar state.
-The default composition is the product; moving, hiding, tabbing, and floating
-panels are customization layered over it. Restore the user's Library dock width
-explicitly; do not depend on platform-specific dock-state size heuristics.
+Use `QMainWindow`, toolbars, tab containers, and model/view track tables. The
+Trackknife client retains native dock panels and versioned window/dock/toolbar
+state. Trackbench uses ADR-0026's versioned declarative composition tree below
+its player chrome: registered panel instances may be nested in
+horizontal/vertical splitters or tab stacks, with bounded validation before
+rendering. Its shipped default remains Folders left and Track Lists right.
+Layout editing is explicit customization layered over that default, not
+required setup.
+
+Trackbench schema version 1 persists stable panel instance IDs, split
+orientation/weights, child order, and active panel tabs. A malformed current
+layout falls back visibly to the shipped default. A newer layout also falls
+back, but its stored bytes are not replaced until the user explicitly edits or
+resets the layout. New functional panels arrive with their owning milestones;
+do not ship empty placeholders merely to make the layout editor look powerful.
 
 Every panel has:
 
@@ -259,6 +283,19 @@ them portable, inspectable, sandboxable, migratable, and fast. A future trusted
 plugin can build truly custom widgets through the panel API; ordinary users
 should not need executable scripts merely to arrange metadata.
 
+ADR-0027 implements the first bounded Trackbench definition slice. Its v1
+state records one of four shipped presentations plus stable column order,
+visibility, and width per list. The default album presentation has a
+full-width group label/duration and a side-artwork column whose cover extends
+through the visible member rows; Artist, track number, Title, Album, Date, and
+Length remain normal independent columns. Compact semantic columns keep their
+preferred widths while Artist, Title, and Album proportionally fill the rest
+of the viewport on every panel/window resize. Cells and group labels remain
+single-line and elide instead of wrapping. Header and Workspace menus expose
+the same controls. Custom `tkfmt-1` column, sort, group, label, and summary
+expressions remain required extensions to this definition rather than being
+represented by ad-hoc Qt state.
+
 ## Shipped presentation presets
 
 Presets apply equally where meaningful to library results, playlists, and queue.
@@ -292,9 +329,10 @@ Source-specific columns such as queue index appear only when available.
 
 ### Folder/library tree
 
-- The left dock is the library tree, not a generic auxiliary sidebar. In the
-  client its single default tab is **MPD**; the **Local Folders** tree
-  described below ships in Trackbench (ADR-0025).
+- The left navigation surface is the library tree, not a generic auxiliary
+  sidebar. It is a native dock in the client, whose single default tab is
+  **MPD**; the **Local Folders** tree described below is a registered
+  Trackbench panel in ADR-0026's composed layout.
 - The MPD tab provides folder structure and configurable title-format
   hierarchy while MPD remains authoritative for server membership. Its shipped
   definition is album artist → chronologically sorted album → disc when the
@@ -306,12 +344,17 @@ Source-specific columns such as queue index appear only when available.
 - The server tree never commandeers the center workspace on selection. Compact
   inline actions append a node to the live queue, insert it next, or replace the
   queue and play; the context menu repeats those actions and can add the node to
-  a chosen working-list tab. Actions on an unloaded root wait for its exact
+  a chosen working-list tab. Dragging selected library rows into the live queue
+  uses the queue's exact painted insertion target. Actions and drops on an
+  unloaded root wait for its exact
   branch query. Inline actions appear on the current or hovered row instead of
-  consuming permanent columns. A single click anywhere on a branch row toggles
-  expansion; clicking an inline action performs only that action. A filter field
-  remains visible above the tree, and unloaded matching roots retain their
-  disclosure indicator while filtering.
+  consuming permanent columns; the current row reveals them only while the tree
+  has keyboard focus, so Qt's implicit first current index does not leave a
+  permanent action strip behind. A single click anywhere on a branch row toggles
+  expansion; the native disclosure arrow and the rest of the row each toggle it
+  exactly once, while clicking an inline action performs only that action. A
+  filter field remains visible above the tree, and unloaded matching roots
+  retain their disclosure indicator while filtering.
 - Rows have hierarchy-specific visual weight rather than a spreadsheet layout:
   artist rows pair a silhouette placeholder with album count; album rows pair
   a compact cover thumbnail with dated title plus track count and duration;

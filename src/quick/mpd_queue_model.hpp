@@ -21,7 +21,7 @@ class MpdQueueModel final : public QAbstractTableModel {
     Q_OBJECT
 
   public:
-    static constexpr int column_count = 6;
+    static constexpr int column_count = ui::track_column_count;
 
     // The values implement the shared album-grouped presentation contract
     // consumed by the uicommon delegate/view.

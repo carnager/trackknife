@@ -27,6 +27,8 @@ class ListPersistenceService final : public QObject {
   public:
     using WorkspaceCallback = std::function<void(PersistedWorkspace, QString)>;
     using CompletionCallback = std::function<void(QString)>;
+    using TransformationChainsCallback =
+        std::function<void(std::vector<persistence::SavedMetadataTransformationChain>, QString)>;
 
     explicit ListPersistenceService(std::filesystem::path database_path, QObject* parent = nullptr);
     ~ListPersistenceService() override;
@@ -40,11 +42,19 @@ class ListPersistenceService final : public QObject {
                        CompletionCallback callback = {});
     void saveProfiles(std::vector<persistence::ConnectionProfile> profiles,
                       CompletionCallback callback = {});
+    void loadMetadataTransformationChains(TransformationChainsCallback callback);
+    void saveMetadataTransformationChain(persistence::SavedMetadataTransformationChain chain,
+                                         CompletionCallback callback = {});
+    void removeMetadataTransformationChain(core::StableId id, CompletionCallback callback = {});
 
     // Window shutdown is the only blocking persistence boundary. Database work
     // still runs on the service thread and the call guarantees durable edits.
     [[nodiscard]] QString saveWorkspaceAndWait(std::vector<persistence::ListDocument> lists,
                                                std::vector<persistence::TrackViewPreset> presets);
+    // Called from a mutation worker after physical publication. The SQLite
+    // transaction stays on the serialized persistence thread.
+    [[nodiscard]] core::Result<persistence::LocalMetadataRefreshResult>
+    refreshLocalMetadataAndWait(persistence::LocalMetadataRefresh refresh);
 
   private:
     struct State;

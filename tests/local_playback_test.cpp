@@ -8,13 +8,18 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
+#include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <ranges>
 #include <span>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
@@ -88,6 +93,42 @@ void write_wave(const std::filesystem::path& path, const std::size_t frame_count
                                static_cast<char>((bits >> 8U) & 0xFFU)};
         output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     }
+}
+
+[[nodiscard]] std::optional<std::vector<unsigned char>>
+decode_base64_file(const std::filesystem::path& path) {
+    std::ifstream input{path, std::ios::binary};
+    if (!input) {
+        return std::nullopt;
+    }
+    const std::string encoded{std::istreambuf_iterator<char>{input},
+                              std::istreambuf_iterator<char>{}};
+    constexpr std::string_view alphabet =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::vector<unsigned char> decoded;
+    decoded.reserve((encoded.size() * 3U) / 4U);
+    unsigned accumulator = 0U;
+    int bits = -8;
+    for (const auto character : encoded) {
+        const auto byte = static_cast<unsigned char>(character);
+        if (std::isspace(byte) != 0) {
+            continue;
+        }
+        if (character == '=') {
+            break;
+        }
+        const auto value = alphabet.find(character);
+        if (value == std::string_view::npos) {
+            return std::nullopt;
+        }
+        accumulator = (accumulator << 6U) | static_cast<unsigned>(value);
+        bits += 6;
+        if (bits >= 0) {
+            decoded.push_back(static_cast<unsigned char>((accumulator >> bits) & 0xFFU));
+            bits -= 8;
+        }
+    }
+    return decoded;
 }
 
 void transportIsBufferedAndSampleAccurate(const std::filesystem::path& path) {
@@ -399,9 +440,104 @@ void chainsQueuedSourceGaplessly(const std::filesystem::path& first,
     CHECK(!playback->take_chain_crossing().has_value());
 }
 
+void chainsSegmentsOfOnePhysicalSource(const std::filesystem::path& path) {
+    constexpr trackknife::audio::PlaybackBufferConfig config{
+        .capacity_frames = 128U,
+        .start_threshold_frames = 64U,
+    };
+    constexpr trackknife::formats::SampleRange first_range{
+        .start_sample = 100,
+        .end_sample = 700,
+    };
+    constexpr trackknife::formats::SampleRange second_range{
+        .start_sample = 700,
+        .end_sample = 1'200,
+    };
+    auto playback =
+        trackknife::audio::LocalPlayback::open_segment(path.native(), first_range, config);
+    CHECK(playback.has_value());
+    if (!playback) {
+        return;
+    }
+    CHECK(playback->queue_next_segment(path.native(), second_range).has_value());
+    CHECK(playback->play().has_value());
+
+    std::vector<float> collected;
+    std::array<float, 73> block{};
+    for (int guard = 0; guard < 1'000 &&
+                        playback->snapshot().state != trackknife::audio::LocalPlaybackState::ended;
+         ++guard) {
+        CHECK(playback->fill_buffer().has_value());
+        const auto copied = playback->render(block);
+        collected.insert(collected.end(), block.begin(),
+                         block.begin() + static_cast<std::ptrdiff_t>(copied));
+    }
+
+    CHECK(playback->snapshot().state == trackknife::audio::LocalPlaybackState::ended);
+    CHECK(collected.size() == 1'100U);
+    CHECK(playback->snapshot().end_sample == 1'200);
+    CHECK(playback->take_chain_crossing() == 700);
+    for (std::size_t index = 0U; index < collected.size(); ++index) {
+        CHECK(collected[index] == expected_float_sample(100 + static_cast<std::int64_t>(index)));
+    }
+}
+
+void chainsSelectedCodecSubsongs(const std::filesystem::path& fixture_directory,
+                                 const std::filesystem::path& root) {
+    const auto binary = decode_base64_file(fixture_directory / "two-subsongs-mod.b64");
+    CHECK(binary.has_value());
+    if (!binary) {
+        return;
+    }
+    const auto path = root / "two-subsongs.mod";
+    std::ofstream output{path, std::ios::binary};
+    output.write(reinterpret_cast<const char*>(binary->data()),
+                 static_cast<std::streamsize>(binary->size()));
+    output.close();
+    CHECK(output.good());
+
+    constexpr trackknife::audio::PlaybackBufferDurationConfig config{
+        .capacity = std::chrono::milliseconds{100},
+        .start_threshold = std::chrono::milliseconds{20},
+    };
+    constexpr trackknife::formats::SampleRange range{
+        .start_sample = 0,
+        .end_sample = 28'800,
+    };
+    auto playback = trackknife::audio::LocalPlayback::open_selected_segment(
+        path.native(), {.stream_index = 0, .subsong_index = 0}, range, config);
+    CHECK(playback.has_value());
+    if (!playback) {
+        return;
+    }
+    CHECK(playback
+              ->queue_next_selected_segment(path.native(), {.stream_index = 0, .subsong_index = 1},
+                                            range)
+              .has_value());
+    CHECK(playback->play().has_value());
+
+    std::vector<float> collected;
+    std::array<float, 512> block{};
+    for (int guard = 0; guard < 2'000 &&
+                        playback->snapshot().state != trackknife::audio::LocalPlaybackState::ended;
+         ++guard) {
+        CHECK(playback->fill_buffer().has_value());
+        const auto copied_frames = playback->render(block);
+        collected.insert(collected.end(), block.begin(),
+                         block.begin() + static_cast<std::ptrdiff_t>(copied_frames * 2U));
+    }
+    CHECK(playback->snapshot().state == trackknife::audio::LocalPlaybackState::ended);
+    CHECK(playback->snapshot().end_sample == 57'600);
+    CHECK(playback->take_chain_crossing() == 28'800);
+    CHECK(collected.size() == 115'200U);
+    CHECK(std::ranges::any_of(collected,
+                              [](const float sample) { return std::abs(sample) > 0.0001F; }));
+}
+
 } // namespace
 
-int main() {
+int main(const int argc, char** argv) {
+    CHECK(argc == 2);
     const auto root =
         std::filesystem::temp_directory_path() /
         ("trackknife-local-playback-" + trackknife::core::StableId::random().to_string());
@@ -419,6 +555,10 @@ int main() {
     validatesConfigurationAndPropagatesCancellation(path);
     producerAndConsumerRunConcurrently(path);
     chainsQueuedSourceGaplessly(path, continuation, other_rate);
+    chainsSegmentsOfOnePhysicalSource(path);
+    if (argc == 2) {
+        chainsSelectedCodecSubsongs(argv[1], root);
+    }
 
     std::filesystem::remove_all(root, error);
     CHECK(!error);

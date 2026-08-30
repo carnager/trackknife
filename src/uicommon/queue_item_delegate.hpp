@@ -12,6 +12,8 @@ class QueueItemDelegate final : public QStyledItemDelegate {
     Q_OBJECT
 
   public:
+    static constexpr int album_header_height = 30;
+
     explicit QueueItemDelegate(QObject* parent = nullptr);
 
     void paint(QPainter* painter, const QStyleOptionViewItem& option,

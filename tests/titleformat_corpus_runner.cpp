@@ -62,6 +62,9 @@ using trackknife::titleformat::FormatContextKind;
     if (value == "sort") {
         return FormatContextKind::sort;
     }
+    if (value == "metadata_transform") {
+        return FormatContextKind::metadata_transformation;
+    }
     throw std::runtime_error("unknown format-expression host: " + std::string{value});
 }
 

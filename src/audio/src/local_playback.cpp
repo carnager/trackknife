@@ -274,12 +274,20 @@ core::Result<LocalPlayback> LocalPlayback::open(std::string raw_path,
 core::Result<LocalPlayback> LocalPlayback::open(std::string raw_path,
                                                 const PlaybackBufferDurationConfig buffer_config,
                                                 core::CancellationToken cancellation) {
+    return open_selected(std::move(raw_path), {}, buffer_config, std::move(cancellation));
+}
+
+core::Result<LocalPlayback>
+LocalPlayback::open_selected(std::string raw_path, formats::AudioSourceSelection selection,
+                             const PlaybackBufferDurationConfig buffer_config,
+                             core::CancellationToken cancellation) {
     if (buffer_config.capacity <= std::chrono::milliseconds::zero() ||
         buffer_config.start_threshold <= std::chrono::milliseconds::zero() ||
         buffer_config.start_threshold > buffer_config.capacity) {
         return std::unexpected(invalid_buffer_duration_config(buffer_config));
     }
-    auto decoder = formats::AudioDecoder::open(std::move(raw_path), std::move(cancellation));
+    auto decoder = formats::AudioDecoder::open_selected(std::move(raw_path), selection,
+                                                        std::move(cancellation));
     if (!decoder) {
         return std::unexpected(std::move(decoder.error()));
     }
@@ -327,13 +335,20 @@ core::Result<LocalPlayback>
 LocalPlayback::open_segment(std::string raw_path, const formats::SampleRange range,
                             const PlaybackBufferDurationConfig buffer_config,
                             core::CancellationToken cancellation) {
+    return open_selected_segment(std::move(raw_path), {}, range, buffer_config,
+                                 std::move(cancellation));
+}
+
+core::Result<LocalPlayback> LocalPlayback::open_selected_segment(
+    std::string raw_path, formats::AudioSourceSelection selection, const formats::SampleRange range,
+    const PlaybackBufferDurationConfig buffer_config, core::CancellationToken cancellation) {
     if (buffer_config.capacity <= std::chrono::milliseconds::zero() ||
         buffer_config.start_threshold <= std::chrono::milliseconds::zero() ||
         buffer_config.start_threshold > buffer_config.capacity) {
         return std::unexpected(invalid_buffer_duration_config(buffer_config));
     }
-    auto decoder =
-        formats::AudioDecoder::open_segment(std::move(raw_path), range, std::move(cancellation));
+    auto decoder = formats::AudioDecoder::open_selected_segment(std::move(raw_path), selection,
+                                                                range, std::move(cancellation));
     if (!decoder) {
         return std::unexpected(std::move(decoder.error()));
     }
@@ -478,6 +493,26 @@ core::Result<void> LocalPlayback::seek_to_sample(const std::int64_t target_sampl
 
 core::Result<void> LocalPlayback::queue_next(std::string raw_path,
                                              core::CancellationToken cancellation) {
+    return queue_next_selected_segment(std::move(raw_path), {}, formats::SampleRange{},
+                                       std::move(cancellation));
+}
+
+core::Result<void> LocalPlayback::queue_next_selected(std::string raw_path,
+                                                      formats::AudioSourceSelection selection,
+                                                      core::CancellationToken cancellation) {
+    return queue_next_selected_segment(std::move(raw_path), selection, formats::SampleRange{},
+                                       std::move(cancellation));
+}
+
+core::Result<void> LocalPlayback::queue_next_segment(std::string raw_path,
+                                                     const formats::SampleRange range,
+                                                     core::CancellationToken cancellation) {
+    return queue_next_selected_segment(std::move(raw_path), {}, range, std::move(cancellation));
+}
+
+core::Result<void> LocalPlayback::queue_next_selected_segment(
+    std::string raw_path, formats::AudioSourceSelection selection, const formats::SampleRange range,
+    core::CancellationToken cancellation) {
     auto& playback = *implementation_;
     if (playback.state.load(std::memory_order_acquire) == LocalPlaybackState::failed) {
         return std::unexpected(core::Error{
@@ -500,7 +535,8 @@ core::Result<void> LocalPlayback::queue_next(std::string raw_path,
             .context = {},
         });
     }
-    auto decoder = formats::AudioDecoder::open(std::move(raw_path), std::move(cancellation));
+    auto decoder = formats::AudioDecoder::open_selected_segment(std::move(raw_path), selection,
+                                                                range, std::move(cancellation));
     if (!decoder) {
         return std::unexpected(std::move(decoder.error()));
     }

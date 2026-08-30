@@ -92,6 +92,22 @@ trackknife::audio::LocalAuditionSnapshot wait_for(trackknife::audio::LocalAuditi
 int main() {
     using namespace std::chrono_literals;
     using trackknife::audio::LocalAuditionState;
+    using trackknife::audio::PlaybackBufferPreset;
+
+    CHECK(trackknife::audio::playback_buffer_preset_id(PlaybackBufferPreset::responsive) ==
+          "responsive");
+    CHECK(trackknife::audio::playback_buffer_preset_from_id("balanced") ==
+          PlaybackBufferPreset::balanced);
+    CHECK(!trackknife::audio::playback_buffer_preset_from_id("unknown"));
+    CHECK((trackknife::audio::playback_buffer_preset_config(PlaybackBufferPreset::responsive) ==
+           trackknife::audio::PlaybackBufferDurationConfig{.capacity = 250ms,
+                                                           .start_threshold = 50ms}));
+    CHECK((trackknife::audio::playback_buffer_preset_config(PlaybackBufferPreset::balanced) ==
+           trackknife::audio::PlaybackBufferDurationConfig{.capacity = 750ms,
+                                                           .start_threshold = 100ms}));
+    CHECK((trackknife::audio::playback_buffer_preset_config(PlaybackBufferPreset::resilient) ==
+           trackknife::audio::PlaybackBufferDurationConfig{.capacity = 2'000ms,
+                                                           .start_threshold = 250ms}));
 
     auto invalid_period = trackknife::audio::LocalAuditionService::create(
         {.buffer = {}, .output = {}, .producer_period = 0ms, .command_capacity = 4U});
@@ -115,6 +131,12 @@ int main() {
         return 1;
     }
     CHECK((*service)->snapshot().state == LocalAuditionState::empty);
+    CHECK(((*service)->snapshot().configured_buffer ==
+           trackknife::audio::PlaybackBufferDurationConfig{.capacity = 250ms,
+                                                           .start_threshold = 50ms}));
+    CHECK(!(*service)->snapshot().active_buffer);
+    CHECK(!(*service)->set_buffer_config({.capacity = 0ms, .start_threshold = 0ms}).has_value());
+    CHECK(!(*service)->set_buffer_config({.capacity = 11s, .start_threshold = 100ms}).has_value());
     const auto empty_path = (*service)->load_and_play({});
     CHECK(!empty_path);
     CHECK(empty_path.error().code == trackknife::core::ErrorCode::invalid_argument);
@@ -123,6 +145,11 @@ int main() {
         (std::filesystem::temp_directory_path() /
          ("trackknife-missing-" + trackknife::core::StableId::random().to_string()))
             .native();
+    const auto balanced_buffer =
+        trackknife::audio::playback_buffer_preset_config(PlaybackBufferPreset::balanced);
+    // A following load supersedes transport work, but not a setting queued
+    // before it: the source must observe the latest buffer policy.
+    CHECK((*service)->set_buffer_config(balanced_buffer).has_value());
     CHECK((*service)->load_and_play(missing_path).has_value());
     const auto missing = wait_for(**service, [](const auto& snapshot) {
         return snapshot.state == LocalAuditionState::failed;
@@ -130,6 +157,14 @@ int main() {
     CHECK(missing.state == LocalAuditionState::failed);
     CHECK(missing.raw_path == missing_path);
     CHECK(missing.error.has_value());
+    CHECK(missing.configured_buffer == balanced_buffer);
+    const auto responsive_buffer =
+        trackknife::audio::playback_buffer_preset_config(PlaybackBufferPreset::responsive);
+    CHECK((*service)->set_buffer_config(responsive_buffer).has_value());
+    const auto responsive_configured = wait_for(**service, [&responsive_buffer](const auto& value) {
+        return value.configured_buffer == responsive_buffer;
+    });
+    CHECK(responsive_configured.configured_buffer == responsive_buffer);
 
     // Volume is validated at the API boundary, survives without a source, and
     // is reapplied when the next source connects.
@@ -163,6 +198,8 @@ int main() {
     CHECK(active.format.has_value());
     CHECK(active.format->sample_rate == 48'000);
     CHECK(active.format->channels == 1);
+    CHECK((active.active_buffer == trackknife::audio::PlaybackBufferDurationConfig{
+                                       .capacity = 250ms, .start_threshold = 50ms}));
     // The retained percent was applied cubically to the connected stream.
     CHECK(active.volume_percent == 40);
     CHECK(active.output.volume > 0.063 && active.output.volume < 0.065);
@@ -181,6 +218,16 @@ int main() {
     std::this_thread::sleep_for(30ms);
     CHECK((*service)->snapshot().position_sample == paused_position);
 
+    // A new profile is published without resizing the ring beneath the RT
+    // consumer. The active value changes on the following ordinary load.
+    CHECK((*service)->set_buffer_config(balanced_buffer).has_value());
+    const auto buffer_pending = wait_for(**service, [&balanced_buffer](const auto& snapshot) {
+        return snapshot.configured_buffer == balanced_buffer;
+    });
+    CHECK(buffer_pending.configured_buffer == balanced_buffer);
+    CHECK((buffer_pending.active_buffer == trackknife::audio::PlaybackBufferDurationConfig{
+                                               .capacity = 250ms, .start_threshold = 50ms}));
+
     // Device selection: enumeration fills the snapshot, an explicit target
     // reconnects the paused source in place, and default restores it.
     const auto empty_target = (*service)->set_output_target(std::string{});
@@ -190,13 +237,31 @@ int main() {
     const auto with_devices =
         wait_for(**service, [](const auto& snapshot) { return !snapshot.devices.empty(); });
     CHECK(!with_devices.devices.empty());
+    CHECK(with_devices.device_generation > 0U);
+    CHECK(!with_devices.device_monitor_error.has_value());
+    CHECK(with_devices.output_target_available);
     if (!with_devices.devices.empty()) {
         const auto target = with_devices.devices.front().name;
+        const auto unavailable_target = "trackknife.test.missing-output";
+        CHECK((*service)->set_output_target(unavailable_target).has_value());
+        const auto unavailable = wait_for(**service, [&unavailable_target](const auto& snapshot) {
+            return snapshot.output_target == unavailable_target &&
+                   !snapshot.output_target_available;
+        });
+        CHECK(!unavailable.output_target_available);
+        CHECK(unavailable.output_suspended);
+        CHECK(unavailable.state == LocalAuditionState::paused);
+        CHECK(unavailable.position_sample == paused_position);
+        CHECK(unavailable.output.state == trackknife::audio::PipeWireOutputState::unconnected);
+
         CHECK((*service)->set_output_target(target).has_value());
         const auto retargeted = wait_for(**service, [&target](const auto& snapshot) {
-            return snapshot.output_target == target && snapshot.state == LocalAuditionState::paused;
+            return snapshot.output_target == target && snapshot.output_target_available &&
+                   snapshot.state == LocalAuditionState::paused;
         });
         CHECK(retargeted.output_target == target);
+        CHECK(retargeted.output_target_available);
+        CHECK(!retargeted.output_suspended);
         CHECK(retargeted.state == LocalAuditionState::paused);
         CHECK(retargeted.position_sample == paused_position);
         CHECK((*service)->set_output_target(std::nullopt).has_value());
@@ -228,6 +293,23 @@ int main() {
     CHECK(stopped.state == LocalAuditionState::ready);
     CHECK(stopped.position_sample == 0);
     CHECK(stopped.output.state == trackknife::audio::PipeWireOutputState::paused);
+
+    constexpr trackknife::formats::SampleRange second_segment{
+        .start_sample = 12'000,
+        .end_sample = 24'000,
+    };
+    CHECK((*service)->load_segment_and_play(path.native(), second_segment).has_value());
+    const auto segment_playback = wait_for(**service, [](const auto& snapshot) {
+        return (snapshot.segment.has_value() && snapshot.state != LocalAuditionState::loading) ||
+               snapshot.state == LocalAuditionState::failed;
+    });
+    CHECK(segment_playback.state != LocalAuditionState::failed);
+    CHECK(segment_playback.raw_path == path.native());
+    CHECK(segment_playback.segment == second_segment);
+    CHECK(segment_playback.active_buffer == balanced_buffer);
+    CHECK(segment_playback.end_sample == 12'000);
+    CHECK(segment_playback.position_sample >= 0);
+    CHECK(segment_playback.position_sample <= 12'000);
 
     CHECK((*service)->clear().has_value());
     const auto cleared = wait_for(**service, [](const auto& snapshot) {

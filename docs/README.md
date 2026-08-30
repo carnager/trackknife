@@ -1,9 +1,9 @@
 # Trackknife knowledge base
 
 This directory is the handoff package for humans and coding agents beginning
-work on the Trackknife project, which builds two applications from shared
-libraries (ADR-0025): the **Trackknife** MPD/Melody client and the
-**Trackbench** local-file workstation.
+work on the Trackknife project, whose primary product is the unified
+**Trackbench** MPD/Melody and local-file workspace (ADR-0058). The standalone
+**Trackknife** MPD client remains as a compatibility shell during migration.
 
 The ordered delivery plan is [`../MILESTONES.md`](../MILESTONES.md).
 

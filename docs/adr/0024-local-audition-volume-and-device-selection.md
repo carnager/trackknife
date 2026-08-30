@@ -3,6 +3,7 @@
 - Status: accepted
 - Date: 2026-08-27
 - Owners: Trackknife project
+- Followed by: ADR-0030 persistent device monitoring and recovery
 
 ## Context
 
@@ -66,5 +67,5 @@ DSP, and conversion disabled, Trackknife must not modify decoded samples.
 
 ## Revisit when
 
-- Hotplug/default-change reaction is designed (registry monitoring).
+- Hotplug/default-change reaction is designed (resolved by ADR-0030).
 - Measured latency presets or per-device buffer tuning arrive.

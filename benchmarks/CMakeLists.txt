@@ -24,4 +24,15 @@ if(TRACKKNIFE_BUILD_UI)
     )
     add_test(NAME ui-benchmark-smoke COMMAND trackknife_ui_benchmark --quick)
     set_tests_properties(ui-benchmark-smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    qt_add_executable(trackbench_ui_benchmark trackbench_ui_benchmark.cpp)
+    target_link_libraries(
+        trackbench_ui_benchmark
+        PRIVATE Trackknife::BenchUi Qt6::Test trackknife_project_options
+                trackknife_project_warnings
+    )
+    add_test(NAME trackbench-ui-benchmark-smoke COMMAND trackbench_ui_benchmark --quick)
+    set_tests_properties(
+        trackbench-ui-benchmark-smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
 endif()

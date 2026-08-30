@@ -159,6 +159,7 @@ class MpdProbeController final : public QObject {
     Q_INVOKABLE void addLibraryItemNext(int row);
     Q_INVOKABLE void addLibraryItems(const QVariantList& rows, bool next);
     Q_INVOKABLE void addUris(const QStringList& uris, bool next);
+    Q_INVOKABLE void addUrisAt(const QStringList& uris, int position);
     Q_INVOKABLE void replaceQueueWithUris(const QStringList& uris);
     void addAlbum(mpd::AlbumFilter album, QueueAddMode mode);
     Q_INVOKABLE void browseDirectory(const QString& uri);
@@ -220,6 +221,7 @@ class MpdProbeController final : public QObject {
     void beginOptimisticPlayback(std::uint64_t command_id, mpd::PlaybackState state);
     void enqueueUri(std::string uri, bool next);
     void enqueueUris(std::vector<std::string> uris, bool next);
+    void enqueueUrisAt(std::vector<std::string> uris, std::optional<unsigned> first_position);
     void reloadStoredPlaylist(const QString& name);
     void updateElapsedTimer();
     [[nodiscard]] mpd::PlaybackState presentedPlaybackState() const noexcept;

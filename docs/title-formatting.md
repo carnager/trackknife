@@ -26,6 +26,7 @@ grammar.
 | Now playing | Status, notification, or window text | multiline and length policy |
 | Conversion/file plan | Relative destination path | component validation, sanitization, traversal and conflict checks |
 | Copy/export | Clipboard or report text | row/record separators and destination encoding |
+| Metadata transformation | Derive one staged scalar value | a separate declarative chain assigns the result to its target field |
 
 Library hierarchy is structural configuration. A preset stores an ordered list
 of level expressions; a `/` appearing in an artist or album value never creates
@@ -137,6 +138,7 @@ tags:
 | Queue | `queue_position`, `queue_total`, `queue_origin` |
 | Now playing | `playback_time`, `playback_remaining`, `playback_state` |
 | Conversion | `conversion_index`, `source_filename`, `source_extension` |
+| Metadata transformation | none; fields are the current working document after earlier actions |
 
 The typed host defines availability. A missing host field behaves like any other
 missing field; presets should use `$if2` for fallback.

@@ -1,9 +1,16 @@
 # Open decisions
 
-Accepted foundations are recorded in ADRs through 0025. The MPD-client-first
+Accepted foundations are recorded in ADRs through 0057. The MPD-client-first
 direction, separate live queue/working-list model, `libmpdclient` boundary,
-and the two-application split (a pure MPD client plus the standalone Trackbench tool
-sharing this repository's libraries) are no longer open.
+and the two-application split (a pure MPD client plus the standalone Trackbench
+tool sharing this repository's libraries) remain accepted. Proposed ADR-0058
+explicitly reopens only that process boundary for evaluation: one Trackbench
+workspace could host authority-bound MPD Queue and Local Queue tabs, with the
+active tab also switching the server-library/local-folders sidebar and the
+MPD-output/PipeWire-output selector. It does not propose a mixed queue or make
+local operations available to MPD rows. Acceptance requires the MPD queue to
+use the exact complete local track-view layout system, plus a migration and
+combined-process prototype; until then, ADR-0025 governs the product.
 
 ## Resolved for M2–M3
 
@@ -29,11 +36,77 @@ recent-location semantics for ad-hoc local sources. ADR-0015 fixes the initial
 streaming decode contract at source rate/layout and the decoder-core PCM WAV,
 AAC/M4A, LAME MP3, Opus/Ogg, and Ogg Vorbis acceptance fixtures. ADR-0016 and
 ADR-0018 fix the bounded playback core and the direct PipeWire adapter.
-ADR-0021 fixes the serialized playback worker, ADR-0023 list progression, and
-ADR-0024 volume/device selection (cubic percent onto PipeWire's stream mixer,
-bounded sink enumeration, in-place retargeting preserving position and state).
-These contracts move into Trackbench unchanged; the ADR-0022 domain chip
-and bound dual-domain transport are superseded by ADR-0025.
+ADR-0021 fixes the serialized playback worker, ADR-0023 list progression,
+ADR-0024 volume/device selection, ADR-0029 named and exact buffer policy, and
+ADR-0030 persistent sink/default monitoring with strict explicit-target
+pause/recovery, and ADR-0031 exhaustive container-chapter projection through
+the shared logical segment model. ADR-0032 adds typed decoder selection,
+bounded tracker-subsong enumeration, and an explicit opt-in policy for
+alternate container streams. These contracts move into Trackbench
+unchanged; the ADR-0022
+domain chip and bound dual-domain transport are superseded by ADR-0025.
+
+## Resolved M5 read, inspection, and draft foundation
+
+ADR-0033 fixes the Qt-free ordered metadata document, deterministic canonical
+lookup, provenance precedence, initial MusicBrainz projection, raw-path source
+revision, and conservative read-only TagLib property boundary. Trackbench list
+snapshots cache effective ordered values but are not mutation authority. Exact
+format write mappings, artwork/native-object preservation, sidecars, and
+journaling remain open M5 decisions and capability work. ADR-0034
+adds the bounded sparse selection union, exact definitions for common, mixed,
+missing, and partial fields, and the non-modal Properties workspace with
+per-item exact-value/provenance inspection. ADR-0035 adds bounded sparse
+replacement/removal patches, deterministic result-state projection, direct
+scalar grid editing, bounded undo/redo, and explicit draft discard. These
+drafts intentionally resolve no write claim. ADR-0036 makes the compact
+Fields/Original/Draft projection primary, and ADR-0037 adds structured exact
+ordered value editing without delimiter parsing. ADR-0038 supersedes the
+separate Tracks drill-down with a file list above that table: file selection is
+now the single source of individual versus bulk edit scope, with arbitrary
+subset summaries projected outside the UI thread. ADR-0039 adds a dynamic,
+copy-on-write session field vocabulary plus explicit Add field and Remove field
+commands without changing that scope. ADR-0040 adds bounded deterministic field
+completion while keeping arbitrary names open, ADR-0041 adds the complete
+cancellable in-memory Draft projection, and ADR-0042 adds the physical-source-
+aware revalidated write-plan/conflict preview. ADR-0043 proves preservation-
+verified native-FLAC text preparation, ADR-0044 adds its journaled commit and
+recovery executor, ADR-0045 adds the idempotent all-occurrence source-cache
+transaction, and ADR-0046 makes startup recovery evidence visible while adding
+bounded retained-backup undo/release. ADR-0047 adds the explicit cancellable
+multi-source Apply job, ordered partial results, and fresh-preview retry.
+ADR-0048 adds the versioned ordered transformation-chain boundary, its first
+literal/remove/per-value/`tkfmt-1` actions, immutable final preview, and one-
+transaction draft staging. ADR-0049 adds normalized saved-chain persistence
+through the serialized worker plus exact append/copy/split/join semantics.
+ADR-0050 exposes first-character Unicode capitalization as a typed saved action
+whose remainder-preserving semantics are distinct from title case.
+ADR-0051 exposes the saved catalog directly in a persistent checkable tagging
+side panel. Checked definitions are composed in displayed deterministic order
+against a temporary draft copy before the immutable write plan, so repeated
+preview cannot compound non-idempotent actions and Apply remains explicit.
+ADR-0052 makes Properties a temporary protected workspace tab instead of a
+separately sized window and moves transformation file/step diagnostics beneath
+expandable Field/Old/New change rows without changing exact preview semantics.
+ADR-0053 fixes case-sensitive complete-value remove/replace semantics and
+bounded consecutive numbering in captured file order while explicitly
+deferring group resets and `TOTALTRACKS`. ADR-0054 fixes the shared preparation-
+plan shape and separates reusable relative output layouts from explicit
+destination roots so rename/move, ReplayGain, and conversion can share one
+review vocabulary. ADR-0055 fixes the persisted schema-1 profile contracts,
+exact `linux-v1` sanitization, and the pure lexical planner's revision, alias,
+containment, and collision behavior against an explicit observation snapshot.
+ADR-0056 fixes no-symlink fresh preflight, actual same/cross-filesystem
+classification, and the numeric durable publication boundaries through
+dependent-state commit and source removal. ADR-0057 fixes locked descriptor-
+relative same-filesystem no-replace publication, rollback, and startup replay;
+case-folded aliases remain unsupported. Bind-mount confinement, the concrete
+dependent path transaction, same-filesystem undo, cross-filesystem execution,
+combined content intent,
+portable/custom sanitization and Unicode normalization, grouped numbering,
+richer match dialects, import/export, the separate capture-pattern grammar,
+other exact format writers, artwork mutation, and sidecars remain open M5
+decisions and capability work.
 
 ## Needed during M4 (application split)
 
@@ -44,26 +117,23 @@ and bound dual-domain transport are superseded by ADR-0025.
    local raw-path rows (drop, export to Trackbench, or both).
 3. Local-path containment implementation and behavior for symlinks/bind
    mounts.
-4. Expansion from the proven decoder-core matrix to the shipped local
-   playback format matrix (FLAC and WavPack are the first candidates needing
-   real fixtures), plus PipeWire buffer presets.
-5. PipeWire hotplug/default-change behavior.
-6. Album-grouping fallback rules for local files lacking MusicBrainz tags,
+4. Shared UI budget measurements on large local folders.
+5. Album-grouping fallback rules for local files lacking MusicBrainz tags,
    and cover-art source precedence (embedded art versus folder images).
 
 ## Needed before M5–M8
 
 1. Sidecar location/format and precedence relative to embedded metadata.
-2. Default filename sanitization and Unicode normalization policy.
+2. Portable/custom filename sanitization and Unicode normalization policy;
+   `linux-v1` is fixed by ADR-0055.
 3. ReplayGain true-peak and Opus output-gain/storage policy.
 4. Initial exact read/write/preservation claims per local format.
-5. Undo retention by time, operation count, and disk budget.
-6. Converter's shipped codec/device presets, resampler quality settings, and
+5. Converter's shipped codec/device presets, resampler quality settings, and
    source-root inference UX.
-7. MusicBrainz web-service rate-limit/cache policy and whether AcoustID
+6. MusicBrainz web-service rate-limit/cache policy and whether AcoustID
    fingerprinting earns its dependency (M6).
-8. Destination profiles for organized output, including MPD-music-root
-   publication defaults.
+7. Shipped destination-profile defaults, including whether an accessible MPD
+   music root earns a convenience preset.
 
 ## Deferred
 

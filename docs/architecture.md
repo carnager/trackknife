@@ -4,20 +4,46 @@
 
 Qt 6 Widgets, C++23 with a Qt-free core, the Linux/build baseline, focused
 media/storage backends, utf8proc, `tkfmt-1`, the MPD-client-first direction,
-and the two-application split (ADR-0025) are accepted in ADRs through 0025.
+the unified MPD/local Trackbench workspace (ADR-0058), Trackbench's versioned composed panel
+layouts (ADR-0026), its semantic track-view layouts (ADR-0027), bounded
+cue-sheet logical-track planning (ADR-0028), and persistent source-rate buffer
+profiles (ADR-0029), and continuous PipeWire device monitoring with conservative
+output recovery (ADR-0030), exhaustive container-chapter projection
+(ADR-0031), explicit decoder selection plus tracker subsongs (ADR-0032), the
+typed local metadata read model (ADR-0033), the staged metadata selection grid
+(ADR-0034), bounded in-memory metadata drafts (ADR-0035), and the aggregate
+metadata fields workspace (ADR-0036), plus exact ordered metadata value editing
+(ADR-0037), the file-selection-driven Properties workspace (ADR-0038), its
+dynamic metadata field vocabulary (ADR-0039), and ranked field-name completion
+(ADR-0040), background complete Draft projection (ADR-0041), and revalidated
+metadata write-plan/conflict preview (ADR-0042), plus the preservation-verified
+prepared-copy FLAC text writer (ADR-0043), the journaled native-FLAC
+commit/recovery executor (ADR-0044), and the provenance-aware dependent-state
+cache transaction (ADR-0045), plus startup recovery presentation and bounded
+retained-backup undo (ADR-0046), and cancellable bounded metadata Apply jobs
+(ADR-0047), plus versioned previewed metadata transformation chains (ADR-0048),
+persisted exact-value chains (ADR-0049), typed first-character metadata
+capitalization (ADR-0050), and the persistent automatic tagging transformation
+panel (ADR-0051), plus the tabbed tagging workspace and expandable change
+preview (ADR-0052), and exact-value matching plus selection-order numbering
+(ADR-0053), plus the unified preparation plan and reusable output profiles
+(ADR-0054), and versioned output-profile persistence plus pure path planning
+(ADR-0055), plus fresh filesystem preflight and a durable file-publication state
+machine (ADR-0056), plus journaled same-filesystem file publication and recovery
+(ADR-0057), are accepted in ADRs through 0058.
 Backend selection is not a capability claim; protocol and file behavior still
 require fixtures and measurements.
 
 ## System shape
 
-One repository builds two applications over shared internal libraries.
-Neither application depends on the other at runtime.
+One repository builds a unified Trackbench workspace over shared internal
+libraries. The standalone Trackknife MPD shell remains during migration.
 
 ```text
-Trackknife (MPD client UI)          Trackbench (local workstation UI)
+Trackbench: MPD Queue context       Trackbench: Local Queue context
   | typed commands, immutable view models, event subscriptions
 Application services
-  | MPD session | tab/list workspace   | local playback | preparation | jobs
+  | MPD session | server library      | local playback | preparation | jobs
 Core domain (shared)
   | source refs | metadata/MusicBrainz | list docs | tkfmt | jobs | plans
 Adapters (linked per application)
@@ -29,18 +55,18 @@ External/platform
 
 The UI never owns sockets, decoders, tags, SQL transactions, or file writes.
 Adapters never reach into widgets. The core can later serve a CLI without a
-second interpretation of domain behavior. Trackbench links no MPD adapter;
-the client links no local playback path (until the M9 Melody endpoint reuses
-`audio` as a server-controlled output).
+second interpretation of domain behavior. Trackbench links both adapters but
+routes them only through the active authority; local mutation services reject
+MPD selections by construction.
 
 ## Primary data flow
 
 ```text
-Trackknife:
+Trackbench MPD context:
 MPD server --command/idle--> MpdSession --> immutable server snapshots
                                       \--> tab/list and view services --> UI
 
-Trackbench:
+Trackbench local context:
 Local source --> playback: FFmpeg --> gain/DSP --> PipeWire
              \-> tags / MusicBrainz / ReplayGain / organize / convert plans
 ```
@@ -83,9 +109,9 @@ groups, transformations, and relative destination generation.
 
 ### `formats`
 
-FFmpeg probe/decode/encode adapters and TagLib/format-specific metadata
-adapters. Each publishes independent read/write/artwork/loudness/preservation
-capabilities; decode support never implies write safety.
+FFmpeg probe/decode/encode adapters. A narrow libopenmpt identity adapter
+enumerates tracker subsongs that FFmpeg can select but does not enumerate;
+FFmpeg remains the PCM decode boundary.
 
 ### `audio`
 
@@ -95,8 +121,12 @@ device output, and underrun diagnostics. A dedicated Qt-free playback worker
 serializes source replacement, bounded decoder production, transport, seek,
 PipeWire transitions, drain, and cancellation while publishing immutable
 snapshots. The real-time callback performs no blocking I/O, allocation, SQL, or
-UI work. Trackbench's player owns it today; the client reuses it later only as
-the M9 Melody endpoint's server-controlled output.
+UI work. Named and exact duration profiles configure future ring allocations
+without resizing live RT state. A persistent registry/default-metadata monitor
+publishes device generations to the same worker; explicit-target loss pauses
+without fallback and reconnects in place when the target returns. Trackbench's
+player owns it today; the client reuses it later only as the M9 Melody
+endpoint's server-controlled output.
 
 ### `preparation`
 
@@ -107,9 +137,19 @@ becoming a canonical local library.
 
 ### `metadata`
 
-Rich multi-source documents, MusicBrainz projections, field vocabulary and
-search, staged patches, capture patterns, and transformation chains. Loudness
-is displayed beside tags but remains a typed record with algorithm/provenance.
+Rich multi-source documents, MusicBrainz projections, TagLib/format-specific
+adapters, the sparse staged-selection projection, field vocabulary and ranked
+search, the bounded copy-on-write patch set and worker result projection, and
+the physical-source-aware revalidated write-plan preview, plus the native-FLAC
+preservation-verified prepared-copy writer. Versioned ordered transformation
+chains, their exact add/copy/split/join and first-character capitalization
+semantics, pure final-cell preview, and future capture patterns remain in this
+module. Saved definitions cross the
+`persistence` boundary only as validated declarative data. Each adapter
+publishes independent
+read/write/artwork/preservation capabilities;
+decode or read support never implies write safety. Loudness is displayed beside
+tags but remains a typed record with algorithm/provenance.
 
 ### `loudness`
 
@@ -121,7 +161,16 @@ writability.
 
 Shared plan/preview/commit/journal framework for tags, artwork, files,
 conversion publication, verification, and loudness writes. Mutations acquire
-per-source locks and revalidate revisions.
+per-source locks and revalidate revisions. The first implementation serializes
+native-FLAC sources, journals exact raw paths and recovery identities through a
+persistence interface, atomically publishes a verified sibling, retains the old
+inode as a backup, requires an idempotent dependent-state commit, and rolls back
+or conservatively escalates interrupted states without depending on Qt. A
+separate backup lifecycle supports verified atomic-exchange undo, explicit
+release, startup maintenance, and restart recovery without conflating backup
+retention with publication state. A Qt-free two-worker Apply orchestrator now
+consumes only wholly ready plans, serializes progress delivery, stops new
+admission on cancellation, and preserves ordered per-source partial results.
 
 ### `jobs`
 
@@ -135,16 +184,32 @@ separate limits rather than one undifferentiated pool.
 SQLite migrations/repositories for profiles, workspace, list documents and
 snapshots, presets, jobs, statistics, caches, and operation journals. Writes are
 short and transactional; sockets, decode, and filesystem work never occur
-inside a database transaction.
+inside a database transaction. Verified metadata publication refreshes every
+matching local occurrence and a raw-path source cache in one idempotent
+transaction; provenance keeps logical-track overlays separate, and the source
+cache prevents a delayed ordinary workspace save from restoring stale fields.
+The operation journal also guards retained-backup state and unique reverse
+operation identities for crash-recoverable undo. Apply first persists a
+UI-captured workspace snapshot on this worker so a newly opened occurrence
+cannot race the ordinary save debounce.
 
 ### `ui`
 
 Qt Widgets presentation split into a shared component library (virtualized
-track views, tab workspace, transport row, command palette, toasts, settings
-and shortcut machinery) plus per-application shells: the client's connection
-setup, server browser/search, queue tabs, and outputs; Trackbench's folder
-navigation, local list tabs, tag grid, previews, and job center. It consumes
-C++ `QAbstractItemModel` and controller objects; no `QQuickWidget` hybrid.
+track views, tab workspace, transport row, command palette, toasts, settings,
+shortcuts, and the versioned panel- and track-view-layout models/validators)
+plus
+per-application shells: the client's connection setup, server browser/search,
+queue tabs, and outputs; Trackbench's composed-panel renderer, folder
+navigation, local list tabs, tag grid, previews, metadata-operation history and
+reconciliation evidence, and job center. Panel layout
+owns only placement and sizing of registered instances, never application
+state. ADR-0052 hosts each captured metadata Properties task as a temporary
+protected tab in the Track Lists surface while excluding it from durable list
+documents. Track-view presentation separately owns semantic column placement and
+group geometry, never queue/list occurrence state. UI consumes C++
+`QAbstractItemModel` and controller objects; no
+`QQuickWidget` hybrid.
 
 ## Identity and source records
 
@@ -169,13 +234,14 @@ mutation.
 mpd_profiles(id, name, endpoint, secret_ref, local_root, reconnect_policy)
 workspace_panels(id, type, config, schema_version)
 lists(id, kind, name, profile_id?, dirty, revision, config)
-list_items(list_id, ordinal, source_kind, remote_uri?, local_ref?, snapshot)
+list_items(list_id, ordinal, source_kind, source_ref, logical_ref?, segment?, snapshot)
 view_presets(id, name, version, definition)
 local_sources(id, raw_path, fs_identity, size, mtime, revision, availability)
 local_metadata(source_id, field, ordinal, value, provenance, revision)
 loudness(source_id/segment, grouping, gains/peaks, algorithm, revision)
 jobs(id, kind, state, summary, resumable_payload)
 operation_journal(id, plan, steps, state, recovery_payload)
+metadata_operation_backups(operation_id, state, undo_id?, timestamps, failure?)
 ```
 
 The live MPD queue is not persisted as a second authoritative list. Its latest
@@ -229,9 +295,37 @@ local, mapped-local, writable, and decodable sources before offering actions.
 - **MPD:** dynamically linked `libmpdclient >= 2.22`, generic pair parsing for
   unknown and advertised extension fields, no handles outside the adapter.
 - **Decode/encode:** FFmpeg libraries, never an `ffmpeg` subprocess for playback.
-- **Metadata:** TagLib plus format-specific adapters and real preservation tests.
+- **Metadata:** TagLib plus format-specific adapters. The generic property
+  reader is active; native-FLAC text has preservation-proven prepared-copy and
+  headless journaled commit plus bounded Apply support (ADRs 0043–0047).
+  ADR-0048's versioned transformation chains stage through the same draft and
+  write-plan boundary; ADR-0049 persists validated definitions and adds exact
+  add/copy/split/join actions, while ADR-0050 adds typed first-character
+  capitalization. ADR-0051 composes checked saved definitions into a temporary
+  draft immediately before the same immutable write-plan boundary. ADR-0053
+  adds complete-value exact remove/replace and captured-file-order numbering
+  without folding grouping or capture grammar into schema 1. Other format and
+  artwork writes remain disabled until their real preservation tests pass.
 - **Loudness:** libebur128 behind Trackknife-owned ReplayGain policy.
-- **State:** SQLite with explicit reversible development migrations.
+- **Preparation:** ADR-0054 composes tag persistence, qualified ReplayGain
+  storage, and filesystem rename/move into one immutable per-source review and
+  recoverable Apply boundary. Versioned relative output layouts remain separate
+  from explicit raw-path destination roots and are reusable by conversion.
+  ADR-0055 persists those contracts in migration 13 and adds a bounded Qt-free
+  path planner over final metadata, captured source revisions, and an explicit
+  filesystem snapshot. It owns lexical mapping and collision diagnostics only;
+  ADR-0056 adds a no-symlink live preflight and classifies same-filesystem rename
+  versus cross-filesystem copy without mutation. Migration 14 durably separates
+  target preparation/publication, dependent-state commit, and source removal.
+  ADR-0057 qualifies locked descriptor-relative no-replace rename, exact
+  rollback, and idempotent startup recovery; concrete dependent path state,
+  undo, cross-filesystem copy, batching, and UI exposure remain to qualify.
+- **State:** SQLite with explicit reversible development migrations, including
+  normalized ordered schema-1 metadata transformation definitions owned by the
+  serialized persistence worker, including their automatic tagging policy
+  flags, exact matching payloads, and numeric arguments (ADRs 0049–0053), plus
+  separately versioned output-layout and raw destination profiles (ADR-0055)
+  and file-publication recovery evidence (ADR-0056).
 - **Local output:** direct PipeWire with a narrow fallback-capable interface.
 
 ## Implementation sequence

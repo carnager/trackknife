@@ -55,6 +55,9 @@ using trackknife::titleformat::FormatContextKind;
     if (value == "sort") {
         return FormatContextKind::sort;
     }
+    if (value == "metadata-transform") {
+        return FormatContextKind::metadata_transformation;
+    }
     return std::nullopt;
 }
 
@@ -148,7 +151,7 @@ void printUsage(std::ostream& output) {
               "  --field NAME=VALUE       Add an ordered metadata value; repeatable\n"
               "  --info NAME=VALUE        Add a technical information field; repeatable\n"
               "  --context NAME           display, now-playing, list, queue, path, tree,\n"
-              "                           group, copy, or sort\n"
+              "                           group, copy, sort, or metadata-transform\n"
               "  --show-dependencies      Print normalized field dependencies\n"
               "  --help                   Show this help\n";
 }

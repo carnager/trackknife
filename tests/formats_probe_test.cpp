@@ -539,6 +539,370 @@ void probesTaggedWavPackFixture(const std::filesystem::path& fixture_directory) 
     CHECK(!error);
 }
 
+void probesTaggedAiffFixture(const std::filesystem::path& fixture_directory) {
+    const auto binary = decode_base64_file(fixture_directory / "tagged-tone-aiff.b64");
+    CHECK(binary.has_value());
+    if (!binary) {
+        return;
+    }
+    const auto path =
+        std::filesystem::temp_directory_path() /
+        ("trackknife-tagged-aiff-" + trackknife::core::StableId::random().to_string() + ".aiff");
+    std::ofstream output{path, std::ios::binary};
+    output.write(reinterpret_cast<const char*>(binary->data()),
+                 static_cast<std::streamsize>(binary->size()));
+    output.close();
+    CHECK(output.good());
+
+    const auto probe = trackknife::formats::probe_local_media(path.native());
+    CHECK(probe.has_value());
+    if (probe) {
+        CHECK(probe->container_names.find("aiff") != std::string::npos);
+        CHECK(probe->audio_streams.size() == 1U);
+        CHECK(probe->audio_streams.front().codec_name == "pcm_s24be");
+        CHECK(probe->audio_streams.front().sample_rate == 44'100);
+        CHECK(probe->audio_streams.front().channels == 1);
+        const auto tag_value = [&probe](const std::string_view name) -> std::string {
+            for (const auto& tag : probe->tags) {
+                if (tag.name == name) {
+                    return tag.value;
+                }
+            }
+            return {};
+        };
+        CHECK(probe->tags.size() == 5U);
+        CHECK(tag_value("title") == "Fixture Tone");
+        CHECK(tag_value("artist") == "Trackknife Project");
+        CHECK(tag_value("album") == "Trackbench Fixtures");
+        CHECK(tag_value("date") == "2026");
+        CHECK(tag_value("track") == "3");
+    }
+
+    auto decoder = trackknife::formats::AudioDecoder::open(path.native());
+    CHECK(decoder.has_value());
+    if (decoder) {
+        CHECK(decoder->output_format().sample_rate == 44'100);
+        CHECK(decoder->output_format().channels == 1);
+        const auto decoded = decode_all(*decoder);
+        CHECK(decoded.size() == 4'410U);
+        const auto loud = [](const float sample) { return std::fabs(sample) > 0.01F; };
+        CHECK(std::ranges::any_of(decoded | std::views::take(64U), loud));
+        CHECK(std::ranges::any_of(decoded | std::views::drop(decoded.size() - 64U), loud));
+
+        auto segment = trackknife::formats::AudioDecoder::open_segment(
+            path.native(), {.start_sample = 700, .end_sample = 3'700});
+        CHECK(segment.has_value());
+        if (segment) {
+            const auto segment_samples = decode_all(*segment);
+            CHECK(segment_samples.size() == 3'000U);
+            CHECK(std::ranges::equal(segment_samples,
+                                     decoded | std::views::drop(700U) | std::views::take(3'000U)));
+        }
+    }
+
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    CHECK(!error);
+}
+
+void probesRf64Fixture(const std::filesystem::path& fixture_directory) {
+    const auto binary = decode_base64_file(fixture_directory / "rf64-tone-wav.b64");
+    CHECK(binary.has_value());
+    if (!binary) {
+        return;
+    }
+    constexpr std::array<unsigned char, 4> rf64_magic{'R', 'F', '6', '4'};
+    constexpr std::array<unsigned char, 4> wave_magic{'W', 'A', 'V', 'E'};
+    constexpr std::array<unsigned char, 4> ds64_magic{'d', 's', '6', '4'};
+    CHECK(binary->size() >= 48U);
+    CHECK(std::equal(rf64_magic.begin(), rf64_magic.end(), binary->begin()));
+    CHECK(std::equal(wave_magic.begin(), wave_magic.end(), binary->begin() + 8));
+    CHECK(std::equal(ds64_magic.begin(), ds64_magic.end(), binary->begin() + 12));
+
+    const auto path =
+        std::filesystem::temp_directory_path() /
+        ("trackknife-rf64-" + trackknife::core::StableId::random().to_string() + ".wav");
+    std::ofstream output{path, std::ios::binary};
+    output.write(reinterpret_cast<const char*>(binary->data()),
+                 static_cast<std::streamsize>(binary->size()));
+    output.close();
+    CHECK(output.good());
+
+    const auto probe = trackknife::formats::probe_local_media(path.native());
+    CHECK(probe.has_value());
+    if (probe) {
+        CHECK(probe->container_names.find("wav") != std::string::npos);
+        CHECK(probe->duration_ms && *probe->duration_ms == 50);
+        CHECK(probe->audio_streams.size() == 1U);
+        CHECK(probe->audio_streams.front().codec_name == "pcm_s24le");
+        CHECK(probe->audio_streams.front().sample_rate == 48'000);
+        CHECK(probe->audio_streams.front().channels == 2);
+        const auto tag_value = [&probe](const std::string_view name) -> std::string {
+            for (const auto& tag : probe->tags) {
+                if (tag.name == name) {
+                    return tag.value;
+                }
+            }
+            return {};
+        };
+        CHECK(tag_value("title") == "RF64 Fixture");
+        CHECK(tag_value("artist") == "Trackknife Project");
+        CHECK(tag_value("time_reference") == "0");
+    }
+
+    auto decoder = trackknife::formats::AudioDecoder::open(path.native());
+    CHECK(decoder.has_value());
+    if (decoder) {
+        CHECK(decoder->output_format().sample_rate == 48'000);
+        CHECK(decoder->output_format().channels == 2);
+        CHECK(decoder->duration_samples() == 2'400);
+        const auto decoded = decode_all(*decoder);
+        CHECK(decoded.size() == 4'800U);
+        const auto loud = [](const float sample) { return std::fabs(sample) > 0.01F; };
+        CHECK(std::ranges::any_of(decoded | std::views::take(128U), loud));
+        CHECK(std::ranges::any_of(decoded | std::views::drop(decoded.size() - 128U), loud));
+
+        auto segment = trackknife::formats::AudioDecoder::open_segment(
+            path.native(), {.start_sample = 500, .end_sample = 1'900});
+        CHECK(segment.has_value());
+        if (segment) {
+            const auto segment_samples = decode_all(*segment);
+            CHECK(segment_samples.size() == 2'800U);
+            CHECK(std::ranges::equal(segment_samples, decoded | std::views::drop(1'000U) |
+                                                          std::views::take(2'800U)));
+        }
+    }
+
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    CHECK(!error);
+}
+
+void probesWave64Fixture(const std::filesystem::path& fixture_directory) {
+    const auto binary = decode_base64_file(fixture_directory / "wave64-float.b64");
+    CHECK(binary.has_value());
+    if (!binary) {
+        return;
+    }
+    constexpr std::array<unsigned char, 16> riff_guid{
+        'r',   'i',   'f',   'f',   0x2eU, 0x91U, 0xcfU, 0x11U,
+        0xa5U, 0xd6U, 0x28U, 0xdbU, 0x04U, 0xc1U, 0x00U, 0x00U,
+    };
+    constexpr std::array<unsigned char, 16> wave_guid{
+        'w',   'a',   'v',   'e',   0xf3U, 0xacU, 0xd3U, 0x11U,
+        0x8cU, 0xd1U, 0x00U, 0xc0U, 0x4fU, 0x8eU, 0xdbU, 0x8aU,
+    };
+    CHECK(binary->size() >= 64U);
+    CHECK(std::equal(riff_guid.begin(), riff_guid.end(), binary->begin()));
+    CHECK(std::equal(wave_guid.begin(), wave_guid.end(), binary->begin() + 24));
+
+    const auto path =
+        std::filesystem::temp_directory_path() /
+        ("trackknife-wave64-" + trackknife::core::StableId::random().to_string() + ".w64");
+    std::ofstream output{path, std::ios::binary};
+    output.write(reinterpret_cast<const char*>(binary->data()),
+                 static_cast<std::streamsize>(binary->size()));
+    output.close();
+    CHECK(output.good());
+
+    const auto probe = trackknife::formats::probe_local_media(path.native());
+    CHECK(probe.has_value());
+    if (probe) {
+        CHECK(probe->container_names.find("w64") != std::string::npos);
+        CHECK(probe->duration_ms && *probe->duration_ms == 50);
+        CHECK(probe->audio_streams.size() == 1U);
+        CHECK(probe->audio_streams.front().codec_name == "pcm_f32le");
+        CHECK(probe->audio_streams.front().sample_format == "flt");
+        CHECK(probe->audio_streams.front().sample_rate == 48'000);
+        CHECK(probe->audio_streams.front().channels == 2);
+    }
+
+    auto decoder = trackknife::formats::AudioDecoder::open(path.native());
+    CHECK(decoder.has_value());
+    if (decoder) {
+        CHECK(decoder->output_format().sample_rate == 48'000);
+        CHECK(decoder->output_format().channels == 2);
+        CHECK(decoder->duration_samples() == 2'400);
+        const auto decoded = decode_all(*decoder);
+        CHECK(decoded.size() == 4'800U);
+        const auto loud = [](const float sample) { return std::fabs(sample) > 0.01F; };
+        CHECK(std::ranges::any_of(decoded | std::views::take(128U), loud));
+        CHECK(std::ranges::any_of(decoded | std::views::drop(decoded.size() - 128U), loud));
+
+        auto segment = trackknife::formats::AudioDecoder::open_segment(
+            path.native(), {.start_sample = 500, .end_sample = 1'900});
+        CHECK(segment.has_value());
+        if (segment) {
+            const auto segment_samples = decode_all(*segment);
+            CHECK(segment_samples.size() == 2'800U);
+            CHECK(std::ranges::equal(segment_samples, decoded | std::views::drop(1'000U) |
+                                                          std::views::take(2'800U)));
+        }
+    }
+
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    CHECK(!error);
+}
+
+void probesAndDecodesContainerChapters(const std::filesystem::path& fixture_directory) {
+    const auto binary = decode_base64_file(fixture_directory / "container-chapters-mka.b64");
+    CHECK(binary.has_value());
+    if (!binary) {
+        return;
+    }
+    const auto path = std::filesystem::temp_directory_path() /
+                      ("trackknife-container-chapters-" +
+                       trackknife::core::StableId::random().to_string() + ".mka");
+    std::ofstream output{path, std::ios::binary};
+    output.write(reinterpret_cast<const char*>(binary->data()),
+                 static_cast<std::streamsize>(binary->size()));
+    output.close();
+    CHECK(output.good());
+
+    const auto probe = trackknife::formats::probe_local_media(path.native());
+    CHECK(probe.has_value());
+    if (probe) {
+        CHECK(probe->best_audio_stream == 0);
+        CHECK(probe->audio_streams.size() == 1U);
+        CHECK(probe->audio_streams.front().codec_name == "flac");
+        CHECK(probe->audio_streams.front().sample_rate == 48'000);
+        CHECK(probe->chapters.size() == 2U);
+        if (probe->chapters.size() == 2U) {
+            CHECK(probe->chapters[0].source_index == 0U);
+            CHECK(probe->chapters[0].start_sample == 0);
+            CHECK(probe->chapters[0].end_sample == 4'800);
+            CHECK(probe->chapters[1].source_index == 1U);
+            CHECK(probe->chapters[1].start_sample == 4'800);
+            CHECK(probe->chapters[1].end_sample == 9'600);
+            const auto tag = [](const trackknife::formats::ProbedChapter& chapter,
+                                const std::string_view name) {
+                const auto found =
+                    std::ranges::find(chapter.tags, name, &trackknife::formats::ProbedTag::name);
+                return found == chapter.tags.end() ? std::string{} : found->value;
+            };
+            CHECK(tag(probe->chapters[0], "title") == "First chapter");
+            CHECK(tag(probe->chapters[0], "ARTIST") == "First Artist");
+            CHECK(tag(probe->chapters[1], "title") == "Second chapter");
+        }
+    }
+
+    auto decoder = trackknife::formats::AudioDecoder::open(path.native());
+    CHECK(decoder.has_value());
+    if (decoder) {
+        CHECK(decoder->duration_samples() == 9'600);
+        const auto decoded = decode_all(*decoder);
+        CHECK(decoded.size() == 9'600U);
+        if (probe && probe->chapters.size() == 2U) {
+            std::vector<float> joined;
+            for (const auto& chapter : probe->chapters) {
+                auto segment = trackknife::formats::AudioDecoder::open_segment(
+                    path.native(),
+                    {.start_sample = chapter.start_sample, .end_sample = chapter.end_sample});
+                CHECK(segment.has_value());
+                if (segment) {
+                    auto samples = decode_all(*segment);
+                    if (samples.size() != 4'800U) {
+                        std::cerr << "container chapter " << chapter.source_index << " decoded "
+                                  << samples.size() << " frames\n";
+                    }
+                    CHECK(samples.size() == 4'800U);
+                    joined.insert(joined.end(), samples.begin(), samples.end());
+                }
+            }
+            CHECK(joined == decoded);
+        }
+    }
+
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    CHECK(!error);
+
+    const auto partial_binary = decode_base64_file(fixture_directory / "partial-chapters-mka.b64");
+    CHECK(partial_binary.has_value());
+    if (partial_binary) {
+        const auto partial_path = std::filesystem::temp_directory_path() /
+                                  ("trackknife-partial-chapters-" +
+                                   trackknife::core::StableId::random().to_string() + ".mka");
+        std::ofstream partial_output{partial_path, std::ios::binary};
+        partial_output.write(reinterpret_cast<const char*>(partial_binary->data()),
+                             static_cast<std::streamsize>(partial_binary->size()));
+        partial_output.close();
+        CHECK(partial_output.good());
+        const auto partial_probe = trackknife::formats::probe_local_media(partial_path.native());
+        CHECK(partial_probe.has_value());
+        CHECK(partial_probe && partial_probe->duration_ms == 200);
+        CHECK(partial_probe && partial_probe->chapters.empty());
+        std::filesystem::remove(partial_path, error);
+        CHECK(!error);
+    }
+}
+
+void probesAndDecodesCodecNativeSubsongs(const std::filesystem::path& fixture_directory) {
+    const auto binary = decode_base64_file(fixture_directory / "two-subsongs-mod.b64");
+    CHECK(binary.has_value());
+    if (!binary) {
+        return;
+    }
+    const auto path =
+        std::filesystem::temp_directory_path() /
+        ("trackknife-codec-subsongs-" + trackknife::core::StableId::random().to_string() + ".mod");
+    std::ofstream output{path, std::ios::binary};
+    output.write(reinterpret_cast<const char*>(binary->data()),
+                 static_cast<std::streamsize>(binary->size()));
+    output.close();
+    CHECK(output.good());
+
+    const auto probe = trackknife::formats::probe_local_media(path.native());
+    CHECK(probe.has_value());
+    CHECK(probe && probe->container_names == "libopenmpt");
+    CHECK(probe && probe->chapters.empty());
+    CHECK(probe && probe->subsongs.size() == 2U);
+    if (probe && probe->subsongs.size() == 2U) {
+        for (std::size_t index = 0U; index < probe->subsongs.size(); ++index) {
+            const auto& subsong = probe->subsongs[index];
+            CHECK(subsong.source_index == index);
+            CHECK(subsong.selection.stream_index == 0);
+            CHECK(subsong.selection.subsong_index == static_cast<int>(index));
+            CHECK(subsong.duration_ms == 600);
+            CHECK(subsong.duration_samples == 28'800);
+        }
+    }
+
+    std::array<std::vector<float>, 2> decoded;
+    for (std::size_t index = 0U; index < decoded.size(); ++index) {
+        const trackknife::formats::AudioSourceSelection selection{
+            .stream_index = 0,
+            .subsong_index = static_cast<int>(index),
+        };
+        auto decoder = trackknife::formats::AudioDecoder::open_selected_segment(
+            path.native(), selection, {.start_sample = 0, .end_sample = 28'800});
+        CHECK(decoder.has_value());
+        if (!decoder) {
+            continue;
+        }
+        CHECK(decoder->source_selection() == selection);
+        CHECK(decoder->output_format().sample_rate == 48'000);
+        CHECK(decoder->output_format().channels == 2);
+        CHECK(decoder->duration_samples() == 28'800);
+        decoded[index] = decode_all(*decoder);
+        CHECK(decoded[index].size() == 57'600U);
+        CHECK(std::ranges::any_of(decoded[index],
+                                  [](const float sample) { return std::abs(sample) > 0.0001F; }));
+    }
+    CHECK(decoded[0] != decoded[1]);
+
+    const auto invalid_stream = trackknife::formats::AudioDecoder::open_selected(
+        path.native(), {.stream_index = 1, .subsong_index = 0});
+    CHECK(!invalid_stream);
+    CHECK(!invalid_stream &&
+          invalid_stream.error().code == trackknife::core::ErrorCode::invalid_argument);
+
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    CHECK(!error);
+}
+
 void loadsEmbeddedArtworkExactly(const std::filesystem::path& fixture_directory) {
     const auto with_art = decode_base64_file(fixture_directory / "art-tone-flac.b64");
     const auto without_art = decode_base64_file(fixture_directory / "tagged-tone-flac.b64");
@@ -596,6 +960,11 @@ int main(const int argc, char** argv) {
         normalizesVorbisFrameTimeline(argv[1]);
         probesTaggedFlacFixture(argv[1]);
         probesTaggedWavPackFixture(argv[1]);
+        probesTaggedAiffFixture(argv[1]);
+        probesRf64Fixture(argv[1]);
+        probesWave64Fixture(argv[1]);
+        probesAndDecodesContainerChapters(argv[1]);
+        probesAndDecodesCodecNativeSubsongs(argv[1]);
         loadsEmbeddedArtworkExactly(argv[1]);
     }
     return failures == 0 ? 0 : 1;

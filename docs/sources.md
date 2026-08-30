@@ -128,6 +128,24 @@ recommendation's `-23 LUFS` target. Persist the algorithm and reference used.
 - [Media Library preferences](https://wiki.hydrogenaudio.org/index.php?title=Foobar2000:Preferences:Media_Library)
 - [Autoplaylists](https://wiki.hydrogenaudio.org/index.php?title=Foobar2000:Autoplaylist)
 - [Faceted library browsing](https://wiki.hydrogenaudio.org/index.php?title=Foobar2000:Components/Facets_%28foo_facets%29)
+- [PipeWire registry API](https://docs.pipewire.org/group__pw__registry.html)
+- [PipeWire metadata API](https://docs.pipewire.org/group__pw__metadata.html)
+- [PipeWire stream autoconnect](https://docs.pipewire.org/page_streams.html)
+- [WirePlumber session management](https://pipewire.pages.freedesktop.org/wireplumber/design/understanding_session_management.html)
+  - Accessed 2026-08-29 for ADR-0030. Registry global/remove events define the
+    live topology boundary; the default sink is metadata, and the session
+    manager owns dynamic stream relinking when graph/default conditions change.
+- [FFmpeg `AVChapter` structure](https://ffmpeg.org/doxygen/trunk/structAVChapter.html)
+- [FFmpeg rational rescaling API](https://ffmpeg.org/doxygen/trunk/group__lavu__math.html)
+  - Accessed 2026-08-29 for ADR-0031. FFmpeg defines chapter start/end values in
+    each chapter's explicit time base; `av_rescale_q_rnd` provides the bounded
+    integer rational conversion used to project absolute sample boundaries.
+- [Official libopenmpt C API](https://lib.openmpt.org/doc/group__libopenmpt__c.html)
+- [Official OpenMPT/libopenmpt repository](https://github.com/OpenMPT/openmpt)
+  - Accessed 2026-08-29 for ADR-0032. The stable C API exposes bounded subsong
+    count, selection, names, and duration, including hidden songs. The project
+    is BSD-3-Clause licensed, which is compatible with Trackknife's GPLv3
+    distribution; its notices remain required.
 
 ## FPL and rich cached playlist items
 
@@ -146,6 +164,7 @@ ADRs record which libraries are selected; a link here alone is not adoption.
 
 - [FFmpeg documentation](https://ffmpeg.org/documentation.html)
 - [FFmpeg codec multithreading notes](https://github.com/FFmpeg/FFmpeg/blob/master/doc/multithreading.txt)
+- [libopenmpt documentation](https://lib.openmpt.org/libopenmpt/documentation/)
 - [TagLib API and supported formats](https://taglib.org/api/)
 - [GTK 4 Rust bindings listed by GTK](https://www.gtk.org/docs/language-bindings/rust/)
 - [gtk4-rs documentation](https://gtk-rs.org/gtk4-rs/stable/latest/docs/gtk4/)

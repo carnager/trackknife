@@ -2,6 +2,11 @@
 
 #pragma once
 
+#include "trackknife/core/local_sources.hpp"
+#include "trackknife/formats/decoder.hpp"
+#include "trackknife/metadata/document.hpp"
+#include "uicommon/track_row_roles.hpp"
+
 #include <QAbstractTableModel>
 #include <QHash>
 #include <QImage>
@@ -13,11 +18,28 @@
 
 namespace trackknife::bench {
 
+// Trackbench's local presentation has a real artwork/status column followed by
+// independent metadata columns. Shared semantic roles still let the grouped
+// delegate and queue view consume the model without owning local-file state.
+enum LocalTrackColumn : int {
+    local_artwork_column = ui::track_artwork_column,
+    local_artist_column = ui::track_artist_column,
+    local_track_number_column = ui::track_number_column,
+    local_title_column = ui::track_title_column,
+    local_album_column = ui::track_album_column,
+    local_date_column = ui::track_date_column,
+    local_length_column = ui::track_length_column,
+    local_column_count = ui::track_column_count,
+};
+
 // One row of a Trackbench working list: raw Linux path bytes plus the
 // display metadata enriched by the background probe or restored from the
 // persisted document.
 struct LocalTrackRow {
     std::string raw_path;
+    std::optional<std::string> logical_reference;
+    formats::AudioSourceSelection selection;
+    std::optional<formats::SampleRange> segment;
     std::string title;
     std::string artist;
     std::string album;
@@ -25,6 +47,11 @@ struct LocalTrackRow {
     std::string date;
     std::string track_number;
     std::optional<std::int64_t> duration_ms;
+    // The display columns above are a projection of this ordered, multi-value
+    // document. The observed revision is retained only as stale-read evidence;
+    // any future mutation must revalidate it immediately before commit.
+    metadata::MetadataDocument metadata;
+    std::optional<core::LocalSourceRevision> source_revision;
     // True once a probe ran or persisted metadata was restored; unprobed rows
     // fall back to their file name and are queued for enrichment.
     bool probed{false};
@@ -32,10 +59,19 @@ struct LocalTrackRow {
     friend bool operator==(const LocalTrackRow&, const LocalTrackRow&) = default;
 };
 
+struct LocalTrackSource {
+    std::string raw_path;
+    formats::AudioSourceSelection selection;
+    std::optional<formats::SampleRange> segment;
+
+    friend bool operator==(const LocalTrackSource&, const LocalTrackSource&) = default;
+};
+
 // Table model over one Trackbench working list, implementing the shared
-// album-grouped presentation contract (uicommon/track_row_roles.hpp) so the
-// client's QueueItemDelegate/QueueTableView render it unchanged. Rows hold
-// raw path bytes; presentation uses the lossless escaped form from the core.
+// album-grouped semantic role contract (uicommon/track_row_roles.hpp). Its
+// seven-column Trackbench projection keeps artwork, artist, number, and title
+// independently arrangeable. Rows hold raw path bytes; presentation uses the
+// lossless escaped form from the core.
 class LocalListModel final : public QAbstractTableModel {
     Q_OBJECT
 
@@ -52,9 +88,19 @@ class LocalListModel final : public QAbstractTableModel {
     // Applies probe metadata to the row holding raw_path (hint first, then
     // search); returns false when the row no longer exists.
     bool applyMetadata(const std::string& raw_path, int hint_row, LocalTrackRow metadata);
+    // Replaces one still-provisional whole-file row with one enriched row or
+    // several logical chapter rows. The first row keeps the original model
+    // position and any following rows are inserted directly after it.
+    bool applyProbeRows(const std::string& raw_path, int hint_row, std::vector<LocalTrackRow> rows);
+    // Refreshes every duplicate/logical occurrence of one verified physical
+    // source while retaining annotation, segment, and sidecar layers.
+    [[nodiscard]] core::Result<std::size_t>
+    applyCommittedMetadata(const std::string& raw_path, const metadata::MetadataDocument& document,
+                           const core::LocalSourceRevision& published_revision);
     // Marks the playing occurrence rendered by the shared delegate; an empty
     // path clears it.
     void setCurrentPath(std::string raw_path, int hint_row);
+    void setCurrentSource(LocalTrackSource source, int hint_row);
     // The delegate's album-grouping identity for a row; artwork is keyed and
     // painted per group.
     [[nodiscard]] QString groupKey(int row) const;
@@ -62,9 +108,11 @@ class LocalListModel final : public QAbstractTableModel {
     void setArtwork(const QString& key, QImage image);
     [[nodiscard]] const std::vector<LocalTrackRow>& rows() const noexcept { return rows_; }
     [[nodiscard]] std::string rawPath(int row) const;
+    [[nodiscard]] LocalTrackSource source(int row) const;
     // Finds the row holding raw_path, preferring the hint row so duplicate
     // occurrences re-anchor to the same position after edits.
     [[nodiscard]] int rowOfPath(const std::string& raw_path, int hint_row) const;
+    [[nodiscard]] int rowOfSource(const LocalTrackSource& source, int hint_row) const;
 
     [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
     [[nodiscard]] int columnCount(const QModelIndex& parent = {}) const override;
@@ -77,10 +125,11 @@ class LocalListModel final : public QAbstractTableModel {
   private:
     void refreshCurrentRow();
     void emitRowChanged(int row);
+    void emitCurrentRowChanged(int row);
 
     std::vector<LocalTrackRow> rows_;
     QHash<QString, QImage> artwork_;
-    std::string current_path_;
+    LocalTrackSource current_source_;
     int current_row_{-1};
 };
 

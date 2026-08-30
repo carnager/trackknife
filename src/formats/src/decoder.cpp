@@ -6,6 +6,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/intreadwrite.h>
 #include <libavutil/samplefmt.h>
@@ -66,6 +67,7 @@ struct AudioDecoder::Impl {
     AVPacket* packet{nullptr};
     AVFrame* frame{nullptr};
     int stream_index{-1};
+    AudioSourceSelection selection;
     PcmFormat output;
     std::optional<std::int64_t> total_samples;
     SampleRange range;
@@ -73,6 +75,7 @@ struct AudioDecoder::Impl {
     std::int64_t discard_before_sample{0};
     std::int64_t decoded_samples{0};
     std::optional<std::int64_t> timeline_origin_sample;
+    std::optional<std::int64_t> next_decoded_sample;
     std::int64_t next_output_sample{0};
     bool input_finished{false};
     bool drain_sent{false};
@@ -160,10 +163,16 @@ struct AudioDecoder::Impl {
         if (!timeline_origin_sample) {
             timeline_origin_sample = raw_output_start;
         }
+        auto output_start = raw_output_start - *timeline_origin_sample;
+        if (next_decoded_sample) {
+            output_start = *next_decoded_sample;
+        }
+        const auto output_frames = static_cast<std::int64_t>(samples.size() / channels);
+        next_decoded_sample = output_start + output_frames;
         decoded_samples = raw_start_sample + converted;
         av_frame_unref(frame);
         return std::optional{PcmChunk{
-            .start_sample = raw_output_start - *timeline_origin_sample,
+            .start_sample = output_start,
             .interleaved_samples = std::move(samples),
         }};
     }
@@ -212,6 +221,12 @@ AudioDecoder::~AudioDecoder() = default;
 
 core::Result<AudioDecoder> AudioDecoder::open(std::string raw_path,
                                               core::CancellationToken cancellation) {
+    return open_selected(std::move(raw_path), {}, std::move(cancellation));
+}
+
+core::Result<AudioDecoder> AudioDecoder::open_selected(std::string raw_path,
+                                                       AudioSourceSelection selection,
+                                                       core::CancellationToken cancellation) {
     if (raw_path.empty()) {
         return std::unexpected(core::Error{.code = core::ErrorCode::invalid_argument,
                                            .message = "local audio path is empty",
@@ -224,10 +239,19 @@ core::Result<AudioDecoder> AudioDecoder::open(std::string raw_path,
             .context = {{.key = "path", .value = raw_path}},
         });
     }
+    if ((selection.stream_index && *selection.stream_index < 0) ||
+        (selection.subsong_index && *selection.subsong_index < 0)) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invalid_argument,
+            .message = "audio source selection indexes must be non-negative",
+            .context = {{.key = "path", .value = raw_path}},
+        });
+    }
 
     auto decoder = std::make_unique<Impl>();
     decoder->raw_path = std::move(raw_path);
     decoder->cancellation = std::move(cancellation);
+    decoder->selection = selection;
     decoder->format = avformat_alloc_context();
     if (decoder->format == nullptr) {
         return std::unexpected(core::Error{
@@ -240,19 +264,57 @@ core::Result<AudioDecoder> AudioDecoder::open(std::string raw_path,
         .callback = Impl::interrupt,
         .opaque = decoder.get(),
     };
+    AVDictionary* input_options = nullptr;
+    if (selection.subsong_index) {
+        const auto option_value = std::to_string(*selection.subsong_index);
+        if (av_dict_set(&input_options, "subsong", option_value.c_str(), 0) < 0) {
+            av_dict_free(&input_options);
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::backend,
+                .message = "FFmpeg could not configure the codec-native subsong",
+                .context = {{.key = "path", .value = decoder->raw_path}},
+            });
+        }
+    }
     const auto open_result =
-        avformat_open_input(&decoder->format, decoder->raw_path.c_str(), nullptr, nullptr);
+        avformat_open_input(&decoder->format, decoder->raw_path.c_str(), nullptr, &input_options);
+    const bool unused_subsong_option = av_dict_get(input_options, "subsong", nullptr, 0) != nullptr;
+    av_dict_free(&input_options);
     if (open_result < 0) {
         return std::unexpected(decoder_error(open_result, "opening local audio", decoder->raw_path,
                                              decoder->cancellation));
+    }
+    if (unused_subsong_option) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::unsupported,
+            .message = "the selected input format does not expose codec-native subsongs",
+            .context = {{.key = "path", .value = decoder->raw_path}},
+        });
     }
     const auto info_result = avformat_find_stream_info(decoder->format, nullptr);
     if (info_result < 0) {
         return std::unexpected(decoder_error(info_result, "reading local audio streams",
                                              decoder->raw_path, decoder->cancellation));
     }
-    decoder->stream_index =
-        av_find_best_stream(decoder->format, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    if (selection.stream_index) {
+        const auto selected = static_cast<unsigned>(*selection.stream_index);
+        if (selected >= decoder->format->nb_streams ||
+            decoder->format->streams[selected] == nullptr ||
+            decoder->format->streams[selected]->codecpar == nullptr ||
+            decoder->format->streams[selected]->codecpar->codec_type != AVMEDIA_TYPE_AUDIO) {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::invalid_argument,
+                .message = "selected audio stream index is unavailable",
+                .context = {{.key = "path", .value = decoder->raw_path},
+                            {.key = "stream_index",
+                             .value = std::to_string(*selection.stream_index)}},
+            });
+        }
+        decoder->stream_index = *selection.stream_index;
+    } else {
+        decoder->stream_index =
+            av_find_best_stream(decoder->format, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    }
     if (decoder->stream_index < 0) {
         return std::unexpected(core::Error{
             .code = core::ErrorCode::unsupported,
@@ -347,6 +409,12 @@ core::Result<AudioDecoder> AudioDecoder::open(std::string raw_path,
 
 core::Result<AudioDecoder> AudioDecoder::open_segment(std::string raw_path, SampleRange range,
                                                       core::CancellationToken cancellation) {
+    return open_selected_segment(std::move(raw_path), {}, range, std::move(cancellation));
+}
+
+core::Result<AudioDecoder>
+AudioDecoder::open_selected_segment(std::string raw_path, AudioSourceSelection selection,
+                                    SampleRange range, core::CancellationToken cancellation) {
     if (range.start_sample < 0 || (range.end_sample && *range.end_sample <= range.start_sample)) {
         return std::unexpected(core::Error{
             .code = core::ErrorCode::invalid_argument,
@@ -357,7 +425,7 @@ core::Result<AudioDecoder> AudioDecoder::open_segment(std::string raw_path, Samp
                          .value = range.end_sample ? std::to_string(*range.end_sample) : "none"}},
         });
     }
-    auto opened = open(std::move(raw_path), std::move(cancellation));
+    auto opened = open_selected(std::move(raw_path), selection, std::move(cancellation));
     if (!opened) {
         return std::unexpected(std::move(opened.error()));
     }
@@ -373,14 +441,14 @@ core::Result<AudioDecoder> AudioDecoder::open_segment(std::string raw_path, Samp
                          .value = std::to_string(*decoder.duration_samples())}},
         });
     }
-    decoder.implementation_->range = range;
-    decoder.implementation_->discard_before_sample = range.start_sample;
     if (range.start_sample > 0) {
         auto seek_result = decoder.seek_to_sample(range.start_sample);
         if (!seek_result) {
             return std::unexpected(std::move(seek_result.error()));
         }
     }
+    decoder.implementation_->range = range;
+    decoder.implementation_->discard_before_sample = range.start_sample;
     return opened;
 }
 
@@ -391,6 +459,10 @@ std::optional<std::int64_t> AudioDecoder::duration_samples() const noexcept {
 }
 
 const SampleRange& AudioDecoder::sample_range() const noexcept { return implementation_->range; }
+
+const AudioSourceSelection& AudioDecoder::source_selection() const noexcept {
+    return implementation_->selection;
+}
 
 core::Result<void> AudioDecoder::seek_to_sample(const std::int64_t target_sample) {
     auto& decoder = *implementation_;
@@ -410,6 +482,15 @@ core::Result<void> AudioDecoder::seek_to_sample(const std::int64_t target_sample
             .message = "seeking local audio was cancelled",
             .context = {{.key = "path", .value = decoder.raw_path}},
         });
+    }
+    // Establish the physical stream's decoded origin before a first seek.
+    // Some containers expose coarse timestamps; later frames are counted in
+    // contiguous PCM rather than independently rounded from those stamps.
+    if (target_sample > decoder.seek_preroll_samples && !decoder.timeline_origin_sample) {
+        auto primed = next_chunk();
+        if (!primed) {
+            return std::unexpected(std::move(primed.error()));
+        }
     }
     decoder.range_finished =
         (decoder.range.end_sample && target_sample == *decoder.range.end_sample) ||
@@ -452,6 +533,7 @@ core::Result<void> AudioDecoder::seek_to_sample(const std::int64_t target_sample
                                              decoder.raw_path, decoder.cancellation));
     }
     decoder.decoded_samples = target_sample + decoder.timeline_origin_sample.value_or(0);
+    decoder.next_decoded_sample.reset();
     decoder.next_output_sample = target_sample;
     decoder.input_finished = false;
     decoder.drain_sent = false;

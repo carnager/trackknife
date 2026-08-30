@@ -12,6 +12,8 @@ qt_add_library(
     mpd_connection_dialog.hpp
     server_library_tree_model.cpp
     server_library_tree_model.hpp
+    server_library_tree_view.cpp
+    server_library_tree_view.hpp
 )
 add_library(Trackknife::Ui ALIAS trackknife_ui)
 

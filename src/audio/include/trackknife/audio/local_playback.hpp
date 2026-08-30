@@ -72,12 +72,20 @@ class LocalPlayback final {
     open(std::string raw_path, PlaybackBufferDurationConfig buffer_config,
          core::CancellationToken cancellation = {});
     [[nodiscard]] static core::Result<LocalPlayback>
+    open_selected(std::string raw_path, formats::AudioSourceSelection selection,
+                  PlaybackBufferDurationConfig buffer_config,
+                  core::CancellationToken cancellation = {});
+    [[nodiscard]] static core::Result<LocalPlayback>
     open_segment(std::string raw_path, formats::SampleRange range,
                  PlaybackBufferConfig buffer_config, core::CancellationToken cancellation = {});
     [[nodiscard]] static core::Result<LocalPlayback>
     open_segment(std::string raw_path, formats::SampleRange range,
                  PlaybackBufferDurationConfig buffer_config,
                  core::CancellationToken cancellation = {});
+    [[nodiscard]] static core::Result<LocalPlayback>
+    open_selected_segment(std::string raw_path, formats::AudioSourceSelection selection,
+                          formats::SampleRange range, PlaybackBufferDurationConfig buffer_config,
+                          core::CancellationToken cancellation = {});
 
     [[nodiscard]] const formats::PcmFormat& output_format() const noexcept;
     [[nodiscard]] const formats::SampleRange& sample_range() const noexcept;
@@ -94,6 +102,16 @@ class LocalPlayback final {
     // the active decode ends.
     [[nodiscard]] core::Result<void> queue_next(std::string raw_path,
                                                 core::CancellationToken cancellation = {});
+    [[nodiscard]] core::Result<void> queue_next_selected(std::string raw_path,
+                                                         formats::AudioSourceSelection selection,
+                                                         core::CancellationToken cancellation = {});
+    [[nodiscard]] core::Result<void> queue_next_segment(std::string raw_path,
+                                                        formats::SampleRange range,
+                                                        core::CancellationToken cancellation = {});
+    [[nodiscard]] core::Result<void>
+    queue_next_selected_segment(std::string raw_path, formats::AudioSourceSelection selection,
+                                formats::SampleRange range,
+                                core::CancellationToken cancellation = {});
     // Drops a queued continuation that has not yet taken over. A continuation
     // whose frames already entered the ring can no longer be withdrawn.
     void clear_next() noexcept;

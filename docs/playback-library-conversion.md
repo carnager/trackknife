@@ -86,8 +86,17 @@ and cancellation. Buffer capacity and start threshold are expressed as
 durations and converted to frames at the decoded source rate. Its immutable
 snapshot feeds Trackbench's transport row, with PipeWire node and underrun
 diagnostics in tooltips.
-Device-clock projection, measured latency presets, volume, device
-discovery/hotplug, and the UI device chooser remain.
+ADR-0029 adds persistent Responsive (250/50 ms), Balanced (750/100 ms), and
+Resilient (2,000/250 ms) ring profiles plus bounded exact custom durations.
+Snapshots distinguish the configured policy from the immutable active ring; a
+mid-track change applies at the next ordinary load and is visible in the audio
+tooltip alongside underruns. These are decoded-PCM safety-buffer policies, not
+claims about end-to-end device latency or forced PipeWire graph quantum.
+ADR-0030 adds a persistent PipeWire registry plus default-metadata monitor.
+System-default streams stay under session-manager dynamic relinking; removal of
+an explicitly selected sink pauses without fallback, retains sample position,
+and reconnects paused when the node returns. Device-clock projection and
+representative latency/underrun measurements remain.
 
 ### Gapless details
 
@@ -102,7 +111,24 @@ Opus in Ogg. The decoder core requests FFmpeg's explicit skip-sample metadata
 and performs delay/padding trim itself. Seeking decodes a conservative
 one-second preroll, or a larger codec/container requirement when reported,
 before trimming to the exact logical sample; this also restores bounded codec
-convergence such as an MP3 bit reservoir.
+convergence such as an MP3 bit reservoir. Decoded PCM after the first timeline
+anchor is counted contiguously rather than independently rescaled from every
+frame timestamp; this prevents coarse container time bases from drifting across
+sample-exact cue/chapter ranges.
+
+ADR-0031 admits container chapters only when they form an exhaustive adjacent
+partition of the known selected-audio duration. Trackbench then projects them
+to the same logical identity, physical source, and end-exclusive sample-range
+model as external cues. Navigation-only, partial, or malformed chapter tables
+remain one ordinary whole-file item.
+
+ADR-0032 adds typed optional audio-stream and codec-subsong selection before
+the sample range. Alternate container streams are never expanded implicitly;
+language, commentary, and alternate mixes require an explicit future choice.
+Tracker files use bounded libopenmpt identity enumeration and FFmpeg selected
+decode. Each multi-song module becomes finite persisted rows over libopenmpt's
+musical durations, excluding the backend-generated fade tail from the clean
+path.
 
 ### DSP
 
@@ -286,7 +312,8 @@ decode exact logical range
 - PCM/resample/channel/bit-depth policy;
 - ReplayGain source/processing;
 - ordered DSP preset;
-- output root and `tkfmt-1` relative-path expression;
+- shared output-layout and destination-profile references, with optional
+  per-conversion-job overrides;
 - one-file-per-track, grouped multi-track, or merge mode;
 - conflict policy;
 - tag/artwork transfer mapping and exclusions;
@@ -297,6 +324,13 @@ decode exact logical range
 Presets are declarative, versioned, human-exportable, and show missing encoders
 before starting. External command-line encoders may be supported through a safe
 argument-array template—never shell-string interpolation—and a capability probe.
+
+Per ADR-0054, one-output-per-track conversion reuses Trackbench's versioned
+relative-directory/basename output layouts and separate explicit raw-path
+destination roots. The converter owns the extension selected by its container
+and may override either profile for one job without mutating the shared
+default. Grouped and merged outputs remain converter-specific because they do
+not necessarily preserve a one-source-item/one-relative-path relationship.
 
 ### Destination modes
 

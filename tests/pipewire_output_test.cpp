@@ -4,6 +4,7 @@
 #include "trackknife/audio/pipewire_output.hpp"
 #include "trackknife/core/error.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -107,6 +108,9 @@ int main() {
                                                              .exclusive = false});
     CHECK(!zero_timeout);
     CHECK(zero_timeout.error().code == trackknife::core::ErrorCode::invalid_argument);
+    const auto invalid_monitor = trackknife::audio::PipeWireDeviceMonitor::connect(0ms);
+    CHECK(!invalid_monitor);
+    CHECK(invalid_monitor.error().code == trackknife::core::ErrorCode::invalid_argument);
 
     auto output = trackknife::audio::PipeWireOutput::connect(
         *source, {.stream_name = "Trackknife silent integration test",
@@ -139,6 +143,26 @@ int main() {
         for (const auto& device : *devices) {
             CHECK(!device.name.empty());
             CHECK(!device.description.empty());
+        }
+    }
+    auto monitor = trackknife::audio::PipeWireDeviceMonitor::connect(3s);
+    CHECK(monitor.has_value());
+    if (monitor) {
+        const auto initial_monitor = monitor->snapshot();
+        std::this_thread::sleep_for(50ms);
+        const auto monitored = monitor->snapshot();
+        CHECK(monitored.generation >= initial_monitor.generation);
+        CHECK(monitored.generation > 0U);
+        CHECK(!monitored.error.has_value());
+        CHECK(!monitored.devices.empty());
+        for (const auto& device : monitored.devices) {
+            CHECK(!device.name.empty());
+            CHECK(!device.description.empty());
+        }
+        if (monitored.default_target) {
+            CHECK(std::ranges::any_of(monitored.devices, [&monitored](const auto& device) {
+                return device.name == *monitored.default_target;
+            }));
         }
     }
 

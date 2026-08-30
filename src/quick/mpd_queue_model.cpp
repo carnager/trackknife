@@ -5,7 +5,6 @@
 #include <QStringList>
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cstddef>
 #include <limits>
@@ -18,8 +17,6 @@
 namespace trackknife::quick {
 namespace {
 
-constexpr std::array<const char*, MpdQueueModel::column_count> headers{
-    "Artist", "Title", "Album", "Date", "Track", "Duration"};
 constexpr qsizetype maximum_artwork_requests = 64;
 constexpr quint64 artwork_token_namespace = quint64{1} << 62U;
 
@@ -53,18 +50,20 @@ constexpr quint64 artwork_token_namespace = quint64{1} << 62U;
 [[nodiscard]] QString display_value(const mpd::Track& track, const int column) {
     switch (column) {
     case 0:
+        return {};
+    case 1:
         return metadata_values(track.metadata, "Artist");
-    case 1: {
+    case 2:
+        return metadata_values(track.metadata, "Track");
+    case 3: {
         const auto title = track.metadata.first("Title");
         return title ? from_utf8(*title) : from_utf8(track.uri);
     }
-    case 2:
-        return metadata_values(track.metadata, "Album");
-    case 3:
-        return metadata_values(track.metadata, "Date");
     case 4:
-        return metadata_values(track.metadata, "Track");
+        return metadata_values(track.metadata, "Album");
     case 5:
+        return metadata_values(track.metadata, "Date");
+    case 6:
         if (track.duration) {
             const auto seconds =
                 std::chrono::duration_cast<std::chrono::seconds>(*track.duration).count();
@@ -193,7 +192,7 @@ QVariant MpdQueueModel::data(const QModelIndex& index, const int role) const {
     case Qt::DisplayRole:
         return display_value(track, index.column());
     case Qt::TextAlignmentRole:
-        return index.column() == 5
+        return index.column() == ui::track_length_column
                    ? QVariant::fromValue(Qt::Alignment{Qt::AlignRight | Qt::AlignVCenter})
                    : QVariant{};
     case UriRole:
@@ -231,7 +230,7 @@ QVariant MpdQueueModel::headerData(const int section, const Qt::Orientation orie
                                    const int role) const {
     if (role == Qt::DisplayRole && orientation == Qt::Horizontal && section >= 0 &&
         section < column_count) {
-        return QString::fromLatin1(headers.at(static_cast<std::size_t>(section)));
+        return QString::fromLatin1(ui::track_column_headers.at(static_cast<std::size_t>(section)));
     }
     if (role == Qt::DisplayRole && orientation == Qt::Vertical) {
         return section + 1;

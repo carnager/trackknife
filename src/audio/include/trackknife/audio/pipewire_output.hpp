@@ -51,6 +51,38 @@ struct PipeWireDevice {
     friend bool operator==(const PipeWireDevice&, const PipeWireDevice&) = default;
 };
 
+struct PipeWireDeviceSnapshot {
+    std::vector<PipeWireDevice> devices;
+    std::optional<std::string> default_target;
+    std::uint64_t generation{0U};
+    std::optional<core::Error> error;
+
+    friend bool operator==(const PipeWireDeviceSnapshot&, const PipeWireDeviceSnapshot&) = default;
+};
+
+// Owns one persistent registry connection. Global add/remove events and the
+// session manager's default.audio.sink metadata increment generation; callers
+// take immutable snapshots without running PipeWire work on their own thread.
+class PipeWireDeviceMonitor final {
+  public:
+    [[nodiscard]] static core::Result<PipeWireDeviceMonitor>
+    connect(std::chrono::milliseconds timeout = std::chrono::milliseconds{2'000});
+
+    PipeWireDeviceMonitor(PipeWireDeviceMonitor&&) noexcept;
+    PipeWireDeviceMonitor& operator=(PipeWireDeviceMonitor&&) noexcept;
+    PipeWireDeviceMonitor(const PipeWireDeviceMonitor&) = delete;
+    PipeWireDeviceMonitor& operator=(const PipeWireDeviceMonitor&) = delete;
+    ~PipeWireDeviceMonitor();
+
+    [[nodiscard]] PipeWireDeviceSnapshot snapshot() const;
+
+  private:
+    struct Impl;
+    explicit PipeWireDeviceMonitor(std::unique_ptr<Impl> implementation);
+
+    std::unique_ptr<Impl> implementation_;
+};
+
 // Enumerates the currently available PipeWire audio sinks via one bounded
 // registry roundtrip. Blocking — intended for a worker thread, never the UI.
 [[nodiscard]] core::Result<std::vector<PipeWireDevice>>

@@ -644,6 +644,18 @@ void MpdProbeController::addUris(const QStringList& uris, const bool next) {
     enqueueUris(std::move(encoded), next);
 }
 
+void MpdProbeController::addUrisAt(const QStringList& uris, const int position) {
+    if (!connected_ || position < 0 || position > queue_model_.rowCount()) {
+        return;
+    }
+    std::vector<std::string> encoded;
+    encoded.reserve(static_cast<std::size_t>(uris.size()));
+    for (const auto& uri : uris) {
+        encoded.push_back(uri.toUtf8().toStdString());
+    }
+    enqueueUrisAt(std::move(encoded), static_cast<unsigned>(position));
+}
+
 void MpdProbeController::replaceQueueWithUris(const QStringList& uris) {
     constexpr qsizetype maximum_batch_size = 4'096;
     if (!session_ || !connected_ || uris.isEmpty()) {
@@ -1663,6 +1675,19 @@ void MpdProbeController::enqueueUri(std::string uri, const bool next) {
 }
 
 void MpdProbeController::enqueueUris(std::vector<std::string> uris, const bool next) {
+    std::optional<unsigned> first_position;
+    if (next) {
+        if (!current_song_id_) {
+            first_position = 0U;
+        } else if (const auto current_row = queue_model_.rowForQueueId(*current_song_id_)) {
+            first_position = static_cast<unsigned>(*current_row) + 1U;
+        }
+    }
+    enqueueUrisAt(std::move(uris), first_position);
+}
+
+void MpdProbeController::enqueueUrisAt(std::vector<std::string> uris,
+                                       const std::optional<unsigned> first_position) {
     constexpr std::size_t maximum_batch_size = 4'096U;
     if (!session_ || uris.empty()) {
         return;
@@ -1691,14 +1716,6 @@ void MpdProbeController::enqueueUris(std::vector<std::string> uris, const bool n
         case mpd::PlaybackState::unknown:
         case mpd::PlaybackState::playing:
             break;
-        }
-    }
-    std::optional<unsigned> first_position;
-    if (next) {
-        if (!current_song_id_) {
-            first_position = 0U;
-        } else if (const auto current_row = queue_model_.rowForQueueId(*current_song_id_)) {
-            first_position = static_cast<unsigned>(*current_row) + 1U;
         }
     }
     if (uris.size() == 1U) {

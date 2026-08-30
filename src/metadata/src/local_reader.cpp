@@ -1,0 +1,163 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+#include "trackknife/metadata/local_reader.hpp"
+
+#include <fileref.h>
+#include <flacfile.h>
+#include <tfile.h>
+#include <tpropertymap.h>
+
+#include <array>
+#include <cstddef>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <utility>
+
+namespace trackknife::metadata {
+namespace {
+
+constexpr std::size_t maximum_fields = 4'096U;
+constexpr std::size_t maximum_values = 16'384U;
+constexpr std::size_t maximum_text_bytes = 4U * 1024U * 1024U;
+
+[[nodiscard]] core::Error error(const core::ErrorCode code, std::string message,
+                                const std::string& raw_path) {
+    return core::Error{
+        .code = code,
+        .message = std::move(message),
+        .context = {{.key = "path", .value = core::escape_raw_path(raw_path)}},
+    };
+}
+
+[[nodiscard]] core::Error cancelled(const std::string& raw_path) {
+    return error(core::ErrorCode::cancelled, "metadata read was cancelled", raw_path);
+}
+
+[[nodiscard]] bool add_text_bytes(std::size_t& total, const std::size_t amount) {
+    if (amount > maximum_text_bytes - total) {
+        return false;
+    }
+    total += amount;
+    return true;
+}
+
+[[nodiscard]] bool has_native_flac_marker(const std::string& raw_path) {
+    std::ifstream input{std::filesystem::path{raw_path}, std::ios::binary};
+    std::array<char, 4> marker{};
+    return input.read(marker.data(), static_cast<std::streamsize>(marker.size())) &&
+           marker == std::array<char, 4>{'f', 'L', 'a', 'C'};
+}
+
+} // namespace
+
+core::Result<LocalMetadataRead> read_local_metadata(const std::string& raw_path,
+                                                    const core::CancellationToken& cancellation) {
+    if (cancellation.is_cancellation_requested()) {
+        return std::unexpected(cancelled(raw_path));
+    }
+    auto revision_before = core::observe_local_source_revision(raw_path);
+    if (!revision_before) {
+        return std::unexpected(std::move(revision_before.error()));
+    }
+
+    TagLib::FileRef reference{raw_path.c_str(), false};
+    if (reference.isNull() || reference.file() == nullptr) {
+        return std::unexpected(error(core::ErrorCode::unsupported,
+                                     "TagLib has no metadata reader for this source", raw_path));
+    }
+    if (!reference.file()->isValid()) {
+        return std::unexpected(
+            error(core::ErrorCode::backend, "TagLib rejected the metadata source", raw_path));
+    }
+    const bool native_flac = dynamic_cast<TagLib::FLAC::File*>(reference.file()) != nullptr &&
+                             has_native_flac_marker(raw_path);
+    const auto properties = reference.file()->properties();
+    if (cancellation.is_cancellation_requested()) {
+        return std::unexpected(cancelled(raw_path));
+    }
+
+    MetadataDocument document;
+    if (properties.size() > maximum_fields) {
+        return std::unexpected(error(core::ErrorCode::limit_exceeded,
+                                     "metadata field count exceeds the read limit", raw_path));
+    }
+    document.fields.reserve(properties.size());
+    std::size_t value_count = 0U;
+    std::size_t text_bytes = 0U;
+    for (auto property = properties.cbegin(); property != properties.cend(); ++property) {
+        MetadataField field;
+        field.native_name = property->first.to8Bit(true);
+        field.canonical_name = canonicalize_field_name(field.native_name);
+        field.provenance = FieldProvenance::embedded;
+        if (field.canonical_name.empty() || !add_text_bytes(text_bytes, field.native_name.size())) {
+            return std::unexpected(error(core::ErrorCode::limit_exceeded,
+                                         "metadata field text exceeds the read limit", raw_path));
+        }
+        field.values.reserve(property->second.size());
+        for (const auto& property_value : property->second) {
+            if (value_count == maximum_values) {
+                return std::unexpected(error(core::ErrorCode::limit_exceeded,
+                                             "metadata value count exceeds the read limit",
+                                             raw_path));
+            }
+            auto value = property_value.to8Bit(true);
+            if (!add_text_bytes(text_bytes, value.size())) {
+                return std::unexpected(error(core::ErrorCode::limit_exceeded,
+                                             "metadata value text exceeds the read limit",
+                                             raw_path));
+            }
+            field.values.push_back(std::move(value));
+            ++value_count;
+        }
+        document.fields.push_back(std::move(field));
+    }
+
+    const auto& unsupported = properties.unsupportedData();
+    if (unsupported.size() > maximum_fields) {
+        return std::unexpected(error(core::ErrorCode::limit_exceeded,
+                                     "native metadata object count exceeds the read limit",
+                                     raw_path));
+    }
+    document.unsupported_native_objects.reserve(unsupported.size());
+    for (const auto& item : unsupported) {
+        auto identity = item.to8Bit(true);
+        if (!add_text_bytes(text_bytes, identity.size())) {
+            return std::unexpected(error(core::ErrorCode::limit_exceeded,
+                                         "native metadata identity text exceeds the read limit",
+                                         raw_path));
+        }
+        document.unsupported_native_objects.push_back(
+            NativeObjectIdentity{.identity = std::move(identity)});
+    }
+
+    auto revision_after = core::observe_local_source_revision(raw_path);
+    if (!revision_after) {
+        return std::unexpected(std::move(revision_after.error()));
+    }
+    if (*revision_before != *revision_after) {
+        return std::unexpected(error(core::ErrorCode::conflict,
+                                     "local source changed while metadata was being read",
+                                     raw_path));
+    }
+    if (cancellation.is_cancellation_requested()) {
+        return std::unexpected(cancelled(raw_path));
+    }
+    const bool preservation_supported = native_flac && document.unsupported_native_objects.empty();
+    return LocalMetadataRead{
+        .raw_path = raw_path,
+        .source_revision = *revision_after,
+        .document = std::move(document),
+        .adapter_name = native_flac ? "taglib-flac-v1" : "taglib-properties-v1",
+        .capabilities =
+            MetadataCapabilities{
+                .fields_readable = true,
+                .fields_writable = native_flac,
+                .pictures_readable = false,
+                .pictures_writable = false,
+                .unknown_data_preserved_on_write = preservation_supported,
+            },
+    };
+}
+
+} // namespace trackknife::metadata

@@ -171,6 +171,14 @@ Decode and tag-write phases should be separate by default. This enables review,
 prevents many tiny concurrent rewrites on slow media, and makes “quiet mode” an
 explicit preset rather than the only workflow.
 
+**Trackbench decision (ADR-0054):** ReplayGain appears as an independent
+checkable operation in the shared preparation workspace once the M7 scanner and
+storage paths are qualified. It remains typed cancellable analysis rather than
+a transformation-script action. Album/group boundaries are shown before
+decoding; revision-bound results then join metadata and source-to-target path
+effects in one final per-file preview. Its explicit embedded/sidecar persistence
+is not disabled merely because ordinary **Save tags** is unchecked.
+
 ## Persistence policy
 
 ### Canonical versus cached data
@@ -309,4 +317,3 @@ Users can:
 - Assert metadata-only scans do not change decoded audio essence.
 - Benchmark multicore scaling on SSD, HDD, and network storage without allowing
   unbounded I/O thrashing.
-

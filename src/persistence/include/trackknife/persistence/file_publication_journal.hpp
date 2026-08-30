@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+#pragma once
+
+#include "trackknife/core/result.hpp"
+#include "trackknife/operations/file_publication_journal.hpp"
+
+#include <filesystem>
+#include <memory>
+
+namespace trackknife::persistence {
+
+class SqliteFilePublicationJournal final : public operations::FilePublicationJournal {
+  public:
+    SqliteFilePublicationJournal(SqliteFilePublicationJournal&&) noexcept;
+    SqliteFilePublicationJournal& operator=(SqliteFilePublicationJournal&&) noexcept;
+    SqliteFilePublicationJournal(const SqliteFilePublicationJournal&) = delete;
+    SqliteFilePublicationJournal& operator=(const SqliteFilePublicationJournal&) = delete;
+    ~SqliteFilePublicationJournal() override;
+
+    [[nodiscard]] static core::Result<SqliteFilePublicationJournal>
+    open(const std::filesystem::path& path);
+
+    [[nodiscard]] core::Result<void>
+    create(const operations::FilePublicationJournalRecord& record) override;
+    [[nodiscard]] core::Result<void>
+    transition(const core::StableId& id,
+               const operations::FilePublicationJournalTransition& transition) override;
+    [[nodiscard]] core::Result<std::optional<operations::FilePublicationJournalRecord>>
+    load(const core::StableId& id) const override;
+    [[nodiscard]] core::Result<std::vector<operations::FilePublicationJournalRecord>>
+    load_incomplete() const override;
+
+  private:
+    struct Impl;
+    explicit SqliteFilePublicationJournal(std::unique_ptr<Impl> implementation);
+
+    std::unique_ptr<Impl> implementation_;
+};
+
+} // namespace trackknife::persistence

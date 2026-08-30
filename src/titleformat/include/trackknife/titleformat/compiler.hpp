@@ -22,6 +22,7 @@ enum class FormatContextKind {
     grouping,
     copy_export,
     sort,
+    metadata_transformation,
 };
 
 struct DialectVersion {

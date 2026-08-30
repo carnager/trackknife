@@ -22,6 +22,7 @@ enum class CommandKind {
     stop,
     seek,
     set_volume,
+    set_buffer,
     refresh_devices,
     set_target,
     clear,
@@ -32,9 +33,12 @@ enum class CommandKind {
 struct Command {
     CommandKind kind{CommandKind::play};
     std::string raw_path;
+    formats::AudioSourceSelection selection;
+    std::optional<formats::SampleRange> segment;
     std::int64_t target_sample{0};
     int volume_percent{100};
     std::optional<std::string> target;
+    PlaybackBufferDurationConfig buffer;
 };
 
 // Sliders are perceptual: PipeWire's stream mixer is linear amplitude, so the
@@ -60,6 +64,27 @@ struct Command {
     };
 }
 
+[[nodiscard]] core::Error output_unavailable_error() {
+    return core::Error{
+        .code = core::ErrorCode::conflict,
+        .message = "the selected PipeWire output is unavailable",
+        .context = {},
+    };
+}
+
+[[nodiscard]] bool output_target_available(const std::vector<PipeWireDevice>& devices,
+                                           const std::optional<std::string>& target) {
+    if (!target) {
+        return !devices.empty();
+    }
+    return std::ranges::any_of(devices,
+                               [&target](const auto& device) { return device.name == *target; });
+}
+
+constexpr auto maximum_buffer_capacity = std::chrono::seconds{10};
+constexpr auto device_monitor_poll_period = std::chrono::milliseconds{100};
+constexpr auto output_recovery_period = std::chrono::seconds{1};
+
 [[nodiscard]] LocalAuditionState map_state(const LocalPlaybackState state) noexcept {
     switch (state) {
     case LocalPlaybackState::stopped:
@@ -84,6 +109,7 @@ struct Command {
 
 struct LocalAuditionService::Impl {
     explicit Impl(LocalAuditionConfig audition_config) : config(std::move(audition_config)) {
+        published.configured_buffer = config.buffer;
         worker = std::jthread{[this](const std::stop_token stop_token) { run(stop_token); }};
     }
 
@@ -110,11 +136,19 @@ struct LocalAuditionService::Impl {
                     source_cancellation->request_cancellation();
                 }
             }
-            commands.clear();
+            // A replacement supersedes transport/source work, but settings
+            // submitted before it must execute first so the new source opens
+            // with the user's latest output policy.
+            std::erase_if(commands, [](const Command& pending) {
+                return pending.kind != CommandKind::set_volume &&
+                       pending.kind != CommandKind::set_buffer &&
+                       pending.kind != CommandKind::set_target;
+            });
         } else if (command.kind == CommandKind::seek) {
             std::erase_if(commands,
                           [](const Command& pending) { return pending.kind == CommandKind::seek; });
         } else if (command.kind == CommandKind::set_volume ||
+                   command.kind == CommandKind::set_buffer ||
                    command.kind == CommandKind::refresh_devices ||
                    command.kind == CommandKind::set_target) {
             std::erase_if(commands, [kind = command.kind](const Command& pending) {
@@ -139,7 +173,11 @@ struct LocalAuditionService::Impl {
             std::lock_guard snapshot_lock{snapshot_mutex};
             published.state = LocalAuditionState::loading;
             published.raw_path = command.raw_path;
+            published.selection = command.selection;
+            published.segment = command.segment;
             published.next_raw_path.clear();
+            published.next_selection = {};
+            published.next_segment.reset();
             published.format.reset();
             published.position_sample = 0;
             published.end_sample.reset();
@@ -170,7 +208,15 @@ struct LocalAuditionService::Impl {
             if (!pending_next_path.empty()) {
                 current_path = std::move(pending_next_path);
                 pending_next_path.clear();
+                current_selection = pending_next_selection;
+                pending_next_selection = {};
+                current_segment = pending_next_segment;
+                pending_next_segment.reset();
             }
+            const auto playback = source->snapshot();
+            current_duration_samples = playback.end_sample
+                                           ? std::optional{*playback.end_sample - track_base}
+                                           : std::nullopt;
             ++chain_transitions;
         }
     }
@@ -179,7 +225,11 @@ struct LocalAuditionService::Impl {
         acknowledge_transitions();
         LocalAuditionSnapshot next;
         next.raw_path = current_path;
+        next.selection = current_selection;
+        next.segment = current_segment;
         next.next_raw_path = pending_next_path;
+        next.next_selection = pending_next_selection;
+        next.next_segment = pending_next_segment;
         next.chain_transitions = chain_transitions;
         next.error = std::move(error);
         if (source) {
@@ -187,14 +237,21 @@ struct LocalAuditionService::Impl {
             next.state = map_state(playback.state);
             next.format = source->output_format();
             next.position_sample = playback.position_sample - track_base;
-            next.end_sample = playback.end_sample ? std::optional{*playback.end_sample - track_base}
-                                                  : std::nullopt;
+            next.end_sample = current_duration_samples;
             next.buffered_frames = playback.buffered_frames;
             next.underrun_count = playback.underrun_count;
         }
         next.volume_percent = volume_percent;
+        next.configured_buffer = config.buffer;
+        next.active_buffer = active_buffer;
         next.output_target = config.output.target_object;
+        next.default_output_target = default_output_target;
+        next.output_target_available = output_available;
+        next.output_suspended = output_suspended_for_device;
+        next.device_generation = device_generation;
         next.devices = devices;
+        next.device_monitor_error = device_monitor_error;
+        next.output_recovery_error = output_recovery_error;
         if (output) {
             next.output = output->snapshot();
         }
@@ -225,6 +282,98 @@ struct LocalAuditionService::Impl {
         published.state = LocalAuditionState::failed;
     }
 
+    [[nodiscard]] core::Result<void> connect_output() {
+        if (!source) {
+            return std::unexpected(no_source_error("connect an output for"));
+        }
+        auto connected = PipeWireOutput::connect(*source, config.output);
+        if (!connected) {
+            return std::unexpected(std::move(connected.error()));
+        }
+        output.emplace(std::move(*connected));
+        if (auto volume_applied = output->set_volume(cubic_volume(volume_percent));
+            !volume_applied) {
+            output.reset();
+            return std::unexpected(std::move(volume_applied.error()));
+        }
+        output_active = false;
+        output_suspended_for_device = false;
+        output_recovery_error.reset();
+        return {};
+    }
+
+    void suspend_for_output_loss() {
+        if (!source) {
+            return;
+        }
+        source->pause();
+        output_suspended_for_device = true;
+        output_recovery_error.reset();
+        pending_next_path.clear();
+        pending_next_selection = {};
+        pending_next_segment.reset();
+        source->clear_next();
+        if (output) {
+            // A removed backend may already have put the stream into ERROR,
+            // making normal quiescence impossible. Destroying the adapter
+            // stops and joins its thread loop before the source can change.
+            static_cast<void>(output->quiesce());
+            output_active = false;
+            output.reset();
+        }
+    }
+
+    void recover_suspended_output() {
+        if (!output_suspended_for_device || !output_available || !source || output) {
+            return;
+        }
+        last_output_recovery_attempt = std::chrono::steady_clock::now();
+        if (auto connected = connect_output(); !connected) {
+            output_suspended_for_device = true;
+            output_recovery_error = std::move(connected.error());
+        }
+    }
+
+    void apply_device_snapshot(PipeWireDeviceSnapshot device_snapshot) {
+        const bool was_available = output_available;
+        devices = std::move(device_snapshot.devices);
+        default_output_target = std::move(device_snapshot.default_target);
+        device_generation = device_snapshot.generation;
+        device_monitor_error = std::move(device_snapshot.error);
+        const bool now_available = output_target_available(devices, config.output.target_object);
+        if (!device_state_initialized) {
+            device_state_initialized = true;
+            output_available = now_available;
+            publish();
+            return;
+        }
+
+        output_available = now_available;
+        if (was_available && !now_available) {
+            suspend_for_output_loss();
+        } else if (!was_available && now_available) {
+            recover_suspended_output();
+        }
+        publish();
+    }
+
+    void poll_device_monitor() {
+        if (!device_monitor || std::chrono::steady_clock::now() - last_device_monitor_poll <
+                                   device_monitor_poll_period) {
+            return;
+        }
+        last_device_monitor_poll = std::chrono::steady_clock::now();
+        auto device_snapshot = device_monitor->snapshot();
+        if (device_snapshot.generation != device_generation) {
+            apply_device_snapshot(std::move(device_snapshot));
+        } else if (output_suspended_for_device && output_available &&
+                   std::chrono::steady_clock::now() - last_output_recovery_attempt >=
+                       output_recovery_period) {
+            recover_suspended_output();
+            publish();
+        }
+    }
+
     void clear_source() {
         if (output) {
             const auto quiet = output->quiesce();
@@ -236,12 +385,20 @@ struct LocalAuditionService::Impl {
         }
         output.reset();
         source.reset();
+        active_buffer.reset();
+        output_suspended_for_device = false;
+        output_recovery_error.reset();
         {
             std::lock_guard lock{cancellation_mutex};
             source_cancellation.reset();
         }
         current_path.clear();
+        current_selection = {};
+        current_segment.reset();
         pending_next_path.clear();
+        pending_next_selection = {};
+        pending_next_segment.reset();
+        current_duration_samples.reset();
         track_base = 0;
         sticky_failure.reset();
         publish();
@@ -258,17 +415,29 @@ struct LocalAuditionService::Impl {
         }
         output.reset();
         source.reset();
+        active_buffer.reset();
+        output_suspended_for_device = false;
+        output_recovery_error.reset();
         sticky_failure.reset();
         pending_next_path.clear();
+        pending_next_selection = {};
+        pending_next_segment.reset();
         track_base = 0;
         current_path = std::move(command.raw_path);
+        current_selection = command.selection;
+        current_segment = command.segment;
         std::shared_ptr<core::CancellationSource> cancellation;
         {
             std::lock_guard lock{cancellation_mutex};
             source_cancellation = std::make_shared<core::CancellationSource>();
             cancellation = source_cancellation;
         }
-        auto opened = LocalPlayback::open(current_path, config.buffer, cancellation->token());
+        auto opened = command.segment
+                          ? LocalPlayback::open_selected_segment(current_path, command.selection,
+                                                                 *command.segment, config.buffer,
+                                                                 cancellation->token())
+                          : LocalPlayback::open_selected(current_path, command.selection,
+                                                         config.buffer, cancellation->token());
         if (!opened) {
             {
                 std::lock_guard lock{cancellation_mutex};
@@ -280,15 +449,19 @@ struct LocalAuditionService::Impl {
             return;
         }
         source.emplace(std::move(*opened));
-        auto connected = PipeWireOutput::connect(*source, config.output);
-        if (!connected) {
-            fail(std::move(connected.error()));
+        active_buffer = config.buffer;
+        const auto opened_snapshot = source->snapshot();
+        track_base = source->sample_range().start_sample;
+        current_duration_samples = opened_snapshot.end_sample
+                                       ? std::optional{*opened_snapshot.end_sample - track_base}
+                                       : std::nullopt;
+        if (device_state_initialized && !output_available) {
+            output_suspended_for_device = true;
+            publish();
             return;
         }
-        output.emplace(std::move(*connected));
-        if (auto volume_applied = output->set_volume(cubic_volume(volume_percent));
-            !volume_applied) {
-            fail(std::move(volume_applied.error()));
+        if (auto connected = connect_output(); !connected) {
+            fail(std::move(connected.error()));
             return;
         }
         auto started = source->play();
@@ -311,11 +484,22 @@ struct LocalAuditionService::Impl {
     }
 
     void play() {
-        if (!source || !output) {
+        if (!source) {
             publish(no_source_error("play"));
             return;
         }
-        if (source->snapshot().state == LocalPlaybackState::ended) {
+        if (!output_available) {
+            publish(output_unavailable_error());
+            return;
+        }
+        if (!output) {
+            if (auto connected = connect_output(); !connected) {
+                fail(std::move(connected.error()));
+                return;
+            }
+        }
+        const bool restart = source->snapshot().state == LocalPlaybackState::ended;
+        if (restart) {
             if (output_active) {
                 auto drained = output->drain();
                 if (!drained) {
@@ -335,6 +519,14 @@ struct LocalAuditionService::Impl {
             fail(std::move(started.error()));
             return;
         }
+        if (restart) {
+            track_base = source->sample_range().start_sample;
+            const auto restarted_snapshot = source->snapshot();
+            current_duration_samples =
+                restarted_snapshot.end_sample
+                    ? std::optional{*restarted_snapshot.end_sample - track_base}
+                    : std::nullopt;
+        }
         auto filled = source->fill_buffer();
         if (!filled) {
             fail(std::move(filled.error()));
@@ -350,40 +542,51 @@ struct LocalAuditionService::Impl {
     }
 
     void pause() {
-        if (!source || !output) {
+        if (!source) {
             publish(no_source_error("pause"));
             return;
         }
         source->pause();
-        auto quiet = output->quiesce();
-        if (!quiet) {
-            fail(std::move(quiet.error()));
-            return;
+        if (output) {
+            auto quiet = output->quiesce();
+            if (!quiet) {
+                fail(std::move(quiet.error()));
+                return;
+            }
+            output_active = false;
         }
-        output_active = false;
         publish();
     }
 
     void stop() {
-        if (!source || !output) {
+        if (!source) {
             publish(no_source_error("stop"));
             return;
         }
         acknowledge_transitions();
-        auto quiet = output->quiesce();
-        if (!quiet) {
-            fail(std::move(quiet.error()));
-            return;
+        if (output) {
+            auto quiet = output->quiesce();
+            if (!quiet) {
+                fail(std::move(quiet.error()));
+                return;
+            }
+            output_active = false;
         }
-        output_active = false;
         auto stopped = source->stop();
         // The core collapses the chain back to single-source semantics.
         track_base = 0;
         pending_next_path.clear();
+        pending_next_selection = {};
+        pending_next_segment.reset();
         if (!stopped) {
             fail(std::move(stopped.error()));
             return;
         }
+        track_base = source->sample_range().start_sample;
+        const auto stopped_snapshot = source->snapshot();
+        current_duration_samples = stopped_snapshot.end_sample
+                                       ? std::optional{*stopped_snapshot.end_sample - track_base}
+                                       : std::nullopt;
         publish();
     }
 
@@ -393,14 +596,32 @@ struct LocalAuditionService::Impl {
             return;
         }
         acknowledge_transitions();
+        // A new duration policy needs a newly allocated ring. Keep this
+        // boundary non-gapless so the following ordinary load can apply it.
+        if (!output_available || (active_buffer && *active_buffer != config.buffer)) {
+            source->clear_next();
+            pending_next_path.clear();
+            pending_next_selection = {};
+            pending_next_segment.reset();
+            publish();
+            return;
+        }
         auto path = std::move(command.raw_path);
         // A rejected continuation (format change, unreadable file) is not a
         // playback failure: next_raw_path simply stays empty and the caller
         // falls back to an ordinary load at end-of-track.
-        if (auto queued = source->queue_next(path); queued) {
+        const auto queued =
+            command.segment
+                ? source->queue_next_selected_segment(path, command.selection, *command.segment)
+                : source->queue_next_selected(path, command.selection);
+        if (queued) {
             pending_next_path = std::move(path);
+            pending_next_selection = command.selection;
+            pending_next_segment = command.segment;
         } else {
             pending_next_path.clear();
+            pending_next_selection = {};
+            pending_next_segment.reset();
         }
         publish();
     }
@@ -410,11 +631,13 @@ struct LocalAuditionService::Impl {
             source->clear_next();
         }
         pending_next_path.clear();
+        pending_next_selection = {};
+        pending_next_segment.reset();
         publish();
     }
 
     void seek(const std::int64_t target_sample) {
-        if (!source || !output) {
+        if (!source) {
             publish(no_source_error("seek"));
             return;
         }
@@ -423,21 +646,25 @@ struct LocalAuditionService::Impl {
         const bool resume = before == LocalPlaybackState::buffering ||
                             before == LocalPlaybackState::playing ||
                             before == LocalPlaybackState::draining;
-        auto quiet = output->quiesce();
-        if (!quiet) {
-            fail(std::move(quiet.error()));
-            return;
+        if (output) {
+            auto quiet = output->quiesce();
+            if (!quiet) {
+                fail(std::move(quiet.error()));
+                return;
+            }
+            output_active = false;
         }
-        output_active = false;
         // Track-relative target onto the produced domain; the flush drops any
         // queued continuation, which the caller re-queues afterwards.
         auto sought = source->seek_to_sample(track_base + target_sample);
         pending_next_path.clear();
+        pending_next_selection = {};
+        pending_next_segment.reset();
         if (!sought) {
             publish(std::move(sought.error()));
             return;
         }
-        if (resume) {
+        if (resume && output) {
             auto started = source->play();
             if (!started) {
                 fail(std::move(started.error()));
@@ -459,18 +686,26 @@ struct LocalAuditionService::Impl {
     }
 
     void refresh_devices() {
-        auto listed = list_pipewire_output_devices();
-        if (!listed) {
-            publish(std::move(listed.error()));
+        auto monitored = PipeWireDeviceMonitor::connect(config.output.transition_timeout);
+        if (!monitored) {
+            device_monitor_error = std::move(monitored.error());
+            publish();
             return;
         }
-        devices = std::move(*listed);
-        publish();
+        device_monitor.emplace(std::move(*monitored));
+        apply_device_snapshot(device_monitor->snapshot());
     }
 
     void set_target(std::optional<std::string> target) {
         config.output.target_object = std::move(target);
-        if (!source || !output) {
+        output_available = !device_state_initialized ||
+                           output_target_available(devices, config.output.target_object);
+        if (!output_available) {
+            suspend_for_output_loss();
+            publish();
+            return;
+        }
+        if (!source) {
             publish();
             return;
         }
@@ -478,22 +713,24 @@ struct LocalAuditionService::Impl {
         const bool resume = before == LocalPlaybackState::buffering ||
                             before == LocalPlaybackState::playing ||
                             before == LocalPlaybackState::draining;
-        auto quiet = output->quiesce();
-        if (!quiet) {
-            fail(std::move(quiet.error()));
-            return;
+        const bool was_suspended = output_suspended_for_device;
+        if (output) {
+            auto quiet = output->quiesce();
+            if (!quiet) {
+                fail(std::move(quiet.error()));
+                return;
+            }
+            output_active = false;
+            output.reset();
         }
-        output_active = false;
-        output.reset();
-        auto connected = PipeWireOutput::connect(*source, config.output);
-        if (!connected) {
-            fail(std::move(connected.error()));
-            return;
-        }
-        output.emplace(std::move(*connected));
-        if (auto volume_applied = output->set_volume(cubic_volume(volume_percent));
-            !volume_applied) {
-            fail(std::move(volume_applied.error()));
+        if (auto connected = connect_output(); !connected) {
+            if (was_suspended) {
+                output_suspended_for_device = true;
+                output_recovery_error = std::move(connected.error());
+                publish();
+            } else {
+                fail(std::move(connected.error()));
+            }
             return;
         }
         if (resume) {
@@ -529,6 +766,17 @@ struct LocalAuditionService::Impl {
         publish();
     }
 
+    void set_buffer(const PlaybackBufferDurationConfig buffer_config) {
+        config.buffer = buffer_config;
+        if (source && active_buffer && *active_buffer != config.buffer) {
+            source->clear_next();
+            pending_next_path.clear();
+            pending_next_selection = {};
+            pending_next_segment.reset();
+        }
+        publish();
+    }
+
     void execute(Command command) {
         switch (command.kind) {
         case CommandKind::load_and_play:
@@ -549,6 +797,9 @@ struct LocalAuditionService::Impl {
         case CommandKind::set_volume:
             set_volume(command.volume_percent);
             break;
+        case CommandKind::set_buffer:
+            set_buffer(command.buffer);
+            break;
         case CommandKind::refresh_devices:
             refresh_devices();
             break;
@@ -568,6 +819,7 @@ struct LocalAuditionService::Impl {
     }
 
     void produce() {
+        poll_device_monitor();
         if (!source || !output) {
             return;
         }
@@ -660,18 +912,34 @@ struct LocalAuditionService::Impl {
     std::mutex cancellation_mutex;
     std::shared_ptr<core::CancellationSource> source_cancellation;
     std::optional<LocalPlayback> source;
+    std::optional<PlaybackBufferDurationConfig> active_buffer;
     std::optional<PipeWireOutput> output;
+    std::optional<PipeWireDeviceMonitor> device_monitor;
     bool output_active{false};
+    bool output_available{true};
+    bool output_suspended_for_device{false};
+    bool device_state_initialized{false};
     int volume_percent{100};
     std::vector<PipeWireDevice> devices;
+    std::optional<std::string> default_output_target;
+    std::optional<core::Error> device_monitor_error;
+    std::optional<core::Error> output_recovery_error;
+    std::uint64_t device_generation{0U};
     std::optional<core::Error> sticky_failure;
     std::string current_path;
+    formats::AudioSourceSelection current_selection;
+    std::optional<formats::SampleRange> current_segment;
     // Gapless bookkeeping: the queued continuation's path, the produced-domain
     // sample where the audible track begins, and the consumed takeover count.
     std::string pending_next_path;
+    formats::AudioSourceSelection pending_next_selection;
+    std::optional<formats::SampleRange> pending_next_segment;
+    std::optional<std::int64_t> current_duration_samples;
     std::int64_t track_base{0};
     std::uint64_t chain_transitions{0U};
     std::chrono::steady_clock::time_point last_publish{};
+    std::chrono::steady_clock::time_point last_device_monitor_poll{};
+    std::chrono::steady_clock::time_point last_output_recovery_attempt{};
     std::jthread worker;
 };
 
@@ -682,11 +950,10 @@ LocalAuditionService::~LocalAuditionService() = default;
 
 core::Result<std::unique_ptr<LocalAuditionService>>
 LocalAuditionService::create(LocalAuditionConfig config) {
-    if (config.buffer.capacity <= std::chrono::milliseconds::zero() ||
-        config.buffer.start_threshold <= std::chrono::milliseconds::zero() ||
-        config.buffer.start_threshold > config.buffer.capacity) {
+    if (!valid_local_audition_buffer_config(config.buffer)) {
         return std::unexpected(invalid_config(
-            "local audition buffer duration and threshold must be positive and ordered"));
+            "local audition buffer duration and threshold must be positive, ordered, and no "
+            "larger than 10 seconds"));
     }
     if (config.output.stream_name.empty()) {
         return std::unexpected(invalid_config("local audition stream name must not be empty"));
@@ -707,57 +974,132 @@ LocalAuditionService::create(LocalAuditionConfig config) {
 LocalAuditionSnapshot LocalAuditionService::snapshot() const { return implementation_->snapshot(); }
 
 core::Result<void> LocalAuditionService::load_and_play(std::string raw_path) {
+    return load_selected_and_play(std::move(raw_path), {});
+}
+
+core::Result<void>
+LocalAuditionService::load_selected_and_play(std::string raw_path,
+                                             formats::AudioSourceSelection selection) {
     if (raw_path.empty()) {
         return std::unexpected(invalid_config("local audition path must not be empty"));
     }
     return implementation_->enqueue(Command{.kind = CommandKind::load_and_play,
                                             .raw_path = std::move(raw_path),
+                                            .selection = selection,
+                                            .segment = std::nullopt,
                                             .target_sample = 0,
                                             .volume_percent = 100,
-                                            .target = {}});
+                                            .target = {},
+                                            .buffer = {}});
+}
+
+core::Result<void> LocalAuditionService::load_segment_and_play(std::string raw_path,
+                                                               const formats::SampleRange segment) {
+    return load_selected_segment_and_play(std::move(raw_path), {}, segment);
+}
+
+core::Result<void>
+LocalAuditionService::load_selected_segment_and_play(std::string raw_path,
+                                                     formats::AudioSourceSelection selection,
+                                                     const formats::SampleRange segment) {
+    if (raw_path.empty()) {
+        return std::unexpected(invalid_config("local audition path must not be empty"));
+    }
+    return implementation_->enqueue(Command{.kind = CommandKind::load_and_play,
+                                            .raw_path = std::move(raw_path),
+                                            .selection = selection,
+                                            .segment = segment,
+                                            .target_sample = 0,
+                                            .volume_percent = 100,
+                                            .target = {},
+                                            .buffer = {}});
 }
 
 core::Result<void> LocalAuditionService::queue_gapless_next(std::string raw_path) {
+    return queue_gapless_next_selected(std::move(raw_path), {});
+}
+
+core::Result<void>
+LocalAuditionService::queue_gapless_next_selected(std::string raw_path,
+                                                  formats::AudioSourceSelection selection) {
     if (raw_path.empty()) {
         return std::unexpected(invalid_config("local audition path must not be empty"));
     }
     return implementation_->enqueue(Command{.kind = CommandKind::queue_next,
                                             .raw_path = std::move(raw_path),
+                                            .selection = selection,
+                                            .segment = std::nullopt,
                                             .target_sample = 0,
                                             .volume_percent = 100,
-                                            .target = {}});
+                                            .target = {},
+                                            .buffer = {}});
+}
+
+core::Result<void>
+LocalAuditionService::queue_gapless_next_segment(std::string raw_path,
+                                                 const formats::SampleRange segment) {
+    return queue_gapless_next_selected_segment(std::move(raw_path), {}, segment);
+}
+
+core::Result<void>
+LocalAuditionService::queue_gapless_next_selected_segment(std::string raw_path,
+                                                          formats::AudioSourceSelection selection,
+                                                          const formats::SampleRange segment) {
+    if (raw_path.empty()) {
+        return std::unexpected(invalid_config("local audition path must not be empty"));
+    }
+    return implementation_->enqueue(Command{.kind = CommandKind::queue_next,
+                                            .raw_path = std::move(raw_path),
+                                            .selection = selection,
+                                            .segment = segment,
+                                            .target_sample = 0,
+                                            .volume_percent = 100,
+                                            .target = {},
+                                            .buffer = {}});
 }
 
 core::Result<void> LocalAuditionService::clear_gapless_next() {
     return implementation_->enqueue(Command{.kind = CommandKind::clear_next,
                                             .raw_path = {},
+                                            .selection = {},
+                                            .segment = std::nullopt,
                                             .target_sample = 0,
                                             .volume_percent = 100,
-                                            .target = {}});
+                                            .target = {},
+                                            .buffer = {}});
 }
 
 core::Result<void> LocalAuditionService::play() {
     return implementation_->enqueue(Command{.kind = CommandKind::play,
                                             .raw_path = {},
+                                            .selection = {},
+                                            .segment = std::nullopt,
                                             .target_sample = 0,
                                             .volume_percent = 100,
-                                            .target = {}});
+                                            .target = {},
+                                            .buffer = {}});
 }
 
 core::Result<void> LocalAuditionService::pause() {
     return implementation_->enqueue(Command{.kind = CommandKind::pause,
                                             .raw_path = {},
+                                            .selection = {},
+                                            .segment = std::nullopt,
                                             .target_sample = 0,
                                             .volume_percent = 100,
-                                            .target = {}});
+                                            .target = {},
+                                            .buffer = {}});
 }
 
 core::Result<void> LocalAuditionService::stop() {
     return implementation_->enqueue(Command{.kind = CommandKind::stop,
                                             .raw_path = {},
+                                            .selection = {},
+                                            .segment = std::nullopt,
                                             .target_sample = 0,
                                             .volume_percent = 100,
-                                            .target = {}});
+                                            .target = {},
+                                            .buffer = {}});
 }
 
 core::Result<void> LocalAuditionService::seek_to_sample(const std::int64_t target_sample) {
@@ -766,9 +1108,12 @@ core::Result<void> LocalAuditionService::seek_to_sample(const std::int64_t targe
     }
     return implementation_->enqueue(Command{.kind = CommandKind::seek,
                                             .raw_path = {},
+                                            .selection = {},
+                                            .segment = std::nullopt,
                                             .target_sample = target_sample,
                                             .volume_percent = 100,
-                                            .target = {}});
+                                            .target = {},
+                                            .buffer = {}});
 }
 
 core::Result<void> LocalAuditionService::set_volume_percent(const int percent) {
@@ -778,17 +1123,40 @@ core::Result<void> LocalAuditionService::set_volume_percent(const int percent) {
     }
     return implementation_->enqueue(Command{.kind = CommandKind::set_volume,
                                             .raw_path = {},
+                                            .selection = {},
+                                            .segment = std::nullopt,
                                             .target_sample = 0,
                                             .volume_percent = percent,
-                                            .target = {}});
+                                            .target = {},
+                                            .buffer = {}});
+}
+
+core::Result<void>
+LocalAuditionService::set_buffer_config(const PlaybackBufferDurationConfig buffer_config) {
+    if (!valid_local_audition_buffer_config(buffer_config)) {
+        return std::unexpected(invalid_config(
+            "local audition buffer duration and threshold must be positive, ordered, and no "
+            "larger than 10 seconds"));
+    }
+    return implementation_->enqueue(Command{.kind = CommandKind::set_buffer,
+                                            .raw_path = {},
+                                            .selection = {},
+                                            .segment = std::nullopt,
+                                            .target_sample = 0,
+                                            .volume_percent = 100,
+                                            .target = {},
+                                            .buffer = buffer_config});
 }
 
 core::Result<void> LocalAuditionService::refresh_output_devices() {
     return implementation_->enqueue(Command{.kind = CommandKind::refresh_devices,
                                             .raw_path = {},
+                                            .selection = {},
+                                            .segment = std::nullopt,
                                             .target_sample = 0,
                                             .volume_percent = 100,
-                                            .target = {}});
+                                            .target = {},
+                                            .buffer = {}});
 }
 
 core::Result<void> LocalAuditionService::set_output_target(std::optional<std::string> target) {
@@ -798,17 +1166,70 @@ core::Result<void> LocalAuditionService::set_output_target(std::optional<std::st
     }
     return implementation_->enqueue(Command{.kind = CommandKind::set_target,
                                             .raw_path = {},
+                                            .selection = {},
+                                            .segment = std::nullopt,
                                             .target_sample = 0,
                                             .volume_percent = 100,
-                                            .target = std::move(target)});
+                                            .target = std::move(target),
+                                            .buffer = {}});
 }
 
 core::Result<void> LocalAuditionService::clear() {
     return implementation_->enqueue(Command{.kind = CommandKind::clear,
                                             .raw_path = {},
+                                            .selection = {},
+                                            .segment = std::nullopt,
                                             .target_sample = 0,
                                             .volume_percent = 100,
-                                            .target = {}});
+                                            .target = {},
+                                            .buffer = {}});
+}
+
+std::string_view playback_buffer_preset_id(const PlaybackBufferPreset preset) noexcept {
+    switch (preset) {
+    case PlaybackBufferPreset::responsive:
+        return "responsive";
+    case PlaybackBufferPreset::balanced:
+        return "balanced";
+    case PlaybackBufferPreset::resilient:
+        return "resilient";
+    }
+    return "balanced";
+}
+
+std::optional<PlaybackBufferPreset>
+playback_buffer_preset_from_id(const std::string_view id) noexcept {
+    if (id == "responsive") {
+        return PlaybackBufferPreset::responsive;
+    }
+    if (id == "balanced") {
+        return PlaybackBufferPreset::balanced;
+    }
+    if (id == "resilient") {
+        return PlaybackBufferPreset::resilient;
+    }
+    return std::nullopt;
+}
+
+PlaybackBufferDurationConfig
+playback_buffer_preset_config(const PlaybackBufferPreset preset) noexcept {
+    using namespace std::chrono_literals;
+    switch (preset) {
+    case PlaybackBufferPreset::responsive:
+        return {.capacity = 250ms, .start_threshold = 50ms};
+    case PlaybackBufferPreset::balanced:
+        return {.capacity = 750ms, .start_threshold = 100ms};
+    case PlaybackBufferPreset::resilient:
+        return {.capacity = 2'000ms, .start_threshold = 250ms};
+    }
+    return {};
+}
+
+bool valid_local_audition_buffer_config(const PlaybackBufferDurationConfig config) noexcept {
+    return config.capacity > std::chrono::milliseconds::zero() &&
+           config.capacity <= maximum_buffer_capacity &&
+           config.start_threshold > std::chrono::milliseconds::zero() &&
+           config.start_threshold <= config.capacity;
 }
 
 } // namespace trackknife::audio

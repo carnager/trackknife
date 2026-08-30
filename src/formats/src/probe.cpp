@@ -9,11 +9,16 @@ extern "C" {
 #include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/samplefmt.h>
+#include <libopenmpt/libopenmpt.h>
+#include <libopenmpt/libopenmpt_stream_callbacks_file.h>
 }
 
 #include <array>
 #include <cerrno>
+#include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -24,6 +29,22 @@ struct FormatCloser {
     void operator()(AVFormatContext* context) const noexcept {
         if (context != nullptr) {
             avformat_close_input(&context);
+        }
+    }
+};
+
+struct FileCloser {
+    void operator()(std::FILE* file) const noexcept {
+        if (file != nullptr) {
+            std::fclose(file);
+        }
+    }
+};
+
+struct OpenMptCloser {
+    void operator()(openmpt_module* module) const noexcept {
+        if (module != nullptr) {
+            openmpt_module_destroy(module);
         }
     }
 };
@@ -79,6 +100,128 @@ void append_tags(const AVDictionary* dictionary, std::vector<ProbedTag>& tags) {
         }
         tags.push_back(ProbedTag{.name = entry->key, .value = entry->value});
     }
+}
+
+constexpr unsigned maximum_chapter_count = 10'000U;
+constexpr std::size_t maximum_subsong_count = 10'000U;
+
+[[nodiscard]] std::optional<std::int64_t> sample_boundary(const std::int64_t timestamp,
+                                                          const AVRational time_base,
+                                                          const int sample_rate,
+                                                          const std::int64_t origin_sample) {
+    if (timestamp == AV_NOPTS_VALUE || time_base.num <= 0 || time_base.den <= 0 ||
+        sample_rate <= 0) {
+        return std::nullopt;
+    }
+    const auto scaled = av_rescale_q_rnd(timestamp, time_base,
+                                         AVRational{.num = 1, .den = sample_rate}, AV_ROUND_DOWN);
+    if (scaled == std::numeric_limits<std::int64_t>::min() || scaled < origin_sample ||
+        (origin_sample < 0 && scaled > std::numeric_limits<std::int64_t>::max() + origin_sample)) {
+        return std::nullopt;
+    }
+    return scaled - origin_sample;
+}
+
+[[nodiscard]] core::Result<std::vector<ProbedSubsong>>
+probe_openmpt_subsongs(const std::string& raw_path, const int stream_index, const int sample_rate,
+                       const core::CancellationToken& cancellation) {
+    if (cancellation.is_cancellation_requested()) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::cancelled,
+            .message = "media subsong probe was cancelled",
+            .context = {{.key = "path", .value = raw_path}},
+        });
+    }
+    std::unique_ptr<std::FILE, FileCloser> file{std::fopen(raw_path.c_str(), "rb")};
+    if (!file) {
+        return std::unexpected(core::Error{
+            .code = errno == ENOENT ? core::ErrorCode::not_found : core::ErrorCode::backend,
+            .message = "opening tracker module for subsong discovery failed",
+            .context = {{.key = "path", .value = raw_path},
+                        {.key = "errno", .value = std::to_string(errno)}},
+        });
+    }
+    int backend_error = OPENMPT_ERROR_OK;
+    const char* backend_message = nullptr;
+    std::unique_ptr<openmpt_module, OpenMptCloser> module{openmpt_module_create2(
+        openmpt_stream_get_file_callbacks2(), file.get(), openmpt_log_func_silent, nullptr, nullptr,
+        nullptr, &backend_error, &backend_message, nullptr)};
+    std::string message = backend_message == nullptr ? std::string{} : backend_message;
+    if (backend_message != nullptr) {
+        openmpt_free_string(backend_message);
+    }
+    if (!module) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::backend,
+            .message = "reading tracker module subsongs failed" +
+                       (message.empty() ? std::string{} : ": " + message),
+            .context = {{.key = "path", .value = raw_path},
+                        {.key = "openmpt_error", .value = std::to_string(backend_error)}},
+        });
+    }
+    file.reset();
+    const auto count = openmpt_module_get_num_subsongs(module.get());
+    if (count < 0 || static_cast<std::size_t>(count) > maximum_subsong_count) {
+        return std::unexpected(core::Error{
+            .code = count < 0 ? core::ErrorCode::backend : core::ErrorCode::limit_exceeded,
+            .message = count < 0 ? "reading tracker module subsong count failed"
+                                 : "local media exceeds the codec-native subsong limit",
+            .context = {{.key = "path", .value = raw_path},
+                        {.key = "subsongs", .value = std::to_string(count)},
+                        {.key = "limit", .value = std::to_string(maximum_subsong_count)}},
+        });
+    }
+    if (count < 2) {
+        return std::vector<ProbedSubsong>{};
+    }
+
+    std::vector<ProbedSubsong> subsongs;
+    subsongs.reserve(static_cast<std::size_t>(count));
+    for (std::int32_t index = 0; index < count; ++index) {
+        if (cancellation.is_cancellation_requested()) {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::cancelled,
+                .message = "media subsong probe was cancelled",
+                .context = {{.key = "path", .value = raw_path}},
+            });
+        }
+        if (openmpt_module_select_subsong(module.get(), index) == 0) {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::backend,
+                .message = "selecting tracker module subsong failed",
+                .context = {{.key = "path", .value = raw_path},
+                            {.key = "subsong", .value = std::to_string(index)}},
+            });
+        }
+        const auto duration = openmpt_module_get_duration_seconds(module.get());
+        const bool valid_duration = std::isfinite(duration) && duration > 0.0;
+        const auto duration_ms = valid_duration ? duration * 1'000.0 : 0.0;
+        const auto duration_samples =
+            valid_duration && sample_rate > 0 ? duration * static_cast<double>(sample_rate) : 0.0;
+        const auto* raw_name = openmpt_module_get_subsong_name(module.get(), index);
+        auto name = raw_name == nullptr ? std::string{} : std::string{raw_name};
+        if (raw_name != nullptr) {
+            openmpt_free_string(raw_name);
+        }
+        subsongs.push_back(ProbedSubsong{
+            .selection = AudioSourceSelection{.stream_index = stream_index, .subsong_index = index},
+            .source_index = static_cast<std::size_t>(index),
+            .name = std::move(name),
+            .duration_ms =
+                valid_duration &&
+                        duration_ms <= static_cast<double>(std::numeric_limits<std::int64_t>::max())
+                    ? std::optional{static_cast<std::int64_t>(std::llround(duration_ms))}
+                    : std::nullopt,
+            .duration_samples =
+                valid_duration && sample_rate > 0 &&
+                        duration_samples <=
+                            static_cast<double>(std::numeric_limits<std::int64_t>::max())
+                    ? std::optional{static_cast<std::int64_t>(std::llround(duration_samples))}
+                    : std::nullopt,
+            .tags = {},
+        });
+    }
+    return subsongs;
 }
 
 } // namespace
@@ -146,6 +289,8 @@ core::Result<MediaProbe> probe_local_media(const std::string& raw_path,
         .audio_streams = {},
         .best_audio_stream = std::nullopt,
         .tags = {},
+        .chapters = {},
+        .subsongs = {},
     };
     probe.audio_streams.reserve(format->nb_streams);
     for (unsigned index = 0U; index < format->nb_streams; ++index) {
@@ -184,6 +329,77 @@ core::Result<MediaProbe> probe_local_media(const std::string& raw_path,
             .message = "local media contains no audio stream",
             .context = {{.key = "path", .value = raw_path}},
         });
+    }
+    if (format->nb_chapters > maximum_chapter_count) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::limit_exceeded,
+            .message = "local media exceeds the chapter limit",
+            .context = {{.key = "path", .value = raw_path},
+                        {.key = "chapters", .value = std::to_string(format->nb_chapters)},
+                        {.key = "limit", .value = std::to_string(maximum_chapter_count)}},
+        });
+    }
+    if (best >= 0 && static_cast<unsigned>(best) < format->nb_streams) {
+        const auto* stream = format->streams[best];
+        const auto sample_rate = stream->codecpar == nullptr ? 0 : stream->codecpar->sample_rate;
+        auto origin_sample = std::int64_t{0};
+        if (sample_rate > 0 && stream->start_time != AV_NOPTS_VALUE) {
+            origin_sample =
+                av_rescale_q_rnd(stream->start_time, stream->time_base,
+                                 AVRational{.num = 1, .den = sample_rate}, AV_ROUND_DOWN);
+        }
+        const auto duration_samples =
+            format->duration != AV_NOPTS_VALUE && sample_rate > 0
+                ? std::optional{av_rescale_q(format->duration, AV_TIME_BASE_Q,
+                                             AVRational{.num = 1, .den = sample_rate})}
+                : std::nullopt;
+        probe.chapters.reserve(format->nb_chapters);
+        auto expected_start = std::int64_t{0};
+        auto chapters_valid = format->nb_chapters > 0U && duration_samples.has_value();
+        for (unsigned index = 0U; chapters_valid && index < format->nb_chapters; ++index) {
+            const auto* chapter = format->chapters[index];
+            if (chapter == nullptr) {
+                chapters_valid = false;
+                break;
+            }
+            const auto start =
+                sample_boundary(chapter->start, chapter->time_base, sample_rate, origin_sample);
+            const auto end =
+                sample_boundary(chapter->end, chapter->time_base, sample_rate, origin_sample);
+            if (!start || !end || *start != expected_start || *end <= *start ||
+                *end > *duration_samples) {
+                chapters_valid = false;
+                break;
+            }
+            ProbedChapter projected{
+                .id = chapter->id,
+                .source_index = index,
+                .start_sample = *start,
+                .end_sample = *end,
+                .tags = {},
+            };
+            append_tags(chapter->metadata, projected.tags);
+            probe.chapters.push_back(std::move(projected));
+            expected_start = *end;
+        }
+        if (!chapters_valid || expected_start != duration_samples.value_or(-1)) {
+            probe.chapters.clear();
+        }
+    }
+    // FFmpeg's libopenmpt demuxer exposes a selected tracker subsong but not
+    // the file's count. The format-specific libopenmpt adapter enumerates that
+    // bounded identity metadata once; FFmpeg remains the playback decoder.
+    // Other multi-stream containers are intentionally not expanded here.
+    if (probe.container_names == "libopenmpt") {
+        const auto sample_rate = best >= 0 && static_cast<unsigned>(best) < format->nb_streams &&
+                                         format->streams[best]->codecpar != nullptr
+                                     ? format->streams[best]->codecpar->sample_rate
+                                     : 0;
+        auto subsongs = probe_openmpt_subsongs(raw_path, best, sample_rate, cancellation);
+        if (!subsongs) {
+            return std::unexpected(std::move(subsongs.error()));
+        }
+        probe.subsongs = std::move(*subsongs);
     }
     return probe;
 }

@@ -4,11 +4,27 @@
 
 #include <Qt>
 
+#include <array>
+
 namespace trackknife::ui {
+
+// Optional QTableView properties used by the shared grouped delegate. Models
+// with a different physical column projection set these to their logical
+// metadata columns. The default projection is the shared seven-column
+// Trackbench contract.
+inline constexpr auto track_artwork_column_property = "trackknife-track-artwork-column";
+inline constexpr auto track_artist_column_property = "trackknife-track-artist-column";
+inline constexpr auto track_number_column_property = "trackknife-track-number-column";
+inline constexpr auto track_title_column_property = "trackknife-track-title-column";
+inline constexpr auto track_album_column_property = "trackknife-track-album-column";
+inline constexpr auto track_date_column_property = "trackknife-track-date-column";
+inline constexpr auto track_length_column_property = "trackknife-track-length-column";
+inline constexpr auto track_separate_number_property = "trackknife-track-separate-number";
+inline constexpr auto track_side_artwork_property = "trackknife-track-side-artwork";
 
 // Shared role and column contract for the album-grouped track presentation
 // (QueueItemDelegate/QueueTableView). Any model rendered by the shared
-// delegate provides these roles and the six-column layout below; the MPD
+// delegate provides these roles and the seven-column layout below; the MPD
 // queue model and Trackbench's local list model both implement it.
 enum TrackRowRole : int {
     track_source_role = Qt::UserRole + 1, // MPD URI or raw local path bytes
@@ -20,18 +36,28 @@ enum TrackRowRole : int {
     track_priority_role,                  // uint MPD priority; 0/absent hides
     track_album_artwork_role,             // QImage cover for the group header
     track_album_artwork_key_role,         // artwork cache identity
+    // Optional fast path: bool, true only for the first row of a group with
+    // at least two members. Views fall back to adjacent group-key comparison.
+    track_album_group_start_role,
 };
 
-// Column layout the shared delegate paints: 0 marker/cover, 1 title,
-// 2 album, 3 date, 4 track number, 5 duration text.
+// Complete physical column layout used by both authority-bound queues:
+// artwork/status, artist, track number, title, album, date, duration.
 enum TrackRowColumn : int {
-    track_marker_column = 0,
-    track_title_column = 1,
-    track_album_column = 2,
-    track_date_column = 3,
-    track_number_column = 4,
-    track_length_column = 5,
-    track_column_count = 6,
+    track_artwork_column = 0,
+    track_marker_column = track_artwork_column,
+    track_artist_column = 1,
+    track_number_column = 2,
+    track_title_column = 3,
+    track_album_column = 4,
+    track_date_column = 5,
+    track_length_column = 6,
+    track_column_count = 7,
 };
+
+// Column labels are part of the same shared contract as their positions. Keep
+// authority-specific models from drifting into near-equivalent names.
+inline constexpr std::array<const char*, track_column_count> track_column_headers{
+    "", "Artist", "#", "Title", "Album", "Date", "Length"};
 
 } // namespace trackknife::ui

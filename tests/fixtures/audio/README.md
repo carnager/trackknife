@@ -49,6 +49,46 @@ The probe test requires the five tags to survive projection through
 `formats::MediaProbe` and the complete decode to publish exactly 4,410
 contiguous frames from sample zero with non-silent first and last windows.
 
+## Rich multi-value FLAC fixture
+
+`rich-metadata-flac.b64` reuses the tagged FLAC audio essence and replaces its
+comments with 20 values covering repeated artists and credits, album/sort
+fields, recording/release-track/release/release-group/artist/album-artist/work/
+disc MusicBrainz identities, and a repeated arbitrary `CUSTOM_FIELD`. It was
+produced with `metaflac` 1.5.0; each repeated `--set-tag` creates another
+ordered Vorbis-comment value:
+
+```sh
+base64 -d tagged-tone-flac.b64 > rich-metadata.flac
+metaflac --dont-use-padding --remove-all-tags \
+  --set-tag='TITLE=Metadata Fixture' \
+  --set-tag='ARTIST=First Artist' --set-tag='ARTIST=Second Artist' \
+  --set-tag='ALBUM=Rich Metadata' --set-tag='ALBUMARTIST=Album Credit' \
+  --set-tag='ARTISTSORT=Artist, First' \
+  --set-tag='ALBUMARTISTSORT=Credit, Album' \
+  --set-tag='ARTISTS=First Artist' --set-tag='ARTISTS=Second Artist' \
+  --set-tag='MUSICBRAINZ_TRACKID=11111111-1111-1111-1111-111111111111' \
+  --set-tag='MUSICBRAINZ_RELEASETRACKID=22222222-2222-2222-2222-222222222222' \
+  --set-tag='MUSICBRAINZ_ALBUMID=33333333-3333-3333-3333-333333333333' \
+  --set-tag='MUSICBRAINZ_RELEASEGROUPID=44444444-4444-4444-4444-444444444444' \
+  --set-tag='MUSICBRAINZ_ARTISTID=55555555-5555-5555-5555-555555555555' \
+  --set-tag='MUSICBRAINZ_ARTISTID=66666666-6666-6666-6666-666666666666' \
+  --set-tag='MUSICBRAINZ_ALBUMARTISTID=77777777-7777-7777-7777-777777777777' \
+  --set-tag='MUSICBRAINZ_WORKID=88888888-8888-8888-8888-888888888888' \
+  --set-tag='MUSICBRAINZ_DISCID=fixture-disc-id' \
+  --set-tag='CUSTOM_FIELD=first custom value' \
+  --set-tag='CUSTOM_FIELD=second custom value' rich-metadata.flac
+metaflac --dont-use-padding --remove --block-type=PADDING rich-metadata.flac
+```
+
+The 2,308-byte binary SHA-256 is
+`ca321677795e922747cecca46bf49747fcfde3bb317566224c42866afef6b873`.
+The read-adapter regression requires native exposed keys, exact repeated-value
+order, the typed MusicBrainz projection, raw-byte paths, and a stable source
+revision. The offscreen Trackbench regression additionally requires arbitrary
+and MusicBrainz values to survive list-cache restart without persisting the
+stale revision as future mutation authority.
+
 ## Embedded-artwork FLAC fixture
 
 `art-tone-flac.b64` is the tagged FLAC tone with a 64×64 orange PNG attached
@@ -83,6 +123,132 @@ The binary SHA-256 is
 The probe test requires both tags to survive projection and the complete
 decode to publish exactly 4,410 contiguous frames from sample zero with
 non-silent first and last windows.
+
+## Tagged AIFF fixture
+
+`tagged-tone-aiff.b64` is the same 4,410-sample 44.1 kHz mono tone stored as
+big-endian 24-bit PCM in AIFF. Its five metadata values are carried in an ID3v2.4
+chunk. It was generated with FFmpeg n9.0.1 / libavcodec 63.1.101 using `-bitexact`:
+
+```sh
+ffmpeg -f lavfi -i "sine=frequency=997:sample_rate=44100:duration=0.1" \
+  -metadata title="Fixture Tone" -metadata artist="Trackknife Project" \
+  -metadata album="Trackbench Fixtures" -metadata date="2026" \
+  -metadata track="3" -c:a pcm_s24be -write_id3v2 1 -id3v2_version 4 \
+  -bitexact tagged-tone.aiff
+```
+
+The binary SHA-256 is
+`8d5d7ffc80b60766bf13349290dfcd448c009dcd30aa6d311126c3d3414143a4`.
+The probe test requires the five tags, AIFF container, and `pcm_s24be` stream
+shape to survive projection. Complete decode must publish exactly 4,410
+contiguous frames, and a sample-bounded seek must exactly equal the same slice
+of the complete decode.
+
+## RF64 WAV fixture
+
+`rf64-tone-wav.b64` is 2,400 stereo frames (50 ms) of a 997 Hz tone at 48 kHz,
+stored as little-endian 24-bit PCM. FFmpeg was forced to write an RF64 header
+for this deliberately small file so the repository can exercise the `RF64` and
+mandatory `ds64` chunks without carrying a multi-gigabyte fixture. It also
+contains BWF and INFO metadata. It was generated with FFmpeg n9.0.1 /
+libavcodec 63.1.101 using `-bitexact`:
+
+```sh
+ffmpeg -f lavfi -i "sine=frequency=997:sample_rate=48000:duration=0.05" \
+  -ac 2 -metadata title="RF64 Fixture" \
+  -metadata artist="Trackknife Project" -c:a pcm_s24le \
+  -rf64 always -write_bext 1 -bitexact rf64-tone.wav
+```
+
+The binary SHA-256 is
+`53d2816ef99a1a278334078d8a43416f4f2ae33ab2ccae4c39d61d182a6ef2ee`.
+The test independently checks the `RF64`, `WAVE`, and `ds64` signatures before
+probing. It then requires the stereo 24-bit stream and metadata to survive,
+exactly 2,400 contiguous frames to decode, and a bounded seek to equal the
+corresponding interleaved slice of the complete decode.
+
+## Wave64 float fixture
+
+`wave64-float.b64` is 2,400 stereo frames (50 ms) of a 997 Hz tone at 48 kHz,
+stored as little-endian 32-bit floating-point PCM in Sony Wave64. It was
+generated with FFmpeg n9.0.1 / libavcodec 63.1.101 using `-bitexact`:
+
+```sh
+ffmpeg -f lavfi -i "sine=frequency=997:sample_rate=48000:duration=0.05" \
+  -ac 2 -c:a pcm_f32le -bitexact -f w64 wave64-float.w64
+```
+
+The binary SHA-256 is
+`7b07d75d2550d7837c58bfb3e17309d09e9cc51931566975740f11c67bc895e3`.
+The test independently verifies the Wave64 RIFF and WAVE GUIDs, then requires
+the float stereo stream shape, exactly 2,400 contiguous decoded frames, and a
+bounded seek identical to the corresponding interleaved complete-decode slice.
+Trackbench's folder-ingestion allowlist includes `.w64` alongside WAV and RF64.
+
+## Container chapter fixture
+
+`container-chapters-mka.b64` is 9,600 mono samples (200 ms) of a 997 Hz tone at
+48 kHz, encoded as FLAC in Matroska. The container has two adjacent 100 ms
+chapters, global album-like title/artist/date metadata, per-chapter titles, and
+an artist override on the first chapter. It was generated with FFmpeg n9.0.1 /
+libavcodec 63.1.101 from this metadata source:
+
+```text
+;FFMETADATA1
+title=Chapter Album
+artist=Album Artist
+date=2026
+[CHAPTER]
+TIMEBASE=1/1000
+START=0
+END=100
+title=First chapter
+artist=First Artist
+[CHAPTER]
+TIMEBASE=1/1000
+START=100
+END=200
+title=Second chapter
+```
+
+```sh
+ffmpeg -f lavfi -i "sine=frequency=997:sample_rate=48000:duration=0.2" \
+  -f ffmetadata -i chapters.ffmeta -map 0:a:0 -map_metadata 1 \
+  -map_chapters 1 -c:a flac container-chapters.mka
+```
+
+The binary SHA-256 is
+`d9a323eadaab30280aa7f27dee5f7917877c29063e66d838302c81e2e326e01a`.
+The tests require the chapter boundaries to project to adjacent sample ranges
+`[0, 4800)` and `[4800, 9600)`, preserve scoped metadata, decode to the exact
+whole-file PCM concatenation, expand as two Trackbench rows, and survive list
+persistence.
+
+`partial-chapters-mka.b64` uses the same 9,600-sample source but carries only
+the first `[0, 4800)` chapter. Its binary SHA-256 is
+`8cfc56bd92a3da2907ecbd8b0ff27fa0771bab211b4754955e552a52fe347ad8`.
+The negative regression requires this navigation-only table to remain an
+ordinary whole-file probe result rather than hiding the unchaptered second
+half.
+
+## Codec-native tracker subsong fixture
+
+`two-subsongs-mod.b64` is an original repository-authored 3,164-byte ProTracker
+MOD (`M.K.`) named `Trackknife subsongs`; it contains no third-party musical
+material. Its 31-sample header defines one 32-byte signed square-like waveform.
+The two order entries reference separate patterns with different note periods,
+and each pattern jumps back to its own order at row 4. libopenmpt consequently
+reports the second otherwise unreachable order as a hidden subsong.
+
+The binary SHA-256 is
+`3ceed6acd7a73296ff343588ba64ee414f11c82f1690fd7191b978fceb834324`.
+libopenmpt 0.8.8 reports two independently selectable 600 ms songs. FFmpeg n9.0.1
+selects them through the `libopenmpt` demuxer's `subsong` option at 48 kHz
+stereo. The regression requires distinct non-silent selected decode, exact
+`[0, 28800)` logical ranges (excluding the demuxer's generated fade tail), one
+gapless playback-ring crossing, Trackbench folder expansion, and SQLite
+restoration of both selections.
 
 ## Vorbis timeline fixture
 

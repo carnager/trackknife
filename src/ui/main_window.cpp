@@ -13,10 +13,13 @@
 #include "ui/library_tree_editor_dialog.hpp"
 #include "ui/mpd_connection_dialog.hpp"
 #include "ui/server_library_tree_model.hpp"
+#include "ui/server_library_tree_view.hpp"
 #include "uicommon/command_palette.hpp"
+#include "uicommon/line_slider.hpp"
 #include "uicommon/list_persistence_service.hpp"
 #include "uicommon/queue_item_delegate.hpp"
 #include "uicommon/queue_table_view.hpp"
+#include "uicommon/track_row_roles.hpp"
 
 #include <QAbstractItemView>
 #include <QAction>
@@ -112,81 +115,6 @@ constexpr auto hover_row_property = "trackknife-hover-row";
 [[nodiscard]] QString displayText(const std::string& value) {
     return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size()));
 }
-
-class LineSlider final : public QSlider {
-  public:
-    explicit LineSlider(QWidget* parent) : QSlider(Qt::Horizontal, parent) {}
-
-    [[nodiscard]] QSize sizeHint() const override {
-        auto size = QSlider::sizeHint();
-        size.setHeight(18);
-        return size;
-    }
-
-  protected:
-    void paintEvent(QPaintEvent*) override {
-        QPainter painter(this);
-        painter.setRenderHint(QPainter::Antialiasing, false);
-
-        auto track_color = palette().color(QPalette::Text);
-        track_color.setAlphaF(isEnabled() ? 0.28F : 0.16F);
-        auto progress_color = palette().color(QPalette::Highlight);
-        progress_color.setAlphaF(isEnabled() ? 1.0F : 0.35F);
-
-        constexpr qreal thickness = 4.0;
-        const auto area = contentsRect();
-        const QRectF track{static_cast<qreal>(area.left()), (height() - thickness) / 2.0,
-                           static_cast<qreal>(area.width()), thickness};
-        painter.fillRect(track, track_color);
-
-        const auto range = maximum() - minimum();
-        if (range <= 0) {
-            return;
-        }
-        const auto fraction = static_cast<qreal>(value() - minimum()) / range;
-        painter.fillRect(QRectF{track.left(), track.top(), track.width() * fraction, thickness},
-                         progress_color);
-    }
-
-    void mousePressEvent(QMouseEvent* event) override {
-        if (event->button() != Qt::LeftButton) {
-            QSlider::mousePressEvent(event);
-            return;
-        }
-        setSliderDown(true);
-        setPositionFromMouse(event->position().x());
-        event->accept();
-    }
-
-    void mouseMoveEvent(QMouseEvent* event) override {
-        if (!isSliderDown()) {
-            QSlider::mouseMoveEvent(event);
-            return;
-        }
-        setPositionFromMouse(event->position().x());
-        event->accept();
-    }
-
-    void mouseReleaseEvent(QMouseEvent* event) override {
-        if (event->button() != Qt::LeftButton || !isSliderDown()) {
-            QSlider::mouseReleaseEvent(event);
-            return;
-        }
-        setPositionFromMouse(event->position().x());
-        setSliderDown(false);
-        event->accept();
-    }
-
-  private:
-    void setPositionFromMouse(const qreal x) {
-        const auto area = contentsRect();
-        const auto span = std::max(1, area.width() - 1);
-        const auto position = std::clamp(qRound(x) - area.left(), 0, span);
-        const auto upside_down = invertedAppearance() != (layoutDirection() == Qt::RightToLeft);
-        setSliderPosition(
-            QStyle::sliderValueFromPosition(minimum(), maximum(), position, span, upside_down));
-    }
-};
 
 class RowHoverDelegate final : public QStyledItemDelegate {
   public:
@@ -549,286 +477,6 @@ class SearchActionDelegate final : public QStyledItemDelegate {
     QIcon icon_;
 };
 
-class ServerLibraryTreeView final : public QTreeView {
-  public:
-    explicit ServerLibraryTreeView(QWidget* parent = nullptr) : QTreeView(parent) {
-        setMouseTracking(true);
-    }
-
-    void setActionCallback(std::function<void(const QModelIndex&, int)> callback) {
-        action_callback_ = std::move(callback);
-    }
-
-    [[nodiscard]] QModelIndex hoverIndex() const { return hover_index_; }
-    [[nodiscard]] int hoverAction() const noexcept { return hover_action_; }
-
-    void completePendingExpansions() {
-        std::erase_if(pending_expansions_, [this](const QPersistentModelIndex& pending) {
-            if (!pending.isValid() || model()->rowCount(pending) <= 0) {
-                return !pending.isValid();
-            }
-            setExpanded(pending, true);
-            return true;
-        });
-    }
-
-    void cancelPendingExpansions() { pending_expansions_.clear(); }
-
-    [[nodiscard]] static QRect actionRect(const QRect& row_rect, const int action) {
-        constexpr int action_count = 3;
-        constexpr int action_extent = 24;
-        constexpr int right_margin = 4;
-        const auto left = row_rect.right() + 1 - right_margin - action_count * action_extent;
-        return QRect{left + action * action_extent, row_rect.center().y() - action_extent / 2,
-                     action_extent, action_extent};
-    }
-
-  protected:
-    void mousePressEvent(QMouseEvent* event) override {
-        if (event->button() == Qt::LeftButton) {
-            const auto index = indexAt(event->position().toPoint());
-            if (index.isValid()) {
-                setCurrentIndex(index);
-                if (actionAt(index, event->position().toPoint()) < 0 &&
-                    model()->hasChildren(index)) {
-                    toggleBranch(index);
-                }
-                event->accept();
-                return;
-            }
-        }
-        QTreeView::mousePressEvent(event);
-    }
-
-    void mouseDoubleClickEvent(QMouseEvent* event) override { event->accept(); }
-
-    void mouseMoveEvent(QMouseEvent* event) override {
-        const auto old_index = QModelIndex{hover_index_};
-        const auto old_action = hover_action_;
-        const auto index = indexAt(event->position().toPoint());
-        hover_index_ = index;
-        hover_action_ = actionAt(index, event->position().toPoint());
-        if (old_index != index || old_action != hover_action_) {
-            if (old_index.isValid()) {
-                viewport()->update(visualRect(old_index));
-            }
-            if (index.isValid()) {
-                viewport()->update(visualRect(index));
-            }
-        }
-        QTreeView::mouseMoveEvent(event);
-    }
-
-    void mouseReleaseEvent(QMouseEvent* event) override {
-        const auto index = indexAt(event->position().toPoint());
-        const auto action = actionAt(index, event->position().toPoint());
-        if (event->button() == Qt::LeftButton && index.isValid() && action >= 0 &&
-            action_callback_) {
-            setCurrentIndex(index);
-            action_callback_(index, action);
-            event->accept();
-            return;
-        }
-        if (event->button() == Qt::LeftButton) {
-            event->accept();
-            return;
-        }
-        QTreeView::mouseReleaseEvent(event);
-    }
-
-    void keyPressEvent(QKeyEvent* event) override {
-        const auto index = currentIndex();
-        if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) && index.isValid() &&
-            model()->hasChildren(index)) {
-            toggleBranch(index);
-            event->accept();
-            return;
-        }
-        QTreeView::keyPressEvent(event);
-    }
-
-    void leaveEvent(QEvent* event) override {
-        const auto old_index = QModelIndex{hover_index_};
-        hover_index_ = QPersistentModelIndex{};
-        hover_action_ = -1;
-        if (old_index.isValid()) {
-            viewport()->update(visualRect(old_index));
-        }
-        QTreeView::leaveEvent(event);
-    }
-
-    bool viewportEvent(QEvent* event) override {
-        if (event->type() == QEvent::ToolTip) {
-            const auto* help = static_cast<QHelpEvent*>(event);
-            const auto index = indexAt(help->pos());
-            const auto action = actionAt(index, help->pos());
-            if (action >= 0) {
-                static const std::array labels{QStringLiteral("Append to live queue"),
-                                               QStringLiteral("Insert next in live queue"),
-                                               QStringLiteral("Replace queue and play")};
-                QToolTip::showText(help->globalPos(), labels[static_cast<std::size_t>(action)],
-                                   this, actionRect(visualRect(index), action));
-                return true;
-            }
-        }
-        return QTreeView::viewportEvent(event);
-    }
-
-  private:
-    void toggleBranch(const QModelIndex& index) {
-        const auto pending = QPersistentModelIndex{index};
-        const auto found = std::ranges::find(pending_expansions_, pending);
-        if (found != pending_expansions_.end()) {
-            pending_expansions_.erase(found);
-            return;
-        }
-        if (isExpanded(index)) {
-            setExpanded(index, false);
-            return;
-        }
-        if (model()->canFetchMore(index)) {
-            pending_expansions_.push_back(pending);
-            model()->fetchMore(index);
-            return;
-        }
-        setExpanded(index, true);
-    }
-
-    [[nodiscard]] int actionAt(const QModelIndex& index, const QPoint& position) const {
-        if (!index.isValid()) {
-            return -1;
-        }
-        const auto row_rect = visualRect(index);
-        for (int action = 0; action < 3; ++action) {
-            if (actionRect(row_rect, action).contains(position)) {
-                return action;
-            }
-        }
-        return -1;
-    }
-
-    QPersistentModelIndex hover_index_;
-    std::vector<QPersistentModelIndex> pending_expansions_;
-    int hover_action_{-1};
-    std::function<void(const QModelIndex&, int)> action_callback_;
-};
-
-class ServerLibraryTreeDelegate final : public QStyledItemDelegate {
-  public:
-    ServerLibraryTreeDelegate(ServerLibraryTreeView* view, std::array<QIcon, 3> action_icons)
-        : QStyledItemDelegate(view), view_(view), action_icons_(std::move(action_icons)) {}
-
-    [[nodiscard]] QSize sizeHint(const QStyleOptionViewItem& option,
-                                 const QModelIndex& index) const override {
-        auto size = QStyledItemDelegate::sizeHint(option, index);
-        const auto kind = static_cast<ServerLibraryTreeModel::NodeKind>(
-            index.data(ServerLibraryTreeModel::KindRole).toInt());
-        const auto level = index.data(ServerLibraryTreeModel::LevelRole).toULongLong();
-        const bool is_album = index.data(ServerLibraryTreeModel::AlbumRole).toBool();
-        size.setHeight(kind == ServerLibraryTreeModel::NodeKind::track ? 34
-                       : is_album                                      ? 42
-                       : level == 0U                                   ? 46
-                                                                       : 38);
-        return size;
-    }
-
-    void paint(QPainter* painter, const QStyleOptionViewItem& option,
-               const QModelIndex& index) const override {
-        auto item = option;
-        initStyleOption(&item, index);
-        const auto icon = item.icon;
-        const auto primary = item.text;
-        const auto secondary = index.data(ServerLibraryTreeModel::SecondaryTextRole).toString();
-        item.text.clear();
-        item.icon = {};
-        item.features &= ~QStyleOptionViewItem::HasDecoration;
-        const auto* widget = item.widget;
-        auto* item_style = widget != nullptr ? widget->style() : QApplication::style();
-        item_style->drawControl(QStyle::CE_ItemViewItem, &item, painter, widget);
-
-        const auto kind = static_cast<ServerLibraryTreeModel::NodeKind>(
-            index.data(ServerLibraryTreeModel::KindRole).toInt());
-        const bool is_track = kind == ServerLibraryTreeModel::NodeKind::track;
-        const bool is_album = index.data(ServerLibraryTreeModel::AlbumRole).toBool();
-        const bool show_actions =
-            view_ != nullptr && (view_->hoverIndex() == index || view_->currentIndex() == index);
-        const auto icon_extent = is_track ? 20 : is_album ? 28 : 32;
-        auto content = item.rect.adjusted(5, 3, -5, -3);
-        const auto icon_rect =
-            QRect{content.left(), content.center().y() - icon_extent / 2, icon_extent, icon_extent};
-        if (!icon.isNull()) {
-            const auto mode =
-                item.state.testFlag(QStyle::State_Enabled) ? QIcon::Normal : QIcon::Disabled;
-            icon.paint(painter, icon_rect, Qt::AlignCenter, mode);
-        }
-        content.setLeft(icon_rect.right() + (is_track ? 6 : 8));
-        if (show_actions) {
-            content.setRight(ServerLibraryTreeView::actionRect(item.rect, 0).left() - 5);
-        }
-
-        const auto foreground = item.palette.color(item.state.testFlag(QStyle::State_Selected)
-                                                       ? QPalette::HighlightedText
-                                                       : QPalette::Text);
-        auto muted = item.palette.color(item.state.testFlag(QStyle::State_Selected)
-                                            ? QPalette::HighlightedText
-                                            : QPalette::PlaceholderText);
-        muted.setAlpha(205);
-        auto primary_font = item.font;
-        auto secondary_font = item.font;
-        secondary_font.setPointSizeF(std::max(7.0, item.font.pointSizeF() - 1.0));
-        const QFontMetrics primary_metrics{primary_font};
-        const QFontMetrics secondary_metrics{secondary_font};
-        const auto primary_height = primary_metrics.height();
-        const auto secondary_height = secondary.isEmpty() ? 0 : secondary_metrics.height();
-        const auto text_height = primary_height + secondary_height;
-        auto text_top = content.center().y() - text_height / 2;
-
-        painter->save();
-        painter->setPen(foreground);
-        painter->setFont(primary_font);
-        painter->drawText(
-            QRect{content.left(), text_top, std::max(0, content.width()), primary_height},
-            Qt::AlignLeft | Qt::AlignVCenter,
-            primary_metrics.elidedText(primary, Qt::ElideRight, content.width()));
-        if (!secondary.isEmpty()) {
-            painter->setPen(muted);
-            painter->setFont(secondary_font);
-            painter->drawText(
-                QRect{content.left(), text_top + primary_height, std::max(0, content.width()),
-                      secondary_height},
-                Qt::AlignLeft | Qt::AlignVCenter,
-                secondary_metrics.elidedText(secondary, Qt::ElideRight, content.width()));
-        }
-        painter->restore();
-
-        if (!show_actions) {
-            return;
-        }
-        for (int action = 0; action < 3; ++action) {
-            const auto action_rect = ServerLibraryTreeView::actionRect(item.rect, action);
-            const bool hovered = view_->hoverIndex() == index && view_->hoverAction() == action;
-            if (hovered) {
-                auto fill = item.palette.color(QPalette::Highlight);
-                fill.setAlpha(item.state.testFlag(QStyle::State_Selected) ? 90 : 42);
-                painter->save();
-                painter->setRenderHint(QPainter::Antialiasing);
-                painter->setPen(Qt::NoPen);
-                painter->setBrush(fill);
-                painter->drawRoundedRect(action_rect.adjusted(2, 2, -2, -2), 4.0, 4.0);
-                painter->restore();
-            }
-            const auto action_icon_rect = action_rect.adjusted(6, 6, -6, -6);
-            action_icons_[static_cast<std::size_t>(action)].paint(
-                painter, action_icon_rect, Qt::AlignCenter,
-                item.state.testFlag(QStyle::State_Enabled) ? QIcon::Normal : QIcon::Disabled);
-        }
-    }
-
-  private:
-    ServerLibraryTreeView* view_;
-    std::array<QIcon, 3> action_icons_;
-};
-
 [[nodiscard]] QString formatTime(const qint64 milliseconds) {
     if (milliseconds < 0) {
         return QStringLiteral("−:−−");
@@ -933,6 +581,9 @@ void configureTrackView(QTableView* view, QAbstractItemModel* model) {
         .source = persistence::ListSource::mpd,
         .profile_id = profile_id,
         .source_reference = track.uri,
+        .logical_reference = std::nullopt,
+        .segment = std::nullopt,
+        .source_selection = std::nullopt,
         .duration_ms = track.duration ? std::optional{track.duration->count()} : std::nullopt,
         .fields = std::move(fields),
     };
@@ -1360,19 +1011,22 @@ void MainWindow::buildWorkspace(const qint64 logical_rows) {
     ui.queue_view->horizontalHeader()->setStretchLastSection(false);
     ui.queue_view->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     ui.queue_view->setItemDelegate(new QueueItemDelegate(ui.queue_view));
-    ui.queue_view->setColumnHidden(2, true);
-    ui.queue_view->setColumnHidden(3, true);
-    ui.queue_view->setColumnHidden(4, true);
-    constexpr std::array queue_column_order{0, 1, 2, 4, 5};
+    ui.queue_view->setColumnHidden(track_number_column, true);
+    ui.queue_view->setColumnHidden(track_album_column, true);
+    ui.queue_view->setColumnHidden(track_date_column, true);
+    constexpr std::array queue_column_order{
+        track_artwork_column, track_artist_column, track_number_column, track_title_column,
+        track_album_column,   track_date_column,   track_length_column};
     for (int visual = 0; visual < static_cast<int>(queue_column_order.size()); ++visual) {
         const auto logical = queue_column_order.at(static_cast<std::size_t>(visual));
         ui.queue_view->horizontalHeader()->moveSection(
             ui.queue_view->horizontalHeader()->visualIndex(logical), visual);
     }
     ui.queue_view->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-    ui.queue_view->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-    ui.queue_view->setColumnWidth(0, 62);
-    ui.queue_view->setColumnWidth(5, 68);
+    ui.queue_view->horizontalHeader()->setSectionResizeMode(track_title_column,
+                                                            QHeaderView::Stretch);
+    ui.queue_view->setColumnWidth(track_artwork_column, 62);
+    ui.queue_view->setColumnWidth(track_length_column, 68);
     if (const auto state = ui.view_presets.value(QStringLiteral("live-queue")); !state.isEmpty()) {
         static_cast<void>(ui.queue_view->horizontalHeader()->restoreState(state));
     }
@@ -2719,11 +2373,13 @@ void MainWindow::addLocalListTab(persistence::ListDocument document, const bool 
     queue_view->setReorderCallback([this, id](const QVariantList& rows, const int insertion_row) {
         reorderLocalRows(id, rows, insertion_row);
     });
-    queue_view->setExternalDropCallback([this, id](QTableView* source, const QVariantList& rows,
-                                                   const int insertion_row,
-                                                   const Qt::DropAction action) {
-        return transferRows(source, rows, id, action == Qt::MoveAction, insertion_row);
-    });
+    queue_view->setExternalDropCallback(
+        [this, id](QAbstractItemView* source, const QVariantList& rows, const int insertion_row,
+                   const Qt::DropAction action) {
+            auto* table = qobject_cast<QTableView*>(source);
+            return table != nullptr &&
+                   transferRows(table, rows, id, action == Qt::MoveAction, insertion_row);
+        });
     if (ui.scratch_view == nullptr) {
         ui.scratch_view = view;
     }

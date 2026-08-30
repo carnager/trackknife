@@ -1,12 +1,13 @@
 # Trackknife milestones
 
 Milestones are capability gates, not calendar promises. The order reflects the
-MPD-client-first direction accepted in ADR-0009 and the two-application split
-accepted in ADR-0025: **Trackknife** stays a pure MPD/Melody client, and the
-**Trackbench** local tool is a separate
-foobar2000-inspired workstation for local files — playback, album grouping,
-tagging, MusicBrainz, ReplayGain, conversion, and resampling — sharing this
-repository, its internal libraries, and its visual language.
+MPD-client-first direction accepted in ADR-0009 and the unified workspace
+accepted in ADR-0058: **Trackbench** contains authority-bound **MPD Queue** and
+**Local Queue** tabs. The active tab switches transport, MPD/PipeWire output
+selection, and server-library/local-folders navigation while local mutation
+tools remain unavailable in MPD context. Both queues use the same complete,
+versioned track-view implementation. The existing `trackknife` executable is a
+compatibility shell during migration.
 
 ## Status
 
@@ -16,8 +17,8 @@ repository, its internal libraries, and its visual language.
 | M1 | Complete | Shared `tkfmt-1` expression engine and sandbox |
 | M2 | Complete | Reliable asynchronous MPD session and domain backbone |
 | M3 | Complete | Polished Qt MPD workspace — the basic MPD client is finished |
-| M4 | Active | Application split and Trackbench's playback workspace |
-| M5 | Planned | Fast local tag workspace and safe file operations |
+| M4 | Complete | Application split and Trackbench's playback workspace |
+| M5 | Active | Fast local tag workspace and safe file operations |
 | M6 | Planned | MusicBrainz identification and metadata providers |
 | M7 | Planned | Universal parallel ReplayGain workflow |
 | M8 | Planned | Parallel converter, resampler, and organized output |
@@ -30,8 +31,8 @@ removes a real dependency, but moving on never disguises a failed gate.
 ## Rules applying to every milestone
 
 - Keep the core independent of Qt UI types.
-- Neither application depends on the other at runtime; shared behavior lives
-  in shared internal libraries, not copies.
+- MPD and local authorities stay separate even though they share one shell;
+  shared behavior lives in shared internal libraries, not copies.
 - Add tests with behavior; protocol behavior needs stock MPD and Melody
   provenance, and format claims need real files.
 - Never block the UI thread on network, disk, decode, tags, SQL, or unbounded
@@ -303,8 +304,8 @@ migration sources.
   over shared libraries. `src/uicommon` holds the MPD-free shared Widgets
   pieces (command palette, list persistence service, local folder tree
   model); `src/bench` builds the `trackbench` executable. Trackbench v1 has
-  tabbed persistent local lists in its own SQLite database, a folder library
-  dock with persisted raw-byte roots, file/folder/drag-drop/CLI ingestion
+  tabbed persistent local lists in its own SQLite database, a Folders panel
+  with persisted raw-byte roots, file/folder/drag-drop/CLI ingestion
   through the ADR-0014 discovery path, and a single local transport over the
   ADR-0021 worker with ADR-0023 end-of-track auto-advance and prev/next plus
   ADR-0024 volume and PipeWire device selection.
@@ -362,7 +363,10 @@ migration sources.
   artist, date, and track number, persisted alongside the existing
   fields. A `--screenshot` QA flag (test-mode settings) renders the
   workspace headlessly; an offscreen render of a two-album fixture set
-  verified header grouping, totals, and numbering.
+  verified header grouping, totals, and numbering. A later regression proved
+  that already-enriched CUE batches use this same view path: their bounded
+  first-row section resize now runs after Qt finalizes inserted header
+  sections, so the album header cannot cover the first logical track.
 - Done: album covers render in Trackbench group headers. The Qt-free
   `formats::load_embedded_artwork` surfaces the container's attached
   picture bytes (fixture-proven, including typed not-found and
@@ -405,10 +409,113 @@ migration sources.
   (throttled re-requests after seeks) and moves anchors/highlight on
   transitions without issuing a load. The live-PipeWire UI test now also
   asserts the player never reports "ended" between tracks.
-- Remaining: pin/duplicate and dirty-indicator parity, the rest of the
-  shipped format matrix (AIFF, WAV/RF64 edge cases, cue/subsong), PipeWire
-  buffer presets and hotplug, and the shared UI budget measurements on
-  large folders.
+- Done: Trackbench's local tabs now complete the remaining lifecycle parity:
+  Workspace-menu shortcuts and a tab context menu expose rename, pin/unpin,
+  duplicate, explicit save, and close. Pinned tabs hide their close affordance
+  and reject close commands; duplicates preserve rows under a new identity;
+  the persisted modified marker and tooltip clear only on explicit save and
+  return on the next edit; dirty close requires an explicit discard decision.
+  An offscreen regression covers the full edit/save/dirty/pin/duplicate/close
+  path and restart persistence.
+- Done: ADR-0026 establishes Trackbench's Columns-UI-inspired, but independently
+  specified, versioned panel-composition tree. The first renderer places the
+  real Folders and Track Lists panels in the polished side-by-side default and
+  lets layout-edit mode switch them to top/bottom or a tab stack and swap their
+  order. Split sizes, tab selection, orientation, and order persist; strict
+  bounded validation rejects malformed/duplicate/incomplete trees, while a
+  newer schema falls back without overwriting the saved value. Dedicated model
+  tests plus an offscreen arrange/restart/reset/future-schema pass cover it;
+  later milestones add real panels rather than placeholders.
+- Done: ADR-0027 extends customization into the Track Lists content rather
+  than stopping at outer panes. Trackbench's default now matches the grouped
+  playlist geometry: one full-width album label/duration, one large side cover
+  through the visible member rows, and independent Artwork, Artist, track
+  number, Title, Album, Date, and Length columns. Workspace/header actions
+  switch between side-art, header-art, plain-column, and compact-queue presets;
+  column order/visibility/width persist per list and can be reset or copied to
+  all tabs. Visible columns auto-fill the viewport with proportional metadata
+  columns, and every row/header stays single-line with right elision. Strict
+  versioned validation and resize/restart/future-state tests protect the
+  definition. `tkfmt-1` custom display/sort/group expressions remain the next
+  view-definition layer.
+- Done: a tagged AIFF fixture adds big-endian 24-bit PCM and ID3v2.4 metadata
+  to the shipped playback matrix. Probe coverage requires all five tags and
+  the exact container/stream shape; complete decode proves 4,410 contiguous
+  non-silent frames, and a bounded seek is byte-for-byte identical to the
+  corresponding complete-decode slice.
+- Done: a forced-small RF64 fixture exercises the real `RF64`/`ds64` path
+  without a multi-gigabyte test asset. It proves BWF/INFO metadata projection,
+  48 kHz stereo 24-bit PCM shape, exactly 2,400 contiguous decoded frames, and
+  a sample-bounded seek identical to the complete-decode slice.
+- Done: a Sony Wave64 fixture completes the initial WAV-family container edge
+  with 32-bit float stereo PCM. Tests verify the RIFF/WAVE GUIDs before probe,
+  exact stream shape and frame count, and sample-bounded seek identity;
+  Trackbench folder ingestion now admits `.w64` files.
+- Done: ADR-0028 carries external cues from bounded parsing through Trackbench
+  intake and playback. Raw `FILE` bytes and unknown directives survive parsing;
+  contained sources are resolved off the UI thread and `AUDIO`/`INDEX 01`
+  boundaries map from a shared 75 Hz origin into exact sample ranges. Folder
+  intake creates metadata-rich logical rows without a duplicate whole-file row;
+  migration 4 persists separate cue identity, physical raw path, and segment.
+  The serialized player loads and gaplessly queues segments—even adjacent rows
+  in the same physical file—with track-relative transport state. Parser limits,
+  multi-file/data boundaries, non-UTF-8 paths, containment escape, fractional
+  rates, exact PCM concatenation, UI intake, and restart restoration are tested.
+- Done: ADR-0029 exposes persistent playback-buffer policy without adding
+  header chrome. Responsive (250/50 ms), Balanced (750/100 ms), and Resilient
+  (2,000/250 ms) profiles plus bounded exact custom values configure the
+  source-rate PCM ring. Snapshots distinguish configured and active values;
+  a mid-track change preserves the immutable RT ring, drops its prepared
+  successor, and applies at the next ordinary load. The audio tooltip reports
+  the profile, exact values, pending state, PipeWire node, and underruns.
+- Done: ADR-0030 replaces menu-open enumeration with one persistent PipeWire
+  registry/default-metadata monitor. Sink and default generations reach the
+  playback worker within a bounded cadence. System-default streams follow the
+  session manager's dynamic relinking; loss of an explicit target never falls
+  back silently—it pauses at the retained sample, removes the stream, and
+  reconnects paused with bounded retries when the target returns. The compact
+  chooser and tooltip expose unavailable, suspended, monitor-error, recovery,
+  and resolved-default state.
+- Done: ADR-0031 adapts exhaustive container-native chapter tables into the
+  same logical-source/sample-range model as external cues. A real Matroska/FLAC
+  fixture proves two scoped-metadata chapters project to adjacent exact ranges,
+  decode back to the whole PCM source, atomically replace Trackbench's
+  provisional row, and survive SQLite restoration. Expansion is bounded and
+  all-or-nothing, so partial, gapped, overlapping, or malformed chapter tables
+  leave a fully playable whole-file row. The fixture also exposed and fixed
+  coarse container-timestamp drift by counting decoded PCM contiguously after
+  its seek anchor.
+- Done: the Trackbench large-list benchmark exercises the real grouped local
+  model/view, long metadata, cue-like shared sources, selection status, cached
+  tabs, view-preset grouping, and artwork updates. It exposed Qt's
+  `ResizeToContents` as an unbounded whole-model pass (roughly 760–780 ms at
+  only 10,000 debug rows). Group starts now use fixed row geometry with bounded
+  section overrides, an allocation-free model role, and a revision-invalidated
+  geometry cache; the 100,000-row release corpus measures 3.36 ms p95 scrolling,
+  6.78 ms cached tab switching, and 7.52 ms cached grouping. A diagnostic
+  one-million-row run also stays inside every budget. The 10,000-row CTest smoke
+  enforces them; full evidence is under `benchmarks/results/`.
+- Done: Trackbench's context surfaces now reach the actual work areas rather
+  than stopping at tabs and column headers. Track-row right-click preserves an
+  existing multi-selection, targets a newly clicked row, or selects an album
+  when invoked over its group header; it reuses Play and Remove and exposes
+  selection-preserving Copy/Move submenus for every other list. Folder rows
+  offer Add file/folder to current list plus directory Expand/Collapse. A
+  single-track cover is right-aligned in its artwork gutter, whose first column
+  is excluded from selection, playback, and focus bands.
+- Done: ADR-0032 adds explicit decoder selection without conflating it with
+  opaque logical identity or sample ranges. Alternate container streams remain
+  opt-in because language/commentary streams are not sequential songs.
+  libopenmpt's bounded identity API enumerates tracker subsong count, names,
+  and musical durations while FFmpeg remains the decoder. A hand-authored
+  two-subsong ProTracker fixture proves distinct selected decode, exact finite
+  ranges, gapless chaining through one ring, Trackbench folder expansion, and
+  SQLite restoration of stream/subsong selectors. MOD/XM/S3M/IT participate in
+  ordinary folder intake.
+
+M4 is complete. Its split, local playback, grouping, logical-track, device,
+workspace, interaction, persistence, and measured-performance gates are now
+covered by repository-owned tests and fixtures. Work proceeds to M5.
 
 ### Exit criteria
 
@@ -438,9 +545,10 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
 
 1. Local metadata/source model and read adapters for the initial real-file
    matrix, including arbitrary ordered values and MusicBrainz fields.
-2. Virtualized track-by-field grid with common/mixed/missing states, direct
-   keyboard navigation, type-to-add/fuzzy field commands, rectangular paste,
-   saved field layouts, and an individual-values inspector.
+2. Virtualized file selector above a Fields/Original/Draft table, with
+   common/mixed/missing states projected for the selected files, direct
+   keyboard navigation, type-to-add/fuzzy field commands, and saved field
+   layouts.
 3. Staged documents, source-revision conflicts, per-format preservation tests,
    and full write previews.
 4. Named transformation chains, `tkfmt-1`-derived values, numbering, and the
@@ -452,11 +560,194 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
    references, provenance, and confidence, proven by internal use before any
    online provider (M6) or public plugin ABI.
 
+### Current progress (2026-08-30)
+
+- Done: ADR-0033 establishes the first Qt-free M5 metadata/source boundary.
+  Ordered arbitrary values retain native and canonical names, qualifiers, and
+  explicit cached/annotation/embedded/stream/segment/sidecar provenance;
+  effective lookup has deterministic precedence, and a typed MusicBrainz
+  projection covers recording, release-track, release, release-group, artist,
+  album-artist, work, disc, credit, and sort-name values.
+- Done: the bounded read-only TagLib property adapter brackets synchronous reads
+  with raw-path source revisions (device, inode, size, nanosecond mtime), typed
+  conflicts/cancellation/errors, field/value/text limits, and an inventory of
+  native objects outside its text projection. A real repeated-value FLAC,
+  WavPack, and invalid-UTF-8 path regression prove the boundary. The generic
+  and WavPack write/preservation flags remain off; native FLAC is qualified by
+  the later ADR-0043 round trip.
+- Done: Trackbench's background probe now feeds the same rich document into
+  ordinary files, CUE tracks, container chapters, and tracker subsongs. Lists
+  cache ordered effective arbitrary/MusicBrainz fields for restart without
+  treating stale source revisions as commit authority. An offscreen real-FLAC
+  restart test covers the complete read, display, cache, and restore path.
+- Done: ADR-0034 adds the bounded sparse multi-file selection projection and
+  non-modal read-only Properties workspace. The virtual track-by-field model
+  exposes common, mixed, missing, and partial states; preserves selected
+  occurrences, arbitrary fields, exact ordered values, and provenance; and
+  projects the selection through a concurrent boundary after opening the
+  dialog shell. Edit/context-menu/`Alt+Return` entry points and real-FLAC
+  offscreen coverage are in place without advertising a write capability.
+- Done: ADR-0035 adds a bounded Qt-free sparse patch set with explicit ordered
+  replacement versus field removal, no-op collapse, deterministic result-state
+  projection, and bounded UI undo history. Properties now supports direct
+  scalar keyboard editing, Delete removal, undo/redo, draft highlighting and
+  counts, exact Original/Draft inspection, and explicit discard. Repeated
+  values are never parsed from joined display text, and Apply remains absent.
+- Done: ADR-0036 makes the compact Fields/Original/Draft table the primary
+  Properties page while retaining the track-by-field matrix as a Tracks
+  drill-down. Bulk scalar replacement, explicit removal, revert, and undo use
+  the same bounded staged draft as individual track cells; mixed, partial, and
+  missing Original states remain explicit and individual exceptions never
+  masquerade as a computed aggregate result.
+- Done: ADR-0037 adds the exact ordered-value editor for both bulk Fields and
+  individual Tracks cells. Structured rows preserve order, duplicates,
+  delimiter characters, and explicit empty values; removal remains explicit,
+  and the non-blocking child editor shares the bounded draft and undo history.
+- Done: ADR-0038 removes the duplicate Fields/Tracks editing modes. Properties
+  now uses one vertical split: a read-only multi-select file list above the
+  Field/Original/Draft table. Selecting one file exposes exact per-file values;
+  selecting several produces the bulk projection and edit scope. Debounced,
+  generation-safe subset summaries stay off the UI thread for nontrivial
+  selections, while staged exact values survive scope changes.
+- Done: ADR-0039 adds visible `Add field…`/Insert and `Remove field`/Delete
+  commands to that table. Arbitrary names extend only the bounded session
+  vocabulary through shared immutable item baselines; the selected-file scope
+  survives insertion, and newly added fields use the ordinary draft, removal,
+  revert, undo, and discard semantics.
+- Done: ADR-0040 adds deterministic fuzzy completion to `Add field…` over
+  present, conventional, MusicBrainz, and workspace-recent names. Canonical
+  duplicates collapse, 12 ranked suggestions stay bounded, and arbitrary text
+  remains valid.
+- Done: ADR-0041 replaces staged-count fallbacks with a cancellable background
+  projection of exact Draft result states and common values. Immutable
+  copy-on-write snapshots, sparse selected-item traversal, generation checks,
+  and one in-flight job keep continued editing safe and bounded.
+- Done: ADR-0042 adds the complete revalidated metadata write-plan preview.
+  An explicit background job rereads each staged raw source once, compares
+  captured and observed revisions, retains every exact logical intent, merges
+  compatible shared-source fields, and blocks changed/missing sources,
+  conflicting CUE/duplicate intents, non-embedded targets, physical aliases,
+  unavailable writers, and unproven unknown-data preservation. The virtualized
+  preview has no Apply action.
+- Done: ADR-0043 adds the first exact writable adapter for native FLAC
+  Vorbis-comment text. It writes only to an exclusive prepared copy, rejects
+  unrepresentable exact-empty/artwork mappings, rereads all targeted and
+  untouched fields, and byte-verifies every non-comment/non-padding metadata
+  block plus the compressed audio region. Real fixtures prove ordered custom
+  and MusicBrainz changes while ReplayGain text, an unknown APPLICATION
+  payload, embedded artwork, decoded PCM, and the original source survive.
+  Compatible FLAC plans are now ready, but the UI still exposes no Apply.
+- Done: ADR-0044 adds the first Qt-free commit/recovery executor and reversible
+  SQLite migration 6. Native-FLAC sources serialize by physical identity and
+  advisory file lock, revalidate under lock, preserve bounded Linux filesystem
+  metadata, journal the exact plan and recovery paths before mutation, retain a
+  byte-identical hard-link backup, atomically publish the verified sibling,
+  reread the result, and require an idempotent dependent-state transaction
+  before completion. Exact rollback is proven for dependent-state and injected
+  journal failures; startup recovery completes an interrupted valid publication,
+  removes safe pre-publication debris, and retains ambiguous evidence for
+  reconciliation. Symlinks and preexisting hard links remain explicitly blocked.
+  The UI still exposes no Apply.
+- Done: ADR-0045 and reversible migration 7 add Trackbench's real dependent-state
+  transaction. Provenance-aware item snapshots retain annotation, CUE, chapter,
+  subsong, and sidecar layers while one raw-path source cache atomically refreshes
+  every duplicate occurrence across every tab. Operation IDs make recovery replay
+  idempotent, the cache survives restart and dominates older debounced workspace
+  saves, and legacy flattened logical rows conservatively require a fresh probe.
+  The serialized persistence worker and local list model expose the matching
+  non-UI transaction and coherent all-row repaint boundaries.
+- Done: ADR-0046 and reversible migration 8 add a separate retained-backup
+  lifecycle, background startup recovery and maintenance, and the non-modal
+  Metadata operations workspace. Ambiguous evidence opens automatically with
+  destructive actions disabled. A verified atomic exchange provides byte-exact,
+  crash-recoverable single-step undo and refreshes all persisted/visible
+  occurrences with a new idempotency identity; explicit release and the fixed
+  seven-day/newest-per-source/256-entry/10-GiB policy bound safe backups without
+  deleting ambiguous evidence. Real-FLAC and offscreen UI tests cover the path.
+- Done: ADR-0047 exposes explicit Apply only for a wholly ready immutable plan.
+  A UI-captured workspace snapshot is persisted before mutation, then two
+  bounded workers feed the existing per-source journaled executor. The
+  window-modal job reports ordered per-source progress, structured partial
+  success, and cancellation that stops new admission while in-flight sources
+  reach a safe boundary. Committed results refresh all durable and visible
+  occurrences and operation history; every partial/no-commit retry requires a
+  fresh preview. Real-FLAC core and offscreen UI tests cover the complete path.
+- Done: ADR-0048 adds the first versioned declarative metadata transformation
+  chain. Ordered literal set, remove, per-value trim/lower/upper, and scalar
+  `tkfmt-1` actions evaluate against the current draft on a cancellable worker;
+  later actions see earlier results. Properties previews exact original/final
+  cells before staging the net result through the existing sparse patch model
+  as one undo transaction. Stale previews fail closed, and transformed drafts
+  still require the ordinary fresh write-plan and Apply path. Qt-free and
+  offscreen real-FLAC tests cover ordering, exact values, validation, limits,
+  cancellation, undo/redo, and write-plan handoff.
+- Done: ADR-0049 and reversible migration 9 persist up to 256 named schema-1
+  transformation chains with explicit stable action codes and exact ordered
+  literal payloads. Properties loads, saves, updates, saves-as-new, and deletes
+  definitions through the serialized persistence worker. Schema 1 now adds
+  exact append-without-dedup, whole-state copy, empty-component-preserving
+  split, and single-value join semantics; Qt-free, restart, transactional, and
+  offscreen save/reload tests cover the slice.
+- Done: ADR-0050 and reversible migration 10 expose first-character Unicode
+  capitalization as a typed, saveable transformation step. Each value keeps
+  its unchanged remainder, empty values, ordering, and multi-value shape;
+  core, persistence, and offscreen UI tests cover the explicit behavior.
+- Done: ADR-0051 and reversible migration 11 expose all saved transformation
+  chains in one persistent checkable **Tagging scripts** side panel. The
+  selected row opens directly in the editor; checked chains run in displayed
+  deterministic order against a temporary copy of each staged tag draft, so
+  their exact results enter the final immutable write plan without polluting
+  undo history or compounding across repeated previews. Apply remains explicit.
+- Done: ADR-0052 promotes metadata Properties from a separately sized window to
+  a temporary `Tags · N tracks` workspace tab that retains draft/apply close
+  protection and stays outside persisted list documents. Transformation
+  previews now lead with expandable Field/Old/New rows; file and producing-step
+  diagnostics remain one disclosure level below each exact change.
+- Done: ADR-0053 and reversible migration 12 add case-sensitive exact-value
+  remove/replace actions plus deterministic selected-file-order numbering.
+  Matching preserves every nonmatching value exactly, replacement retains an
+  ordered payload, and numbering exposes bounded start/minimum-width settings;
+  all three flow through saved and checked automatic chains, exact preview,
+  one-step staging, and fresh physical write-plan review. Group resets and
+  `TOTALTRACKS` remain explicit future numbering work.
+- Done: ADR-0054 accepts one typed preparation plan for checkable tag saving,
+  rename, move, and ReplayGain operations in the tagging workspace. Versioned
+  output-layout profiles are independent of raw-path destination profiles and
+  are shared with the future converter; combined operations prepare one final
+  verified publication and enter one immutable per-file review.
+- Done: ADR-0055 and reversible migration 13 persist independently versioned
+  output-layout and raw-path destination profiles. The bounded Qt-free planner
+  evaluates final metadata for independent rename/move choices, preserves the
+  existing extension, exposes raw-to-`linux-v1` sanitization, collapses
+  consistent shared logical sources, and blocks containment, collision,
+  revision, device/inode alias, dependency, and path-limit conflicts against an
+  explicit filesystem snapshot.
+- Done: ADR-0056 and reversible migration 14 add the fresh Linux filesystem
+  preflight and a distinct file-publication recovery state machine. Preflight
+  opens every existing component without following symlinks, rechecks the
+  exact source revision/link count, target occupancy, parent access and actual
+  path limits, reports missing directories without creating them, and
+  classifies atomic rename versus cross-filesystem copy. Durable states now
+  distinguish prepared target, published target, dependent-state commit, and
+  cross-filesystem source removal with optimistic guards and raw-path identity
+  evidence.
+- Done: ADR-0057 adds the first executable file-publication slice. A locked,
+  descriptor-relative same-filesystem source is revalidated, planned missing
+  directories are journaled before creation, and `renameat2` publishes without
+  replacing an appeared target. Parent syncing, exact-identity rollback,
+  idempotent dependent-state replay, startup completion, and conservative
+  reconciliation pass real-file and injected-transition tests. This core is
+  intentionally not exposed as a workspace action yet.
+- Next: implement the path-aware all-occurrence dependent-state transaction,
+  then same-filesystem undo and cross-filesystem verified-copy publication
+  before enabling workspace operation choices. The capture-pattern grammar and
+  chain import/export follow that vertical slice.
+
 ### Exit criteria
 
 - Common bulk edits need no repetitive per-target clicking or fixed giant
   dropdown navigation.
-- Keyboard-only and paste-heavy editing is fast on large selections.
+- Keyboard-only bulk editing is fast on large selections.
 - Each advertised writable format passes real round-trip, unknown-data,
   artwork, MusicBrainz, and audio-essence preservation tests.
 - Plans stop on source revision changes and injected failures leave a valid

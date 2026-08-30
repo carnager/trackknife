@@ -48,6 +48,9 @@ void list_documents_round_trip_transactionally() {
                         .source = persistence::ListSource::mpd,
                         .profile_id = profile_id,
                         .source_reference = "Artist/Album/01.flac",
+                        .logical_reference = std::nullopt,
+                        .segment = std::nullopt,
+                        .source_selection = std::nullopt,
                         .duration_ms = 180'125,
                         .fields = {{"Artist", "First"}, {"Artist", "Second"}, {"Title", "Song"}},
                     },
@@ -55,6 +58,9 @@ void list_documents_round_trip_transactionally() {
                         .source = persistence::ListSource::mpd,
                         .profile_id = profile_id,
                         .source_reference = "Artist/Album/01.flac",
+                        .logical_reference = std::nullopt,
+                        .segment = std::nullopt,
+                        .source_selection = std::nullopt,
                         .duration_ms = 180'125,
                         .fields = {{"Artist", "First"}, {"Title", "Song"}},
                     },
@@ -62,6 +68,17 @@ void list_documents_round_trip_transactionally() {
                         .source = persistence::ListSource::local,
                         .profile_id = std::nullopt,
                         .source_reference = raw_local_path,
+                        .logical_reference = std::string{"sheet.cue\0file:0\0track:0", 24U},
+                        .segment =
+                            persistence::ListItemSegment{
+                                .start_sample = 44'100,
+                                .end_sample = 88'200,
+                            },
+                        .source_selection =
+                            persistence::ListItemSourceSelection{
+                                .audio_stream_index = 0,
+                                .subsong_index = 3,
+                            },
                         .duration_ms = std::nullopt,
                         .fields = {{"Title", "Raw path"}},
                     },
@@ -79,9 +96,12 @@ void list_documents_round_trip_transactionally() {
 
     {
         auto opened = persistence::ListRepository::open(database_path);
+        if (!opened) {
+            std::cerr << opened.error().message << '\n';
+        }
         require(opened.has_value(), "list repository must create and migrate a new database");
         auto repository = std::move(*opened);
-        require(repository.schema_version() == 3U, "state repository schema must be explicit");
+        require(repository.schema_version() == 14U, "state repository schema must be explicit");
         require(repository.replace_all(expected).has_value(),
                 "valid list documents must commit in one transaction");
         require(repository.load_all() == expected,
@@ -144,9 +164,627 @@ void list_documents_round_trip_transactionally() {
     cleanup();
 }
 
+template <typename Action>
+const Action& require_action(const trackknife::metadata::MetadataTransformationChain& chain,
+                             const std::size_t index, const std::string_view message) {
+    require(index < chain.actions.size(), message);
+    const auto* action = std::get_if<Action>(&chain.actions[index]);
+    require(action != nullptr, message);
+    return *action;
+}
+
+void metadata_transformation_chains_round_trip_transactionally() {
+    namespace core = trackknife::core;
+    namespace metadata = trackknife::metadata;
+    namespace persistence = trackknife::persistence;
+    const auto database_path =
+        std::filesystem::temp_directory_path() /
+        ("trackknife-transformation-chains-" + core::StableId::random().to_string() + ".sqlite3");
+    const auto cleanup = [&database_path] {
+        std::error_code ignored;
+        std::filesystem::remove(database_path, ignored);
+        std::filesystem::remove(database_path.string() + "-wal", ignored);
+        std::filesystem::remove(database_path.string() + "-shm", ignored);
+    };
+    cleanup();
+
+    const auto chain_id = core::StableId::random();
+    const persistence::SavedMetadataTransformationChain expected{
+        .id = chain_id,
+        .chain =
+            metadata::MetadataTransformationChain{
+                .schema_version = 1U,
+                .name = "Exact cleanup",
+                .actions =
+                    {
+                        metadata::MetadataSetValuesAction{.target_field = "Artist",
+                                                          .values = {"one", "", "one"}},
+                        metadata::MetadataAddValuesAction{.target_field = "Artist",
+                                                          .values = {"tail", ""}},
+                        metadata::MetadataRemoveFieldAction{.target_field = "Comment"},
+                        metadata::MetadataTransformValuesAction{
+                            .target_field = "Title",
+                            .transform = metadata::MetadataValueTransformKind::trim_ascii},
+                        metadata::MetadataTransformValuesAction{
+                            .target_field = "Album",
+                            .transform = metadata::MetadataValueTransformKind::lowercase},
+                        metadata::MetadataTransformValuesAction{
+                            .target_field = "Genre",
+                            .transform = metadata::MetadataValueTransformKind::uppercase},
+                        metadata::MetadataTransformValuesAction{
+                            .target_field = "Subtitle",
+                            .transform = metadata::MetadataValueTransformKind::capitalize_first},
+                        metadata::MetadataCopyFieldAction{.target_field = "Credits",
+                                                          .source_field = "Artist"},
+                        metadata::MetadataSplitValuesAction{.target_field = "Tags",
+                                                            .separator = "::"},
+                        metadata::MetadataJoinValuesAction{.target_field = "Tags", .separator = ""},
+                        metadata::MetadataFormatValueAction{
+                            .target_field = "Sort title", .dialect = {}, .source = "%artist%"},
+                        metadata::MetadataRemoveMatchingValuesAction{.target_field = "Artist",
+                                                                     .match = "Unknown"},
+                        metadata::MetadataReplaceMatchingValuesAction{
+                            .target_field = "Genre",
+                            .match = "Rock",
+                            .replacement_values = {"Alternative", "Indie"}},
+                        metadata::MetadataNumberSelectedItemsAction{
+                            .target_field = "Track Number", .start = 7U, .padding = 2U},
+                    },
+            },
+        .automatic = true,
+    };
+
+    {
+        auto opened = persistence::ListRepository::open(database_path);
+        require(opened.has_value(), "transformation repository must open");
+        auto repository = std::move(*opened);
+        require(repository.upsert_metadata_transformation_chain(expected).has_value(),
+                "a validated transformation chain must persist atomically");
+        const auto loaded = repository.load_metadata_transformation_chains();
+        require(loaded.has_value() && loaded->size() == 1U && loaded->front().id == chain_id &&
+                    loaded->front().chain.schema_version == 1U &&
+                    loaded->front().chain.name == expected.chain.name &&
+                    loaded->front().automatic &&
+                    loaded->front().chain.actions.size() == expected.chain.actions.size(),
+                "saved transformation identity, schema, automatic policy, name, and action count "
+                "must round trip");
+        const auto& chain = loaded->front().chain;
+        require(
+            require_action<metadata::MetadataSetValuesAction>(chain, 0U, "set action") ==
+                    require_action<metadata::MetadataSetValuesAction>(expected.chain, 0U,
+                                                                      "expected set action") &&
+                require_action<metadata::MetadataAddValuesAction>(chain, 1U, "add action") ==
+                    require_action<metadata::MetadataAddValuesAction>(expected.chain, 1U,
+                                                                      "expected add action") &&
+                require_action<metadata::MetadataRemoveFieldAction>(chain, 2U, "remove action") ==
+                    require_action<metadata::MetadataRemoveFieldAction>(expected.chain, 2U,
+                                                                        "expected remove action") &&
+                require_action<metadata::MetadataTransformValuesAction>(chain, 3U, "trim action") ==
+                    require_action<metadata::MetadataTransformValuesAction>(
+                        expected.chain, 3U, "expected trim action") &&
+                require_action<metadata::MetadataTransformValuesAction>(chain, 4U,
+                                                                        "lower action") ==
+                    require_action<metadata::MetadataTransformValuesAction>(
+                        expected.chain, 4U, "expected lower action") &&
+                require_action<metadata::MetadataTransformValuesAction>(chain, 5U,
+                                                                        "upper action") ==
+                    require_action<metadata::MetadataTransformValuesAction>(
+                        expected.chain, 5U, "expected upper action") &&
+                require_action<metadata::MetadataTransformValuesAction>(chain, 6U,
+                                                                        "capitalize action") ==
+                    require_action<metadata::MetadataTransformValuesAction>(
+                        expected.chain, 6U, "expected capitalize action") &&
+                require_action<metadata::MetadataCopyFieldAction>(chain, 7U, "copy action") ==
+                    require_action<metadata::MetadataCopyFieldAction>(expected.chain, 7U,
+                                                                      "expected copy action") &&
+                require_action<metadata::MetadataSplitValuesAction>(chain, 8U, "split action") ==
+                    require_action<metadata::MetadataSplitValuesAction>(expected.chain, 8U,
+                                                                        "expected split action") &&
+                require_action<metadata::MetadataJoinValuesAction>(chain, 9U, "join action") ==
+                    require_action<metadata::MetadataJoinValuesAction>(expected.chain, 9U,
+                                                                       "expected join action") &&
+                require_action<metadata::MetadataFormatValueAction>(chain, 10U, "format action") ==
+                    require_action<metadata::MetadataFormatValueAction>(expected.chain, 10U,
+                                                                        "expected format action") &&
+                require_action<metadata::MetadataRemoveMatchingValuesAction>(
+                    chain, 11U, "remove matching action") ==
+                    require_action<metadata::MetadataRemoveMatchingValuesAction>(
+                        expected.chain, 11U, "expected remove matching action") &&
+                require_action<metadata::MetadataReplaceMatchingValuesAction>(
+                    chain, 12U, "replace matching action") ==
+                    require_action<metadata::MetadataReplaceMatchingValuesAction>(
+                        expected.chain, 12U, "expected replace matching action") &&
+                require_action<metadata::MetadataNumberSelectedItemsAction>(chain, 13U,
+                                                                            "number action") ==
+                    require_action<metadata::MetadataNumberSelectedItemsAction>(
+                        expected.chain, 13U, "expected number action"),
+            "explicit action kinds and exact ordered payloads must round trip");
+
+        auto conflicting = expected;
+        conflicting.id = core::StableId::random();
+        const auto conflict = repository.upsert_metadata_transformation_chain(conflicting);
+        require(!conflict && conflict.error().code == core::ErrorCode::conflict &&
+                    repository.load_metadata_transformation_chains()->size() == 1U,
+                "an exact duplicate saved name must preserve the preceding transaction");
+
+        auto updated = expected;
+        updated.chain.name = "Exact cleanup v2";
+        updated.chain.actions = {
+            metadata::MetadataJoinValuesAction{.target_field = "Artist", .separator = "; "}};
+        require(repository.upsert_metadata_transformation_chain(updated).has_value(),
+                "upserting one stable identity must replace its chain atomically");
+    }
+    {
+        auto reopened = persistence::ListRepository::open(database_path);
+        require(reopened.has_value(), "transformation repository must reopen");
+        auto loaded = reopened->load_metadata_transformation_chains();
+        require(loaded.has_value() && loaded->size() == 1U &&
+                    loaded->front().chain.name == "Exact cleanup v2" && loaded->front().automatic &&
+                    require_action<metadata::MetadataJoinValuesAction>(loaded->front().chain, 0U,
+                                                                       "reopened join action")
+                            .separator == "; ",
+                "updated saved transformations must survive restart");
+        require(reopened->remove_metadata_transformation_chain(chain_id).has_value() &&
+                    reopened->load_metadata_transformation_chains()->empty(),
+                "deleting a saved chain must cascade through its ordered payload");
+        const auto missing = reopened->remove_metadata_transformation_chain(chain_id);
+        require(!missing && missing.error().code == core::ErrorCode::not_found,
+                "deleting an absent saved chain must report not-found");
+    }
+    cleanup();
+}
+
+void output_layout_and_destination_profiles_round_trip_transactionally() {
+    namespace core = trackknife::core;
+    namespace operations = trackknife::operations;
+    namespace persistence = trackknife::persistence;
+    const auto database_path =
+        std::filesystem::temp_directory_path() /
+        ("trackknife-output-profiles-" + core::StableId::random().to_string() + ".sqlite3");
+    const auto cleanup = [&database_path] {
+        std::error_code ignored;
+        std::filesystem::remove(database_path, ignored);
+        std::filesystem::remove(database_path.string() + "-wal", ignored);
+        std::filesystem::remove(database_path.string() + "-shm", ignored);
+    };
+    cleanup();
+
+    const auto layout_id = core::StableId::random();
+    const auto destination_id = core::StableId::random();
+    const persistence::SavedOutputLayoutProfile expected_layout{
+        .id = layout_id,
+        .profile =
+            operations::OutputLayoutProfile{
+                .schema_version = 1U,
+                .name = "Album folders",
+                .dialect = {},
+                .relative_directory_expression = "%album artist%/%album%",
+                .basename_expression = "$num(%tracknumber%,2) - %title%",
+                .sanitization_policy = {.name = "linux", .version = 1U},
+            },
+    };
+    const std::string raw_destination{"/srv/music/library-\xff", 20U};
+    const persistence::SavedDestinationProfile expected_destination{
+        .id = destination_id,
+        .profile =
+            operations::DestinationProfile{
+                .schema_version = 1U,
+                .name = "Main library",
+                .root_raw_path = raw_destination,
+                .containment_policy = {.name = "lexical-beneath-root", .version = 1U},
+            },
+    };
+
+    {
+        auto opened = persistence::ListRepository::open(database_path);
+        require(opened.has_value(), "output-profile repository must open");
+        auto repository = std::move(*opened);
+        require(repository.schema_version() == 14U,
+                "output profiles must survive the explicit schema-14 migration");
+        require(repository.upsert_output_layout_profile(expected_layout).has_value() &&
+                    repository.upsert_destination_profile(expected_destination).has_value(),
+                "validated output and destination profiles must persist atomically");
+        require(repository.load_output_layout_profiles() == std::vector{expected_layout} &&
+                    repository.load_destination_profiles() == std::vector{expected_destination},
+                "versioned expressions, policies, and raw destination bytes must round trip");
+
+        auto conflicting_layout = expected_layout;
+        conflicting_layout.id = core::StableId::random();
+        const auto layout_conflict = repository.upsert_output_layout_profile(conflicting_layout);
+        require(!layout_conflict && layout_conflict.error().code == core::ErrorCode::conflict &&
+                    repository.load_output_layout_profiles() == std::vector{expected_layout},
+                "duplicate output-layout names must preserve the preceding transaction");
+
+        auto conflicting_destination = expected_destination;
+        conflicting_destination.id = core::StableId::random();
+        const auto destination_conflict =
+            repository.upsert_destination_profile(conflicting_destination);
+        require(!destination_conflict &&
+                    destination_conflict.error().code == core::ErrorCode::conflict &&
+                    repository.load_destination_profiles() == std::vector{expected_destination},
+                "duplicate destination names must preserve the preceding transaction");
+
+        auto invalid_destination = expected_destination;
+        invalid_destination.profile.root_raw_path = "relative/library";
+        const auto rejected = repository.upsert_destination_profile(invalid_destination);
+        require(!rejected && rejected.error().code == core::ErrorCode::invalid_argument &&
+                    repository.load_destination_profiles() == std::vector{expected_destination},
+                "invalid destination roots must be rejected without changing persisted state");
+
+        auto updated_layout = expected_layout;
+        updated_layout.profile.name = "Disc folders";
+        updated_layout.profile.relative_directory_expression =
+            "%album artist%/%album%/Disc %discnumber%";
+        updated_layout.profile.basename_expression = "%tracknumber%. %title%";
+        auto updated_destination = expected_destination;
+        updated_destination.profile.name = "Archive";
+        updated_destination.profile.root_raw_path = "/mnt/archive";
+        require(repository.upsert_output_layout_profile(updated_layout).has_value() &&
+                    repository.upsert_destination_profile(updated_destination).has_value(),
+                "upserting stable profile identities must replace their payloads");
+    }
+    {
+        auto reopened = persistence::ListRepository::open(database_path);
+        require(reopened.has_value(), "output-profile repository must reopen");
+        auto layouts = reopened->load_output_layout_profiles();
+        auto destinations = reopened->load_destination_profiles();
+        require(layouts.has_value() && layouts->size() == 1U && layouts->front().id == layout_id &&
+                    layouts->front().profile.name == "Disc folders" &&
+                    layouts->front().profile.relative_directory_expression ==
+                        "%album artist%/%album%/Disc %discnumber%" &&
+                    destinations.has_value() && destinations->size() == 1U &&
+                    destinations->front().id == destination_id &&
+                    destinations->front().profile.name == "Archive" &&
+                    destinations->front().profile.root_raw_path == "/mnt/archive",
+                "updated output and destination profiles must survive restart");
+        require(reopened->remove_output_layout_profile(layout_id).has_value() &&
+                    reopened->remove_destination_profile(destination_id).has_value() &&
+                    reopened->load_output_layout_profiles()->empty() &&
+                    reopened->load_destination_profiles()->empty(),
+                "profile deletion must remove exactly the selected stable identities");
+        const auto missing_layout = reopened->remove_output_layout_profile(layout_id);
+        const auto missing_destination = reopened->remove_destination_profile(destination_id);
+        require(!missing_layout && missing_layout.error().code == core::ErrorCode::not_found &&
+                    !missing_destination &&
+                    missing_destination.error().code == core::ErrorCode::not_found,
+                "deleting absent output profiles must report not-found");
+    }
+    cleanup();
+}
+
+void committed_metadata_refreshes_every_occurrence_idempotently() {
+    namespace core = trackknife::core;
+    namespace metadata = trackknife::metadata;
+    namespace persistence = trackknife::persistence;
+    const auto database_path =
+        std::filesystem::temp_directory_path() /
+        ("trackknife-metadata-refresh-" + core::StableId::random().to_string() + ".sqlite3");
+    const auto cleanup = [&database_path] {
+        std::error_code ignored;
+        std::filesystem::remove(database_path, ignored);
+        std::filesystem::remove(database_path.string() + "-wal", ignored);
+        std::filesystem::remove(database_path.string() + "-shm", ignored);
+    };
+    cleanup();
+
+    const std::string source{"/music/invalid-\xff.flac", 21U};
+    const std::string other{"/music/other.flac"};
+    const auto embedded = metadata::FieldProvenance::embedded;
+    const auto annotation = metadata::FieldProvenance::annotation;
+    const auto sidecar = metadata::FieldProvenance::sidecar;
+    const auto segment = metadata::FieldProvenance::segment;
+    const core::LocalSourceRevision previous_revision{
+        .device = 10U,
+        .inode = 20U,
+        .size = 30U,
+        .modification_time_seconds = -40,
+        .modification_time_nanoseconds = 50,
+    };
+    const std::vector<persistence::ListDocument> stale_documents{
+        persistence::ListDocument{
+            .id = core::StableId::random(),
+            .kind = persistence::ListKind::scratch,
+            .name = "First",
+            .pinned = false,
+            .dirty = false,
+            .items =
+                {
+                    persistence::ListItem{
+                        .source = persistence::ListSource::local,
+                        .profile_id = std::nullopt,
+                        .source_reference = source,
+                        .logical_reference = std::nullopt,
+                        .segment = std::nullopt,
+                        .source_selection = std::nullopt,
+                        .duration_ms = 1'000,
+                        .source_revision = previous_revision,
+                        .fields =
+                            {
+                                {.name = "title",
+                                 .value = "Old embedded",
+                                 .native_name = "TITLE",
+                                 .provenance = embedded},
+                                {.name = "comment",
+                                 .value = "Private note",
+                                 .native_name = "COMMENT",
+                                 .provenance = annotation},
+                            },
+                    },
+                    persistence::ListItem{
+                        .source = persistence::ListSource::local,
+                        .profile_id = std::nullopt,
+                        .source_reference = source,
+                        .logical_reference = std::string{"cue-v1\0sheet\0track-1", 20U},
+                        .segment =
+                            persistence::ListItemSegment{.start_sample = 0, .end_sample = 44'100},
+                        .source_selection = std::nullopt,
+                        .duration_ms = 1'000,
+                        .source_revision = previous_revision,
+                        .fields =
+                            {
+                                {.name = "title",
+                                 .value = "Old embedded",
+                                 .native_name = "TITLE",
+                                 .provenance = embedded},
+                                {.name = "album",
+                                 .value = "Old album",
+                                 .native_name = "ALBUM",
+                                 .provenance = embedded},
+                                {.name = "title",
+                                 .value = "CUE title",
+                                 .native_name = "TITLE",
+                                 .provenance = sidecar},
+                                {.name = "tracknumber",
+                                 .value = "1",
+                                 .native_name = "TRACKNUMBER",
+                                 .provenance = segment},
+                            },
+                    },
+                    persistence::ListItem{
+                        .source = persistence::ListSource::local,
+                        .profile_id = std::nullopt,
+                        .source_reference = other,
+                        .logical_reference = std::nullopt,
+                        .segment = std::nullopt,
+                        .source_selection = std::nullopt,
+                        .duration_ms = std::nullopt,
+                        .source_revision = std::nullopt,
+                        .fields = {{.name = "title",
+                                    .value = "Other",
+                                    .native_name = "TITLE",
+                                    .provenance = embedded}},
+                    },
+                },
+        },
+        persistence::ListDocument{
+            .id = core::StableId::random(),
+            .kind = persistence::ListKind::saved,
+            .name = "Duplicate",
+            .pinned = true,
+            .dirty = false,
+            .items = {persistence::ListItem{
+                .source = persistence::ListSource::local,
+                .profile_id = std::nullopt,
+                .source_reference = source,
+                .logical_reference = std::nullopt,
+                .segment = std::nullopt,
+                .source_selection = std::nullopt,
+                .duration_ms = 1'000,
+                .source_revision = previous_revision,
+                .fields = {{.name = "title",
+                            .value = "Old embedded",
+                            .native_name = "TITLE",
+                            .provenance = embedded}},
+            }},
+        },
+    };
+    const core::LocalSourceRevision published_revision{
+        .device = 1U,
+        .inode = 2U,
+        .size = 3U,
+        .modification_time_seconds = -4,
+        .modification_time_nanoseconds = 5,
+    };
+    const auto operation_id = core::StableId::random();
+    const persistence::LocalMetadataRefresh refresh{
+        .operation_id = operation_id,
+        .source_reference = source,
+        .previous_revision = previous_revision,
+        .published_revision = published_revision,
+        .document =
+            metadata::MetadataDocument{
+                .fields =
+                    {
+                        metadata::MetadataField{
+                            .canonical_name = "title",
+                            .native_name = "TITLE",
+                            .values = {"New embedded", "Alternate title"},
+                            .qualifier =
+                                metadata::FieldQualifier{.language = "en", .description = "main"},
+                            .provenance = embedded,
+                        },
+                        metadata::MetadataField{
+                            .canonical_name = "album",
+                            .native_name = "ALBUM",
+                            .values = {"New album"},
+                            .qualifier = {},
+                            .provenance = embedded,
+                        },
+                    },
+                .unsupported_native_objects = {},
+            },
+    };
+
+    {
+        auto opened = persistence::ListRepository::open(database_path);
+        require(opened.has_value(), "metadata refresh repository must open");
+        auto repository = std::move(*opened);
+        require(repository.replace_all(stale_documents).has_value(),
+                "provenance-aware list snapshots must persist");
+        const auto applied = repository.refresh_local_metadata(refresh);
+        require(applied == persistence::LocalMetadataRefreshResult{.affected_occurrences = 3U,
+                                                                   .already_applied = false},
+                "one transaction must refresh every duplicate and logical occurrence");
+        auto loaded = repository.load_all();
+        require(loaded.has_value(), "refreshed list state must load");
+        const auto& whole_fields = (*loaded)[0].items[0].fields;
+        require(whole_fields.size() == 4U && whole_fields[0].value == "New embedded" &&
+                    whole_fields[1].value == "Alternate title" &&
+                    whole_fields[0].language == std::optional<std::string>{"en"} &&
+                    whole_fields[0].description == std::optional<std::string>{"main"} &&
+                    whole_fields.back().value == "Private note" &&
+                    whole_fields.back().provenance == annotation,
+                "source replacement must preserve qualifiers and non-source annotations");
+        const auto& cue_fields = (*loaded)[0].items[1].fields;
+        require(cue_fields.size() == 5U && cue_fields[0].value == "New embedded" &&
+                    cue_fields[2].value == "New album" && cue_fields[3].value == "CUE title" &&
+                    cue_fields[3].provenance == sidecar && cue_fields[4].value == "1" &&
+                    cue_fields[4].provenance == segment,
+                "CUE and segment overlays must survive an embedded source refresh");
+        require((*loaded)[0].items[2] == stale_documents[0].items[2],
+                "unrelated local sources must remain byte-for-byte unchanged");
+
+        require(repository.replace_all(stale_documents).has_value(),
+                "an already queued stale workspace save may still arrive");
+        const auto replayed = repository.refresh_local_metadata(refresh);
+        require(replayed == persistence::LocalMetadataRefreshResult{.affected_occurrences = 3U,
+                                                                    .already_applied = true},
+                "recovery replay must be an idempotent no-op");
+        loaded = repository.load_all();
+        require(loaded.has_value() && (*loaded)[0].items[0].fields[0].value == "New embedded" &&
+                    (*loaded)[0].items[1].fields[3].value == "CUE title" &&
+                    (*loaded)[0].items[0].source_revision == published_revision,
+                "the durable source cache must dominate a stale debounced snapshot save");
+
+        auto mismatched = refresh;
+        mismatched.published_revision.size += 1U;
+        const auto rejected = repository.refresh_local_metadata(mismatched);
+        require(!rejected && rejected.error().code == core::ErrorCode::conflict,
+                "one operation identity cannot be replayed with another revision");
+
+        const core::LocalSourceRevision external_revision{
+            .device = 100U,
+            .inode = 200U,
+            .size = 300U,
+            .modification_time_seconds = 400,
+            .modification_time_nanoseconds = 500,
+        };
+        auto externally_refreshed = stale_documents;
+        for (auto& document : externally_refreshed) {
+            for (auto& item : document.items) {
+                if (item.source_reference != source) {
+                    continue;
+                }
+                item.source_revision = external_revision;
+                for (auto& snapshot_field : item.fields) {
+                    if (snapshot_field.provenance == embedded && snapshot_field.name == "title") {
+                        snapshot_field.value = "External title";
+                    }
+                }
+            }
+        }
+        require(repository.replace_all(externally_refreshed).has_value(),
+                "a freshly observed external source snapshot must persist");
+        loaded = repository.load_all();
+        require(loaded.has_value() && (*loaded)[0].items[0].fields[0].value == "External title" &&
+                    (*loaded)[0].items[0].source_revision == external_revision,
+                "a different freshly observed revision must not be shadowed by an old cache");
+
+        auto latest = refresh;
+        latest.operation_id = core::StableId::random();
+        latest.previous_revision = external_revision;
+        latest.published_revision = core::LocalSourceRevision{
+            .device = 101U,
+            .inode = 201U,
+            .size = 301U,
+            .modification_time_seconds = 401,
+            .modification_time_nanoseconds = 501,
+        };
+        latest.document.fields[0].values = {"Latest title"};
+        require(repository.refresh_local_metadata(latest) ==
+                    persistence::LocalMetadataRefreshResult{.affected_occurrences = 3U,
+                                                            .already_applied = false},
+                "a later verified commit must replace the prior source cache");
+    }
+    {
+        auto reopened = persistence::ListRepository::open(database_path);
+        require(reopened.has_value(), "refreshed repository must reopen");
+        auto loaded = reopened->load_all();
+        require(loaded.has_value() && (*loaded)[0].items[0].fields[0].value == "Latest title" &&
+                    (*loaded)[0].items[1].fields[2].value == "CUE title",
+                "source cache and layered logical snapshots must survive restart");
+    }
+    cleanup();
+}
+
+void legacy_logical_snapshots_block_refresh() {
+    namespace core = trackknife::core;
+    namespace metadata = trackknife::metadata;
+    namespace persistence = trackknife::persistence;
+    const auto database_path =
+        std::filesystem::temp_directory_path() /
+        ("trackknife-legacy-refresh-" + core::StableId::random().to_string() + ".sqlite3");
+    const std::string source{"/music/legacy.flac"};
+    auto opened = persistence::ListRepository::open(database_path);
+    require(opened.has_value(), "legacy refresh repository must open");
+    auto repository = std::move(*opened);
+    const std::vector documents{persistence::ListDocument{
+        .id = core::StableId::random(),
+        .kind = persistence::ListKind::scratch,
+        .name = "Legacy",
+        .pinned = false,
+        .dirty = false,
+        .items = {persistence::ListItem{
+            .source = persistence::ListSource::local,
+            .profile_id = std::nullopt,
+            .source_reference = source,
+            .logical_reference = std::string{"cue-v1\0legacy", 13U},
+            .segment = persistence::ListItemSegment{.start_sample = 0, .end_sample = 1},
+            .source_selection = std::nullopt,
+            .duration_ms = std::nullopt,
+            .source_revision = std::nullopt,
+            .fields = {{"title", "Flattened CUE title"}},
+        }},
+    }};
+    require(repository.replace_all(documents).has_value(), "legacy snapshot must persist");
+    const auto rejected = repository.refresh_local_metadata(persistence::LocalMetadataRefresh{
+        .operation_id = core::StableId::random(),
+        .source_reference = source,
+        .previous_revision = core::LocalSourceRevision{.device = 6,
+                                                       .inode = 7,
+                                                       .size = 8,
+                                                       .modification_time_seconds = 9,
+                                                       .modification_time_nanoseconds = 10},
+        .published_revision = core::LocalSourceRevision{.device = 1,
+                                                        .inode = 2,
+                                                        .size = 3,
+                                                        .modification_time_seconds = 4,
+                                                        .modification_time_nanoseconds = 5},
+        .document =
+            metadata::MetadataDocument{.fields = {metadata::MetadataField{
+                                           .canonical_name = "title",
+                                           .native_name = "TITLE",
+                                           .values = {"New"},
+                                           .qualifier = {},
+                                           .provenance = metadata::FieldProvenance::embedded}},
+                                       .unsupported_native_objects = {}},
+    });
+    require(!rejected && rejected.error().code == core::ErrorCode::conflict &&
+                repository.load_all() == documents,
+            "flattened logical snapshots must block instead of losing their overlay");
+    std::error_code ignored;
+    std::filesystem::remove(database_path, ignored);
+    std::filesystem::remove(database_path.string() + "-wal", ignored);
+    std::filesystem::remove(database_path.string() + "-shm", ignored);
+}
+
 } // namespace
 
 int main() {
     list_documents_round_trip_transactionally();
+    metadata_transformation_chains_round_trip_transactionally();
+    output_layout_and_destination_profiles_round_trip_transactionally();
+    committed_metadata_refreshes_every_occurrence_idempotently();
+    legacy_logical_snapshots_block_refresh();
     return EXIT_SUCCESS;
 }

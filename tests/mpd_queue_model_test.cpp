@@ -108,11 +108,22 @@ void MpdQueueModelTest::projectsOrderedMetadataAndQueueIdentity() {
 
     QCOMPARE(model.rowCount(), 1);
     QCOMPARE(model.columnCount(), MpdQueueModel::column_count);
-    QCOMPARE(model.data(model.index(0, 0)).toString(), QStringLiteral("Slayer, Guest"));
-    QCOMPARE(model.data(model.index(0, 1)).toString(), QStringLiteral("Killing Fields"));
-    QCOMPARE(model.data(model.index(0, 5)).toString(), QStringLiteral("3:40"));
+    for (int column = 0; column < ui::track_column_count; ++column) {
+        QCOMPARE(
+            model.headerData(column, Qt::Horizontal, Qt::DisplayRole).toString(),
+            QString::fromLatin1(ui::track_column_headers.at(static_cast<std::size_t>(column))));
+    }
+    QVERIFY(model.data(model.index(0, ui::track_artwork_column)).toString().isEmpty());
+    QCOMPARE(model.data(model.index(0, ui::track_artist_column)).toString(),
+             QStringLiteral("Slayer, Guest"));
+    QCOMPARE(model.data(model.index(0, ui::track_number_column)).toString(), QStringLiteral("1"));
+    QCOMPARE(model.data(model.index(0, ui::track_title_column)).toString(),
+             QStringLiteral("Killing Fields"));
+    QCOMPARE(model.data(model.index(0, ui::track_length_column)).toString(),
+             QStringLiteral("3:40"));
     const auto duration_alignment =
-        model.data(model.index(0, 5), Qt::TextAlignmentRole).value<Qt::Alignment>();
+        model.data(model.index(0, ui::track_length_column), Qt::TextAlignmentRole)
+            .value<Qt::Alignment>();
     QVERIFY(duration_alignment.testFlag(Qt::AlignRight));
     QVERIFY(duration_alignment.testFlag(Qt::AlignVCenter));
     QCOMPARE(model.data(model.index(0, 0), MpdQueueModel::QueueIdRole).toUInt(), 73U);
@@ -296,6 +307,8 @@ void MpdQueueModelTest::exposesOutputCountToQml() {
         controller.metaObject()->indexOfMethod("moveQueueItems(QVariantList,int)");
     const auto priority_method =
         controller.metaObject()->indexOfMethod("setQueuePriority(QVariantList,int)");
+    const auto positioned_add_method =
+        controller.metaObject()->indexOfMethod("addUrisAt(QStringList,int)");
     const auto playlist_remove_method =
         controller.metaObject()->indexOfMethod("removeStoredPlaylistItems(QString,QVariantList)");
     const auto playlist_move_method =
@@ -306,6 +319,7 @@ void MpdQueueModelTest::exposesOutputCountToQml() {
     QVERIFY(move_method >= 0);
     QVERIFY(move_batch_method >= 0);
     QVERIFY(priority_method >= 0);
+    QVERIFY(positioned_add_method >= 0);
     QVERIFY(playlist_remove_method >= 0);
     QVERIFY(playlist_move_method >= 0);
     QCOMPARE(controller.metaObject()->property(property_index).read(&controller).toInt(), 0);

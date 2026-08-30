@@ -1,33 +1,27 @@
 # Trackknife
 
-This repository builds two fast, modern Qt 6 applications that share internal
-libraries and one visual language (ADR-0025):
-
-- **Trackknife** — a keyboard-fluent tabbed client for MPD and Melody with
-  excellent live-queue and working-list management. The basic client is
-  finished and live-validated against stock MPD 0.24.14 and Melody 0.23.5.
-- **Trackbench** — a foobar2000-inspired workstation for local files:
-  playback with album grouping, tagging, MusicBrainz support, ReplayGain,
-  conversion, and resampling. No library database for now; it grows from
-  direct filesystem navigation.
-
-MPD or Melody owns the server library; Trackknife is purely its client.
-Trackbench speaks no MPD protocol and publishes prepared files by plain
-filesystem access, even when the destination is an MPD music root.
+This repository builds **Trackbench**, a fast modern Qt 6 workspace with
+separate MPD/Melody and local-file authorities (ADR-0058). MPD Queue and Local
+Queue tabs share one visual language and complete track-view layout engine;
+the active tab switches the sidebar, transport, and MPD/PipeWire output
+selector. Local tagging and filesystem operations remain unavailable for MPD
+rows. The standalone **Trackknife** MPD client remains as a compatibility shell
+during migration.
 
 The buildable foundation, `tkfmt-1` engine, asynchronous MPD backbone, M3 Qt
-workspace, and the local FFmpeg/PipeWire engine (sample-accurate decode,
-bounded playback buffering, direct PipeWire output) are implemented. The
-active M4 milestone splits the codebase into the two applications and stands
-up Trackbench's playback workspace. Start with
+workspace, and Trackbench's local FFmpeg/PipeWire playback workspace
+(sample-accurate logical tracks, bounded playback buffering, direct PipeWire
+output) are implemented. M4 is complete; active M5 builds the fast metadata and
+safe file-operation workspace. Start with
 [`MILESTONES.md`](MILESTONES.md), then [`docs/README.md`](docs/README.md).
 
 ## Build
 
 Requirements are CMake 3.28+, Ninja, a C++23 compiler, Qt 6.4+ with Gui,
 Widgets, Concurrent, and Test modules, utf8proc 2.9+, libmpdclient 2.22+,
-FFmpeg libavformat 60+/libavcodec 60+/libavutil 58+/libswresample 4+, plus
-PipeWire 0.3.50+, and nlohmann/json 3.11+ for the expression-corpus runner.
+FFmpeg libavformat 60+/libavcodec 60+/libavutil 58+/libswresample 4+,
+libopenmpt 0.7+, TagLib 2.0+, PipeWire 0.3.50+, and nlohmann/json 3.11+ for the
+expression-corpus runner.
 
 ```sh
 cmake --preset dev
@@ -36,7 +30,7 @@ ctest --preset dev
 ```
 
 The MPD client executable is a pure Qt Widgets workspace with a tabbed left
-Library pane for server navigation and direct local folders,
+Library pane for server navigation and playlists,
 live/scratch/search-result tabs, optional dock panels, a compact
 two-row top player with current-track metadata and right-aligned search, an
 album-grouped queue, and status-bar queue-summary/mode/output controls. Typing
@@ -57,8 +51,7 @@ desktop secret-service storage is implemented:
 ./build/dev/src/app/trackknife
 ```
 
-Trackbench is a separate executable with its own tabbed local lists, folder
-library dock, and local transport:
+Trackbench is the primary executable with MPD and local queue contexts:
 
 ```sh
 ./build/dev/src/bench/trackbench [files or folders…]

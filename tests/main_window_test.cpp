@@ -9,6 +9,7 @@
 #include "ui/server_library_tree_model.hpp"
 #include "uicommon/queue_item_delegate.hpp"
 #include "uicommon/queue_table_view.hpp"
+#include "uicommon/track_row_roles.hpp"
 
 #include <QAction>
 #include <QBuffer>
@@ -686,6 +687,9 @@ void MainWindowTest::editsAndDuplicatesPersistentWorkingLists() {
             .source = persistence::ListSource::mpd,
             .profile_id = profile_id,
             .source_reference = title + ".flac",
+            .logical_reference = std::nullopt,
+            .segment = std::nullopt,
+            .source_selection = std::nullopt,
             .duration_ms = 60'000,
             .fields = {{.name = "Artist", .value = "Artist"},
                        {.name = "Title", .value = std::move(title)}},
@@ -731,7 +735,8 @@ void MainWindowTest::editsAndDuplicatesPersistentWorkingLists() {
                                                 QItemSelectionModel::ClearAndSelect |
                                                     QItemSelectionModel::Rows);
         move_down->trigger();
-        QCOMPARE(view->model()->index(1, 1).data().toString(), QStringLiteral("Duplicate"));
+        QCOMPARE(view->model()->index(1, track_title_column).data().toString(),
+                 QStringLiteral("Duplicate"));
         view->selectionModel()->setCurrentIndex(view->model()->index(2, 0),
                                                 QItemSelectionModel::ClearAndSelect |
                                                     QItemSelectionModel::Rows);
@@ -834,7 +839,7 @@ void MainWindowTest::persistsTrackViewPresetsTransactionally() {
         auto* scratch = window.findChild<QTableView*>(QStringLiteral("track-view-library"));
         QVERIFY(queue != nullptr);
         QVERIFY(scratch != nullptr);
-        queue->setColumnWidth(5, 113);
+        queue->setColumnWidth(track_length_column, 113);
         scratch->setColumnWidth(0, 247);
         QVERIFY(window.close());
     }
@@ -844,7 +849,7 @@ void MainWindowTest::persistsTrackViewPresetsTransactionally() {
     auto* scratch = restored.findChild<QTableView*>(QStringLiteral("track-view-library"));
     QVERIFY(queue != nullptr);
     QVERIFY(scratch != nullptr);
-    QCOMPARE(queue->columnWidth(5), 113);
+    QCOMPARE(queue->columnWidth(track_length_column), 113);
     QCOMPARE(scratch->columnWidth(0), 247);
 }
 
@@ -861,17 +866,16 @@ void MainWindowTest::usesGroupedCantataStyleQueue() {
     QVERIFY(!queue->dragDropOverwriteMode());
     QVERIFY(queue->model()->supportedDropActions().testFlag(Qt::MoveAction));
     QVERIFY(queue->horizontalHeader()->isHidden());
-    QVERIFY(!queue->isColumnHidden(0));
-    QVERIFY(queue->isColumnHidden(2));
-    QVERIFY(queue->isColumnHidden(3));
-    QVERIFY(!queue->isColumnHidden(1));
-    QVERIFY(queue->isColumnHidden(4));
-    QVERIFY(!queue->isColumnHidden(5));
-    QCOMPARE(queue->horizontalHeader()->logicalIndex(0), 0);
-    QCOMPARE(queue->horizontalHeader()->logicalIndex(1), 1);
-    QCOMPARE(queue->horizontalHeader()->logicalIndex(2), 2);
-    QCOMPARE(queue->horizontalHeader()->logicalIndex(3), 4);
-    QCOMPARE(queue->horizontalHeader()->logicalIndex(4), 5);
+    QVERIFY(!queue->isColumnHidden(track_artwork_column));
+    QVERIFY(!queue->isColumnHidden(track_artist_column));
+    QVERIFY(queue->isColumnHidden(track_number_column));
+    QVERIFY(!queue->isColumnHidden(track_title_column));
+    QVERIFY(queue->isColumnHidden(track_album_column));
+    QVERIFY(queue->isColumnHidden(track_date_column));
+    QVERIFY(!queue->isColumnHidden(track_length_column));
+    for (int visual = 0; visual < track_column_count; ++visual) {
+        QCOMPARE(queue->horizontalHeader()->logicalIndex(visual), visual);
+    }
     auto* list_actions = window.findChild<QToolButton*>(QStringLiteral("list-actions-button"));
     QVERIFY(list_actions != nullptr);
     QCOMPARE(list_actions->parentWidget(), window.statusBar());
@@ -894,7 +898,7 @@ void MainWindowTest::mapsDropPositionsToInsertionRows() {
     view.show();
 
     const auto row_center = [&view, &model](const int row) {
-        return view.visualRect(model.index(row, 1)).center();
+        return view.visualRect(model.index(row, track_title_column)).center();
     };
     // Above/on a row inserts before it; below it inserts after it.
     QCOMPARE(view.dropInsertionRow(row_center(1), QueueTableView::AboveItem), 1);
@@ -902,7 +906,8 @@ void MainWindowTest::mapsDropPositionsToInsertionRows() {
     QCOMPARE(view.dropInsertionRow(row_center(1), QueueTableView::BelowItem), 2);
     QCOMPARE(view.dropInsertionRow(row_center(2), QueueTableView::BelowItem), 3);
     // Empty space below the content appends regardless of the indicator.
-    const QPoint below_content{10, view.visualRect(model.index(2, 1)).bottom() + 50};
+    const QPoint below_content{10,
+                               view.visualRect(model.index(2, track_title_column)).bottom() + 50};
     QCOMPARE(view.dropInsertionRow(below_content, QueueTableView::OnViewport), 3);
 }
 
@@ -918,9 +923,9 @@ void MainWindowTest::rendersNonzeroQueuePriority() {
     view.setModel(&model);
     view.setProperty("trackknife-hover-row", -1);
     QueueItemDelegate delegate{&view};
-    QCOMPARE(delegate.priorityLabel(model.index(0, 1)), QStringLiteral("192"));
-    QVERIFY(delegate.priorityLabel(model.index(1, 1)).isEmpty());
-    QVERIFY(delegate.priorityLabel(model.index(2, 1)).isEmpty());
+    QCOMPARE(delegate.priorityLabel(model.index(0, track_title_column)), QStringLiteral("192"));
+    QVERIFY(delegate.priorityLabel(model.index(1, track_title_column)).isEmpty());
+    QVERIFY(delegate.priorityLabel(model.index(2, track_title_column)).isEmpty());
 
     const auto paint_title_cell = [&view, &delegate](const QModelIndex& index) {
         QImage canvas{400, 60, QImage::Format_ARGB32_Premultiplied};
@@ -949,8 +954,8 @@ void MainWindowTest::rendersNonzeroQueuePriority() {
     // The prioritized row paints a badge at the right edge of its title cell's
     // track-row area (below the 30px album header it begins); rows without a
     // nonzero priority leave that band untouched.
-    QVERIFY(badge_band_has_paint(paint_title_cell(model.index(0, 1)), 31, 51));
-    QVERIFY(!badge_band_has_paint(paint_title_cell(model.index(2, 1)), 2, 51));
+    QVERIFY(badge_band_has_paint(paint_title_cell(model.index(0, track_title_column)), 31, 51));
+    QVERIFY(!badge_band_has_paint(paint_title_cell(model.index(2, track_title_column)), 2, 51));
 }
 
 void MainWindowTest::albumHeaderSelectsAlbumTracks() {
@@ -978,6 +983,8 @@ void MainWindowTest::albumHeaderSelectsAlbumTracks() {
     QCOMPARE(selected.at(1).row(), 1);
 
     const auto second_album = model->index(2, 1);
+    QCOMPARE(queue->visualRect(second_album).height(),
+             queue->visualRect(model->index(1, 1)).height());
     const auto second_header = QPoint{queue->visualRect(second_album).center().x(),
                                       queue->visualRect(second_album).top() + 5};
     QTest::mouseClick(queue->viewport(), Qt::LeftButton, Qt::NoModifier, second_header);

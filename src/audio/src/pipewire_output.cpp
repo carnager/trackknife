@@ -2,21 +2,26 @@
 
 #include "trackknife/audio/pipewire_output.hpp"
 
+#include <pipewire/extensions/metadata.h>
 #include <pipewire/keys.h>
 #include <pipewire/pipewire.h>
 #include <spa/buffer/buffer.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/audio/raw.h>
 #include <spa/param/props.h>
+#include <spa/utils/json.h>
 #include <spa/utils/result.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
+#include <map>
 #include <span>
 #include <string>
 #include <thread>
@@ -24,6 +29,8 @@
 
 namespace trackknife::audio {
 namespace {
+
+constexpr std::size_t maximum_output_device_count = 256U;
 
 static_assert(std::atomic<PipeWireOutputState>::is_always_lock_free);
 static_assert(std::atomic_bool::is_always_lock_free);
@@ -416,33 +423,56 @@ core::Result<void> PipeWireOutput::set_volume(const double volume) {
 
 namespace {
 
+[[nodiscard]] std::optional<PipeWireDevice> output_device(const char* type, const spa_dict* props) {
+    if (type == nullptr || props == nullptr || std::string_view{type} != PW_TYPE_INTERFACE_Node) {
+        return std::nullopt;
+    }
+    const auto* media_class = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS);
+    if (media_class == nullptr || (std::string_view{media_class} != "Audio/Sink" &&
+                                   std::string_view{media_class} != "Audio/Duplex")) {
+        return std::nullopt;
+    }
+    const auto* name = spa_dict_lookup(props, PW_KEY_NODE_NAME);
+    if (name == nullptr || *name == '\0') {
+        return std::nullopt;
+    }
+    const auto* description = spa_dict_lookup(props, PW_KEY_NODE_DESCRIPTION);
+    return PipeWireDevice{
+        .name = name,
+        .description = description != nullptr && *description != '\0' ? description : name,
+    };
+}
+
+[[nodiscard]] std::optional<std::string> default_sink_name(const char* value) {
+    if (value == nullptr) {
+        return std::nullopt;
+    }
+    std::array<char, 1'024> name{};
+    const auto parsed =
+        spa_json_str_object_find(value, std::strlen(value), "name", name.data(), name.size());
+    if (parsed <= 0 || name.front() == '\0') {
+        return std::nullopt;
+    }
+    return std::string{name.data()};
+}
+
 struct DeviceEnumeration {
     pw_thread_loop* loop{nullptr};
     std::vector<PipeWireDevice> devices;
     bool done{false};
+    bool limit_exceeded{false};
     int sync_sequence{0};
 
     static void on_global(void* data, std::uint32_t /*id*/, std::uint32_t /*permissions*/,
                           const char* type, std::uint32_t /*version*/, const spa_dict* props) {
         auto& state = *static_cast<DeviceEnumeration*>(data);
-        if (type == nullptr || props == nullptr ||
-            std::string_view{type} != PW_TYPE_INTERFACE_Node) {
-            return;
+        if (auto device = output_device(type, props)) {
+            if (state.devices.size() >= maximum_output_device_count) {
+                state.limit_exceeded = true;
+            } else {
+                state.devices.push_back(std::move(*device));
+            }
         }
-        const auto* media_class = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS);
-        if (media_class == nullptr || (std::string_view{media_class} != "Audio/Sink" &&
-                                       std::string_view{media_class} != "Audio/Duplex")) {
-            return;
-        }
-        const auto* name = spa_dict_lookup(props, PW_KEY_NODE_NAME);
-        if (name == nullptr || *name == '\0') {
-            return;
-        }
-        const auto* description = spa_dict_lookup(props, PW_KEY_NODE_DESCRIPTION);
-        state.devices.push_back(PipeWireDevice{
-            .name = name,
-            .description = description != nullptr && *description != '\0' ? description : name,
-        });
     }
 
     static void on_done(void* data, const std::uint32_t id, const int sequence) {
@@ -474,6 +504,337 @@ constexpr pw_core_events device_core_events{
 };
 
 } // namespace
+
+struct PipeWireDeviceMonitor::Impl {
+    pw_thread_loop* loop{nullptr};
+    pw_context* context{nullptr};
+    pw_core* core{nullptr};
+    pw_registry* registry{nullptr};
+    pw_metadata* metadata{nullptr};
+    std::uint32_t metadata_id{PW_ID_ANY};
+    spa_hook registry_listener{};
+    spa_hook core_listener{};
+    spa_hook metadata_listener{};
+    bool registry_listening{false};
+    bool core_listening{false};
+    bool metadata_listening{false};
+    bool started{false};
+    bool initial_sync_done{false};
+    int sync_sequence{0};
+    std::map<std::uint32_t, PipeWireDevice> devices;
+    std::optional<std::string> default_target;
+    std::optional<core::Error> error;
+    std::uint64_t generation{1U};
+
+    ~Impl() {
+        if (started) {
+            pw_thread_loop_lock(loop);
+            release_metadata();
+            if (registry_listening) {
+                spa_hook_remove(&registry_listener);
+                registry_listening = false;
+            }
+            if (core_listening) {
+                spa_hook_remove(&core_listener);
+                core_listening = false;
+            }
+            if (registry != nullptr) {
+                pw_proxy_destroy(reinterpret_cast<pw_proxy*>(registry));
+                registry = nullptr;
+            }
+            if (core != nullptr) {
+                pw_core_disconnect(core);
+                core = nullptr;
+            }
+            pw_thread_loop_unlock(loop);
+            pw_thread_loop_stop(loop);
+            started = false;
+        }
+        if (context != nullptr) {
+            pw_context_destroy(context);
+            context = nullptr;
+        }
+        if (loop != nullptr) {
+            pw_thread_loop_destroy(loop);
+            loop = nullptr;
+        }
+    }
+
+    void changed() {
+        ++generation;
+        if (started) {
+            pw_thread_loop_signal(loop, false);
+        }
+    }
+
+    void release_metadata() {
+        if (metadata_listening) {
+            spa_hook_remove(&metadata_listener);
+            metadata_listening = false;
+        }
+        if (metadata != nullptr) {
+            pw_proxy_destroy(reinterpret_cast<pw_proxy*>(metadata));
+            metadata = nullptr;
+        }
+        metadata_id = PW_ID_ANY;
+    }
+
+    static void on_global(void* data, const std::uint32_t id, std::uint32_t /*permissions*/,
+                          const char* type, const std::uint32_t version, const spa_dict* props) {
+        auto& monitor = *static_cast<Impl*>(data);
+        if (auto device = output_device(type, props)) {
+            const auto found = monitor.devices.find(id);
+            if (found == monitor.devices.end()) {
+                if (monitor.devices.size() >= maximum_output_device_count) {
+                    monitor.error = core::Error{
+                        .code = core::ErrorCode::limit_exceeded,
+                        .message = "PipeWire output device count exceeds the monitor limit",
+                        .context = {{.key = "limit",
+                                     .value = std::to_string(maximum_output_device_count)}},
+                    };
+                    monitor.changed();
+                    return;
+                }
+                monitor.devices.emplace(id, std::move(*device));
+                monitor.changed();
+            } else if (found->second != *device) {
+                found->second = std::move(*device);
+                monitor.changed();
+            }
+            return;
+        }
+        if (type == nullptr || props == nullptr || monitor.metadata != nullptr ||
+            std::string_view{type} != PW_TYPE_INTERFACE_Metadata) {
+            return;
+        }
+        const auto* metadata_name = spa_dict_lookup(props, PW_KEY_METADATA_NAME);
+        if (metadata_name == nullptr || std::string_view{metadata_name} != "default") {
+            return;
+        }
+        monitor.metadata = static_cast<pw_metadata*>(pw_registry_bind(
+            monitor.registry, id, type,
+            std::min(version, static_cast<std::uint32_t>(PW_VERSION_METADATA)), 0));
+        if (monitor.metadata == nullptr) {
+            monitor.error = core::Error{
+                .code = core::ErrorCode::backend,
+                .message = "could not bind PipeWire default metadata",
+                .context = {},
+            };
+            monitor.changed();
+            return;
+        }
+        monitor.metadata_id = id;
+        const auto listener_result = pw_metadata_add_listener(
+            monitor.metadata, &monitor.metadata_listener, &metadata_events, &monitor);
+        if (listener_result < 0) {
+            monitor.error =
+                pipewire_error("could not listen to PipeWire default metadata", listener_result);
+            monitor.release_metadata();
+            monitor.changed();
+            return;
+        }
+        monitor.metadata_listening = true;
+    }
+
+    static void on_global_remove(void* data, const std::uint32_t id) {
+        auto& monitor = *static_cast<Impl*>(data);
+        bool did_change = monitor.devices.erase(id) > 0U;
+        if (id == monitor.metadata_id) {
+            monitor.release_metadata();
+            did_change = did_change || monitor.default_target.has_value();
+            monitor.default_target.reset();
+        }
+        if (did_change) {
+            monitor.changed();
+        }
+    }
+
+    static int on_metadata_property(void* data, const std::uint32_t subject, const char* key,
+                                    const char* /*type*/, const char* value) {
+        auto& monitor = *static_cast<Impl*>(data);
+        if (subject != PW_ID_CORE) {
+            return 0;
+        }
+        if (key == nullptr) {
+            if (monitor.default_target) {
+                monitor.default_target.reset();
+                monitor.changed();
+            }
+            return 0;
+        }
+        if (std::string_view{key} != "default.audio.sink") {
+            return 0;
+        }
+        auto next = default_sink_name(value);
+        if (next != monitor.default_target) {
+            monitor.default_target = std::move(next);
+            monitor.changed();
+        }
+        return 0;
+    }
+
+    static void on_done(void* data, const std::uint32_t id, const int sequence) {
+        auto& monitor = *static_cast<Impl*>(data);
+        if (id == PW_ID_CORE && sequence == monitor.sync_sequence) {
+            monitor.initial_sync_done = true;
+            pw_thread_loop_signal(monitor.loop, false);
+        }
+    }
+
+    static void on_error(void* data, std::uint32_t /*id*/, int /*sequence*/, const int result,
+                         const char* message) {
+        auto& monitor = *static_cast<Impl*>(data);
+        monitor.error = core::Error{
+            .code = core::ErrorCode::backend,
+            .message = message != nullptr && *message != '\0'
+                           ? std::string{message}
+                           : std::string{"PipeWire device monitor failed"},
+            .context = {{.key = "pipewire_error", .value = spa_strerror(result)}},
+        };
+        monitor.changed();
+    }
+
+    static constexpr pw_registry_events registry_events{
+        .version = PW_VERSION_REGISTRY_EVENTS,
+        .global = on_global,
+        .global_remove = on_global_remove,
+    };
+
+    static constexpr pw_core_events core_events{
+        .version = PW_VERSION_CORE_EVENTS,
+        .info = nullptr,
+        .done = on_done,
+        .ping = nullptr,
+        .error = on_error,
+        .remove_id = nullptr,
+        .bound_id = nullptr,
+        .add_mem = nullptr,
+        .remove_mem = nullptr,
+        .bound_props = nullptr,
+    };
+
+    static constexpr pw_metadata_events metadata_events{
+        .version = PW_VERSION_METADATA_EVENTS,
+        .property = on_metadata_property,
+    };
+};
+
+PipeWireDeviceMonitor::PipeWireDeviceMonitor(std::unique_ptr<Impl> implementation)
+    : implementation_(std::move(implementation)) {}
+
+PipeWireDeviceMonitor::PipeWireDeviceMonitor(PipeWireDeviceMonitor&&) noexcept = default;
+PipeWireDeviceMonitor& PipeWireDeviceMonitor::operator=(PipeWireDeviceMonitor&&) noexcept = default;
+PipeWireDeviceMonitor::~PipeWireDeviceMonitor() = default;
+
+core::Result<PipeWireDeviceMonitor>
+PipeWireDeviceMonitor::connect(const std::chrono::milliseconds timeout) {
+    if (timeout <= std::chrono::milliseconds::zero()) {
+        return std::unexpected(invalid_config("PipeWire monitor timeout must be positive"));
+    }
+    initialize_pipewire();
+    auto monitor = std::make_unique<Impl>();
+    monitor->loop = pw_thread_loop_new("trackknife-pw-monitor", nullptr);
+    if (monitor->loop == nullptr) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::backend,
+            .message = "could not create PipeWire device monitor loop",
+            .context = {},
+        });
+    }
+    monitor->context = pw_context_new(pw_thread_loop_get_loop(monitor->loop), nullptr, 0);
+    if (monitor->context == nullptr) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::backend,
+            .message = "could not create PipeWire device monitor context",
+            .context = {},
+        });
+    }
+    const auto start_result = pw_thread_loop_start(monitor->loop);
+    if (start_result < 0) {
+        return std::unexpected(
+            pipewire_error("could not start PipeWire device monitor", start_result));
+    }
+    monitor->started = true;
+
+    pw_thread_loop_lock(monitor->loop);
+    monitor->core = pw_context_connect(monitor->context, nullptr, 0);
+    if (monitor->core == nullptr) {
+        pw_thread_loop_unlock(monitor->loop);
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::backend,
+            .message = "could not connect PipeWire device monitor",
+            .context = {},
+        });
+    }
+    monitor->registry = pw_core_get_registry(monitor->core, PW_VERSION_REGISTRY, 0);
+    if (monitor->registry == nullptr) {
+        pw_thread_loop_unlock(monitor->loop);
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::backend,
+            .message = "could not open PipeWire device monitor registry",
+            .context = {},
+        });
+    }
+    pw_registry_add_listener(monitor->registry, &monitor->registry_listener, &Impl::registry_events,
+                             monitor.get());
+    monitor->registry_listening = true;
+    pw_core_add_listener(monitor->core, &monitor->core_listener, &Impl::core_events, monitor.get());
+    monitor->core_listening = true;
+    monitor->sync_sequence = pw_core_sync(monitor->core, PW_ID_CORE, 0);
+
+    timespec deadline{};
+    const auto timeout_nanoseconds =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(timeout).count();
+    const auto clock_result =
+        pw_thread_loop_get_time(monitor->loop, &deadline, timeout_nanoseconds);
+    if (clock_result < 0) {
+        pw_thread_loop_unlock(monitor->loop);
+        return std::unexpected(
+            pipewire_error("could not start PipeWire monitor timeout", clock_result));
+    }
+    while (!monitor->initial_sync_done && !monitor->error) {
+        const auto wait_result = pw_thread_loop_timed_wait_full(monitor->loop, &deadline);
+        if (wait_result == -ETIMEDOUT) {
+            pw_thread_loop_unlock(monitor->loop);
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::backend,
+                .message = "PipeWire device monitor initial sync timed out",
+                .context = {},
+            });
+        }
+        if (wait_result < 0) {
+            pw_thread_loop_unlock(monitor->loop);
+            return std::unexpected(
+                pipewire_error("could not wait for PipeWire device monitor", wait_result));
+        }
+    }
+    if (monitor->error) {
+        auto error = *monitor->error;
+        pw_thread_loop_unlock(monitor->loop);
+        return std::unexpected(std::move(error));
+    }
+    pw_thread_loop_unlock(monitor->loop);
+    return PipeWireDeviceMonitor{std::move(monitor)};
+}
+
+PipeWireDeviceSnapshot PipeWireDeviceMonitor::snapshot() const {
+    const auto& monitor = *implementation_;
+    pw_thread_loop_lock(monitor.loop);
+    PipeWireDeviceSnapshot result{
+        .devices = {},
+        .default_target = monitor.default_target,
+        .generation = monitor.generation,
+        .error = monitor.error,
+    };
+    result.devices.reserve(monitor.devices.size());
+    for (const auto& [id, device] : monitor.devices) {
+        static_cast<void>(id);
+        result.devices.push_back(device);
+    }
+    pw_thread_loop_unlock(monitor.loop);
+    std::ranges::sort(result.devices, {}, &PipeWireDevice::name);
+    return result;
+}
 
 core::Result<std::vector<PipeWireDevice>>
 list_pipewire_output_devices(const std::chrono::milliseconds timeout) {
@@ -574,6 +935,13 @@ list_pipewire_output_devices(const std::chrono::milliseconds timeout) {
             .code = core::ErrorCode::backend,
             .message = "PipeWire device enumeration timed out",
             .context = {},
+        });
+    }
+    if (state.limit_exceeded) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::limit_exceeded,
+            .message = "PipeWire output device count exceeds the enumeration limit",
+            .context = {{.key = "limit", .value = std::to_string(maximum_output_device_count)}},
         });
     }
     return devices;

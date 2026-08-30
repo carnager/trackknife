@@ -136,6 +136,87 @@ void ListPersistenceService::saveProfiles(std::vector<persistence::ConnectionPro
         Qt::QueuedConnection);
 }
 
+void ListPersistenceService::loadMetadataTransformationChains(
+    TransformationChainsCallback callback) {
+    const QPointer self{this};
+    QMetaObject::invokeMethod(
+        worker_,
+        [self, state = state_, callback = std::move(callback)]() mutable {
+            std::vector<persistence::SavedMetadataTransformationChain> chains;
+            QString error = state->initialization_error;
+            if (error.isEmpty() && !state->repository) {
+                error = QStringLiteral("List persistence is not initialized");
+            } else if (error.isEmpty()) {
+                auto loaded = state->repository->load_metadata_transformation_chains();
+                if (!loaded) {
+                    error = errorText(loaded.error());
+                } else {
+                    chains = std::move(*loaded);
+                }
+            }
+            if (!self || !callback) {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                self,
+                [callback = std::move(callback), chains = std::move(chains), error]() mutable {
+                    callback(std::move(chains), error);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+
+void ListPersistenceService::saveMetadataTransformationChain(
+    persistence::SavedMetadataTransformationChain chain, CompletionCallback callback) {
+    const QPointer self{this};
+    QMetaObject::invokeMethod(
+        worker_,
+        [self, state = state_, chain = std::move(chain), callback = std::move(callback)]() mutable {
+            QString error = state->initialization_error;
+            if (error.isEmpty() && !state->repository) {
+                error = QStringLiteral("List persistence is not initialized");
+            } else if (error.isEmpty()) {
+                if (auto stored = state->repository->upsert_metadata_transformation_chain(chain);
+                    !stored) {
+                    error = errorText(stored.error());
+                }
+            }
+            if (!self || !callback) {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                self, [callback = std::move(callback), error]() mutable { callback(error); },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+
+void ListPersistenceService::removeMetadataTransformationChain(core::StableId id,
+                                                               CompletionCallback callback) {
+    const QPointer self{this};
+    QMetaObject::invokeMethod(
+        worker_,
+        [self, state = state_, id, callback = std::move(callback)]() mutable {
+            QString error = state->initialization_error;
+            if (error.isEmpty() && !state->repository) {
+                error = QStringLiteral("List persistence is not initialized");
+            } else if (error.isEmpty()) {
+                if (auto removed = state->repository->remove_metadata_transformation_chain(id);
+                    !removed) {
+                    error = errorText(removed.error());
+                }
+            }
+            if (!self || !callback) {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                self, [callback = std::move(callback), error]() mutable { callback(error); },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+
 QString
 ListPersistenceService::saveWorkspaceAndWait(std::vector<persistence::ListDocument> lists,
                                              std::vector<persistence::TrackViewPreset> presets) {
@@ -156,6 +237,54 @@ ListPersistenceService::saveWorkspaceAndWait(std::vector<persistence::ListDocume
         },
         Qt::BlockingQueuedConnection);
     return error;
+}
+
+core::Result<persistence::LocalMetadataRefreshResult>
+ListPersistenceService::refreshLocalMetadataAndWait(persistence::LocalMetadataRefresh refresh) {
+    if (QThread::currentThread() == thread()) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invariant,
+            .message = "Metadata refresh cannot block the UI thread",
+            .context = {},
+        });
+    }
+    if (QThread::currentThread() == thread_) {
+        if (!state_->initialization_error.isEmpty() || !state_->repository) {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::database,
+                .message = state_->initialization_error.isEmpty()
+                               ? "List persistence is not initialized"
+                               : state_->initialization_error.toStdString(),
+                .context = {},
+            });
+        }
+        return state_->repository->refresh_local_metadata(refresh);
+    }
+    std::optional<core::Result<persistence::LocalMetadataRefreshResult>> result;
+    QMetaObject::invokeMethod(
+        worker_,
+        [state = state_, refresh = std::move(refresh), &result] {
+            if (!state->initialization_error.isEmpty() || !state->repository) {
+                result = std::unexpected(core::Error{
+                    .code = core::ErrorCode::database,
+                    .message = state->initialization_error.isEmpty()
+                                   ? "List persistence is not initialized"
+                                   : state->initialization_error.toStdString(),
+                    .context = {},
+                });
+                return;
+            }
+            result = state->repository->refresh_local_metadata(refresh);
+        },
+        Qt::BlockingQueuedConnection);
+    if (!result) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invariant,
+            .message = "Metadata refresh did not return a persistence result",
+            .context = {},
+        });
+    }
+    return std::move(*result);
 }
 
 } // namespace trackknife::ui

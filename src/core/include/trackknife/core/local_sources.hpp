@@ -7,6 +7,7 @@
 #include "trackknife/core/result.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <string>
 #include <string_view>
@@ -52,6 +53,25 @@ struct ContainedLocalSource {
 
     friend bool operator==(const ContainedLocalSource&, const ContainedLocalSource&) = default;
 };
+
+// A Linux filesystem observation suitable for detecting replacement or
+// modification between metadata read, preview, and commit. It is evidence,
+// not a permanent identity: callers must observe it again immediately before
+// mutation.
+struct LocalSourceRevision {
+    std::uint64_t device{0U};
+    std::uint64_t inode{0U};
+    std::uint64_t size{0U};
+    std::int64_t modification_time_seconds{0};
+    std::int64_t modification_time_nanoseconds{0};
+
+    friend bool operator==(const LocalSourceRevision&, const LocalSourceRevision&) = default;
+};
+
+// Follows the final path target and observes a regular file without decoding
+// the raw Linux path bytes as text.
+[[nodiscard]] Result<LocalSourceRevision>
+observe_local_source_revision(const std::string& raw_path);
 
 // Filesystem revalidation for file operations: resolves the configured root
 // and the referenced path to their final targets and requires the result to

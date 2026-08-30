@@ -2,8 +2,12 @@
 
 #pragma once
 
+#include "trackknife/core/local_sources.hpp"
 #include "trackknife/core/result.hpp"
 #include "trackknife/core/stable_id.hpp"
+#include "trackknife/metadata/document.hpp"
+#include "trackknife/metadata/transformation.hpp"
+#include "trackknife/operations/output_path_plan.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -21,8 +25,27 @@ enum class ListSource : std::uint8_t { mpd, local };
 struct SnapshotField {
     std::string name;
     std::string value;
+    std::string native_name{};
+    metadata::FieldProvenance provenance{metadata::FieldProvenance::cached_snapshot};
+    std::optional<std::string> language{};
+    std::optional<std::string> description{};
 
     friend bool operator==(const SnapshotField&, const SnapshotField&) = default;
+};
+
+struct ListItemSegment {
+    std::int64_t start_sample{0};
+    std::optional<std::int64_t> end_sample;
+
+    friend bool operator==(const ListItemSegment&, const ListItemSegment&) = default;
+};
+
+struct ListItemSourceSelection {
+    std::optional<int> audio_stream_index;
+    std::optional<int> subsong_index;
+
+    friend bool operator==(const ListItemSourceSelection&,
+                           const ListItemSourceSelection&) = default;
 };
 
 struct ListItem {
@@ -31,7 +54,15 @@ struct ListItem {
     // MPD URIs and local raw OS paths are stored as SQLite BLOBs. No UTF-8 or
     // URL interpretation occurs at this boundary.
     std::string source_reference;
+    // Opaque logical identity (for example, cue sheet + file/track indexes)
+    // remains distinct from the physical source and survives duplicate paths.
+    std::optional<std::string> logical_reference;
+    std::optional<ListItemSegment> segment;
+    // Explicit decoder selection for independently playable content inside a
+    // physical source. Ordinary rows leave this absent.
+    std::optional<ListItemSourceSelection> source_selection;
     std::optional<std::int64_t> duration_ms;
+    std::optional<core::LocalSourceRevision> source_revision{};
     std::vector<SnapshotField> fields;
 
     friend bool operator==(const ListItem&, const ListItem&) = default;
@@ -66,6 +97,47 @@ struct TrackViewPreset {
     friend bool operator==(const TrackViewPreset&, const TrackViewPreset&) = default;
 };
 
+struct SavedMetadataTransformationChain {
+    core::StableId id;
+    metadata::MetadataTransformationChain chain;
+    bool automatic{false};
+
+    friend bool operator==(const SavedMetadataTransformationChain&,
+                           const SavedMetadataTransformationChain&) = default;
+};
+
+struct SavedOutputLayoutProfile {
+    core::StableId id;
+    operations::OutputLayoutProfile profile;
+
+    friend bool operator==(const SavedOutputLayoutProfile&,
+                           const SavedOutputLayoutProfile&) = default;
+};
+
+struct SavedDestinationProfile {
+    core::StableId id;
+    operations::DestinationProfile profile;
+
+    friend bool operator==(const SavedDestinationProfile&,
+                           const SavedDestinationProfile&) = default;
+};
+
+struct LocalMetadataRefresh {
+    core::StableId operation_id;
+    std::string source_reference;
+    core::LocalSourceRevision previous_revision;
+    core::LocalSourceRevision published_revision;
+    metadata::MetadataDocument document;
+};
+
+struct LocalMetadataRefreshResult {
+    std::size_t affected_occurrences{0U};
+    bool already_applied{false};
+
+    friend bool operator==(const LocalMetadataRefreshResult&,
+                           const LocalMetadataRefreshResult&) = default;
+};
+
 class ListRepository final {
   public:
     ListRepository(ListRepository&&) noexcept;
@@ -79,10 +151,29 @@ class ListRepository final {
     [[nodiscard]] core::Result<unsigned> schema_version() const;
     [[nodiscard]] core::Result<std::vector<ListDocument>> load_all() const;
     [[nodiscard]] core::Result<void> replace_all(std::span<const ListDocument> documents);
+    // Atomically refreshes every local occurrence of one physical source and
+    // its source cache. The operation identity makes recovery replay a no-op.
+    [[nodiscard]] core::Result<LocalMetadataRefreshResult>
+    refresh_local_metadata(const LocalMetadataRefresh& refresh);
     [[nodiscard]] core::Result<std::vector<ConnectionProfile>> load_profiles() const;
     [[nodiscard]] core::Result<void> replace_profiles(std::span<const ConnectionProfile> profiles);
     [[nodiscard]] core::Result<std::vector<TrackViewPreset>> load_view_presets() const;
     [[nodiscard]] core::Result<void> replace_view_presets(std::span<const TrackViewPreset> presets);
+    [[nodiscard]] core::Result<std::vector<SavedMetadataTransformationChain>>
+    load_metadata_transformation_chains() const;
+    [[nodiscard]] core::Result<void>
+    upsert_metadata_transformation_chain(const SavedMetadataTransformationChain& saved_chain);
+    [[nodiscard]] core::Result<void> remove_metadata_transformation_chain(const core::StableId& id);
+    [[nodiscard]] core::Result<std::vector<SavedOutputLayoutProfile>>
+    load_output_layout_profiles() const;
+    [[nodiscard]] core::Result<void>
+    upsert_output_layout_profile(const SavedOutputLayoutProfile& saved_profile);
+    [[nodiscard]] core::Result<void> remove_output_layout_profile(const core::StableId& id);
+    [[nodiscard]] core::Result<std::vector<SavedDestinationProfile>>
+    load_destination_profiles() const;
+    [[nodiscard]] core::Result<void>
+    upsert_destination_profile(const SavedDestinationProfile& saved_profile);
+    [[nodiscard]] core::Result<void> remove_destination_profile(const core::StableId& id);
 
   private:
     struct Impl;

@@ -486,7 +486,8 @@ QVariant ServerLibraryTreeModel::data(const QModelIndex& index, const int role) 
 }
 
 Qt::ItemFlags ServerLibraryTreeModel::flags(const QModelIndex& index) const {
-    return index.isValid() ? Qt::ItemIsEnabled | Qt::ItemIsSelectable : Qt::NoItemFlags;
+    return index.isValid() ? Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled
+                           : Qt::NoItemFlags;
 }
 
 bool ServerLibraryTreeModel::hasChildren(const QModelIndex& parent_index) const {
