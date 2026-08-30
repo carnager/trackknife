@@ -6,6 +6,7 @@ qt_add_library(
     bench_main_window.hpp
     bench_main_window_helpers.cpp
     bench_main_window_helpers.hpp
+    bench_metadata_operations.cpp
     file_publication_apply_dialog.cpp
     file_publication_apply_dialog.hpp
     local_list_model.cpp
