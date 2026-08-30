@@ -6,6 +6,7 @@
 #include "trackknife/operations/file_publication.hpp"
 #include "trackknife/operations/output_path_preflight.hpp"
 #include "trackknife/persistence/file_publication_journal.hpp"
+#include "trackknife/persistence/list_repository.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -427,6 +428,86 @@ void ambiguousRecoveryNeverDeletesEitherPath() {
             "ambiguous recovery must remain visible with failure evidence");
 }
 
+void realPublicationCommitsTheAllOccurrenceRelocationTransaction() {
+    TemporaryDirectory directory;
+    const auto source = directory.path() / "source.flac";
+    const auto target = directory.path() / "nested" / "target.flac";
+    write_file(source, "physical relocation bytes");
+    const auto checked = preflight(source, target);
+    const auto source_revision = checked.sources.front().observed_revision;
+    const auto state_path = directory.path() / "state.sqlite3";
+    auto repository_result = persistence::ListRepository::open(state_path);
+    require(repository_result.has_value(), "relocation integration repository must open");
+    auto repository = std::move(*repository_result);
+    const std::vector documents{
+        persistence::ListDocument{
+            .id = core::StableId::random(),
+            .kind = persistence::ListKind::scratch,
+            .name = "First",
+            .pinned = false,
+            .dirty = false,
+            .items = {persistence::ListItem{
+                .source = persistence::ListSource::local,
+                .profile_id = std::nullopt,
+                .source_reference = source.native(),
+                .logical_reference = std::nullopt,
+                .segment = std::nullopt,
+                .source_selection = std::nullopt,
+                .duration_ms = std::nullopt,
+                .source_revision = source_revision,
+                .fields = {{"title", "First"}},
+            }},
+        },
+        persistence::ListDocument{
+            .id = core::StableId::random(),
+            .kind = persistence::ListKind::saved,
+            .name = "Duplicate",
+            .pinned = true,
+            .dirty = false,
+            .items = {persistence::ListItem{
+                .source = persistence::ListSource::local,
+                .profile_id = std::nullopt,
+                .source_reference = source.native(),
+                .logical_reference = std::string{"cue-v1\0track", 12U},
+                .segment = persistence::ListItemSegment{.start_sample = 0, .end_sample = 1},
+                .source_selection = std::nullopt,
+                .duration_ms = std::nullopt,
+                .source_revision = source_revision,
+                .fields = {{"title", "Logical"}},
+            }},
+        },
+    };
+    require(repository.replace_all(documents).has_value(),
+            "relocation integration occurrences must persist");
+    auto journal = open_journal(directory, "state.sqlite3");
+    const auto committed = operations::commit_same_filesystem_publication(
+        checked, 0U, journal,
+        [&](const operations::FilePublicationCommitResult& result) -> core::Result<void> {
+            auto relocated = repository.relocate_local_source(persistence::LocalSourceRelocation{
+                .operation_id = result.journal_id,
+                .source_reference = result.source_raw_path,
+                .target_reference = result.target_raw_path,
+                .previous_revision = result.source_revision,
+                .published_revision = result.target_revision,
+            });
+            return relocated ? core::Result<void>{} : std::unexpected(std::move(relocated.error()));
+        });
+    require(committed.has_value() && !std::filesystem::exists(source) &&
+                read_file(target) == "physical relocation bytes",
+            "physical publication and dependent state must complete together");
+    auto loaded = repository.load_all();
+    require(loaded && (*loaded)[0].items[0].source_reference == target.native() &&
+                (*loaded)[1].items[0].source_reference == target.native() &&
+                (*loaded)[0].items[0].source_revision == committed->target_revision,
+            "the real executor callback must re-key every persisted occurrence");
+    require(repository.replace_all(documents).has_value(),
+            "a pre-publication workspace snapshot may arrive after commit");
+    loaded = repository.load_all();
+    require(loaded && (*loaded)[0].items[0].source_reference == target.native() &&
+                (*loaded)[1].items[0].source_reference == target.native(),
+            "publication relocation history must suppress stale source paths");
+}
+
 void cancellationBeforeCommitCreatesNoJournal() {
     TemporaryDirectory directory;
     const auto source = directory.path() / "source.flac";
@@ -455,6 +536,7 @@ int main() {
     recoversBothSidesOfTheAtomicJournalBoundary();
     recoveryRollbackAndPostDependentCompletionAreExact();
     ambiguousRecoveryNeverDeletesEitherPath();
+    realPublicationCommitsTheAllOccurrenceRelocationTransaction();
     cancellationBeforeCommitCreatesNoJournal();
     std::cout << "file publication executor tests passed\n";
     return 0;

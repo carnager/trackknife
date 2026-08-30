@@ -21,12 +21,13 @@
 namespace trackknife::persistence {
 namespace {
 
-constexpr unsigned current_schema_version = 14U;
+constexpr unsigned current_schema_version = 15U;
 constexpr std::size_t maximum_documents = 1'024U;
 constexpr std::size_t maximum_items_per_document = 1'000'000U;
 constexpr std::size_t maximum_fields_per_item = 4'096U;
 constexpr std::size_t maximum_refresh_occurrences = 1'000'000U;
 constexpr std::size_t maximum_cached_sources = 1'000'000U;
+constexpr std::size_t maximum_source_relocations = 1'000'000U;
 constexpr std::size_t maximum_metadata_transformation_chains = 256U;
 constexpr std::size_t maximum_output_layout_profiles = 256U;
 constexpr std::size_t maximum_destination_profiles = 256U;
@@ -582,6 +583,27 @@ read_optional_revision(sqlite3_stmt* statement, const int first,
             return result;
         }
     }
+    if (version <= 14) {
+        constexpr auto migration =
+            "CREATE TABLE local_source_relocations ("
+            "sequence INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL UNIQUE, "
+            "source_reference BLOB NOT NULL, target_reference BLOB NOT NULL, "
+            "previous_device BLOB NOT NULL, previous_inode BLOB NOT NULL, "
+            "previous_size BLOB NOT NULL, previous_mtime_seconds BLOB NOT NULL, "
+            "previous_mtime_nanoseconds BLOB NOT NULL, published_device BLOB NOT NULL, "
+            "published_inode BLOB NOT NULL, published_size BLOB NOT NULL, "
+            "published_mtime_seconds BLOB NOT NULL, published_mtime_nanoseconds BLOB NOT NULL, "
+            "affected_occurrences INTEGER NOT NULL CHECK(affected_occurrences > 0), "
+            "cache_rekeyed INTEGER NOT NULL CHECK(cache_rekeyed IN (0,1)), "
+            "CHECK(source_reference != target_reference));"
+            "CREATE INDEX local_source_relocations_source "
+            "ON local_source_relocations(source_reference, sequence);"
+            "UPDATE schema_version SET version = 15;";
+        if (auto result = execute(database, migration); !result) {
+            rollback();
+            return result;
+        }
+    }
     if (auto result = execute(database, "COMMIT"); !result) {
         rollback();
         return result;
@@ -727,6 +749,113 @@ flatten_source_fields(const metadata::MetadataDocument& document) {
     return field.provenance == metadata::FieldProvenance::cached_snapshot ||
            field.provenance == metadata::FieldProvenance::embedded ||
            field.provenance == metadata::FieldProvenance::stream;
+}
+
+class LocalSourceRelocationResolver final {
+  public:
+    LocalSourceRelocationResolver(sqlite3* database, Statement next,
+                                  std::unordered_set<std::string> source_references)
+        : database_{database}, next_{std::move(next)},
+          source_references_{std::move(source_references)} {}
+
+    [[nodiscard]] core::Result<void>
+    resolve(std::string& source_reference,
+            std::optional<core::LocalSourceRevision>& source_revision) {
+        if (!source_revision || !source_references_.contains(source_reference)) {
+            return {};
+        }
+        sqlite3_int64 preceding_sequence = 0;
+        for (std::size_t step_count = 0U; step_count < maximum_source_relocations; ++step_count) {
+            auto* statement = next_.get();
+            if (!bind_blob(statement, 1, source_reference) ||
+                !bind_revision(statement, 2, *source_revision) ||
+                sqlite3_bind_int64(statement, 7, preceding_sequence) != SQLITE_OK) {
+                return std::unexpected(
+                    database_error(database_, "Could not bind local-source relocation"));
+            }
+            const auto step = sqlite3_step(statement);
+            if (step == SQLITE_DONE) {
+                sqlite3_reset(statement);
+                sqlite3_clear_bindings(statement);
+                return {};
+            }
+            if (step != SQLITE_ROW) {
+                auto error = database_error(database_, "Could not resolve local-source relocation");
+                sqlite3_reset(statement);
+                sqlite3_clear_bindings(statement);
+                return std::unexpected(std::move(error));
+            }
+            const auto sequence = sqlite3_column_int64(statement, 0);
+            auto target_reference = column_blob(statement, 1);
+            auto published_revision = read_revision(statement, 2, "Local-source relocation");
+            sqlite3_reset(statement);
+            sqlite3_clear_bindings(statement);
+            if (!published_revision) {
+                return std::unexpected(std::move(published_revision.error()));
+            }
+            if (sequence <= preceding_sequence || target_reference.empty() ||
+                target_reference == source_reference || published_revision->inode == 0U) {
+                return std::unexpected(core::Error{
+                    .code = core::ErrorCode::database,
+                    .message = "Local-source relocation history is invalid",
+                    .context = {},
+                });
+            }
+            preceding_sequence = sequence;
+            source_reference = std::move(target_reference);
+            source_revision = *published_revision;
+            if (!source_references_.contains(source_reference)) {
+                return {};
+            }
+        }
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::limit_exceeded,
+            .message = "Local-source relocation history exceeds the replay limit",
+            .context = {},
+        });
+    }
+
+  private:
+    sqlite3* database_{nullptr};
+    Statement next_;
+    std::unordered_set<std::string> source_references_;
+};
+
+[[nodiscard]] core::Result<LocalSourceRelocationResolver>
+local_source_relocation_resolver(sqlite3* database) {
+    auto sources = prepare(database, "SELECT DISTINCT source_reference "
+                                     "FROM local_source_relocations");
+    if (!sources) {
+        return std::unexpected(std::move(sources.error()));
+    }
+    std::unordered_set<std::string> source_references;
+    int step = SQLITE_ROW;
+    while ((step = sqlite3_step(sources->get())) == SQLITE_ROW) {
+        auto source_reference = column_blob(sources->get(), 0);
+        if (source_reference.empty() || source_references.size() >= maximum_source_relocations ||
+            !source_references.insert(std::move(source_reference)).second) {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::database,
+                .message = "Local-source relocation index is invalid",
+                .context = {},
+            });
+        }
+    }
+    if (step != SQLITE_DONE) {
+        return std::unexpected(
+            database_error(database, "Could not load local-source relocation index"));
+    }
+    auto next = prepare(
+        database,
+        "SELECT sequence, target_reference, published_device, published_inode, published_size, "
+        "published_mtime_seconds, published_mtime_nanoseconds "
+        "FROM local_source_relocations WHERE source_reference = ? AND previous_device = ? "
+        "AND previous_inode = ? AND previous_size = ? AND previous_mtime_seconds = ? "
+        "AND previous_mtime_nanoseconds = ? AND sequence > ? ORDER BY sequence LIMIT 1");
+    if (!next) {
+        return std::unexpected(std::move(next.error()));
+    }
+    return LocalSourceRelocationResolver{database, std::move(*next), std::move(source_references)};
 }
 
 struct SerializedTransformationAction {
@@ -911,6 +1040,10 @@ core::Result<unsigned> ListRepository::schema_version() const {
 }
 
 core::Result<std::vector<ListDocument>> ListRepository::load_all() const {
+    auto relocation_resolver = local_source_relocation_resolver(implementation_->database);
+    if (!relocation_resolver) {
+        return std::unexpected(std::move(relocation_resolver.error()));
+    }
     auto documents_query =
         prepare(implementation_->database,
                 "SELECT id, kind, name, pinned, dirty FROM list_documents ORDER BY position");
@@ -1033,10 +1166,17 @@ core::Result<std::vector<ListDocument>> ListRepository::load_all() const {
                 .context = {{"document_id", document_id}},
             });
         }
+        auto source_reference = column_blob(items_query->get(), 4);
+        if (source == static_cast<int>(ListSource::local)) {
+            if (auto resolved = relocation_resolver->resolve(source_reference, *source_revision);
+                !resolved) {
+                return std::unexpected(std::move(resolved.error()));
+            }
+        }
         documents[found->second].items.push_back(ListItem{
             .source = static_cast<ListSource>(source),
             .profile_id = profile_id,
-            .source_reference = column_blob(items_query->get(), 4),
+            .source_reference = std::move(source_reference),
             .logical_reference = std::move(logical_reference),
             .segment = segment,
             .source_selection = source_selection,
@@ -1211,6 +1351,12 @@ core::Result<void> ListRepository::replace_all(const std::span<const ListDocumen
         return result;
     }
     const auto rollback = [database] { static_cast<void>(execute(database, "ROLLBACK")); };
+    auto relocation_resolver = local_source_relocation_resolver(database);
+    if (!relocation_resolver) {
+        auto error = std::move(relocation_resolver.error());
+        rollback();
+        return std::unexpected(std::move(error));
+    }
     if (auto result = execute(database, "DELETE FROM list_documents"); !result) {
         rollback();
         return result;
@@ -1261,6 +1407,16 @@ core::Result<void> ListRepository::replace_all(const std::span<const ListDocumen
         for (std::size_t item_position = 0U; item_position < document.items.size();
              ++item_position) {
             const auto& item = document.items[item_position];
+            auto source_reference = item.source_reference;
+            auto source_revision = item.source_revision;
+            if (item.source == ListSource::local) {
+                if (auto resolved = relocation_resolver->resolve(source_reference, source_revision);
+                    !resolved) {
+                    auto error = std::move(resolved.error());
+                    rollback();
+                    return std::unexpected(std::move(error));
+                }
+            }
             auto* item_statement = insert_item->get();
             const auto profile_id = item.profile_id ? item.profile_id->to_string() : std::string{};
             const auto profile_bound = item.profile_id
@@ -1295,10 +1451,10 @@ core::Result<void> ListRepository::replace_all(const std::span<const ListDocumen
                 sqlite3_bind_int64(item_statement, 2, static_cast<sqlite3_int64>(item_position)) !=
                     SQLITE_OK ||
                 sqlite3_bind_int(item_statement, 3, static_cast<int>(item.source)) != SQLITE_OK ||
-                !profile_bound || !bind_blob(item_statement, 5, item.source_reference) ||
+                !profile_bound || !bind_blob(item_statement, 5, source_reference) ||
                 !duration_bound || !logical_reference_bound || !segment_start_bound ||
                 !segment_end_bound || !audio_stream_bound || !subsong_bound ||
-                !bind_optional_revision(item_statement, 12, item.source_revision)) {
+                !bind_optional_revision(item_statement, 12, source_revision)) {
                 auto error = database_error(database, "Could not bind list item");
                 rollback();
                 return std::unexpected(std::move(error));
@@ -1712,6 +1868,316 @@ ListRepository::refresh_local_metadata(const LocalMetadataRefresh& refresh) {
     }
     return LocalMetadataRefreshResult{
         .affected_occurrences = occurrences.size(),
+        .already_applied = false,
+    };
+}
+
+core::Result<LocalSourceRelocationResult>
+ListRepository::relocate_local_source(const LocalSourceRelocation& relocation) {
+    if (relocation.operation_id.is_nil() || relocation.source_reference.empty() ||
+        relocation.target_reference.empty() ||
+        relocation.source_reference.find('\0') != std::string::npos ||
+        relocation.target_reference.find('\0') != std::string::npos ||
+        relocation.source_reference == relocation.target_reference ||
+        relocation.previous_revision.inode == 0U || relocation.published_revision.inode == 0U) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invalid_argument,
+            .message = "Local-source relocation requires distinct raw paths and valid evidence",
+            .context = {},
+        });
+    }
+
+    auto* database = implementation_->database;
+    if (auto result = execute(database, "BEGIN IMMEDIATE"); !result) {
+        return std::unexpected(std::move(result.error()));
+    }
+    const auto rollback = [database] { static_cast<void>(execute(database, "ROLLBACK")); };
+    const auto operation_id = relocation.operation_id.to_string();
+
+    auto replay = prepare(
+        database,
+        "SELECT source_reference, target_reference, previous_device, previous_inode, "
+        "previous_size, previous_mtime_seconds, previous_mtime_nanoseconds, published_device, "
+        "published_inode, published_size, published_mtime_seconds, "
+        "published_mtime_nanoseconds, affected_occurrences, cache_rekeyed "
+        "FROM local_source_relocations WHERE operation_id = ?");
+    if (!replay || !bind_text(replay->get(), 1, operation_id)) {
+        auto error = replay ? database_error(database, "Could not bind relocation replay")
+                            : std::move(replay.error());
+        rollback();
+        return std::unexpected(std::move(error));
+    }
+    const auto replay_step = sqlite3_step(replay->get());
+    if (replay_step == SQLITE_ROW) {
+        auto previous_revision = read_revision(replay->get(), 2, "Local-source relocation");
+        auto published_revision = read_revision(replay->get(), 7, "Local-source relocation");
+        const auto affected = sqlite3_column_int64(replay->get(), 12);
+        const auto cache_rekeyed = sqlite3_column_int(replay->get(), 13);
+        if (!previous_revision) {
+            auto error = std::move(previous_revision.error());
+            rollback();
+            return std::unexpected(std::move(error));
+        }
+        if (!published_revision) {
+            auto error = std::move(published_revision.error());
+            rollback();
+            return std::unexpected(std::move(error));
+        }
+        if (column_blob(replay->get(), 0) != relocation.source_reference ||
+            column_blob(replay->get(), 1) != relocation.target_reference ||
+            *previous_revision != relocation.previous_revision ||
+            *published_revision != relocation.published_revision || affected <= 0 ||
+            static_cast<std::uint64_t>(affected) > maximum_refresh_occurrences ||
+            (cache_rekeyed != 0 && cache_rekeyed != 1)) {
+            rollback();
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::conflict,
+                .message = "Local-source relocation identity was replayed with different content",
+                .context = {{"operation_id", operation_id}},
+            });
+        }
+        rollback();
+        return LocalSourceRelocationResult{
+            .affected_occurrences = static_cast<std::size_t>(affected),
+            .cache_rekeyed = cache_rekeyed != 0,
+            .already_applied = true,
+        };
+    }
+    if (replay_step != SQLITE_DONE) {
+        auto error = database_error(database, "Could not inspect relocation replay");
+        rollback();
+        return std::unexpected(std::move(error));
+    }
+
+    auto occurrences = prepare(
+        database, "SELECT observed_device, observed_inode, observed_size, observed_mtime_seconds, "
+                  "observed_mtime_nanoseconds FROM list_items WHERE source = ? "
+                  "AND source_reference = ? ORDER BY document_id, position");
+    if (!occurrences ||
+        sqlite3_bind_int(occurrences->get(), 1, static_cast<int>(ListSource::local)) != SQLITE_OK ||
+        !bind_blob(occurrences->get(), 2, relocation.source_reference)) {
+        auto error = occurrences ? database_error(database, "Could not bind relocation occurrences")
+                                 : std::move(occurrences.error());
+        rollback();
+        return std::unexpected(std::move(error));
+    }
+    std::size_t affected_occurrences = 0U;
+    int occurrence_step = SQLITE_ROW;
+    while ((occurrence_step = sqlite3_step(occurrences->get())) == SQLITE_ROW) {
+        if (affected_occurrences >= maximum_refresh_occurrences) {
+            rollback();
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::limit_exceeded,
+                .message = "Local-source relocation exceeds the occurrence limit",
+                .context = {{"source_path", relocation.source_reference}},
+            });
+        }
+        auto revision = read_optional_revision(occurrences->get(), 0, "Relocated list item");
+        if (!revision) {
+            auto error = std::move(revision.error());
+            rollback();
+            return std::unexpected(std::move(error));
+        }
+        if (!*revision || **revision != relocation.previous_revision) {
+            rollback();
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::conflict,
+                .message = "Every relocated occurrence must identify the published source",
+                .context = {{"source_path", relocation.source_reference}},
+            });
+        }
+        ++affected_occurrences;
+    }
+    if (occurrence_step != SQLITE_DONE) {
+        auto error = database_error(database, "Could not enumerate relocation occurrences");
+        rollback();
+        return std::unexpected(std::move(error));
+    }
+    if (affected_occurrences == 0U) {
+        rollback();
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::not_found,
+            .message = "Relocated source has no persisted list occurrence",
+            .context = {{"source_path", relocation.source_reference}},
+        });
+    }
+
+    auto target_occurrence = prepare(
+        database, "SELECT 1 FROM list_items WHERE source = ? AND source_reference = ? LIMIT 1");
+    if (!target_occurrence ||
+        sqlite3_bind_int(target_occurrence->get(), 1, static_cast<int>(ListSource::local)) !=
+            SQLITE_OK ||
+        !bind_blob(target_occurrence->get(), 2, relocation.target_reference)) {
+        auto error = target_occurrence
+                         ? database_error(database, "Could not bind relocation target")
+                         : std::move(target_occurrence.error());
+        rollback();
+        return std::unexpected(std::move(error));
+    }
+    const auto target_step = sqlite3_step(target_occurrence->get());
+    if (target_step == SQLITE_ROW) {
+        rollback();
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::conflict,
+            .message = "Relocation target already has a persisted local source",
+            .context = {{"target_path", relocation.target_reference}},
+        });
+    }
+    if (target_step != SQLITE_DONE) {
+        auto error = database_error(database, "Could not inspect relocation target");
+        rollback();
+        return std::unexpected(std::move(error));
+    }
+
+    const auto cache_exists = [&](const std::string& source_reference) -> core::Result<bool> {
+        auto query = prepare(database, "SELECT 1 FROM local_metadata_cache "
+                                       "WHERE source_reference = ? LIMIT 1");
+        if (!query || !bind_blob(query->get(), 1, source_reference)) {
+            return std::unexpected(query ? database_error(database, "Could not bind source cache")
+                                         : std::move(query.error()));
+        }
+        const auto step = sqlite3_step(query->get());
+        if (step == SQLITE_ROW) {
+            return true;
+        }
+        if (step == SQLITE_DONE) {
+            return false;
+        }
+        return std::unexpected(database_error(database, "Could not inspect source cache"));
+    };
+    auto source_cache = cache_exists(relocation.source_reference);
+    auto target_cache = cache_exists(relocation.target_reference);
+    if (!source_cache || !target_cache) {
+        auto error =
+            !source_cache ? std::move(source_cache.error()) : std::move(target_cache.error());
+        rollback();
+        return std::unexpected(std::move(error));
+    }
+    if (*target_cache) {
+        rollback();
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::conflict,
+            .message = "Relocation target already owns a metadata source cache",
+            .context = {{"target_path", relocation.target_reference}},
+        });
+    }
+
+    auto update_occurrences = prepare(
+        database,
+        "UPDATE list_items SET source_reference = ?, observed_device = ?, observed_inode = ?, "
+        "observed_size = ?, observed_mtime_seconds = ?, observed_mtime_nanoseconds = ? "
+        "WHERE source = ? AND source_reference = ?");
+    if (!update_occurrences ||
+        !bind_blob(update_occurrences->get(), 1, relocation.target_reference) ||
+        !bind_revision(update_occurrences->get(), 2, relocation.published_revision) ||
+        sqlite3_bind_int(update_occurrences->get(), 7, static_cast<int>(ListSource::local)) !=
+            SQLITE_OK ||
+        !bind_blob(update_occurrences->get(), 8, relocation.source_reference)) {
+        auto error = update_occurrences
+                         ? database_error(database, "Could not bind relocated occurrences")
+                         : std::move(update_occurrences.error());
+        rollback();
+        return std::unexpected(std::move(error));
+    }
+    if (auto updated =
+            step_done(database, update_occurrences->get(), "Could not relocate source occurrences");
+        !updated || static_cast<std::size_t>(sqlite3_changes(database)) != affected_occurrences) {
+        auto error = updated ? core::Error{.code = core::ErrorCode::database,
+                                           .message = "Relocation occurrence count changed",
+                                           .context = {}}
+                             : std::move(updated.error());
+        rollback();
+        return std::unexpected(std::move(error));
+    }
+
+    if (*source_cache) {
+        auto copy_cache = prepare(
+            database,
+            "INSERT INTO local_metadata_cache(source_reference, previous_device, previous_inode, "
+            "previous_size, previous_mtime_seconds, previous_mtime_nanoseconds, published_device, "
+            "published_inode, published_size, published_mtime_seconds, "
+            "published_mtime_nanoseconds) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? "
+            "FROM local_metadata_cache WHERE source_reference = ?");
+        auto copy_fields = prepare(
+            database,
+            "INSERT INTO local_metadata_cache_fields(source_reference, position, name, value, "
+            "native_name, provenance, language, description) SELECT ?, position, name, value, "
+            "native_name, provenance, language, description FROM local_metadata_cache_fields "
+            "WHERE source_reference = ? ORDER BY position");
+        auto delete_cache =
+            prepare(database, "DELETE FROM local_metadata_cache WHERE source_reference = ?");
+        if (!copy_cache || !copy_fields || !delete_cache) {
+            auto error = !copy_cache    ? std::move(copy_cache.error())
+                         : !copy_fields ? std::move(copy_fields.error())
+                                        : std::move(delete_cache.error());
+            rollback();
+            return std::unexpected(std::move(error));
+        }
+        if (!bind_blob(copy_cache->get(), 1, relocation.target_reference) ||
+            !bind_revision(copy_cache->get(), 2, relocation.previous_revision) ||
+            !bind_revision(copy_cache->get(), 7, relocation.published_revision) ||
+            !bind_blob(copy_cache->get(), 12, relocation.source_reference) ||
+            !bind_blob(copy_fields->get(), 1, relocation.target_reference) ||
+            !bind_blob(copy_fields->get(), 2, relocation.source_reference) ||
+            !bind_blob(delete_cache->get(), 1, relocation.source_reference)) {
+            auto error = database_error(database, "Could not bind source-cache relocation");
+            rollback();
+            return std::unexpected(std::move(error));
+        }
+        if (auto copied =
+                step_done(database, copy_cache->get(), "Could not copy relocated source cache");
+            !copied) {
+            rollback();
+            return std::unexpected(std::move(copied.error()));
+        }
+        if (auto copied = step_done(database, copy_fields->get(),
+                                    "Could not copy relocated source-cache fields");
+            !copied) {
+            rollback();
+            return std::unexpected(std::move(copied.error()));
+        }
+        if (auto removed =
+                step_done(database, delete_cache->get(), "Could not remove prior source cache");
+            !removed) {
+            rollback();
+            return std::unexpected(std::move(removed.error()));
+        }
+    }
+
+    auto insert_relocation = prepare(
+        database,
+        "INSERT INTO local_source_relocations(operation_id, source_reference, target_reference, "
+        "previous_device, previous_inode, previous_size, previous_mtime_seconds, "
+        "previous_mtime_nanoseconds, published_device, published_inode, published_size, "
+        "published_mtime_seconds, published_mtime_nanoseconds, affected_occurrences, "
+        "cache_rekeyed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+    if (!insert_relocation || !bind_text(insert_relocation->get(), 1, operation_id) ||
+        !bind_blob(insert_relocation->get(), 2, relocation.source_reference) ||
+        !bind_blob(insert_relocation->get(), 3, relocation.target_reference) ||
+        !bind_revision(insert_relocation->get(), 4, relocation.previous_revision) ||
+        !bind_revision(insert_relocation->get(), 9, relocation.published_revision) ||
+        sqlite3_bind_int64(insert_relocation->get(), 14,
+                           static_cast<sqlite3_int64>(affected_occurrences)) != SQLITE_OK ||
+        sqlite3_bind_int(insert_relocation->get(), 15, *source_cache ? 1 : 0) != SQLITE_OK) {
+        auto error = insert_relocation
+                         ? database_error(database, "Could not bind local-source relocation")
+                         : std::move(insert_relocation.error());
+        rollback();
+        return std::unexpected(std::move(error));
+    }
+    if (auto stored = step_done(database, insert_relocation->get(),
+                                "Could not store local-source relocation");
+        !stored) {
+        rollback();
+        return std::unexpected(std::move(stored.error()));
+    }
+    if (auto committed = execute(database, "COMMIT"); !committed) {
+        rollback();
+        return std::unexpected(std::move(committed.error()));
+    }
+    return LocalSourceRelocationResult{
+        .affected_occurrences = affected_occurrences,
+        .cache_rekeyed = *source_cache,
         .already_applied = false,
     };
 }

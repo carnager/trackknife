@@ -863,6 +863,24 @@ void BenchMainWindowTest::committedMetadataRefreshesDuplicatesAndPreservesCueOve
     QCOMPARE(model.rows()[0].source_revision, std::optional{revision});
     QCOMPARE(model.rows()[2].title, std::string{"Other"});
 
+    model.setCurrentSource(model.source(1), 1);
+    const core::LocalSourceRevision relocated_revision{.device = 6,
+                                                       .inode = 7,
+                                                       .size = 8,
+                                                       .modification_time_seconds = 9,
+                                                       .modification_time_nanoseconds = 10};
+    const std::string relocated{"/archive/shared.flac"};
+    const auto relocated_rows =
+        model.applyCommittedRelocation(source, relocated, revision, relocated_revision);
+    QVERIFY(relocated_rows.has_value());
+    QCOMPARE(*relocated_rows, 2U);
+    QCOMPARE(model.rows()[0].raw_path, relocated);
+    QCOMPARE(model.rows()[1].raw_path, relocated);
+    QCOMPARE(model.rows()[0].source_revision, std::optional{relocated_revision});
+    QCOMPARE(model.rows()[1].logical_reference, cue.logical_reference);
+    QCOMPARE(model.rows()[2].raw_path, std::string{"/music/other.flac"});
+    QVERIFY(model.data(model.index(1, 0), ui::track_current_role).toBool());
+
     auto legacy = cue;
     legacy.metadata.fields = {
         field("title", "Flattened CUE", metadata::FieldProvenance::cached_snapshot)};

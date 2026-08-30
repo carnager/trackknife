@@ -738,10 +738,17 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   idempotent dependent-state replay, startup completion, and conservative
   reconciliation pass real-file and injected-transition tests. This core is
   intentionally not exposed as a workspace action yet.
-- Next: implement the path-aware all-occurrence dependent-state transaction,
-  then same-filesystem undo and cross-filesystem verified-copy publication
-  before enabling workspace operation choices. The capture-pattern grammar and
-  chain import/export follow that vertical slice.
+- Done: ADR-0059 and reversible migration 15 add the concrete path-aware
+  dependent-state callback. One revision-guarded transaction re-keys every
+  local list/logical occurrence and the source metadata cache, records exact
+  idempotency evidence, and replays ordered revision-qualified relocations over
+  delayed workspace snapshots without redirecting a different file that later
+  reuses the path. The real same-filesystem executor now passes through this
+  repository transaction, and visible models retain their current-row anchor.
+- Next: implement same-filesystem undo, then cross-filesystem verified-copy
+  publication and active-playback reconciliation before enabling workspace
+  operation choices. The capture-pattern grammar and chain import/export
+  follow that vertical slice.
 
 ### Exit criteria
 

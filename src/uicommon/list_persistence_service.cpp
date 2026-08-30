@@ -287,4 +287,52 @@ ListPersistenceService::refreshLocalMetadataAndWait(persistence::LocalMetadataRe
     return std::move(*result);
 }
 
+core::Result<persistence::LocalSourceRelocationResult>
+ListPersistenceService::relocateLocalSourceAndWait(persistence::LocalSourceRelocation relocation) {
+    if (QThread::currentThread() == thread()) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invariant,
+            .message = "Local-source relocation cannot block the UI thread",
+            .context = {},
+        });
+    }
+    if (QThread::currentThread() == thread_) {
+        if (!state_->initialization_error.isEmpty() || !state_->repository) {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::database,
+                .message = state_->initialization_error.isEmpty()
+                               ? "List persistence is not initialized"
+                               : state_->initialization_error.toStdString(),
+                .context = {},
+            });
+        }
+        return state_->repository->relocate_local_source(relocation);
+    }
+    std::optional<core::Result<persistence::LocalSourceRelocationResult>> result;
+    QMetaObject::invokeMethod(
+        worker_,
+        [state = state_, relocation = std::move(relocation), &result] {
+            if (!state->initialization_error.isEmpty() || !state->repository) {
+                result = std::unexpected(core::Error{
+                    .code = core::ErrorCode::database,
+                    .message = state->initialization_error.isEmpty()
+                                   ? "List persistence is not initialized"
+                                   : state->initialization_error.toStdString(),
+                    .context = {},
+                });
+                return;
+            }
+            result = state->repository->relocate_local_source(relocation);
+        },
+        Qt::BlockingQueuedConnection);
+    if (!result) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invariant,
+            .message = "Local-source relocation did not return a persistence result",
+            .context = {},
+        });
+    }
+    return std::move(*result);
+}
+
 } // namespace trackknife::ui

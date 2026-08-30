@@ -286,6 +286,61 @@ LocalListModel::applyCommittedMetadata(const std::string& raw_path,
     return affected;
 }
 
+core::Result<std::size_t>
+LocalListModel::applyCommittedRelocation(const std::string& source_raw_path,
+                                         const std::string& target_raw_path,
+                                         const core::LocalSourceRevision& previous_revision,
+                                         const core::LocalSourceRevision& published_revision) {
+    if (source_raw_path.empty() || target_raw_path.empty() || source_raw_path == target_raw_path ||
+        previous_revision.inode == 0U || published_revision.inode == 0U) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invalid_argument,
+            .message = "Committed relocation requires distinct paths and valid revisions",
+            .context = {},
+        });
+    }
+    const auto matches_source = [&source_raw_path](const LocalTrackRow& row) {
+        return row.raw_path == source_raw_path;
+    };
+    const auto affected = static_cast<std::size_t>(std::ranges::count_if(rows_, matches_source));
+    if (affected == 0U) {
+        return std::size_t{0U};
+    }
+    if (std::ranges::any_of(rows_, [&target_raw_path](const LocalTrackRow& row) {
+            return row.raw_path == target_raw_path;
+        })) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::conflict,
+            .message = "Relocation target already exists in the local list",
+            .context = {{"target_path", target_raw_path}},
+        });
+    }
+    if (std::ranges::any_of(rows_, [&](const LocalTrackRow& row) {
+            return matches_source(row) && row.source_revision != previous_revision;
+        })) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::conflict,
+            .message = "Relocated rows no longer identify the published source",
+            .context = {{"source_path", source_raw_path}},
+        });
+    }
+
+    beginResetModel();
+    for (auto& row : rows_) {
+        if (!matches_source(row)) {
+            continue;
+        }
+        row.raw_path = target_raw_path;
+        row.source_revision = published_revision;
+    }
+    if (current_source_.raw_path == source_raw_path) {
+        current_source_.raw_path = target_raw_path;
+    }
+    endResetModel();
+    refreshCurrentRow();
+    return affected;
+}
+
 void LocalListModel::setCurrentPath(std::string raw_path, const int hint_row) {
     setCurrentSource(
         LocalTrackSource{.raw_path = std::move(raw_path), .selection = {}, .segment = std::nullopt},

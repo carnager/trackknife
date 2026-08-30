@@ -55,6 +55,8 @@ class ListPersistenceService final : public QObject {
     // transaction stays on the serialized persistence thread.
     [[nodiscard]] core::Result<persistence::LocalMetadataRefreshResult>
     refreshLocalMetadataAndWait(persistence::LocalMetadataRefresh refresh);
+    [[nodiscard]] core::Result<persistence::LocalSourceRelocationResult>
+    relocateLocalSourceAndWait(persistence::LocalSourceRelocation relocation);
 
   private:
     struct State;

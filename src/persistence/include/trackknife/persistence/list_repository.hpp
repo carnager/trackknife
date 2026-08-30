@@ -138,6 +138,23 @@ struct LocalMetadataRefreshResult {
                            const LocalMetadataRefreshResult&) = default;
 };
 
+struct LocalSourceRelocation {
+    core::StableId operation_id;
+    std::string source_reference;
+    std::string target_reference;
+    core::LocalSourceRevision previous_revision;
+    core::LocalSourceRevision published_revision;
+};
+
+struct LocalSourceRelocationResult {
+    std::size_t affected_occurrences{0U};
+    bool cache_rekeyed{false};
+    bool already_applied{false};
+
+    friend bool operator==(const LocalSourceRelocationResult&,
+                           const LocalSourceRelocationResult&) = default;
+};
+
 class ListRepository final {
   public:
     ListRepository(ListRepository&&) noexcept;
@@ -155,6 +172,12 @@ class ListRepository final {
     // its source cache. The operation identity makes recovery replay a no-op.
     [[nodiscard]] core::Result<LocalMetadataRefreshResult>
     refresh_local_metadata(const LocalMetadataRefresh& refresh);
+    // Atomically re-keys every revision-matching local occurrence and its
+    // source cache. Durable relocation history prevents a delayed workspace
+    // snapshot from resurrecting an earlier path and makes recovery replay a
+    // no-op.
+    [[nodiscard]] core::Result<LocalSourceRelocationResult>
+    relocate_local_source(const LocalSourceRelocation& relocation);
     [[nodiscard]] core::Result<std::vector<ConnectionProfile>> load_profiles() const;
     [[nodiscard]] core::Result<void> replace_profiles(std::span<const ConnectionProfile> profiles);
     [[nodiscard]] core::Result<std::vector<TrackViewPreset>> load_view_presets() const;

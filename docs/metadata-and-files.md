@@ -500,8 +500,21 @@ success restores the exact source path, while a journal failure afterwards
 retains the target and replays the callback during startup recovery. Ambiguous
 topology is never deleted. Case-only aliases on case-folding filesystems remain
 unsupported because ordinary rename cannot retain the no-replace guarantee.
-The concrete list/cache/playback relocation transaction, undo, cross-filesystem
-copy, bounded batch execution, and UI choices remain unavailable.
+ADR-0057 itself does not define the concrete dependent-state schema, undo,
+cross-filesystem copy, bounded batch execution, or UI choices.
+
+**Trackbench decision (ADR-0059):** migration 15 and the serialized list
+repository now supply the concrete all-occurrence path callback. Every exact
+local source occurrence must carry the captured previous revision; the one
+transaction advances all duplicate/logical rows to the target and published
+revision, re-keys any verified metadata cache, rejects target-state collisions,
+and records idempotent operation evidence. Ordered relocation records are
+replayed over load and replace-all snapshots only when path bytes and revision
+both match, so delayed A snapshots converge through A→B→C while a different
+file reusing A remains A. The visible list model follows the same guarded update
+and retains its current-row anchor. Same-filesystem undo, cross-filesystem
+verified copy, active-playback reconciliation, batching, and workspace choices
+remain unavailable.
 
 ### Plan pipeline
 

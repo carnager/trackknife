@@ -97,6 +97,12 @@ class LocalListModel final : public QAbstractTableModel {
     [[nodiscard]] core::Result<std::size_t>
     applyCommittedMetadata(const std::string& raw_path, const metadata::MetadataDocument& document,
                            const core::LocalSourceRevision& published_revision);
+    // Advances every in-memory occurrence of one durably relocated physical
+    // source while retaining logical identities and playback selection.
+    [[nodiscard]] core::Result<std::size_t>
+    applyCommittedRelocation(const std::string& source_raw_path, const std::string& target_raw_path,
+                             const core::LocalSourceRevision& previous_revision,
+                             const core::LocalSourceRevision& published_revision);
     // Marks the playing occurrence rendered by the shared delegate; an empty
     // path clears it.
     void setCurrentPath(std::string raw_path, int hint_row);
