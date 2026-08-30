@@ -6,6 +6,7 @@ qt_add_library(
     bench_main_window.hpp
     bench_main_window_helpers.cpp
     bench_main_window_helpers.hpp
+    bench_list_tabs.cpp
     bench_metadata_operations.cpp
     bench_mpd.cpp
     bench_track_views.cpp
