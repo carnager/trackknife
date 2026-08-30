@@ -145,6 +145,11 @@ class FailingOnceTransitionJournal final : public operations::FilePublicationJou
         return journal_.load_incomplete();
     }
 
+    core::Result<std::vector<operations::FilePublicationJournalRecord>>
+    load_reversals(const core::StableId& journal_id) const override {
+        return journal_.load_reversals(journal_id);
+    }
+
   private:
     operations::FilePublicationJournal& journal_;
     State failed_state_;
@@ -506,6 +511,172 @@ void realPublicationCommitsTheAllOccurrenceRelocationTransaction() {
     require(loaded && (*loaded)[0].items[0].source_reference == target.native() &&
                 (*loaded)[1].items[0].source_reference == target.native(),
             "publication relocation history must suppress stale source paths");
+
+    const auto undone = operations::undo_same_filesystem_publication(
+        committed->journal_id, journal,
+        [&](const operations::FilePublicationCommitResult& result) -> core::Result<void> {
+            auto relocated = repository.relocate_local_source(persistence::LocalSourceRelocation{
+                .operation_id = result.journal_id,
+                .source_reference = result.source_raw_path,
+                .target_reference = result.target_raw_path,
+                .previous_revision = result.source_revision,
+                .published_revision = result.target_revision,
+            });
+            return relocated ? core::Result<void>{} : std::unexpected(std::move(relocated.error()));
+        });
+    require(undone && read_file(source) == "physical relocation bytes" &&
+                !std::filesystem::exists(target),
+            "real dependent-state relocation must also commit the reverse publication");
+    loaded = repository.load_all();
+    require(loaded && (*loaded)[0].items[0].source_reference == source.native() &&
+                (*loaded)[1].items[0].source_reference == source.native(),
+            "undo must atomically return every persisted occurrence to the original path");
+    require(repository.replace_all(documents).has_value(),
+            "a snapshot from before publication may be saved after undo");
+    loaded = repository.load_all();
+    require(loaded && (*loaded)[0].items[0].source_reference == source.native() &&
+                (*loaded)[1].items[0].source_reference == source.native(),
+            "ordered relocation history must converge through publication and undo");
+}
+
+void completedSameFilesystemPublicationCanBeUndoneIdempotently() {
+    TemporaryDirectory directory;
+    const auto source = directory.path() / "source.flac";
+    const auto target = directory.path() / "new" / "target.flac";
+    write_file(source, "undo bytes");
+    const auto checked = preflight(source, target);
+    auto journal = open_journal(directory, "undo.sqlite3");
+    const auto committed = operations::commit_same_filesystem_publication(
+        checked, 0U, journal, successful_dependent_commit);
+    require(committed.has_value() && !std::filesystem::exists(source) &&
+                read_file(target) == "undo bytes",
+            "undo fixture must begin with a completed publication");
+
+    std::size_t callback_count = 0U;
+    const auto undone = operations::undo_same_filesystem_publication(
+        committed->journal_id, journal,
+        [&](const operations::FilePublicationCommitResult& result) -> core::Result<void> {
+            ++callback_count;
+            require(result.journal_id != committed->journal_id &&
+                        result.source_raw_path == target.native() &&
+                        result.target_raw_path == source.native() &&
+                        result.source_revision == committed->target_revision &&
+                        result.target_revision == committed->source_revision,
+                    "undo dependent state must receive the exact reverse publication");
+            require(read_file(source) == "undo bytes" && !std::filesystem::exists(target),
+                    "undo dependent state must run after reverse publication");
+            return {};
+        });
+    require(undone.has_value() && callback_count == 1U && read_file(source) == "undo bytes" &&
+                !std::filesystem::exists(target),
+            "completed publication must reverse through a second journaled rename");
+    const auto reversals = journal.load_reversals(committed->journal_id);
+    require(reversals && reversals->size() == 1U && reversals->front().id == undone->journal_id &&
+                reversals->front().reverses_journal_id == committed->journal_id &&
+                reversals->front().state == State::complete,
+            "completed undo must retain its relation and terminal evidence");
+
+    const auto replayed = operations::undo_same_filesystem_publication(
+        committed->journal_id, journal,
+        [&](const operations::FilePublicationCommitResult&) -> core::Result<void> {
+            ++callback_count;
+            return {};
+        });
+    require(replayed == undone && callback_count == 1U,
+            "repeated undo must return the completed reverse without replaying dependent state");
+}
+
+void failedUndoRestoresPublishedTargetAndCanBeRetried() {
+    TemporaryDirectory directory;
+    const auto source = directory.path() / "source.flac";
+    const auto target = directory.path() / "target.flac";
+    write_file(source, "retry undo");
+    const auto checked = preflight(source, target);
+    auto journal = open_journal(directory, "undo-retry.sqlite3");
+    const auto committed = operations::commit_same_filesystem_publication(
+        checked, 0U, journal, successful_dependent_commit);
+    require(committed.has_value(), "undo retry fixture must publish");
+    const auto failed = operations::undo_same_filesystem_publication(
+        committed->journal_id, journal,
+        [](const operations::FilePublicationCommitResult&) -> core::Result<void> {
+            return std::unexpected(core::Error{.code = core::ErrorCode::database,
+                                               .message = "injected undo dependent failure",
+                                               .context = {}});
+        });
+    require(!failed && failed.error().code == core::ErrorCode::database &&
+                !std::filesystem::exists(source) && read_file(target) == "retry undo",
+            "undo dependent failure must roll the reverse rename back to the published target");
+    auto reversals = journal.load_reversals(committed->journal_id);
+    require(reversals && reversals->size() == 1U && reversals->front().state == State::rolled_back,
+            "failed undo must retain a terminal retryable attempt");
+    const auto retried = operations::undo_same_filesystem_publication(
+        committed->journal_id, journal, successful_dependent_commit);
+    reversals = journal.load_reversals(committed->journal_id);
+    require(retried && reversals && reversals->size() == 2U &&
+                reversals->back().id == retried->journal_id &&
+                reversals->back().state == State::complete && read_file(source) == "retry undo" &&
+                !std::filesystem::exists(target),
+            "a rolled-back undo attempt must permit a fresh successful reversal");
+}
+
+void undoJournalBoundaryRecoversByReplayingDependentState() {
+    TemporaryDirectory directory;
+    const auto source = directory.path() / "source.flac";
+    const auto target = directory.path() / "target.flac";
+    write_file(source, "recover undo");
+    const auto checked = preflight(source, target);
+    auto durable = open_journal(directory, "undo-recovery.sqlite3");
+    const auto committed = operations::commit_same_filesystem_publication(
+        checked, 0U, durable, successful_dependent_commit);
+    require(committed.has_value(), "undo recovery fixture must publish");
+    FailingOnceTransitionJournal failing{durable, State::dependent_state_committed};
+    std::size_t callback_count = 0U;
+    std::optional<core::StableId> undo_id;
+    const auto interrupted = operations::undo_same_filesystem_publication(
+        committed->journal_id, failing,
+        [&](const operations::FilePublicationCommitResult& result) -> core::Result<void> {
+            ++callback_count;
+            undo_id = result.journal_id;
+            return {};
+        });
+    require(!interrupted && callback_count == 1U && undo_id &&
+                read_file(source) == "recover undo" && !std::filesystem::exists(target),
+            "a post-dependent undo journal failure must retain the restored source path");
+    const auto incomplete = durable.load(*undo_id);
+    require(incomplete && *incomplete && (**incomplete).state == State::target_published,
+            "interrupted undo must remain at the replayable target-published boundary");
+    const auto recovered = operations::recover_same_filesystem_publications(
+        durable, [&](const operations::FilePublicationCommitResult& result) -> core::Result<void> {
+            ++callback_count;
+            require(result.journal_id == *undo_id,
+                    "startup recovery must replay the reverse operation identity");
+            return {};
+        });
+    require(recovered && recovered->size() == 1U && callback_count == 2U &&
+                recovered->front().journal_id == *undo_id &&
+                recovered->front().outcome ==
+                    operations::FilePublicationRecoveryOutcome::completed &&
+                read_file(source) == "recover undo" && !std::filesystem::exists(target),
+            "startup recovery must complete an interrupted undo without moving the file again");
+}
+
+void changedUndoTopologyCreatesNoReverseJournal() {
+    TemporaryDirectory directory;
+    const auto source = directory.path() / "source.flac";
+    const auto target = directory.path() / "target.flac";
+    write_file(source, "original");
+    const auto checked = preflight(source, target);
+    auto journal = open_journal(directory, "undo-conflict.sqlite3");
+    const auto committed = operations::commit_same_filesystem_publication(
+        checked, 0U, journal, successful_dependent_commit);
+    require(committed.has_value(), "undo conflict fixture must publish");
+    write_file(source, "unrelated replacement");
+    const auto rejected = operations::undo_same_filesystem_publication(
+        committed->journal_id, journal, successful_dependent_commit);
+    require(!rejected && rejected.error().code == core::ErrorCode::conflict &&
+                read_file(source) == "unrelated replacement" && read_file(target) == "original" &&
+                journal.load_reversals(committed->journal_id)->empty(),
+            "an occupied original path must block undo without journal or filesystem mutation");
 }
 
 void cancellationBeforeCommitCreatesNoJournal() {
@@ -537,6 +708,10 @@ int main() {
     recoveryRollbackAndPostDependentCompletionAreExact();
     ambiguousRecoveryNeverDeletesEitherPath();
     realPublicationCommitsTheAllOccurrenceRelocationTransaction();
+    completedSameFilesystemPublicationCanBeUndoneIdempotently();
+    failedUndoRestoresPublishedTargetAndCanBeRetried();
+    undoJournalBoundaryRecoversByReplayingDependentState();
+    changedUndoTopologyCreatesNoReverseJournal();
     cancellationBeforeCommitCreatesNoJournal();
     std::cout << "file publication executor tests passed\n";
     return 0;

@@ -42,6 +42,9 @@ struct FilePublicationJournalRecord {
     std::optional<core::LocalSourceRevision> target_revision;
     std::vector<std::size_t> occurrence_indexes;
     std::vector<std::string> planned_missing_directory_raw_paths;
+    // A reverse publication is an undo attempt for this completed record.
+    // Rolled-back attempts may be followed by another reverse record.
+    std::optional<core::StableId> reverses_journal_id;
     std::optional<core::Error> failure;
 
     friend bool operator==(const FilePublicationJournalRecord&,
@@ -80,6 +83,8 @@ class FilePublicationJournal {
     load(const core::StableId& id) const = 0;
     [[nodiscard]] virtual core::Result<std::vector<FilePublicationJournalRecord>>
     load_incomplete() const = 0;
+    [[nodiscard]] virtual core::Result<std::vector<FilePublicationJournalRecord>>
+    load_reversals(const core::StableId& journal_id) const = 0;
 };
 
 } // namespace trackknife::operations

@@ -516,6 +516,17 @@ and retains its current-row anchor. Same-filesystem undo, cross-filesystem
 verified copy, active-playback reconciliation, batching, and workspace choices
 remain unavailable.
 
+**Trackbench decision (ADR-0060):** a same-filesystem undo is a second durable
+publication record linked to its completed forward operation. It locks and
+revalidates the exact published target, requires the original parent and an
+absent original name, journals before a no-replace reverse rename, syncs and
+verifies both entries, then sends a new B→A identity through the same ADR-0059
+all-occurrence callback. Dependent failure restores B; a crash after callback
+success leaves A and replays the idempotent reverse record at startup. Rolled-
+back attempts may retry, while a completed reversal makes repeated undo a
+verified no-op. Directories created for the forward target are never removed.
+The core undo exists, but operation history UI remains unavailable.
+
 ### Plan pipeline
 
 ```text

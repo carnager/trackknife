@@ -745,10 +745,15 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   delayed workspace snapshots without redirecting a different file that later
   reuses the path. The real same-filesystem executor now passes through this
   repository transaction, and visible models retain their current-row anchor.
-- Next: implement same-filesystem undo, then cross-filesystem verified-copy
-  publication and active-playback reconciliation before enabling workspace
-  operation choices. The capture-pattern grammar and chain import/export
-  follow that vertical slice.
+- Done: ADR-0060 and reversible migration 16 make a same-filesystem undo a
+  related reverse publication with its own identity. Exact locked revision and
+  absent-name checks precede a journaled no-replace rename; dependent failure
+  restores the forward target, rolled-back attempts can retry, completed undo
+  is idempotent, and a post-callback crash reuses ordinary startup recovery.
+  The real list/cache callback proves ordered A→B→A convergence.
+- Next: implement cross-filesystem verified-copy publication and active-
+  playback reconciliation before enabling workspace operation choices. The
+  capture-pattern grammar and chain import/export follow that vertical slice.
 
 ### Exit criteria
 

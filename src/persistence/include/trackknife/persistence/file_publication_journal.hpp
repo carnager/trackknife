@@ -30,6 +30,8 @@ class SqliteFilePublicationJournal final : public operations::FilePublicationJou
     load(const core::StableId& id) const override;
     [[nodiscard]] core::Result<std::vector<operations::FilePublicationJournalRecord>>
     load_incomplete() const override;
+    [[nodiscard]] core::Result<std::vector<operations::FilePublicationJournalRecord>>
+    load_reversals(const core::StableId& journal_id) const override;
 
   private:
     struct Impl;

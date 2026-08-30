@@ -549,6 +549,98 @@ commit_result(const FilePublicationJournalRecord& record,
     };
 }
 
+[[nodiscard]] core::Result<FilePublicationCommitResult> execute_created_same_filesystem_rename(
+    FilePublicationJournalRecord record, const LockedSource& source,
+    const Descriptor& target_parent, FilePublicationJournal& journal,
+    const FilePublicationDependentStateCommitter& dependent_state_committer,
+    const core::CancellationToken& cancellation) {
+    const auto finish_before_publication =
+        [&](const core::Error& failure) -> core::Result<FilePublicationCommitResult> {
+        auto terminal =
+            terminal_transition(journal, record, State::planned, std::nullopt, failure, true);
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(failure);
+    };
+    if (cancellation.is_cancellation_requested()) {
+        return finish_before_publication(cancelled(record.source_raw_path, record.target_raw_path));
+    }
+    const auto source_path = std::filesystem::path{record.source_raw_path};
+    const auto target_path = std::filesystem::path{record.target_raw_path};
+    if (auto absent = require_target_absent(target_parent, target_path.filename().native(), record);
+        !absent) {
+        return finish_before_publication(absent.error());
+    }
+    if (auto current_source =
+            require_locked_source_entry(source, source_path.filename().native(), record);
+        !current_source) {
+        return finish_before_publication(current_source.error());
+    }
+    if (cancellation.is_cancellation_requested()) {
+        return finish_before_publication(cancelled(record.source_raw_path, record.target_raw_path));
+    }
+    if (auto renamed = rename_no_replace(source.parent, source_path.filename().native(),
+                                         target_parent, target_path.filename().native(), record);
+        !renamed) {
+        return finish_before_publication(renamed.error());
+    }
+    const auto target_revision = source.revision;
+    auto synced = sync_publication_directories(source.parent, target_parent, record);
+    auto verified = verify_published_topology(record, target_revision);
+    if (!synced || !verified) {
+        const auto failure = !synced ? synced.error() : verified.error();
+        const auto rolled_back = rollback_rename(record, target_revision);
+        auto terminal = terminal_transition(journal, record, State::planned, std::nullopt, failure,
+                                            rolled_back.has_value());
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(rolled_back ? failure : rolled_back.error());
+    }
+    if (auto published =
+            transition(journal, record, State::planned, State::target_published, target_revision);
+        !published) {
+        const auto& failure = published.error();
+        const auto rolled_back = rollback_rename(record, target_revision);
+        auto terminal = terminal_transition(journal, record, State::planned, std::nullopt, failure,
+                                            rolled_back.has_value());
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(rolled_back ? failure : rolled_back.error());
+    }
+    record.state = State::target_published;
+    record.target_revision = target_revision;
+    auto result = commit_result(record, target_revision);
+    if (auto dependent = dependent_state_committer(result); !dependent) {
+        const auto& failure = dependent.error();
+        const auto rolled_back = rollback_rename(record, target_revision);
+        auto terminal = terminal_transition(journal, record, State::target_published,
+                                            target_revision, failure, rolled_back.has_value());
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(rolled_back ? failure : rolled_back.error());
+    }
+    if (auto final_topology = verify_published_topology(record, target_revision); !final_topology) {
+        auto marked = terminal_transition(journal, record, State::target_published, target_revision,
+                                          final_topology.error(), false);
+        return std::unexpected(marked ? final_topology.error() : std::move(marked.error()));
+    }
+    if (auto dependent = transition(journal, record, State::target_published,
+                                    State::dependent_state_committed, target_revision);
+        !dependent) {
+        return std::unexpected(std::move(dependent.error()));
+    }
+    if (auto completed = transition(journal, record, State::dependent_state_committed,
+                                    State::complete, target_revision);
+        !completed) {
+        return std::unexpected(std::move(completed.error()));
+    }
+    return result;
+}
+
 [[nodiscard]] core::Result<void> mark_reconciliation(FilePublicationJournal& journal,
                                                      const FilePublicationJournalRecord& record,
                                                      const core::Error& issue) {
@@ -630,6 +722,7 @@ core::Result<FilePublicationCommitResult> commit_same_filesystem_publication(
             .target_revision = std::nullopt,
             .occurrence_indexes = checked.planned.item_indexes,
             .planned_missing_directory_raw_paths = checked.missing_directory_raw_paths,
+            .reverses_journal_id = std::nullopt,
             .failure = std::nullopt,
         };
         if (auto absent = require_target_absent(fresh_target->descriptor,
@@ -674,82 +767,123 @@ core::Result<FilePublicationCommitResult> commit_same_filesystem_publication(
             record->source_raw_path, record->target_raw_path, record->id);
         return finish_before_publication(failure);
     }
-    if (auto absent = require_target_absent(target_parent->descriptor,
-                                            target_path.filename().native(), *record);
-        !absent) {
-        return finish_before_publication(absent.error());
+    return execute_created_same_filesystem_rename(std::move(*record), *source,
+                                                  target_parent->descriptor, journal,
+                                                  dependent_state_committer, cancellation);
+}
+
+core::Result<FilePublicationCommitResult> undo_same_filesystem_publication(
+    const core::StableId& journal_id, FilePublicationJournal& journal,
+    const FilePublicationDependentStateCommitter& dependent_state_committer,
+    const core::CancellationToken& cancellation) {
+    if (journal_id.is_nil() || !dependent_state_committer) {
+        return std::unexpected(publication_error(
+            core::ErrorCode::invalid_argument,
+            "File-publication undo requires an operation and state committer", {}));
     }
     if (cancellation.is_cancellation_requested()) {
-        return finish_before_publication(
-            cancelled(record->source_raw_path, record->target_raw_path));
+        return std::unexpected(cancelled({}));
     }
-    const auto source_path = std::filesystem::path{record->source_raw_path};
+    auto loaded = journal.load(journal_id);
+    if (!loaded) {
+        return std::unexpected(std::move(loaded.error()));
+    }
+    if (!*loaded) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::not_found,
+            .message = "File publication was not found for undo",
+            .context = {{"journal_id", journal_id.to_string()}},
+        });
+    }
+    const auto& original = **loaded;
+    if (original.publication != OutputPathPublicationKind::same_filesystem_rename ||
+        original.state != State::complete || !original.target_revision ||
+        original.reverses_journal_id) {
+        return std::unexpected(
+            publication_error(core::ErrorCode::conflict,
+                              "Only a completed original same-filesystem publication can be undone",
+                              original.source_raw_path, original.target_raw_path, original.id));
+    }
+    auto reversals = journal.load_reversals(original.id);
+    if (!reversals) {
+        return std::unexpected(std::move(reversals.error()));
+    }
+    for (const auto& reversal : *reversals) {
+        if (reversal.state == State::rolled_back) {
+            continue;
+        }
+        if (reversal.state == State::complete && reversal.target_revision) {
+            if (auto topology = verify_published_topology(reversal, *reversal.target_revision);
+                !topology) {
+                return std::unexpected(std::move(topology.error()));
+            }
+            return commit_result(reversal, *reversal.target_revision);
+        }
+        return std::unexpected(publication_error(
+            core::ErrorCode::conflict,
+            reversal.state == State::needs_reconciliation
+                ? "File-publication undo requires manual reconciliation"
+                : "File-publication undo must finish startup recovery before retry",
+            reversal.source_raw_path, reversal.target_raw_path, reversal.id));
+    }
+
+    auto source = open_locked_source(original.target_raw_path, *original.target_revision,
+                                     cancellation, original.source_raw_path, original.id);
+    if (!source) {
+        return std::unexpected(std::move(source.error()));
+    }
+    const auto target_path = std::filesystem::path{original.source_raw_path};
+    auto target_parent =
+        walk_directory(target_path.parent_path().native(), false, original.target_raw_path,
+                       original.source_raw_path, original.id);
+    if (!target_parent) {
+        return std::unexpected(std::move(target_parent.error()));
+    }
+    struct stat target_parent_status{};
+    if (::fstat(target_parent->descriptor.get(), &target_parent_status) != 0 ||
+        static_cast<std::uint64_t>(target_parent_status.st_dev) != source->revision.device ||
+        ::faccessat(source->parent.get(), ".", W_OK | X_OK, 0) != 0 ||
+        ::faccessat(target_parent->descriptor.get(), ".", W_OK | X_OK, 0) != 0) {
+        return std::unexpected(
+            publication_error(core::ErrorCode::conflict,
+                              "Undo filesystem or directory permissions changed after publication",
+                              original.target_raw_path, original.source_raw_path, original.id));
+    }
+    FilePublicationJournalRecord reversal{
+        .id = core::StableId::random(),
+        .state = State::planned,
+        .publication = OutputPathPublicationKind::same_filesystem_rename,
+        .source_raw_path = original.target_raw_path,
+        .target_raw_path = original.source_raw_path,
+        .prepared_raw_path = {},
+        .expected_source_revision = source->revision,
+        .prepared_revision = std::nullopt,
+        .target_revision = std::nullopt,
+        .occurrence_indexes = original.occurrence_indexes,
+        .planned_missing_directory_raw_paths = {},
+        .reverses_journal_id = original.id,
+        .failure = std::nullopt,
+    };
+    if (auto absent = require_target_absent(target_parent->descriptor,
+                                            target_path.filename().native(), reversal);
+        !absent) {
+        return std::unexpected(std::move(absent.error()));
+    }
+    const auto source_path = std::filesystem::path{reversal.source_raw_path};
     if (auto current_source =
-            require_locked_source_entry(*source, source_path.filename().native(), *record);
+            require_locked_source_entry(*source, source_path.filename().native(), reversal);
         !current_source) {
-        return finish_before_publication(current_source.error());
+        return std::unexpected(std::move(current_source.error()));
     }
-    if (auto renamed =
-            rename_no_replace(source->parent, source_path.filename().native(),
-                              target_parent->descriptor, target_path.filename().native(), *record);
-        !renamed) {
-        return finish_before_publication(renamed.error());
+    if (cancellation.is_cancellation_requested()) {
+        return std::unexpected(cancelled(reversal.source_raw_path, reversal.target_raw_path));
     }
-    const auto target_revision = source->revision;
-    auto synced = sync_publication_directories(source->parent, target_parent->descriptor, *record);
-    auto verified = verify_published_topology(*record, target_revision);
-    if (!synced || !verified) {
-        const auto failure = !synced ? synced.error() : verified.error();
-        const auto rolled_back = rollback_rename(*record, target_revision);
-        auto terminal = terminal_transition(journal, *record, State::planned, std::nullopt, failure,
-                                            rolled_back.has_value());
-        if (!terminal) {
-            return std::unexpected(std::move(terminal.error()));
-        }
-        return std::unexpected(rolled_back ? failure : rolled_back.error());
+    if (auto created = journal.create(reversal); !created) {
+        return std::unexpected(std::move(created.error()));
     }
-    if (auto published =
-            transition(journal, *record, State::planned, State::target_published, target_revision);
-        !published) {
-        const auto& failure = published.error();
-        const auto rolled_back = rollback_rename(*record, target_revision);
-        auto terminal = terminal_transition(journal, *record, State::planned, std::nullopt, failure,
-                                            rolled_back.has_value());
-        if (!terminal) {
-            return std::unexpected(std::move(terminal.error()));
-        }
-        return std::unexpected(rolled_back ? failure : rolled_back.error());
-    }
-    record->state = State::target_published;
-    record->target_revision = target_revision;
-    auto result = commit_result(*record, target_revision);
-    if (auto dependent = dependent_state_committer(result); !dependent) {
-        const auto& failure = dependent.error();
-        const auto rolled_back = rollback_rename(*record, target_revision);
-        auto terminal = terminal_transition(journal, *record, State::target_published,
-                                            target_revision, failure, rolled_back.has_value());
-        if (!terminal) {
-            return std::unexpected(std::move(terminal.error()));
-        }
-        return std::unexpected(rolled_back ? failure : rolled_back.error());
-    }
-    if (auto final_topology = verify_published_topology(*record, target_revision);
-        !final_topology) {
-        auto marked = terminal_transition(journal, *record, State::target_published,
-                                          target_revision, final_topology.error(), false);
-        return std::unexpected(marked ? final_topology.error() : std::move(marked.error()));
-    }
-    if (auto dependent = transition(journal, *record, State::target_published,
-                                    State::dependent_state_committed, target_revision);
-        !dependent) {
-        return std::unexpected(std::move(dependent.error()));
-    }
-    if (auto completed = transition(journal, *record, State::dependent_state_committed,
-                                    State::complete, target_revision);
-        !completed) {
-        return std::unexpected(std::move(completed.error()));
-    }
-    return result;
+    return execute_created_same_filesystem_rename(std::move(reversal), *source,
+                                                  target_parent->descriptor, journal,
+                                                  dependent_state_committer, cancellation);
 }
 
 core::Result<std::vector<FilePublicationRecoveryResult>> recover_same_filesystem_publications(

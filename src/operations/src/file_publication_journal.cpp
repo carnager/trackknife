@@ -44,6 +44,7 @@ make_file_publication_journal_record(const OutputPathPreflight& preflight,
         .target_revision = std::nullopt,
         .occurrence_indexes = source.planned.item_indexes,
         .planned_missing_directory_raw_paths = source.missing_directory_raw_paths,
+        .reverses_journal_id = std::nullopt,
         .failure = std::nullopt,
     };
 }

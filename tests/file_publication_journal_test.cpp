@@ -74,6 +74,7 @@ Record planned_record(const Kind kind) {
         .target_revision = std::nullopt,
         .occurrence_indexes = {2U, 7U, 99U},
         .planned_missing_directory_raw_paths = {"/library/Artist", "/library/Artist/Album"},
+        .reverses_journal_id = std::nullopt,
         .failure = std::nullopt,
     };
     if (kind == Kind::cross_filesystem_copy) {
@@ -250,11 +251,59 @@ void failureEvidenceIsValidatedAndReconciliationRemainsVisible() {
             "reconciliation evidence must remain visible to startup recovery UI");
 }
 
+void reversalRelationsRoundTripAndRequireAnExistingOriginal() {
+    TemporaryDatabase database;
+    auto opened = persistence::SqliteFilePublicationJournal::open(database.path());
+    require(opened.has_value(), "reversal journal must open");
+    auto journal = std::move(*opened);
+    const auto original = planned_record(Kind::same_filesystem_rename);
+    require(journal.create(original).has_value(), "reversal original must persist");
+    const auto published = revision(80U);
+    require(
+        journal.transition(original.id, Transition{.expected_state = State::planned,
+                                                   .state = State::target_published,
+                                                   .prepared_revision = std::nullopt,
+                                                   .target_revision = published,
+                                                   .failure = std::nullopt}) &&
+            journal.transition(original.id, Transition{.expected_state = State::target_published,
+                                                       .state = State::dependent_state_committed,
+                                                       .prepared_revision = std::nullopt,
+                                                       .target_revision = published,
+                                                       .failure = std::nullopt}) &&
+            journal.transition(original.id,
+                               Transition{.expected_state = State::dependent_state_committed,
+                                          .state = State::complete,
+                                          .prepared_revision = std::nullopt,
+                                          .target_revision = published,
+                                          .failure = std::nullopt}),
+        "reversal original must reach complete");
+
+    auto reversal = planned_record(Kind::same_filesystem_rename);
+    reversal.source_raw_path = original.target_raw_path;
+    reversal.target_raw_path = original.source_raw_path;
+    reversal.expected_source_revision = published;
+    reversal.planned_missing_directory_raw_paths.clear();
+    reversal.reverses_journal_id = original.id;
+    require(journal.create(reversal).has_value(), "reverse operation must persist its relation");
+    auto related = journal.load_reversals(original.id);
+    require(related && *related == std::vector{reversal},
+            "reverse lookup must retain complete raw and revision evidence");
+
+    auto missing_parent = reversal;
+    missing_parent.id = core::StableId::random();
+    missing_parent.reverses_journal_id = core::StableId::random();
+    const auto rejected = journal.create(missing_parent);
+    require(!rejected && rejected.error().code == core::ErrorCode::invalid_argument &&
+                journal.load_reversals(*missing_parent.reverses_journal_id)->empty(),
+            "a reversal cannot reference an absent original operation");
+}
+
 } // namespace
 
 int main() {
     sameFilesystemStateMachineIsDurableAndOptimistic();
     crossFilesystemStateMachinePreservesEveryRecoveryBoundary();
     failureEvidenceIsValidatedAndReconciliationRemainsVisible();
+    reversalRelationsRoundTripAndRequireAnExistingOriginal();
     return EXIT_SUCCESS;
 }

@@ -26,6 +26,7 @@ namespace {
 constexpr std::size_t maximum_occurrences = 100'000U;
 constexpr std::size_t maximum_directories = 4'096U;
 constexpr std::size_t maximum_incomplete_records = 10'000U;
+constexpr std::size_t maximum_reversal_records = 1'024U;
 constexpr std::size_t maximum_text_bytes = 64U * 1024U * 1024U;
 
 using Kind = operations::OutputPathPublicationKind;
@@ -196,6 +197,12 @@ read_optional_revision(sqlite3_stmt* statement, const int first) {
     return sqlite3_bind_int64(statement, column, static_cast<sqlite3_int64>(value)) == SQLITE_OK;
 }
 
+[[nodiscard]] bool bind_optional_id(sqlite3_stmt* statement, const int column,
+                                    const std::optional<core::StableId>& id) {
+    return id ? bind_blob(statement, column, id->to_string())
+              : sqlite3_bind_null(statement, column) == SQLITE_OK;
+}
+
 [[nodiscard]] core::Result<std::size_t> read_index(sqlite3_stmt* statement, const int column) {
     const auto value = sqlite3_column_int64(statement, column);
     if (value < 0 || static_cast<std::uint64_t>(value) >
@@ -315,6 +322,8 @@ valid_failure_evidence(const Kind kind,
         !valid_optional_revision(record.target_revision) || record.occurrence_indexes.empty() ||
         record.occurrence_indexes.size() > maximum_occurrences ||
         record.planned_missing_directory_raw_paths.size() > maximum_directories ||
+        (record.reverses_journal_id && (record.reverses_journal_id == record.id ||
+                                        record.publication != Kind::same_filesystem_rename)) ||
         (record.failure && !record.failure->context.empty())) {
         return std::unexpected(invalid_record("Invalid file-publication journal structure"));
     }
@@ -373,6 +382,73 @@ valid_failure_evidence(const Kind kind,
         return std::unexpected(invalid_record("Invalid planned file-publication journal"));
     }
     return validate_structure(record);
+}
+
+[[nodiscard]] core::Result<void> validate_reversal_parent(sqlite3* database, const Record& record) {
+    if (!record.reverses_journal_id) {
+        return {};
+    }
+    auto parent = prepare(
+        database,
+        "SELECT state, publication_kind, source_path, target_path, target_device, target_inode, "
+        "target_size, target_mtime_seconds, target_mtime_nanoseconds, reverses_id "
+        "FROM file_publication_journal WHERE id = ?");
+    if (!parent || !bind_blob(parent->get(), 1, record.reverses_journal_id->to_string())) {
+        return std::unexpected(parent ? database_error(database, "Could not bind reversal parent")
+                                      : std::move(parent.error()));
+    }
+    const auto parent_step = sqlite3_step(parent->get());
+    if (parent_step == SQLITE_DONE) {
+        return std::unexpected(invalid_record("File-publication reversal parent does not exist"));
+    }
+    if (parent_step != SQLITE_ROW) {
+        return std::unexpected(database_error(database, "Could not load reversal parent"));
+    }
+    auto target_revision = read_optional_revision(parent->get(), 4);
+    if (!target_revision) {
+        return std::unexpected(std::move(target_revision.error()));
+    }
+    if (sqlite3_column_int(parent->get(), 0) != static_cast<int>(State::complete) ||
+        sqlite3_column_int(parent->get(), 1) != static_cast<int>(Kind::same_filesystem_rename) ||
+        column_blob(parent->get(), 2) != record.target_raw_path ||
+        column_blob(parent->get(), 3) != record.source_raw_path || !*target_revision ||
+        **target_revision != record.expected_source_revision ||
+        sqlite3_column_type(parent->get(), 9) != SQLITE_NULL ||
+        !record.planned_missing_directory_raw_paths.empty()) {
+        return std::unexpected(
+            invalid_record("File-publication reversal does not match its completed original"));
+    }
+
+    auto occurrences =
+        prepare(database, "SELECT position, item_index FROM file_publication_journal_occurrences "
+                          "WHERE journal_id = ? ORDER BY position");
+    if (!occurrences ||
+        !bind_blob(occurrences->get(), 1, record.reverses_journal_id->to_string())) {
+        return std::unexpected(occurrences
+                                   ? database_error(database, "Could not bind reversal occurrences")
+                                   : std::move(occurrences.error()));
+    }
+    std::size_t position = 0U;
+    int step = SQLITE_ROW;
+    while ((step = sqlite3_step(occurrences->get())) == SQLITE_ROW) {
+        auto persisted_position = read_index(occurrences->get(), 0);
+        auto item_index = read_index(occurrences->get(), 1);
+        if (!persisted_position || !item_index || *persisted_position != position ||
+            position >= record.occurrence_indexes.size() ||
+            record.occurrence_indexes[position] != *item_index) {
+            return std::unexpected(
+                invalid_record("File-publication reversal occurrence evidence differs"));
+        }
+        ++position;
+    }
+    if (step != SQLITE_DONE) {
+        return std::unexpected(database_error(database, "Could not load reversal occurrences"));
+    }
+    if (position != record.occurrence_indexes.size()) {
+        return std::unexpected(
+            invalid_record("File-publication reversal occurrence evidence differs"));
+    }
+    return {};
 }
 
 [[nodiscard]] core::Result<void> validate_transition(const Kind kind,
@@ -496,6 +572,15 @@ valid_failure_evidence(const Kind kind,
         auto expected = read_revision(statement->get(), 6);
         auto prepared_revision = read_optional_revision(statement->get(), 11);
         auto target_revision = read_optional_revision(statement->get(), 16);
+        std::optional<core::StableId> reverses_journal_id;
+        if (sqlite3_column_type(statement->get(), 23) != SQLITE_NULL) {
+            auto parsed = core::StableId::parse(column_blob(statement->get(), 23));
+            if (!parsed || parsed->is_nil()) {
+                return std::unexpected(
+                    database_error(database, "Invalid file-publication reversal identity"));
+            }
+            reverses_journal_id = *parsed;
+        }
         if (!parsed_id || parsed_id->is_nil() || state_value < 0 || state_value > 7 ||
             kind_value < static_cast<int>(Kind::same_filesystem_rename) ||
             kind_value > static_cast<int>(Kind::cross_filesystem_copy) || !expected ||
@@ -532,6 +617,7 @@ valid_failure_evidence(const Kind kind,
                       .target_revision = *target_revision,
                       .occurrence_indexes = {},
                       .planned_missing_directory_raw_paths = {},
+                      .reverses_journal_id = reverses_journal_id,
                       .failure = std::move(failure)};
         if (auto children = load_children(database, record); !children) {
             return std::unexpected(std::move(children.error()));
@@ -554,7 +640,7 @@ constexpr auto record_columns =
     "expected_inode, expected_size, expected_mtime_seconds, expected_mtime_nanoseconds, "
     "prepared_device, prepared_inode, prepared_size, prepared_mtime_seconds, "
     "prepared_mtime_nanoseconds, target_device, target_inode, target_size, "
-    "target_mtime_seconds, target_mtime_nanoseconds, error_code, error_message ";
+    "target_mtime_seconds, target_mtime_nanoseconds, error_code, error_message, reverses_id ";
 
 } // namespace
 
@@ -618,8 +704,13 @@ SqliteFilePublicationJournal::create(const operations::FilePublicationJournalRec
         return begun;
     }
     const auto rollback = [database] { static_cast<void>(execute(database, "ROLLBACK")); };
+    if (auto parent = validate_reversal_parent(database, record); !parent) {
+        auto error = std::move(parent.error());
+        rollback();
+        return std::unexpected(std::move(error));
+    }
     const auto insert_sql = "INSERT INTO file_publication_journal(" + std::string{record_columns} +
-                            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+                            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
     auto insert = prepare(database, insert_sql.c_str());
     const auto id = record.id.to_string();
     if (!insert || !bind_blob(insert->get(), 1, id) ||
@@ -632,7 +723,8 @@ SqliteFilePublicationJournal::create(const operations::FilePublicationJournalRec
         !bind_optional_revision(insert->get(), 12, record.prepared_revision) ||
         !bind_optional_revision(insert->get(), 17, record.target_revision) ||
         sqlite3_bind_null(insert->get(), 22) != SQLITE_OK ||
-        sqlite3_bind_null(insert->get(), 23) != SQLITE_OK) {
+        sqlite3_bind_null(insert->get(), 23) != SQLITE_OK ||
+        !bind_optional_id(insert->get(), 24, record.reverses_journal_id)) {
         auto error = insert ? database_error(database, "Could not bind file-publication journal")
                             : std::move(insert.error());
         rollback();
@@ -806,6 +898,26 @@ SqliteFilePublicationJournal::load_incomplete() const {
     if (records->size() > maximum_incomplete_records) {
         return std::unexpected(
             database_error(implementation_->database, "Too many incomplete file publications"));
+    }
+    return records;
+}
+
+core::Result<std::vector<operations::FilePublicationJournalRecord>>
+SqliteFilePublicationJournal::load_reversals(const core::StableId& journal_id) const {
+    if (journal_id.is_nil()) {
+        return std::unexpected(invalid_record("File-publication journal ID cannot be nil"));
+    }
+    std::scoped_lock lock{implementation_->mutex};
+    const auto sql = "SELECT " + std::string{record_columns} +
+                     "FROM file_publication_journal WHERE reverses_id = ? "
+                     "ORDER BY rowid LIMIT 1025";
+    auto records = load_records(implementation_->database, sql.c_str(), journal_id.to_string());
+    if (!records) {
+        return std::unexpected(std::move(records.error()));
+    }
+    if (records->size() > maximum_reversal_records) {
+        return std::unexpected(
+            database_error(implementation_->database, "Too many file-publication reversals"));
     }
     return records;
 }

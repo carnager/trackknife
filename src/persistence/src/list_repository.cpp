@@ -21,7 +21,7 @@
 namespace trackknife::persistence {
 namespace {
 
-constexpr unsigned current_schema_version = 15U;
+constexpr unsigned current_schema_version = 16U;
 constexpr std::size_t maximum_documents = 1'024U;
 constexpr std::size_t maximum_items_per_document = 1'000'000U;
 constexpr std::size_t maximum_fields_per_item = 4'096U;
@@ -599,6 +599,18 @@ read_optional_revision(sqlite3_stmt* statement, const int first,
             "CREATE INDEX local_source_relocations_source "
             "ON local_source_relocations(source_reference, sequence);"
             "UPDATE schema_version SET version = 15;";
+        if (auto result = execute(database, migration); !result) {
+            rollback();
+            return result;
+        }
+    }
+    if (version <= 15) {
+        constexpr auto migration =
+            "ALTER TABLE file_publication_journal ADD COLUMN reverses_id TEXT "
+            "REFERENCES file_publication_journal(id);"
+            "CREATE INDEX file_publication_journal_reverses "
+            "ON file_publication_journal(reverses_id);"
+            "UPDATE schema_version SET version = 16;";
         if (auto result = execute(database, migration); !result) {
             rollback();
             return result;

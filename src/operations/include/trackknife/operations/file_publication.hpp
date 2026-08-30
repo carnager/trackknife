@@ -41,6 +41,15 @@ using FilePublicationDependentStateCommitter =
     const FilePublicationDependentStateCommitter& dependent_state_committer,
     const core::CancellationToken& cancellation = {});
 
+// Reverses one completed same-filesystem publication as a second journaled
+// no-replace rename. The reverse record has its own dependent-state identity,
+// is recovered by the normal publication recovery path, and makes repeated
+// successful undo requests idempotent.
+[[nodiscard]] core::Result<FilePublicationCommitResult> undo_same_filesystem_publication(
+    const core::StableId& journal_id, FilePublicationJournal& journal,
+    const FilePublicationDependentStateCommitter& dependent_state_committer,
+    const core::CancellationToken& cancellation = {});
+
 enum class FilePublicationRecoveryOutcome : std::uint8_t {
     completed,
     rolled_back,
