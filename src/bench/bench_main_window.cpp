@@ -4804,6 +4804,54 @@ void BenchMainWindow::showMetadataProperties() {
                                                                            std::move(completion));
                 },
         },
+        OutputProfileStore{
+            .load =
+                [persistence_service](OutputProfileStore::LoadCompletion completion) {
+                    if (!persistence_service) {
+                        completion({}, {}, QStringLiteral("Trackbench persistence is unavailable"));
+                        return;
+                    }
+                    persistence_service->loadOutputProfiles(std::move(completion));
+                },
+            .save_layout =
+                [persistence_service](persistence::SavedOutputLayoutProfile profile,
+                                      OutputProfileStore::Completion completion) {
+                    if (!persistence_service) {
+                        completion(QStringLiteral("Trackbench persistence is unavailable"));
+                        return;
+                    }
+                    persistence_service->saveOutputLayoutProfile(std::move(profile),
+                                                                 std::move(completion));
+                },
+            .remove_layout =
+                [persistence_service](core::StableId id,
+                                      OutputProfileStore::Completion completion) {
+                    if (!persistence_service) {
+                        completion(QStringLiteral("Trackbench persistence is unavailable"));
+                        return;
+                    }
+                    persistence_service->removeOutputLayoutProfile(id, std::move(completion));
+                },
+            .save_destination =
+                [persistence_service](persistence::SavedDestinationProfile profile,
+                                      OutputProfileStore::Completion completion) {
+                    if (!persistence_service) {
+                        completion(QStringLiteral("Trackbench persistence is unavailable"));
+                        return;
+                    }
+                    persistence_service->saveDestinationProfile(std::move(profile),
+                                                                std::move(completion));
+                },
+            .remove_destination =
+                [persistence_service](core::StableId id,
+                                      OutputProfileStore::Completion completion) {
+                    if (!persistence_service) {
+                        completion(QStringLiteral("Trackbench persistence is unavailable"));
+                        return;
+                    }
+                    persistence_service->removeDestinationProfile(id, std::move(completion));
+                },
+        },
         tabs_);
     properties->setWindowFlags(Qt::Widget);
     properties->setProperty("bench-special-tab", QStringLiteral("metadata-properties"));

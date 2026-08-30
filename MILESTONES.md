@@ -772,9 +772,15 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   filesystem dispatch on at most 1–8 workers. Shared reviewed missing-directory
   prefixes serialize only until successful batch evidence establishes them;
   independent file I/O then proceeds in parallel.
-- Next: wire Save tags/Rename/Move/ReplayGain choices and file-preview Apply
-  into the tagging workspace. The capture-pattern grammar and chain
-  import/export follow that vertical slice.
+- Done: the tagging workspace now has a dedicated **Operations** side-panel
+  page. **Save tags** is a real independent choice, while Rename, Move, and
+  ReplayGain are visible but capability-gated. Reusable naming layouts and
+  raw-path move destinations load, create, update, and remove through the
+  serialized persistence worker without a separate settings window.
+- Next: generalize the immutable review for final metadata plus file paths,
+  enable Rename/Move, and bind it to bounded publication Apply and visible
+  source reconciliation. The capture-pattern grammar and chain import/export
+  follow that vertical slice.
 
 ### Exit criteria
 

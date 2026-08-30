@@ -217,6 +217,142 @@ void ListPersistenceService::removeMetadataTransformationChain(core::StableId id
         Qt::QueuedConnection);
 }
 
+void ListPersistenceService::loadOutputProfiles(OutputProfilesCallback callback) {
+    const QPointer self{this};
+    QMetaObject::invokeMethod(
+        worker_,
+        [self, state = state_, callback = std::move(callback)]() mutable {
+            std::vector<persistence::SavedOutputLayoutProfile> layouts;
+            std::vector<persistence::SavedDestinationProfile> destinations;
+            QString error = state->initialization_error;
+            if (error.isEmpty() && !state->repository) {
+                error = QStringLiteral("List persistence is not initialized");
+            } else if (error.isEmpty()) {
+                auto loaded_layouts = state->repository->load_output_layout_profiles();
+                if (!loaded_layouts) {
+                    error = errorText(loaded_layouts.error());
+                } else {
+                    auto loaded_destinations = state->repository->load_destination_profiles();
+                    if (!loaded_destinations) {
+                        error = errorText(loaded_destinations.error());
+                    } else {
+                        layouts = std::move(*loaded_layouts);
+                        destinations = std::move(*loaded_destinations);
+                    }
+                }
+            }
+            if (!self || !callback) {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                self,
+                [callback = std::move(callback), layouts = std::move(layouts),
+                 destinations = std::move(destinations),
+                 error]() mutable { callback(std::move(layouts), std::move(destinations), error); },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+
+void ListPersistenceService::saveOutputLayoutProfile(persistence::SavedOutputLayoutProfile profile,
+                                                     CompletionCallback callback) {
+    const QPointer self{this};
+    QMetaObject::invokeMethod(
+        worker_,
+        [self, state = state_, profile = std::move(profile),
+         callback = std::move(callback)]() mutable {
+            QString error = state->initialization_error;
+            if (error.isEmpty() && !state->repository) {
+                error = QStringLiteral("List persistence is not initialized");
+            } else if (error.isEmpty()) {
+                if (auto stored = state->repository->upsert_output_layout_profile(profile);
+                    !stored) {
+                    error = errorText(stored.error());
+                }
+            }
+            if (!self || !callback) {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                self, [callback = std::move(callback), error]() mutable { callback(error); },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+
+void ListPersistenceService::removeOutputLayoutProfile(core::StableId id,
+                                                       CompletionCallback callback) {
+    const QPointer self{this};
+    QMetaObject::invokeMethod(
+        worker_,
+        [self, state = state_, id, callback = std::move(callback)]() mutable {
+            QString error = state->initialization_error;
+            if (error.isEmpty() && !state->repository) {
+                error = QStringLiteral("List persistence is not initialized");
+            } else if (error.isEmpty()) {
+                if (auto removed = state->repository->remove_output_layout_profile(id); !removed) {
+                    error = errorText(removed.error());
+                }
+            }
+            if (!self || !callback) {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                self, [callback = std::move(callback), error]() mutable { callback(error); },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+
+void ListPersistenceService::saveDestinationProfile(persistence::SavedDestinationProfile profile,
+                                                    CompletionCallback callback) {
+    const QPointer self{this};
+    QMetaObject::invokeMethod(
+        worker_,
+        [self, state = state_, profile = std::move(profile),
+         callback = std::move(callback)]() mutable {
+            QString error = state->initialization_error;
+            if (error.isEmpty() && !state->repository) {
+                error = QStringLiteral("List persistence is not initialized");
+            } else if (error.isEmpty()) {
+                if (auto stored = state->repository->upsert_destination_profile(profile); !stored) {
+                    error = errorText(stored.error());
+                }
+            }
+            if (!self || !callback) {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                self, [callback = std::move(callback), error]() mutable { callback(error); },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+
+void ListPersistenceService::removeDestinationProfile(core::StableId id,
+                                                      CompletionCallback callback) {
+    const QPointer self{this};
+    QMetaObject::invokeMethod(
+        worker_,
+        [self, state = state_, id, callback = std::move(callback)]() mutable {
+            QString error = state->initialization_error;
+            if (error.isEmpty() && !state->repository) {
+                error = QStringLiteral("List persistence is not initialized");
+            } else if (error.isEmpty()) {
+                if (auto removed = state->repository->remove_destination_profile(id); !removed) {
+                    error = errorText(removed.error());
+                }
+            }
+            if (!self || !callback) {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                self, [callback = std::move(callback), error]() mutable { callback(error); },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
+}
+
 QString
 ListPersistenceService::saveWorkspaceAndWait(std::vector<persistence::ListDocument> lists,
                                              std::vector<persistence::TrackViewPreset> presets) {

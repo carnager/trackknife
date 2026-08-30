@@ -26,6 +26,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QCompleter>
 #include <QDialog>
@@ -154,6 +155,7 @@ class BenchMainWindowTest final : public QObject {
     void metadataReadyPlanAppliesAndRefreshesHistory();
     void metadataApplyCancellationPreservesDraftForFreshPreview();
     void metadataTransformationChainPreviewsAndStagesOneUndo();
+    void preparationSidePanelEditsReusableOutputProfiles();
     void metadataOperationHistoryUndoesRetainedBackup();
     void metadataStartupPresentsReconciliation();
     void folderDiscoveryAdmitsWave64();
@@ -1102,6 +1104,207 @@ void BenchMainWindowTest::metadataApplyCancellationPreservesDraftForFreshPreview
     QTRY_COMPARE(
         aggregate_model->data(aggregate_model->index(*title_row, 2), Qt::EditRole).toString(),
         QStringLiteral("Cancelled batch title"));
+    delete properties;
+}
+
+void BenchMainWindowTest::preparationSidePanelEditsReusableOutputProfiles() {
+    QTemporaryDir media;
+    QVERIFY(media.isValid());
+    const auto path = media.filePath(QStringLiteral("profiles.flac"));
+    QVERIFY(materialize_audio_fixture(QStringLiteral("rich-metadata-flac.b64"), path));
+    const auto encoded = QFile::encodeName(path);
+    const std::string raw_path{encoded.constData(), static_cast<std::size_t>(encoded.size())};
+    const auto read = metadata::read_local_metadata(raw_path);
+    QVERIFY(read.has_value());
+    const MetadataPropertiesSource source{
+        .source =
+            metadata::StagedMetadataSource{
+                .raw_path = raw_path,
+                .source_revision = read->source_revision,
+                .baseline = read->document,
+            },
+        .track_label = QStringLiteral("Profile fixture"),
+    };
+
+    std::vector<persistence::SavedOutputLayoutProfile> layouts{
+        persistence::SavedOutputLayoutProfile{
+            .id = core::StableId::random(),
+            .profile =
+                operations::OutputLayoutProfile{
+                    .schema_version = 1U,
+                    .name = "Albums",
+                    .dialect = {},
+                    .relative_directory_expression = "%album artist%/%album%",
+                    .basename_expression = "%tracknumber% - %title%",
+                    .sanitization_policy = {"linux", 1U},
+                },
+        },
+    };
+    std::vector<persistence::SavedDestinationProfile> destinations{
+        persistence::SavedDestinationProfile{
+            .id = core::StableId::random(),
+            .profile =
+                operations::DestinationProfile{
+                    .schema_version = 1U,
+                    .name = "Library",
+                    .root_raw_path = QFile::encodeName(media.path()).toStdString(),
+                    .containment_policy = {"lexical-beneath-root", 1U},
+                },
+        },
+    };
+    OutputProfileStore output_store{
+        .load =
+            [&layouts, &destinations](OutputProfileStore::LoadCompletion completion) {
+                completion(layouts, destinations, {});
+            },
+        .save_layout =
+            [&layouts](persistence::SavedOutputLayoutProfile saved,
+                       OutputProfileStore::Completion completion) {
+                const auto found = std::ranges::find(layouts, saved.id,
+                                                     &persistence::SavedOutputLayoutProfile::id);
+                if (found == layouts.end()) {
+                    layouts.push_back(std::move(saved));
+                } else {
+                    *found = std::move(saved);
+                }
+                completion({});
+            },
+        .remove_layout =
+            [&layouts](core::StableId id, OutputProfileStore::Completion completion) {
+                std::erase_if(layouts, [id](const auto& saved) { return saved.id == id; });
+                completion({});
+            },
+        .save_destination =
+            [&destinations](persistence::SavedDestinationProfile saved,
+                            OutputProfileStore::Completion completion) {
+                const auto found = std::ranges::find(destinations, saved.id,
+                                                     &persistence::SavedDestinationProfile::id);
+                if (found == destinations.end()) {
+                    destinations.push_back(std::move(saved));
+                } else {
+                    *found = std::move(saved);
+                }
+                completion({});
+            },
+        .remove_destination =
+            [&destinations](core::StableId id, OutputProfileStore::Completion completion) {
+                std::erase_if(destinations, [id](const auto& saved) { return saved.id == id; });
+                completion({});
+            },
+    };
+
+    auto* properties = new MetadataPropertiesDialog(
+        1U,
+        [source](const std::size_t index) -> std::optional<MetadataPropertiesSource> {
+            return index == 0U ? std::optional{source} : std::nullopt;
+        },
+        {}, {}, {}, {}, output_store);
+    properties->show();
+
+    QTabWidget* side_panel = nullptr;
+    QTRY_VERIFY((side_panel = properties->findChild<QTabWidget*>(
+                     QStringLiteral("bench-metadata-side-panel"))) != nullptr);
+    side_panel->setCurrentIndex(1);
+    auto* save_tags =
+        properties->findChild<QCheckBox*>(QStringLiteral("bench-preparation-save-tags"));
+    auto* rename_files =
+        properties->findChild<QCheckBox*>(QStringLiteral("bench-preparation-rename-files"));
+    auto* move_files =
+        properties->findChild<QCheckBox*>(QStringLiteral("bench-preparation-move-files"));
+    auto* replaygain =
+        properties->findChild<QCheckBox*>(QStringLiteral("bench-preparation-replaygain"));
+    QVERIFY(save_tags != nullptr);
+    QVERIFY(rename_files != nullptr);
+    QVERIFY(move_files != nullptr);
+    QVERIFY(replaygain != nullptr);
+    QVERIFY(save_tags->isChecked());
+    QVERIFY(save_tags->isEnabled());
+    QVERIFY(!rename_files->isEnabled());
+    QVERIFY(!move_files->isEnabled());
+    QVERIFY(!replaygain->isEnabled());
+    QTableView* fields = nullptr;
+    auto* preview =
+        properties->findChild<QPushButton*>(QStringLiteral("bench-metadata-preview-write-plan"));
+    auto* preparation_status =
+        properties->findChild<QLabel*>(QStringLiteral("bench-metadata-read-only"));
+    QTRY_VERIFY((fields = properties->findChild<QTableView*>(
+                     QStringLiteral("bench-metadata-fields"))) != nullptr);
+    QVERIFY(preview != nullptr);
+    QVERIFY(preparation_status != nullptr);
+    auto* aggregate_model = qobject_cast<MetadataAggregateModel*>(fields->model());
+    QVERIFY(aggregate_model != nullptr);
+    const auto title_row = aggregate_model->fieldRow(QStringLiteral("title"));
+    QVERIFY(title_row.has_value());
+    QVERIFY(aggregate_model->setData(aggregate_model->index(*title_row, 2),
+                                     QStringLiteral("Naming context"), Qt::EditRole));
+    QTRY_VERIFY(preview->isEnabled());
+    save_tags->setChecked(false);
+    QVERIFY(!preview->isEnabled());
+    QVERIFY(preparation_status->text().contains(QStringLiteral("Save tags is off")));
+    save_tags->setChecked(true);
+    QTRY_VERIFY(preview->isEnabled());
+
+    auto* layout_combo =
+        properties->findChild<QComboBox*>(QStringLiteral("bench-output-layout-profile"));
+    auto* layout_name =
+        properties->findChild<QLineEdit*>(QStringLiteral("bench-output-layout-name"));
+    auto* layout_directory = properties->findChild<QLineEdit*>(
+        QStringLiteral("bench-output-layout-directory-expression"));
+    auto* layout_basename = properties->findChild<QLineEdit*>(
+        QStringLiteral("bench-output-layout-basename-expression"));
+    auto* layout_new =
+        properties->findChild<QPushButton*>(QStringLiteral("bench-output-layout-new"));
+    auto* layout_save =
+        properties->findChild<QPushButton*>(QStringLiteral("bench-output-layout-save"));
+    auto* destination_combo =
+        properties->findChild<QComboBox*>(QStringLiteral("bench-destination-profile"));
+    auto* destination_name =
+        properties->findChild<QLineEdit*>(QStringLiteral("bench-destination-name"));
+    auto* destination_root =
+        properties->findChild<QLineEdit*>(QStringLiteral("bench-destination-root"));
+    auto* destination_new =
+        properties->findChild<QPushButton*>(QStringLiteral("bench-destination-new"));
+    auto* destination_save =
+        properties->findChild<QPushButton*>(QStringLiteral("bench-destination-save"));
+    QVERIFY(layout_combo != nullptr);
+    QVERIFY(layout_name != nullptr);
+    QVERIFY(layout_directory != nullptr);
+    QVERIFY(layout_basename != nullptr);
+    QVERIFY(layout_new != nullptr);
+    QVERIFY(layout_save != nullptr);
+    QVERIFY(destination_combo != nullptr);
+    QVERIFY(destination_name != nullptr);
+    QVERIFY(destination_root != nullptr);
+    QVERIFY(destination_new != nullptr);
+    QVERIFY(destination_save != nullptr);
+    QCOMPARE(layout_combo->count(), 1);
+    QCOMPARE(layout_combo->currentText(), QStringLiteral("Albums"));
+    QCOMPARE(layout_basename->text(), QStringLiteral("%tracknumber% - %title%"));
+    QCOMPARE(destination_combo->count(), 1);
+    QCOMPARE(destination_combo->currentText(), QStringLiteral("Library"));
+
+    QTest::mouseClick(layout_new, Qt::LeftButton);
+    layout_name->setText(QStringLiteral("Artist folders"));
+    layout_directory->setText(QStringLiteral("%artist%"));
+    layout_basename->setText(QStringLiteral("%title%"));
+    QTRY_VERIFY(layout_save->isEnabled());
+    QTest::mouseClick(layout_save, Qt::LeftButton);
+    QTRY_COMPARE(layouts.size(), 2U);
+    QCOMPARE(layout_combo->count(), 2);
+    QCOMPARE(layout_combo->currentText(), QStringLiteral("Artist folders"));
+
+    QTest::mouseClick(destination_new, Qt::LeftButton);
+    destination_name->setText(QStringLiteral("Archive"));
+    destination_root->setFocus();
+    QTest::keyClicks(destination_root, media.filePath(QStringLiteral("archive")));
+    QTRY_VERIFY(destination_save->isEnabled());
+    QTest::mouseClick(destination_save, Qt::LeftButton);
+    QTRY_COMPARE(destinations.size(), 2U);
+    QCOMPARE(destination_combo->count(), 2);
+    QCOMPARE(destination_combo->currentText(), QStringLiteral("Archive"));
+    QCOMPARE(destinations.back().profile.root_raw_path,
+             QFile::encodeName(media.filePath(QStringLiteral("archive"))).toStdString());
+
     delete properties;
 }
 

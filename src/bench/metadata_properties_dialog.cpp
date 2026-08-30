@@ -7,12 +7,15 @@
 
 #include <QAbstractListModel>
 #include <QApplication>
+#include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QCompleter>
 #include <QDialogButtonBox>
 #include <QElapsedTimer>
 #include <QEvent>
+#include <QFile>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -33,6 +36,7 @@
 #include <QSplitter>
 #include <QStringListModel>
 #include <QStyledItemDelegate>
+#include <QTabWidget>
 #include <QTableView>
 #include <QTimer>
 #include <QTreeView>
@@ -1873,12 +1877,14 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
     const std::size_t requested_item_count, MetadataPropertiesSourceReader source_reader,
     const std::span<const std::string_view> preferred_fields,
     MetadataWritePlanApplierFactory plan_applier_factory, MetadataApplyObserver apply_observer,
-    MetadataTransformationStore transformation_store, QWidget* parent)
+    MetadataTransformationStore transformation_store, OutputProfileStore output_profile_store,
+    QWidget* parent)
     : QDialog(parent), selection_watcher_(this), write_plan_watcher_(this), apply_watcher_(this),
       source_reader_(std::move(source_reader)),
       plan_applier_factory_(std::move(plan_applier_factory)),
       apply_observer_(std::move(apply_observer)),
       transformation_store_(std::move(transformation_store)),
+      output_profile_store_(std::move(output_profile_store)),
       requested_item_count_(requested_item_count) {
     setObjectName(QStringLiteral("bench-metadata-properties"));
     setWindowTitle(QStringLiteral("Track properties"));
@@ -1905,12 +1911,15 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
     read_only_->setTextFormat(Qt::PlainText);
     root_layout_->addWidget(read_only_);
 
-    auto* transformation_group = new QGroupBox(QStringLiteral("Tagging scripts"), this);
-    transformation_group->setObjectName(QStringLiteral("bench-metadata-transformation-panel"));
-    transformation_group->setMinimumWidth(230);
-    transformation_group->setMaximumWidth(340);
-    transformation_panel_ = transformation_group;
+    auto* side_tabs = new QTabWidget(this);
+    side_tabs->setObjectName(QStringLiteral("bench-metadata-side-panel"));
+    side_tabs->setMinimumWidth(270);
+    side_tabs->setMaximumWidth(390);
+    transformation_panel_ = side_tabs;
     transformation_panel_->hide();
+
+    auto* transformation_group = new QWidget(side_tabs);
+    transformation_group->setObjectName(QStringLiteral("bench-metadata-transformation-panel"));
     auto* transformation_layout = new QVBoxLayout(transformation_group);
     transformation_layout->setContentsMargins(8, 8, 8, 8);
     transformation_layout->setSpacing(6);
@@ -1940,6 +1949,119 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
         QStringLiteral("Open the selected saved script, or create a new one"));
     transform_button_->setEnabled(false);
     transformation_layout->addWidget(transform_button_);
+    side_tabs->addTab(transformation_group, QStringLiteral("Scripts"));
+
+    auto* operations_panel = new QWidget(side_tabs);
+    operations_panel->setObjectName(QStringLiteral("bench-preparation-operations-panel"));
+    auto* operations_layout = new QVBoxLayout(operations_panel);
+    operations_layout->setContentsMargins(8, 8, 8, 8);
+    operations_layout->setSpacing(6);
+    auto* operations_help = new QLabel(
+        QStringLiteral("Choose what one reviewed preparation will do. Rename and Move become "
+                       "selectable with their combined preview and undo path."),
+        operations_panel);
+    operations_help->setObjectName(QStringLiteral("bench-preparation-operations-help"));
+    operations_help->setWordWrap(true);
+    operations_layout->addWidget(operations_help);
+    save_tags_check_ = new QCheckBox(QStringLiteral("Save tags"), operations_panel);
+    save_tags_check_->setObjectName(QStringLiteral("bench-preparation-save-tags"));
+    save_tags_check_->setChecked(true);
+    operations_layout->addWidget(save_tags_check_);
+    rename_files_check_ = new QCheckBox(QStringLiteral("Rename files"), operations_panel);
+    rename_files_check_->setObjectName(QStringLiteral("bench-preparation-rename-files"));
+    rename_files_check_->setEnabled(false);
+    rename_files_check_->setToolTip(
+        QStringLiteral("The combined metadata/file review is not wired yet"));
+    operations_layout->addWidget(rename_files_check_);
+    move_files_check_ = new QCheckBox(QStringLiteral("Move files"), operations_panel);
+    move_files_check_->setObjectName(QStringLiteral("bench-preparation-move-files"));
+    move_files_check_->setEnabled(false);
+    move_files_check_->setToolTip(
+        QStringLiteral("The combined metadata/file review is not wired yet"));
+    operations_layout->addWidget(move_files_check_);
+    replaygain_check_ = new QCheckBox(QStringLiteral("ReplayGain"), operations_panel);
+    replaygain_check_->setObjectName(QStringLiteral("bench-preparation-replaygain"));
+    replaygain_check_->setEnabled(false);
+    replaygain_check_->setToolTip(QStringLiteral("ReplayGain analysis is planned for M7"));
+    operations_layout->addWidget(replaygain_check_);
+
+    auto* layout_group = new QGroupBox(QStringLiteral("Naming layout"), operations_panel);
+    layout_group->setObjectName(QStringLiteral("bench-output-layout-editor"));
+    auto* layout_form = new QFormLayout(layout_group);
+    layout_form->setContentsMargins(6, 8, 6, 6);
+    output_layout_combo_ = new QComboBox(layout_group);
+    output_layout_combo_->setObjectName(QStringLiteral("bench-output-layout-profile"));
+    output_layout_combo_->setAccessibleName(QStringLiteral("Saved naming layout"));
+    layout_form->addRow(QStringLiteral("Saved:"), output_layout_combo_);
+    output_layout_name_ = new QLineEdit(layout_group);
+    output_layout_name_->setObjectName(QStringLiteral("bench-output-layout-name"));
+    output_layout_name_->setPlaceholderText(QStringLiteral("For example: Album folders"));
+    layout_form->addRow(QStringLiteral("Name:"), output_layout_name_);
+    output_directory_expression_ = new QLineEdit(layout_group);
+    output_directory_expression_->setObjectName(
+        QStringLiteral("bench-output-layout-directory-expression"));
+    output_directory_expression_->setPlaceholderText(
+        QStringLiteral("For example: %album artist%/%album%"));
+    layout_form->addRow(QStringLiteral("Folders:"), output_directory_expression_);
+    output_basename_expression_ = new QLineEdit(layout_group);
+    output_basename_expression_->setObjectName(
+        QStringLiteral("bench-output-layout-basename-expression"));
+    output_basename_expression_->setPlaceholderText(
+        QStringLiteral("For example: %tracknumber% - %title%"));
+    layout_form->addRow(QStringLiteral("Filename:"), output_basename_expression_);
+    auto* layout_buttons = new QHBoxLayout;
+    output_layout_new_button_ = new QPushButton(QStringLiteral("New"), layout_group);
+    output_layout_new_button_->setObjectName(QStringLiteral("bench-output-layout-new"));
+    output_layout_save_button_ = new QPushButton(QStringLiteral("Save"), layout_group);
+    output_layout_save_button_->setObjectName(QStringLiteral("bench-output-layout-save"));
+    output_layout_remove_button_ = new QPushButton(QStringLiteral("Remove"), layout_group);
+    output_layout_remove_button_->setObjectName(QStringLiteral("bench-output-layout-remove"));
+    layout_buttons->addWidget(output_layout_new_button_);
+    layout_buttons->addWidget(output_layout_save_button_);
+    layout_buttons->addWidget(output_layout_remove_button_);
+    layout_form->addRow(layout_buttons);
+    operations_layout->addWidget(layout_group);
+
+    auto* destination_group = new QGroupBox(QStringLiteral("Move destination"), operations_panel);
+    destination_group->setObjectName(QStringLiteral("bench-destination-editor"));
+    auto* destination_form = new QFormLayout(destination_group);
+    destination_form->setContentsMargins(6, 8, 6, 6);
+    destination_combo_ = new QComboBox(destination_group);
+    destination_combo_->setObjectName(QStringLiteral("bench-destination-profile"));
+    destination_combo_->setAccessibleName(QStringLiteral("Saved move destination"));
+    destination_form->addRow(QStringLiteral("Saved:"), destination_combo_);
+    destination_name_ = new QLineEdit(destination_group);
+    destination_name_->setObjectName(QStringLiteral("bench-destination-name"));
+    destination_name_->setPlaceholderText(QStringLiteral("For example: Music library"));
+    destination_form->addRow(QStringLiteral("Name:"), destination_name_);
+    auto* root_row = new QHBoxLayout;
+    destination_root_ = new QLineEdit(destination_group);
+    destination_root_->setObjectName(QStringLiteral("bench-destination-root"));
+    destination_root_->setPlaceholderText(QStringLiteral("Choose an absolute folder"));
+    destination_browse_button_ = new QPushButton(QStringLiteral("Browse…"), destination_group);
+    destination_browse_button_->setObjectName(QStringLiteral("bench-destination-browse"));
+    root_row->addWidget(destination_root_, 1);
+    root_row->addWidget(destination_browse_button_);
+    destination_form->addRow(QStringLiteral("Root:"), root_row);
+    auto* destination_buttons = new QHBoxLayout;
+    destination_new_button_ = new QPushButton(QStringLiteral("New"), destination_group);
+    destination_new_button_->setObjectName(QStringLiteral("bench-destination-new"));
+    destination_save_button_ = new QPushButton(QStringLiteral("Save"), destination_group);
+    destination_save_button_->setObjectName(QStringLiteral("bench-destination-save"));
+    destination_remove_button_ = new QPushButton(QStringLiteral("Remove"), destination_group);
+    destination_remove_button_->setObjectName(QStringLiteral("bench-destination-remove"));
+    destination_buttons->addWidget(destination_new_button_);
+    destination_buttons->addWidget(destination_save_button_);
+    destination_buttons->addWidget(destination_remove_button_);
+    destination_form->addRow(destination_buttons);
+    operations_layout->addWidget(destination_group);
+    output_profile_status_ =
+        new QLabel(QStringLiteral("Loading output profiles…"), operations_panel);
+    output_profile_status_->setObjectName(QStringLiteral("bench-output-profile-status"));
+    output_profile_status_->setWordWrap(true);
+    operations_layout->addWidget(output_profile_status_);
+    operations_layout->addStretch(1);
+    side_tabs->addTab(operations_panel, QStringLiteral("Operations"));
 
     loading_ = new QLabel(QStringLiteral("Preparing metadata grid…"), this);
     loading_->setObjectName(QStringLiteral("bench-metadata-loading"));
@@ -2029,6 +2151,60 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
             toggleAutomaticTransformation(*id, item->checkState() == Qt::Checked);
         }
     });
+    connect(output_layout_combo_, &QComboBox::currentIndexChanged, this,
+            &MetadataPropertiesDialog::selectOutputLayout);
+    connect(destination_combo_, &QComboBox::currentIndexChanged, this,
+            &MetadataPropertiesDialog::selectDestination);
+    connect(output_layout_new_button_, &QPushButton::clicked, this,
+            &MetadataPropertiesDialog::newOutputLayout);
+    connect(destination_new_button_, &QPushButton::clicked, this,
+            &MetadataPropertiesDialog::newDestination);
+    connect(output_layout_save_button_, &QPushButton::clicked, this,
+            &MetadataPropertiesDialog::saveOutputLayout);
+    connect(destination_save_button_, &QPushButton::clicked, this,
+            &MetadataPropertiesDialog::saveDestination);
+    connect(output_layout_remove_button_, &QPushButton::clicked, this,
+            &MetadataPropertiesDialog::removeOutputLayout);
+    connect(destination_remove_button_, &QPushButton::clicked, this,
+            &MetadataPropertiesDialog::removeDestination);
+    for (auto* editor : {output_layout_name_, output_directory_expression_,
+                         output_basename_expression_, destination_name_, destination_root_}) {
+        connect(editor, &QLineEdit::textChanged, this,
+                &MetadataPropertiesDialog::updateOutputProfileButtons);
+    }
+    connect(destination_root_, &QLineEdit::textEdited, this, [this](const QString& text) {
+        const auto encoded = QFile::encodeName(text);
+        destination_root_raw_path_.assign(encoded.constData(),
+                                          static_cast<std::size_t>(encoded.size()));
+    });
+    connect(destination_browse_button_, &QPushButton::clicked, this, [this] {
+        const auto initial = destination_root_raw_path_.empty()
+                                 ? QString{}
+                                 : QFile::decodeName(QByteArray{
+                                       destination_root_raw_path_.data(),
+                                       static_cast<qsizetype>(destination_root_raw_path_.size())});
+        const auto selected = QFileDialog::getExistingDirectory(
+            this, QStringLiteral("Choose move destination"), initial,
+            QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+        if (selected.isEmpty()) {
+            return;
+        }
+        const auto encoded = QFile::encodeName(selected);
+        destination_root_raw_path_.assign(encoded.constData(),
+                                          static_cast<std::size_t>(encoded.size()));
+        destination_root_->setText(
+            QString::fromStdString(core::escape_raw_path(destination_root_raw_path_)));
+        updateOutputProfileButtons();
+    });
+    connect(save_tags_check_, &QCheckBox::toggled, this, [this](const bool enabled) {
+        invalidateWritePlan();
+        if (!enabled) {
+            read_only_->setText(QStringLiteral(
+                "Tag edits remain in memory but will not be written while Save tags is off"));
+        } else if (grid_model_ != nullptr) {
+            updateDraftState(draft_count_, undo_button_->isEnabled(), redo_button_->isEnabled());
+        }
+    });
     connect(preview_plan_button_, &QPushButton::clicked, this,
             &MetadataPropertiesDialog::previewWritePlan);
     connect(&write_plan_watcher_, &QFutureWatcherBase::finished, this,
@@ -2041,6 +2217,7 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
             &MetadataPropertiesDialog::updateApplyProgress);
     root_layout_->addWidget(buttons_);
     loadTransformationCatalog();
+    loadOutputProfiles();
 
     const metadata::StagedMetadataSelectionLimits limits;
     if (requested_item_count_ > limits.items) {
@@ -2325,9 +2502,13 @@ void MetadataPropertiesDialog::updateDraftState(const int patch_count, const boo
                                              .arg(patch_count == 1 ? QStringLiteral("change")
                                                                    : QStringLiteral("changes")));
     read_only_->setText(
-        QStringLiteral("In-memory draft only · file writing is not enabled until a fresh ready "
-                       "plan is explicitly applied · %1")
-            .arg(revision_summary_));
+        save_tags_check_ != nullptr && !save_tags_check_->isChecked()
+            ? QStringLiteral("In-memory draft only · Save tags is off, so metadata is used only "
+                             "as preparation context · %1")
+                  .arg(revision_summary_)
+            : QStringLiteral("In-memory draft only · file writing is not enabled until a fresh "
+                             "ready plan is explicitly applied · %1")
+                  .arg(revision_summary_));
     undo_button_->setEnabled(can_undo);
     redo_button_->setEnabled(can_redo);
     discard_button_->setEnabled(patch_count > 0);
@@ -2493,14 +2674,344 @@ void MetadataPropertiesDialog::toggleAutomaticTransformation(const core::StableI
     });
 }
 
+void MetadataPropertiesDialog::loadOutputProfiles() {
+    output_profiles_loading_ = true;
+    updateOutputProfileButtons();
+    if (!output_profile_store_.load) {
+        output_profiles_loading_ = false;
+        output_profile_status_->setText(
+            QStringLiteral("Output-profile persistence is unavailable"));
+        rebuildOutputProfileControls();
+        return;
+    }
+    const QPointer self{this};
+    output_profile_store_.load(
+        [self](std::vector<persistence::SavedOutputLayoutProfile> layouts,
+               std::vector<persistence::SavedDestinationProfile> destinations,
+               QString error) mutable {
+            if (!self) {
+                return;
+            }
+            self->output_profiles_loading_ = false;
+            if (!error.isEmpty()) {
+                self->output_profile_status_->setText(
+                    QStringLiteral("Could not load output profiles · %1").arg(error));
+                self->rebuildOutputProfileControls();
+                return;
+            }
+            self->output_layout_catalog_ = std::move(layouts);
+            self->destination_catalog_ = std::move(destinations);
+            self->rebuildOutputProfileControls(self->editing_output_layout_id_,
+                                               self->editing_destination_id_);
+            self->output_profile_status_->setText(
+                QStringLiteral("%1 naming %2 · %3 move %4")
+                    .arg(self->output_layout_catalog_.size())
+                    .arg(self->output_layout_catalog_.size() == 1U ? QStringLiteral("layout")
+                                                                   : QStringLiteral("layouts"))
+                    .arg(self->destination_catalog_.size())
+                    .arg(self->destination_catalog_.size() == 1U ? QStringLiteral("destination")
+                                                                 : QStringLiteral("destinations")));
+        });
+}
+
+void MetadataPropertiesDialog::rebuildOutputProfileControls(
+    const std::optional<core::StableId> selected_layout,
+    const std::optional<core::StableId> selected_destination) {
+    const QSignalBlocker layout_blocker{output_layout_combo_};
+    const QSignalBlocker destination_blocker{destination_combo_};
+    output_layout_combo_->clear();
+    for (const auto& saved : output_layout_catalog_) {
+        output_layout_combo_->addItem(display_utf8(saved.profile.name),
+                                      QString::fromStdString(saved.id.to_string()));
+    }
+    destination_combo_->clear();
+    for (const auto& saved : destination_catalog_) {
+        destination_combo_->addItem(display_utf8(saved.profile.name),
+                                    QString::fromStdString(saved.id.to_string()));
+    }
+    const auto select_id = [](QComboBox* combo, const std::optional<core::StableId>& id) {
+        if (!id) {
+            return combo->count() > 0 ? 0 : -1;
+        }
+        return combo->findData(QString::fromStdString(id->to_string()));
+    };
+    const auto layout_index = select_id(output_layout_combo_, selected_layout);
+    const auto destination_index = select_id(destination_combo_, selected_destination);
+    output_layout_combo_->setCurrentIndex(layout_index);
+    destination_combo_->setCurrentIndex(destination_index);
+    selectOutputLayout(layout_index);
+    selectDestination(destination_index);
+    updateOutputProfileButtons();
+}
+
+void MetadataPropertiesDialog::selectOutputLayout(const int index) {
+    if (index < 0 || index >= output_layout_combo_->count()) {
+        editing_output_layout_id_.reset();
+        output_layout_name_->clear();
+        output_directory_expression_->clear();
+        output_basename_expression_->clear();
+        updateOutputProfileButtons();
+        return;
+    }
+    const auto id =
+        core::StableId::parse(output_layout_combo_->itemData(index).toString().toStdString());
+    const auto found = id ? std::ranges::find(output_layout_catalog_, *id,
+                                              &persistence::SavedOutputLayoutProfile::id)
+                          : output_layout_catalog_.end();
+    if (found == output_layout_catalog_.end()) {
+        newOutputLayout();
+        return;
+    }
+    editing_output_layout_id_ = found->id;
+    output_layout_name_->setText(display_utf8(found->profile.name));
+    output_directory_expression_->setText(
+        display_utf8(found->profile.relative_directory_expression));
+    output_basename_expression_->setText(display_utf8(found->profile.basename_expression));
+    updateOutputProfileButtons();
+}
+
+void MetadataPropertiesDialog::selectDestination(const int index) {
+    if (index < 0 || index >= destination_combo_->count()) {
+        editing_destination_id_.reset();
+        destination_root_raw_path_.clear();
+        destination_name_->clear();
+        destination_root_->clear();
+        updateOutputProfileButtons();
+        return;
+    }
+    const auto id =
+        core::StableId::parse(destination_combo_->itemData(index).toString().toStdString());
+    const auto found =
+        id ? std::ranges::find(destination_catalog_, *id, &persistence::SavedDestinationProfile::id)
+           : destination_catalog_.end();
+    if (found == destination_catalog_.end()) {
+        newDestination();
+        return;
+    }
+    editing_destination_id_ = found->id;
+    destination_root_raw_path_ = found->profile.root_raw_path;
+    destination_name_->setText(display_utf8(found->profile.name));
+    destination_root_->setText(
+        QString::fromStdString(core::escape_raw_path(destination_root_raw_path_)));
+    updateOutputProfileButtons();
+}
+
+void MetadataPropertiesDialog::newOutputLayout() {
+    editing_output_layout_id_.reset();
+    output_layout_combo_->setCurrentIndex(-1);
+    output_layout_name_->clear();
+    output_directory_expression_->clear();
+    output_basename_expression_->clear();
+    output_layout_name_->setFocus();
+    output_profile_status_->setText(
+        QStringLiteral("Define a reusable relative folder and filename convention"));
+    updateOutputProfileButtons();
+}
+
+void MetadataPropertiesDialog::newDestination() {
+    editing_destination_id_.reset();
+    destination_root_raw_path_.clear();
+    destination_combo_->setCurrentIndex(-1);
+    destination_name_->clear();
+    destination_root_->clear();
+    destination_name_->setFocus();
+    output_profile_status_->setText(QStringLiteral("Define a named absolute root for Move files"));
+    updateOutputProfileButtons();
+}
+
+void MetadataPropertiesDialog::saveOutputLayout() {
+    if (!output_profile_store_.save_layout || output_profile_mutation_running_) {
+        return;
+    }
+    persistence::SavedOutputLayoutProfile saved{
+        .id = editing_output_layout_id_.value_or(core::StableId::random()),
+        .profile =
+            operations::OutputLayoutProfile{
+                .schema_version = 1U,
+                .name = encode_utf8(output_layout_name_->text()),
+                .dialect = {},
+                .relative_directory_expression = encode_utf8(output_directory_expression_->text()),
+                .basename_expression = encode_utf8(output_basename_expression_->text()),
+                .sanitization_policy = {"linux", 1U},
+            },
+    };
+    if (auto valid = operations::validate_output_layout_profile(saved.profile); !valid) {
+        output_profile_status_->setText(QStringLiteral("Naming layout is not valid · %1")
+                                            .arg(display_utf8(valid.error().message)));
+        return;
+    }
+    output_profile_mutation_running_ = true;
+    updateOutputProfileButtons();
+    const QPointer self{this};
+    auto retained_saved = saved;
+    output_profile_store_.save_layout(
+        std::move(saved), [self, saved = std::move(retained_saved)](QString error) mutable {
+            if (!self) {
+                return;
+            }
+            self->output_profile_mutation_running_ = false;
+            if (!error.isEmpty()) {
+                self->output_profile_status_->setText(
+                    QStringLiteral("Could not save naming layout · %1").arg(error));
+                self->updateOutputProfileButtons();
+                return;
+            }
+            const auto found = std::ranges::find(self->output_layout_catalog_, saved.id,
+                                                 &persistence::SavedOutputLayoutProfile::id);
+            if (found == self->output_layout_catalog_.end()) {
+                self->output_layout_catalog_.push_back(saved);
+            } else {
+                *found = saved;
+            }
+            std::ranges::sort(self->output_layout_catalog_, {},
+                              [](const auto& profile) { return profile.profile.name; });
+            self->editing_output_layout_id_ = saved.id;
+            self->rebuildOutputProfileControls(saved.id, self->editing_destination_id_);
+            self->output_profile_status_->setText(QStringLiteral("Naming layout saved"));
+        });
+}
+
+void MetadataPropertiesDialog::saveDestination() {
+    if (!output_profile_store_.save_destination || output_profile_mutation_running_) {
+        return;
+    }
+    persistence::SavedDestinationProfile saved{
+        .id = editing_destination_id_.value_or(core::StableId::random()),
+        .profile =
+            operations::DestinationProfile{
+                .schema_version = 1U,
+                .name = encode_utf8(destination_name_->text()),
+                .root_raw_path = destination_root_raw_path_,
+                .containment_policy = {"lexical-beneath-root", 1U},
+            },
+    };
+    if (auto valid = operations::validate_destination_profile(saved.profile); !valid) {
+        output_profile_status_->setText(QStringLiteral("Move destination is not valid · %1")
+                                            .arg(display_utf8(valid.error().message)));
+        return;
+    }
+    output_profile_mutation_running_ = true;
+    updateOutputProfileButtons();
+    const QPointer self{this};
+    auto retained_saved = saved;
+    output_profile_store_.save_destination(
+        std::move(saved), [self, saved = std::move(retained_saved)](QString error) mutable {
+            if (!self) {
+                return;
+            }
+            self->output_profile_mutation_running_ = false;
+            if (!error.isEmpty()) {
+                self->output_profile_status_->setText(
+                    QStringLiteral("Could not save move destination · %1").arg(error));
+                self->updateOutputProfileButtons();
+                return;
+            }
+            const auto found = std::ranges::find(self->destination_catalog_, saved.id,
+                                                 &persistence::SavedDestinationProfile::id);
+            if (found == self->destination_catalog_.end()) {
+                self->destination_catalog_.push_back(saved);
+            } else {
+                *found = saved;
+            }
+            std::ranges::sort(self->destination_catalog_, {},
+                              [](const auto& profile) { return profile.profile.name; });
+            self->editing_destination_id_ = saved.id;
+            self->rebuildOutputProfileControls(self->editing_output_layout_id_, saved.id);
+            self->output_profile_status_->setText(QStringLiteral("Move destination saved"));
+        });
+}
+
+void MetadataPropertiesDialog::removeOutputLayout() {
+    if (!editing_output_layout_id_ || !output_profile_store_.remove_layout ||
+        output_profile_mutation_running_) {
+        return;
+    }
+    const auto id = *editing_output_layout_id_;
+    output_profile_mutation_running_ = true;
+    updateOutputProfileButtons();
+    const QPointer self{this};
+    output_profile_store_.remove_layout(id, [self, id](QString error) {
+        if (!self) {
+            return;
+        }
+        self->output_profile_mutation_running_ = false;
+        if (!error.isEmpty()) {
+            self->output_profile_status_->setText(
+                QStringLiteral("Could not remove naming layout · %1").arg(error));
+            self->updateOutputProfileButtons();
+            return;
+        }
+        std::erase_if(self->output_layout_catalog_,
+                      [id](const auto& saved) { return saved.id == id; });
+        self->editing_output_layout_id_.reset();
+        self->rebuildOutputProfileControls({}, self->editing_destination_id_);
+        self->output_profile_status_->setText(QStringLiteral("Naming layout removed"));
+    });
+}
+
+void MetadataPropertiesDialog::removeDestination() {
+    if (!editing_destination_id_ || !output_profile_store_.remove_destination ||
+        output_profile_mutation_running_) {
+        return;
+    }
+    const auto id = *editing_destination_id_;
+    output_profile_mutation_running_ = true;
+    updateOutputProfileButtons();
+    const QPointer self{this};
+    output_profile_store_.remove_destination(id, [self, id](QString error) {
+        if (!self) {
+            return;
+        }
+        self->output_profile_mutation_running_ = false;
+        if (!error.isEmpty()) {
+            self->output_profile_status_->setText(
+                QStringLiteral("Could not remove move destination · %1").arg(error));
+            self->updateOutputProfileButtons();
+            return;
+        }
+        std::erase_if(self->destination_catalog_,
+                      [id](const auto& saved) { return saved.id == id; });
+        self->editing_destination_id_.reset();
+        self->rebuildOutputProfileControls(self->editing_output_layout_id_, {});
+        self->output_profile_status_->setText(QStringLiteral("Move destination removed"));
+    });
+}
+
+void MetadataPropertiesDialog::updateOutputProfileButtons() {
+    if (output_layout_save_button_ == nullptr) {
+        return;
+    }
+    const auto available = !output_profiles_loading_ && !output_profile_mutation_running_;
+    output_layout_combo_->setEnabled(available && !output_layout_catalog_.empty());
+    destination_combo_->setEnabled(available && !destination_catalog_.empty());
+    output_layout_name_->setEnabled(available);
+    output_directory_expression_->setEnabled(available);
+    output_basename_expression_->setEnabled(available);
+    destination_name_->setEnabled(available);
+    destination_root_->setEnabled(available);
+    destination_browse_button_->setEnabled(available && output_profile_store_.save_destination);
+    output_layout_new_button_->setEnabled(available && output_profile_store_.save_layout);
+    destination_new_button_->setEnabled(available && output_profile_store_.save_destination);
+    output_layout_save_button_->setEnabled(available && output_profile_store_.save_layout &&
+                                           !output_layout_name_->text().isEmpty() &&
+                                           !output_basename_expression_->text().isEmpty());
+    destination_save_button_->setEnabled(available && output_profile_store_.save_destination &&
+                                         !destination_name_->text().isEmpty() &&
+                                         !destination_root_raw_path_.empty());
+    output_layout_remove_button_->setEnabled(available && output_profile_store_.remove_layout &&
+                                             editing_output_layout_id_.has_value());
+    destination_remove_button_->setEnabled(available && output_profile_store_.remove_destination &&
+                                           editing_destination_id_.has_value());
+}
+
 void MetadataPropertiesDialog::updateWritePlanButton() {
     if (preview_plan_button_ == nullptr) {
         return;
     }
-    preview_plan_button_->setEnabled(grid_model_ != nullptr && draft_count_ > 0 &&
-                                     !transformation_catalog_loading_ && !write_plan_running_ &&
-                                     !apply_running_ && write_plan_dialog_ == nullptr &&
-                                     apply_dialog_ == nullptr);
+    preview_plan_button_->setEnabled(
+        grid_model_ != nullptr && draft_count_ > 0 && save_tags_check_->isChecked() &&
+        !transformation_catalog_loading_ && !write_plan_running_ && !apply_running_ &&
+        write_plan_dialog_ == nullptr && apply_dialog_ == nullptr);
     updateTransformationButton();
 }
 
@@ -2515,7 +3026,8 @@ void MetadataPropertiesDialog::invalidateWritePlan() {
 }
 
 void MetadataPropertiesDialog::previewWritePlan() {
-    if (grid_model_ == nullptr || grid_model_->patches().empty() || write_plan_running_) {
+    if (grid_model_ == nullptr || grid_model_->patches().empty() || write_plan_running_ ||
+        !save_tags_check_->isChecked()) {
         return;
     }
     metadata::MetadataTransformationChain combined{

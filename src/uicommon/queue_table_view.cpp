@@ -123,7 +123,7 @@ void paintAlbumArtwork(QueueTableView* view, QPainter* painter) {
     const auto last_candidate = std::min(model->rowCount() - 1, last_visible + 1);
     const auto artwork_left = view->horizontalHeader()->sectionViewportPosition(column);
     const auto artwork_width = view->horizontalHeader()->sectionSize(column);
-    const auto palette = view->palette();
+    const auto& palette = view->palette();
     for (int row = first_candidate; row <= last_candidate; ++row) {
         if (row > 0 && groupKey(view, row) == groupKey(view, row - 1)) {
             continue;

@@ -29,6 +29,9 @@ class ListPersistenceService final : public QObject {
     using CompletionCallback = std::function<void(QString)>;
     using TransformationChainsCallback =
         std::function<void(std::vector<persistence::SavedMetadataTransformationChain>, QString)>;
+    using OutputProfilesCallback =
+        std::function<void(std::vector<persistence::SavedOutputLayoutProfile>,
+                           std::vector<persistence::SavedDestinationProfile>, QString)>;
 
     explicit ListPersistenceService(std::filesystem::path database_path, QObject* parent = nullptr);
     ~ListPersistenceService() override;
@@ -46,6 +49,13 @@ class ListPersistenceService final : public QObject {
     void saveMetadataTransformationChain(persistence::SavedMetadataTransformationChain chain,
                                          CompletionCallback callback = {});
     void removeMetadataTransformationChain(core::StableId id, CompletionCallback callback = {});
+    void loadOutputProfiles(OutputProfilesCallback callback);
+    void saveOutputLayoutProfile(persistence::SavedOutputLayoutProfile profile,
+                                 CompletionCallback callback = {});
+    void removeOutputLayoutProfile(core::StableId id, CompletionCallback callback = {});
+    void saveDestinationProfile(persistence::SavedDestinationProfile profile,
+                                CompletionCallback callback = {});
+    void removeDestinationProfile(core::StableId id, CompletionCallback callback = {});
 
     // Window shutdown is the only blocking persistence boundary. Database work
     // still runs on the service thread and the call guarantees durable edits.

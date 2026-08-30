@@ -23,11 +23,13 @@
 
 class QModelIndex;
 class QCloseEvent;
+class QCheckBox;
 class QComboBox;
 class QDialogButtonBox;
 class QEvent;
 class QLabel;
 class QInputDialog;
+class QLineEdit;
 class QListWidget;
 class QPushButton;
 class QTableView;
@@ -62,6 +64,19 @@ struct MetadataTransformationStore {
     std::function<void(core::StableId, Completion)> remove;
 };
 
+struct OutputProfileStore {
+    using LoadCompletion =
+        std::function<void(std::vector<persistence::SavedOutputLayoutProfile>,
+                           std::vector<persistence::SavedDestinationProfile>, QString)>;
+    using Completion = std::function<void(QString)>;
+
+    std::function<void(LoadCompletion)> load;
+    std::function<void(persistence::SavedOutputLayoutProfile, Completion)> save_layout;
+    std::function<void(core::StableId, Completion)> remove_layout;
+    std::function<void(persistence::SavedDestinationProfile, Completion)> save_destination;
+    std::function<void(core::StableId, Completion)> remove_destination;
+};
+
 struct MetadataApplyProgressState;
 
 class MetadataPropertiesDialog final : public QDialog {
@@ -74,6 +89,7 @@ class MetadataPropertiesDialog final : public QDialog {
                              MetadataWritePlanApplierFactory plan_applier_factory,
                              MetadataApplyObserver apply_observer,
                              MetadataTransformationStore transformation_store = {},
+                             OutputProfileStore output_profile_store = {},
                              QWidget* parent = nullptr);
     ~MetadataPropertiesDialog() override;
 
@@ -95,6 +111,19 @@ class MetadataPropertiesDialog final : public QDialog {
     void
     rebuildTransformationCatalogControls(std::optional<core::StableId> selected = std::nullopt);
     void toggleAutomaticTransformation(core::StableId id, bool enabled);
+    void loadOutputProfiles();
+    void
+    rebuildOutputProfileControls(std::optional<core::StableId> selected_layout = std::nullopt,
+                                 std::optional<core::StableId> selected_destination = std::nullopt);
+    void selectOutputLayout(int index);
+    void selectDestination(int index);
+    void newOutputLayout();
+    void newDestination();
+    void saveOutputLayout();
+    void saveDestination();
+    void removeOutputLayout();
+    void removeDestination();
+    void updateOutputProfileButtons();
     void updateWritePlanButton();
     void invalidateWritePlan();
     void previewWritePlan();
@@ -119,7 +148,10 @@ class MetadataPropertiesDialog final : public QDialog {
     MetadataWritePlanApplierFactory plan_applier_factory_;
     MetadataApplyObserver apply_observer_;
     MetadataTransformationStore transformation_store_;
+    OutputProfileStore output_profile_store_;
     std::vector<persistence::SavedMetadataTransformationChain> transformation_catalog_;
+    std::vector<persistence::SavedOutputLayoutProfile> output_layout_catalog_;
+    std::vector<persistence::SavedDestinationProfile> destination_catalog_;
     std::vector<metadata::StagedMetadataSource> sources_;
     std::vector<std::string> preferred_fields_;
     std::vector<std::string> recent_field_names_;
@@ -141,6 +173,25 @@ class MetadataPropertiesDialog final : public QDialog {
     QWidget* transformation_panel_{nullptr};
     QListWidget* transformation_list_{nullptr};
     QLabel* transformation_status_{nullptr};
+    QCheckBox* save_tags_check_{nullptr};
+    QCheckBox* rename_files_check_{nullptr};
+    QCheckBox* move_files_check_{nullptr};
+    QCheckBox* replaygain_check_{nullptr};
+    QComboBox* output_layout_combo_{nullptr};
+    QLineEdit* output_layout_name_{nullptr};
+    QLineEdit* output_directory_expression_{nullptr};
+    QLineEdit* output_basename_expression_{nullptr};
+    QPushButton* output_layout_new_button_{nullptr};
+    QPushButton* output_layout_save_button_{nullptr};
+    QPushButton* output_layout_remove_button_{nullptr};
+    QComboBox* destination_combo_{nullptr};
+    QLineEdit* destination_name_{nullptr};
+    QLineEdit* destination_root_{nullptr};
+    QPushButton* destination_browse_button_{nullptr};
+    QPushButton* destination_new_button_{nullptr};
+    QPushButton* destination_save_button_{nullptr};
+    QPushButton* destination_remove_button_{nullptr};
+    QLabel* output_profile_status_{nullptr};
     QPushButton* preview_plan_button_{nullptr};
     MetadataGridModel* grid_model_{nullptr};
     MetadataAggregateModel* aggregate_model_{nullptr};
@@ -166,6 +217,11 @@ class MetadataPropertiesDialog final : public QDialog {
     core::CancellationSource apply_cancellation_;
     int draft_count_{0};
     bool transformation_catalog_loading_{false};
+    bool output_profiles_loading_{false};
+    bool output_profile_mutation_running_{false};
+    std::optional<core::StableId> editing_output_layout_id_;
+    std::optional<core::StableId> editing_destination_id_;
+    std::string destination_root_raw_path_;
     bool write_plan_running_{false};
     bool apply_running_{false};
     bool apply_committed_{false};
