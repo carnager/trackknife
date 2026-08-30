@@ -24,9 +24,9 @@ uses only captured revision-qualified source tags; neither manual drafts nor
 checked automatic transformations can create a filename that misrepresents the
 file. The transformation editor also provides canonical Raw script editing for
 the bounded cleanup subset with live typed translation and Save/discard dirty
-protection. The development build and the complete 43/43 development test suite pass;
-clang-tidy and full sanitizer validation remain to be rerun for this
-continuation point.
+protection. The development, ASan/UBSan, TSan, and clang-tidy builds and their
+complete 43/43 test suites pass at this continuation point (validated
+2026-08-30).
 
 The next vertical slice is the one named at the end of M5 in
 [`MILESTONES.md`](MILESTONES.md): add native transformation-chain interchange
@@ -82,6 +82,7 @@ For sanitizer, static-analysis, and optimized builds:
 
 ```sh
 cmake --preset asan && cmake --build --preset asan && ctest --preset asan
+cmake --preset tsan && cmake --build --preset tsan && ctest --preset tsan
 cmake --preset tidy && cmake --build --preset tidy && ctest --preset tidy
 cmake --preset release && cmake --build --preset release
 ```

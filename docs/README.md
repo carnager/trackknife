@@ -24,9 +24,8 @@ Start metadata and file-operation work with
 [`adr/0070-canonical-raw-transformation-editor.md`](adr/0070-canonical-raw-transformation-editor.md),
 and
 [`adr/0071-retire-trackknife-compatibility-shell.md`](adr/0071-retire-trackknife-compatibility-shell.md).
-The development build and the complete 43/43 development test suite pass.
-Clang-tidy and full sanitizer validation remain to be rerun for this
-continuation point.
+The development, ASan/UBSan, TSan, and clang-tidy builds and their complete
+43/43 test suites pass at this continuation point (validated 2026-08-30).
 
 The next implementation slice is native transformation-chain interchange,
 followed by another preservation-proven writer or combined changed-content/
