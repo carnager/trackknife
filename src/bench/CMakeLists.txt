@@ -22,6 +22,8 @@ qt_add_library(
     metadata_transformation_dialog.hpp
     metadata_transformation_preview_model.cpp
     metadata_transformation_preview_model.hpp
+    preparation_plan_dialog.cpp
+    preparation_plan_dialog.hpp
 )
 add_library(Trackknife::BenchUi ALIAS trackknife_bench_ui)
 
