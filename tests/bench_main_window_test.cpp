@@ -2401,13 +2401,14 @@ void BenchMainWindowTest::metadataSuggestionsStageSelectionConsistency() {
 
     // The internal consistency provider stages album artist and total tracks
     // for every file as one ordinary colored draft transaction.
-    QTRY_COMPARE_WITH_TIMEOUT(grid_model->patches().patch_count(), std::size_t{6U}, 5'000);
-    QVERIFY(status->text().contains(QStringLiteral("6 suggestions")));
+    QTRY_COMPARE_WITH_TIMEOUT(grid_model->patches().patch_count(), std::size_t{9U}, 5'000);
+    QVERIFY(status->text().contains(QStringLiteral("9 suggestions")));
     QVERIFY(status->text().contains(QStringLiteral("Selection consistency")));
     QVERIFY(aggregate_model->fieldRow(QStringLiteral("Album Artist")).has_value());
     QVERIFY(aggregate_model->fieldRow(QStringLiteral("Total Tracks")).has_value());
     const auto album_artist_column = grid_model->fieldColumn(QStringLiteral("Album Artist"));
     const auto totals_column = grid_model->fieldColumn(QStringLiteral("Total Tracks"));
+    QVERIFY(grid_model->fieldColumn(QStringLiteral("TRACKTOTAL")).has_value());
     QVERIFY(album_artist_column.has_value());
     QVERIFY(totals_column.has_value());
     for (int row = 0; row < grid_model->rowCount(); ++row) {
@@ -2430,11 +2431,12 @@ void BenchMainWindowTest::metadataSuggestionsStageSelectionConsistency() {
     files->selectAll();
     QTRY_VERIFY(suggest->isEnabled());
     QTest::mouseClick(suggest, Qt::LeftButton);
-    QTRY_COMPARE_WITH_TIMEOUT(grid_model->patches().patch_count(), std::size_t{6U}, 5'000);
+    QTRY_COMPARE_WITH_TIMEOUT(grid_model->patches().patch_count(), std::size_t{9U}, 5'000);
+    files->selectAll();
     QTRY_VERIFY(suggest->isEnabled());
     QTest::mouseClick(suggest, Qt::LeftButton);
     QTRY_VERIFY_WITH_TIMEOUT(status->text().contains(QStringLiteral("already agree")), 5'000);
-    QCOMPARE(grid_model->patches().patch_count(), std::size_t{6U});
+    QCOMPARE(grid_model->patches().patch_count(), std::size_t{9U});
     delete properties;
 }
 

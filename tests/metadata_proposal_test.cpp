@@ -82,13 +82,15 @@ void consistentAlbumProposesAlbumArtistAndTotals() {
         trackknife::metadata::propose_selection_consistency(*selection, draft, items);
     CHECK(proposals.has_value());
     CHECK(proposals->provider_name == "Selection consistency");
-    CHECK(proposals->field_proposal_count() == 6U);
+    CHECK(proposals->field_proposal_count() == 9U);
     for (std::size_t item = 0U; item < 3U; ++item) {
         const auto* album_artist = proposed_field(*proposals, item, "albumartist");
         const auto* totals = proposed_field(*proposals, item, "totaltracks");
+        const auto* track_total = proposed_field(*proposals, item, "tracktotal");
         CHECK(album_artist != nullptr && album_artist->values == std::vector<std::string>{"Band"} &&
               album_artist->confidence == 1.0 && !album_artist->rationale.empty());
         CHECK(totals != nullptr && totals->values == std::vector<std::string>{"3"});
+        CHECK(track_total != nullptr && track_total->values == std::vector<std::string>{"3"});
     }
 }
 
@@ -150,10 +152,10 @@ void draftValuesDriveTheDerivation() {
     CHECK(album_artist != nullptr && album_artist->values == std::vector<std::string>{"Band"});
 }
 
-void tracktotalSpellingSatisfiesAndIsReused() {
-    // Two files already carry the common Vorbis TRACKTOTAL spelling; the
-    // third gets the proposal in that same spelling, and nobody receives a
-    // second differently spelled totals tag.
+void bothTotalsSpellingsAreProposedLikePicard() {
+    // Different consumers read different totals spellings, so — like Picard —
+    // both are written. Files already carrying one spelling only receive the
+    // other; the bare file receives both.
     const auto selection = StagedMetadataSelection::create({
         source("/music/1.flac", {field("ALBUM", {"Alpha"}), field("TRACKNUMBER", {"1"}),
                                  field("TRACKTOTAL", {"3"})}),
@@ -167,12 +169,16 @@ void tracktotalSpellingSatisfiesAndIsReused() {
     const auto proposals =
         trackknife::metadata::propose_selection_consistency(*selection, draft, items);
     CHECK(proposals.has_value());
-    CHECK(proposals->field_proposal_count() == 1U);
-    const auto* totals = proposed_field(*proposals, 2U, "tracktotal");
-    CHECK(totals != nullptr && totals->display_field == "TRACKTOTAL" &&
-          totals->values == std::vector<std::string>{"3"});
+    CHECK(proposals->field_proposal_count() == 4U);
+    CHECK(proposed_field(*proposals, 0U, "totaltracks") != nullptr);
     CHECK(proposed_field(*proposals, 0U, "tracktotal") == nullptr);
-    CHECK(proposed_field(*proposals, 0U, "totaltracks") == nullptr);
+    CHECK(proposed_field(*proposals, 1U, "totaltracks") != nullptr);
+    CHECK(proposed_field(*proposals, 1U, "tracktotal") == nullptr);
+    const auto* totals = proposed_field(*proposals, 2U, "totaltracks");
+    const auto* track_total = proposed_field(*proposals, 2U, "tracktotal");
+    CHECK(totals != nullptr && totals->values == std::vector<std::string>{"3"});
+    CHECK(track_total != nullptr && track_total->display_field == "TRACKTOTAL" &&
+          track_total->values == std::vector<std::string>{"3"});
 }
 
 void phantomProvenanceDoesNotSatisfy() {
@@ -321,7 +327,7 @@ int main() {
     disagreementAndGapsProposeNothing();
     presentAlbumArtistFillsOnlyMissingFiles();
     draftValuesDriveTheDerivation();
-    tracktotalSpellingSatisfiesAndIsReused();
+    bothTotalsSpellingsAreProposedLikePicard();
     phantomProvenanceDoesNotSatisfy();
     previewStagesOnlyConfidentChanges();
     previewRejectsMalformedProposals();

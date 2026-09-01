@@ -53,7 +53,13 @@ namespace {
                                                        const StagedMetadataPatchSet& draft,
                                                        const std::size_t item_index,
                                                        const std::string& canonical_field) {
-    if (const auto field_index = selection.field_index(canonical_field)) {
+    auto field_index = selection.field_index(canonical_field);
+    if (!field_index) {
+        // Non-conventional names such as TRACKTOTAL live in the exact-native
+        // registry once the draft ensures them; their patches count the same.
+        field_index = selection.exact_native_field_index(canonical_field);
+    }
+    if (field_index) {
         if (const auto* patch = draft.patch(item_index, *field_index)) {
             return patch->kind == StagedMetadataPatchKind::remove_field ? std::vector<std::string>{}
                                                                         : patch->values;
@@ -324,32 +330,21 @@ core::Result<MetadataProposalSet> propose_selection_consistency(
             *numbers.rbegin() == positions.size()) {
             const auto total = std::to_string(positions.size());
             const std::vector<std::string> total_values{total};
-            // TRACKTOTAL and TOTALTRACKS are distinct logical fields with the
-            // same meaning. Either spelling satisfies, and new proposals use
-            // the spelling the album already carries so one album never ends
-            // up with a mix.
-            auto group_uses_tracktotal = false;
-            auto group_uses_totaltracks = false;
+            const auto rationale = "\"" + album + "\" has the complete run of tracks 1–" + total +
+                                   " in this selection";
+            // TRACKTOTAL and TOTALTRACKS are distinct logical spellings of
+            // the same meaning and different consumers read different ones.
+            // Like Picard, propose both so every file ends up readable
+            // everywhere; each spelling is skipped individually once its
+            // writable value already matches.
             for (const auto position : positions) {
                 const auto item_index = item_indexes[position];
-                if (!writable_values(selection, draft, item_index, "tracktotal").empty()) {
-                    group_uses_tracktotal = true;
+                if (writable_values(selection, draft, item_index, "totaltracks") != total_values) {
+                    propose(position, "Total Tracks", total_values, rationale);
                 }
-                if (!writable_values(selection, draft, item_index, "totaltracks").empty()) {
-                    group_uses_totaltracks = true;
+                if (writable_values(selection, draft, item_index, "tracktotal") != total_values) {
+                    propose(position, "TRACKTOTAL", total_values, rationale);
                 }
-            }
-            const auto* display_field =
-                group_uses_tracktotal && !group_uses_totaltracks ? "TRACKTOTAL" : "Total Tracks";
-            for (const auto position : positions) {
-                const auto item_index = item_indexes[position];
-                if (writable_values(selection, draft, item_index, "totaltracks") == total_values ||
-                    writable_values(selection, draft, item_index, "tracktotal") == total_values) {
-                    continue;
-                }
-                propose(position, display_field, total_values,
-                        "\"" + album + "\" has the complete run of tracks 1–" + total +
-                            " in this selection");
             }
         }
     }
