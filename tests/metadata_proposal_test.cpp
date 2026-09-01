@@ -82,15 +82,13 @@ void consistentAlbumProposesAlbumArtistAndTotals() {
         trackknife::metadata::propose_selection_consistency(*selection, draft, items);
     CHECK(proposals.has_value());
     CHECK(proposals->provider_name == "Selection consistency");
-    CHECK(proposals->field_proposal_count() == 9U);
+    CHECK(proposals->field_proposal_count() == 6U);
     for (std::size_t item = 0U; item < 3U; ++item) {
         const auto* album_artist = proposed_field(*proposals, item, "albumartist");
         const auto* totals = proposed_field(*proposals, item, "totaltracks");
-        const auto* track_total = proposed_field(*proposals, item, "tracktotal");
         CHECK(album_artist != nullptr && album_artist->values == std::vector<std::string>{"Band"} &&
               album_artist->confidence == 1.0 && !album_artist->rationale.empty());
         CHECK(totals != nullptr && totals->values == std::vector<std::string>{"3"});
-        CHECK(track_total != nullptr && track_total->values == std::vector<std::string>{"3"});
     }
 }
 
@@ -152,10 +150,10 @@ void draftValuesDriveTheDerivation() {
     CHECK(album_artist != nullptr && album_artist->values == std::vector<std::string>{"Band"});
 }
 
-void bothTotalsSpellingsAreProposedLikePicard() {
-    // Different consumers read different totals spellings, so — like Picard —
-    // both are written. Files already carrying one spelling only receive the
-    // other; the bare file receives both.
+void pairedSpellingSatisfiesTheLogicalField() {
+    // TRACKTOTAL resolves to the one logical totals identity, so files that
+    // already carry it are satisfied and the bare file receives exactly one
+    // logical proposal; the FLAC writer emits both spellings on its own.
     const auto selection = StagedMetadataSelection::create({
         source("/music/1.flac", {field("ALBUM", {"Alpha"}), field("TRACKNUMBER", {"1"}),
                                  field("TRACKTOTAL", {"3"})}),
@@ -164,21 +162,17 @@ void bothTotalsSpellingsAreProposedLikePicard() {
         source("/music/3.flac", {field("ALBUM", {"Alpha"}), field("TRACKNUMBER", {"3"})}),
     });
     CHECK(selection.has_value());
+    CHECK(trackknife::metadata::canonicalize_field_name("TRACKTOTAL") == "totaltracks");
     const trackknife::metadata::StagedMetadataPatchSet draft;
     const std::vector<std::size_t> items{0U, 1U, 2U};
     const auto proposals =
         trackknife::metadata::propose_selection_consistency(*selection, draft, items);
     CHECK(proposals.has_value());
-    CHECK(proposals->field_proposal_count() == 4U);
-    CHECK(proposed_field(*proposals, 0U, "totaltracks") != nullptr);
-    CHECK(proposed_field(*proposals, 0U, "tracktotal") == nullptr);
-    CHECK(proposed_field(*proposals, 1U, "totaltracks") != nullptr);
-    CHECK(proposed_field(*proposals, 1U, "tracktotal") == nullptr);
+    CHECK(proposals->field_proposal_count() == 1U);
+    CHECK(proposed_field(*proposals, 0U, "totaltracks") == nullptr);
+    CHECK(proposed_field(*proposals, 1U, "totaltracks") == nullptr);
     const auto* totals = proposed_field(*proposals, 2U, "totaltracks");
-    const auto* track_total = proposed_field(*proposals, 2U, "tracktotal");
     CHECK(totals != nullptr && totals->values == std::vector<std::string>{"3"});
-    CHECK(track_total != nullptr && track_total->display_field == "TRACKTOTAL" &&
-          track_total->values == std::vector<std::string>{"3"});
 }
 
 void phantomProvenanceDoesNotSatisfy() {
@@ -327,7 +321,7 @@ int main() {
     disagreementAndGapsProposeNothing();
     presentAlbumArtistFillsOnlyMissingFiles();
     draftValuesDriveTheDerivation();
-    bothTotalsSpellingsAreProposedLikePicard();
+    pairedSpellingSatisfiesTheLogicalField();
     phantomProvenanceDoesNotSatisfy();
     previewStagesOnlyConfidentChanges();
     previewRejectsMalformedProposals();

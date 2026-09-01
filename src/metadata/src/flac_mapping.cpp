@@ -30,8 +30,12 @@ constexpr std::array conventional_mappings{
     ConventionalMapping{"originaldate", "ORIGINALDATE"},
     ConventionalMapping{"tracknumber", "TRACKNUMBER"},
     ConventionalMapping{"totaltracks", "TOTALTRACKS"},
+    // Picard-paired secondary spellings: they resolve to the same canonical
+    // identity and never win the write name (the primary entry comes first).
+    ConventionalMapping{"totaltracks", "TRACKTOTAL"},
     ConventionalMapping{"discnumber", "DISCNUMBER"},
     ConventionalMapping{"totaldiscs", "TOTALDISCS"},
+    ConventionalMapping{"totaldiscs", "DISCTOTAL"},
     ConventionalMapping{"genre", "GENRE"},
     ConventionalMapping{"composer", "COMPOSER"},
     ConventionalMapping{"performer", "PERFORMER"},
@@ -160,6 +164,18 @@ bool is_conventional_metadata_field(const std::string_view canonical_name) {
     return !conventional_name(canonical_name).empty();
 }
 
+std::vector<std::string> paired_flac_property_names(const std::string_view canonical_name) {
+    // Picard writes both totals spellings so every consumer finds the one it
+    // reads; removal and verification cover the same pair.
+    if (canonical_name == "totaltracks") {
+        return {"TOTALTRACKS", "TRACKTOTAL"};
+    }
+    if (canonical_name == "totaldiscs") {
+        return {"TOTALDISCS", "DISCTOTAL"};
+    }
+    return {};
+}
+
 core::Result<FlacTextFieldMapping> map_flac_text_field(const std::string_view canonical_name,
                                                        const std::string_view display_name,
                                                        const std::string_view existing_native_name,
@@ -195,7 +211,8 @@ core::Result<FlacTextFieldMapping> map_flac_text_field(const std::string_view ca
     if (property_name.empty()) {
         property_name = uppercase_ascii(display_name);
     }
-    if (canonicalize_field_name(property_name) != canonical_name) {
+    if (canonicalize_field_name(property_name) != canonical_name &&
+        resolve_text_property_identity(property_name).canonical_name != canonical_name) {
         return std::unexpected(mapping_error(
             "the FLAC property key does not resolve to the planned field", display_name));
     }

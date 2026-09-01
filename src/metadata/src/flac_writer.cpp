@@ -462,10 +462,14 @@ using EffectiveNativeText = std::map<std::string, EffectiveNativeTextField>;
             if (!mapping) {
                 return std::unexpected(std::move(mapping.error()));
             }
-            const auto identity = resolve_text_property_identity(mapping->property_name);
-            expected[canonicalize_native_field_name(mapping->property_name)] =
-                EffectiveNativeTextField{.canonical_name = identity.canonical_name,
-                                         .values = intent.values};
+            // Paired identities are written under every paired spelling, but
+            // the reread applies the Picard load rule and surfaces only the
+            // primary; expect exactly that primary.
+            const auto paired = paired_flac_property_names(change.canonical_name);
+            const auto& property_name = paired.empty() ? mapping->property_name : paired.front();
+            const auto identity = resolve_text_property_identity(property_name);
+            expected[canonicalize_native_field_name(property_name)] = EffectiveNativeTextField{
+                .canonical_name = identity.canonical_name, .values = intent.values};
         }
     }
     if (before.unsupported_native_objects != after.unsupported_native_objects) {
@@ -560,11 +564,22 @@ using EffectiveNativeText = std::map<std::string, EffectiveNativeTextField>;
             for (const auto& value : intent.values) {
                 values.append(TagLib::String{value, TagLib::String::UTF8});
             }
-            if (!properties.replace(TagLib::String{mapping->property_name, TagLib::String::UTF8},
-                                    values)) {
-                return std::unexpected(writer_error(core::ErrorCode::unsupported,
-                                                    "TagLib rejected the FLAC property mapping",
-                                                    source_plan.raw_path, prepared_raw_path));
+            // Picard-paired identities are written under every paired native
+            // spelling so any consumer finds the one it reads; everything
+            // else keeps its single mapped property name.
+            auto property_names = change.exact_native_name
+                                      ? std::vector<std::string>{}
+                                      : paired_flac_property_names(change.canonical_name);
+            if (property_names.empty()) {
+                property_names.push_back(mapping->property_name);
+            }
+            for (const auto& property_name : property_names) {
+                if (!properties.replace(TagLib::String{property_name, TagLib::String::UTF8},
+                                        values)) {
+                    return std::unexpected(writer_error(core::ErrorCode::unsupported,
+                                                        "TagLib rejected the FLAC property mapping",
+                                                        source_plan.raw_path, prepared_raw_path));
+                }
             }
         }
     }

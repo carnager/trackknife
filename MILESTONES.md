@@ -965,16 +965,21 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   fill and contiguous-run TOTALTRACKS per album group, with Qt-free and
   offscreen coverage. M6 MusicBrainz implements this same contract.
 - Fixed: Suggest no longer skips files whose totals or album artist exist
-  only as cached-snapshot/stream projections, and — like Picard — proposes
-  track totals in both spellings (TOTALTRACKS and TRACKTOTAL) so every
-  consumer finds the one it reads, each skipped individually once its
-  writable value matches. Satisfied and unchanged checks compare against
-  the writable (draft-or-embedded) state and see draft patches in both the
-  logical and exact-native registries, so re-running Suggest over its own
-  staged draft is quiet. Proven by Qt-free provenance/spelling regressions
-  and a real-file pipeline reproduction. Known limit: a phantom value
-  exactly equal to the proposal still collapses at the shared no-op staging
-  boundary.
+  only as cached-snapshot/stream projections. Satisfied and unchanged
+  checks compare against the writable (draft-or-embedded) state and see
+  draft patches in both the logical and exact-native registries, so
+  re-running Suggest over its own staged draft is quiet. Proven by Qt-free
+  provenance regressions and a real-file pipeline reproduction. Known
+  limit: a phantom value exactly equal to the proposal still collapses at
+  the shared no-op staging boundary.
+- Done: ADR-0087 makes TRACKTOTAL/TOTALTRACKS and DISCTOTAL/TOTALDISCS one
+  Picard-style identity. Canonicalization merges the spellings, so the
+  grid, drafts, naming expressions, capture, and providers see one logical
+  totals field; the reader surfaces the primary spelling when a file
+  carries both while preserving the secondary comment's bytes; and the
+  FLAC writer erases and rewrites both paired spellings on every replace
+  and removes both on removal, verified by a real-FLAC round trip and the
+  mixed-album end-to-end reproduction.
 - Fixed: Properties now resolves a requested freeform field against both
   logical and exact-native identities before extending its grid. Editing an
   existing native `TEST` field as `test` no longer emits a false Qt column

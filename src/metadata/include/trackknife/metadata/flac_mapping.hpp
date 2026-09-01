@@ -9,6 +9,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace trackknife::metadata {
 
@@ -30,6 +31,10 @@ struct TextPropertyIdentity {
 // underscores, hyphens, and punctuation; similarity never creates an alias.
 [[nodiscard]] TextPropertyIdentity resolve_text_property_identity(std::string_view native_name);
 [[nodiscard]] bool is_conventional_metadata_field(std::string_view canonical_name);
+
+// Picard-paired native spellings for one canonical identity, primary first.
+// Empty for fields written under a single name.
+[[nodiscard]] std::vector<std::string> paired_flac_property_names(std::string_view canonical_name);
 
 // Resolves one Trackbench field to the exact Xiph-comment key used by the
 // native FLAC adapter. Existing native spelling wins; known newly added fields

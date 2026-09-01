@@ -9,11 +9,13 @@
 #include <tfile.h>
 #include <tpropertymap.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace trackknife::metadata {
@@ -114,6 +116,24 @@ core::Result<LocalMetadataRead> read_local_metadata(const std::string& raw_path,
         }
         document.fields.push_back(std::move(field));
     }
+
+    // Picard load rule for paired totals spellings: both natives resolve to
+    // one canonical identity, and when a file carries both, the primary
+    // spelling wins and the secondary is not surfaced twice. The secondary
+    // comment stays byte-preserved in the file; writes refresh both.
+    const auto drop_paired_secondary = [&document](const std::string_view primary,
+                                                   const std::string_view secondary) {
+        const auto has_primary = std::ranges::any_of(document.fields, [primary](const auto& field) {
+            return canonicalize_native_field_name(field.native_name) == primary;
+        });
+        if (has_primary) {
+            std::erase_if(document.fields, [secondary](const auto& field) {
+                return canonicalize_native_field_name(field.native_name) == secondary;
+            });
+        }
+    };
+    drop_paired_secondary("totaltracks", "tracktotal");
+    drop_paired_secondary("totaldiscs", "disctotal");
 
     const auto& unsupported = properties.unsupportedData();
     if (unsupported.size() > maximum_fields) {

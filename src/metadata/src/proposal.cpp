@@ -332,18 +332,13 @@ core::Result<MetadataProposalSet> propose_selection_consistency(
             const std::vector<std::string> total_values{total};
             const auto rationale = "\"" + album + "\" has the complete run of tracks 1–" + total +
                                    " in this selection";
-            // TRACKTOTAL and TOTALTRACKS are distinct logical spellings of
-            // the same meaning and different consumers read different ones.
-            // Like Picard, propose both so every file ends up readable
-            // everywhere; each spelling is skipped individually once its
-            // writable value already matches.
+            // One logical totals field: TRACKTOTAL resolves to the same
+            // canonical identity on read, and the FLAC writer emits both
+            // paired spellings on its own.
             for (const auto position : positions) {
                 const auto item_index = item_indexes[position];
                 if (writable_values(selection, draft, item_index, "totaltracks") != total_values) {
                     propose(position, "Total Tracks", total_values, rationale);
-                }
-                if (writable_values(selection, draft, item_index, "tracktotal") != total_values) {
-                    propose(position, "TRACKTOTAL", total_values, rationale);
                 }
             }
         }

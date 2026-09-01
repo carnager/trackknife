@@ -58,6 +58,15 @@ std::string canonicalize_field_name(const std::string_view name) {
                                 ? static_cast<char>(character - 'A' + 'a')
                                 : character);
     }
+    // Explicitly enumerated Picard-paired identities, not similarity: the
+    // TRACKTOTAL/TOTALTRACKS and DISCTOTAL/TOTALDISCS spellings carry one
+    // meaning, are read as one logical field, and are written together.
+    if (canonical == "tracktotal") {
+        return "totaltracks";
+    }
+    if (canonical == "disctotal") {
+        return "totaldiscs";
+    }
     return canonical;
 }
 

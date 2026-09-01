@@ -867,6 +867,139 @@ void blocksUnrepresentablePlansAndStaleOrCancelledWrites(
 
 } // namespace
 
+[[nodiscard]] bool bytes_contain(const std::vector<unsigned char>& bytes,
+                                 const std::string_view needle) {
+    return std::search(bytes.begin(), bytes.end(), needle.begin(), needle.end()) != bytes.end();
+}
+
+void writesPairedTotalsSpellingsLikePicard(const std::filesystem::path& fixture_directory) {
+    TemporaryDirectory directory;
+    const auto source = materialize(fixture_directory, "rich-metadata-flac.b64",
+                                    directory.path() / "paired-totals.flac");
+    const auto read = trackknife::metadata::read_local_metadata(source.native());
+    CHECK(read.has_value());
+    if (!read) {
+        return;
+    }
+    auto selection = selection_for(*read);
+    if (!selection) {
+        return;
+    }
+    const auto totals = selection->ensure_missing_field("Total Tracks", "Total Tracks");
+    const auto disc_totals = selection->ensure_missing_field("Total Discs", "Total Discs");
+    CHECK(totals.has_value());
+    CHECK(disc_totals.has_value());
+    if (!totals || !disc_totals) {
+        return;
+    }
+    trackknife::metadata::StagedMetadataPatchSet patches;
+    CHECK(patches.replace_values(*selection, 0U, *totals, {"9"}).has_value());
+    CHECK(patches.replace_values(*selection, 0U, *disc_totals, {"2"}).has_value());
+    auto plan = make_plan(*selection, patches);
+    CHECK(plan && plan->ready());
+    if (!plan || !plan->ready()) {
+        return;
+    }
+    const auto prepared_path = directory.path() / "paired-written.flac";
+    const auto prepared = trackknife::metadata::prepare_flac_metadata_write_copy(
+        plan->sources.front(), prepared_path.native());
+    CHECK(prepared.has_value());
+    if (!prepared) {
+        std::cerr << prepared.error().message << '\n';
+        return;
+    }
+    // Picard write rule: both spellings land in the file for every consumer.
+    const auto written = read_bytes(prepared_path);
+    CHECK(bytes_contain(written, "TOTALTRACKS=9"));
+    CHECK(bytes_contain(written, "TRACKTOTAL=9"));
+    CHECK(bytes_contain(written, "TOTALDISCS=2"));
+    CHECK(bytes_contain(written, "DISCTOTAL=2"));
+
+    // Picard load rule: one logical field surfaces, primary spelling first.
+    const auto reread = trackknife::metadata::read_local_metadata(prepared_path.native());
+    CHECK(reread.has_value());
+    if (!reread) {
+        return;
+    }
+    const auto totals_fields =
+        std::ranges::count_if(reread->document.fields, [](const auto& field) {
+            return field.canonical_name == "totaltracks";
+        });
+    CHECK(totals_fields == 1);
+    const auto found = std::ranges::find_if(reread->document.fields, [](const auto& field) {
+        return field.canonical_name == "totaltracks";
+    });
+    CHECK(found != reread->document.fields.end() && found->native_name == "TOTALTRACKS");
+    CHECK(reread->document.effective_values("totaltracks") == (std::vector<std::string>{"9"}));
+    CHECK(reread->document.effective_values("tracktotal") == (std::vector<std::string>{"9"}));
+
+    // A later edit refreshes both spellings, and removal deletes both.
+    auto second_selection = selection_for(*reread);
+    if (!second_selection) {
+        return;
+    }
+    const auto second_totals = second_selection->field_index("totaltracks");
+    CHECK(second_totals.has_value());
+    if (!second_totals) {
+        return;
+    }
+    trackknife::metadata::StagedMetadataPatchSet second_patches;
+    CHECK(second_patches.replace_values(*second_selection, 0U, *second_totals, {"10"}).has_value());
+    auto second_plan = make_plan(*second_selection, second_patches);
+    CHECK(second_plan && second_plan->ready());
+    if (!second_plan || !second_plan->ready()) {
+        return;
+    }
+    const auto updated_path = directory.path() / "paired-updated.flac";
+    const auto updated = trackknife::metadata::prepare_flac_metadata_write_copy(
+        second_plan->sources.front(), updated_path.native());
+    CHECK(updated.has_value());
+    if (!updated) {
+        std::cerr << updated.error().message << '\n';
+        return;
+    }
+    const auto updated_bytes = read_bytes(updated_path);
+    CHECK(bytes_contain(updated_bytes, "TOTALTRACKS=10"));
+    CHECK(bytes_contain(updated_bytes, "TRACKTOTAL=10"));
+    CHECK(!bytes_contain(updated_bytes, "TOTALTRACKS=9"));
+    CHECK(!bytes_contain(updated_bytes, "TRACKTOTAL=9"));
+
+    const auto third_read = trackknife::metadata::read_local_metadata(updated_path.native());
+    CHECK(third_read.has_value());
+    if (!third_read) {
+        return;
+    }
+    auto third_selection = selection_for(*third_read);
+    if (!third_selection) {
+        return;
+    }
+    const auto third_totals = third_selection->field_index("tracktotal");
+    CHECK(third_totals.has_value());
+    if (!third_totals) {
+        return;
+    }
+    trackknife::metadata::StagedMetadataPatchSet third_patches;
+    CHECK(third_patches.remove_field(*third_selection, 0U, *third_totals).has_value());
+    auto third_plan = make_plan(*third_selection, third_patches);
+    CHECK(third_plan && third_plan->ready());
+    if (!third_plan || !third_plan->ready()) {
+        return;
+    }
+    const auto removed_path = directory.path() / "paired-removed.flac";
+    const auto removed = trackknife::metadata::prepare_flac_metadata_write_copy(
+        third_plan->sources.front(), removed_path.native());
+    CHECK(removed.has_value());
+    if (!removed) {
+        std::cerr << removed.error().message << '\n';
+        return;
+    }
+    const auto removed_bytes = read_bytes(removed_path);
+    CHECK(!bytes_contain(removed_bytes, "TOTALTRACKS="));
+    CHECK(!bytes_contain(removed_bytes, "TRACKTOTAL="));
+    CHECK(bytes_contain(removed_bytes, "TOTALDISCS=2"));
+    CHECK(bytes_contain(removed_bytes, "DISCTOTAL=2"));
+}
+
 int main(const int argc, char** argv) {
     CHECK(argc == 2);
     if (argc == 2) {
@@ -875,6 +1008,7 @@ int main(const int argc, char** argv) {
         freeformFieldNeverAliasesAConventionalNeighbor(fixture_directory);
         preservesEmbeddedArtworkAndDecodedAudio(fixture_directory);
         preparesVerifiedArtworkReplaceAndRemove(fixture_directory);
+        writesPairedTotalsSpellingsLikePicard(fixture_directory);
         blocksUnrepresentablePlansAndStaleOrCancelledWrites(fixture_directory);
     }
     return failures == 0 ? 0 : 1;

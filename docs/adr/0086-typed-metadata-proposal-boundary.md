@@ -50,12 +50,11 @@ and reviewable before anything is written.
   embedded-provenance baseline fields only. Cached-snapshot and
   stream-projected values can make a tag look present in the effective
   document while no writable tag exists; such phantoms never suppress a
-  proposal. TRACKTOTAL and TOTALTRACKS are distinct logical spellings of
-  the same meaning read by different consumers: like Picard, totals are
-  proposed in both spellings, each skipped individually once its writable
-  value matches. DISCTOTAL/TOTALDISCS is the analogous pair when disc
-  totals are ever proposed; spacing/underscore variants already unify
-  through canonicalization.
+  proposal. ADR-0087 later merges the TRACKTOTAL/TOTALTRACKS and
+  DISCTOTAL/TOTALDISCS spellings into one canonical identity with
+  Picard-style paired writes, so providers propose one logical totals
+  value; spacing/underscore variants already unify through
+  canonicalization.
 - Properties exposes it as **Suggest** beside the grid tools: it runs in the
   background over the selected files (all files when none are selected),
   stages the surviving cells as one transaction, and reports the count and

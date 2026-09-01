@@ -812,6 +812,19 @@ TOTALTRACKS only for an exactly contiguous 1..N run per album group. M6
 MusicBrainz implements the same contract; candidate ranking and comparison
 surfaces are its UI work.
 
+**Trackbench decision (ADR-0087, M5 paired totals identities):** the
+TRACKTOTAL/TOTALTRACKS and DISCTOTAL/TOTALDISCS spellings are one
+explicitly enumerated Picard-style identity, not an inferred alias.
+Canonicalization merges them, so every canonical-keyed surface — grid rows,
+drafts, capture targets, naming expressions, providers — sees a single
+logical totals field. The reader applies Picard's load rule (primary
+spelling wins when a file carries both; the secondary comment stays
+byte-preserved), and the prepared-copy FLAC writer applies Picard's write
+rule: replaces land under both paired native spellings and removals delete
+both, with verification pinned to the primary the reread surfaces.
+ADR-0066's "similarity never creates an alias" contract is otherwise
+unchanged.
+
 **Trackbench decision (ADR-0075):** a revision-qualified metadata source cache
 is durable correctness state, not an audio-file backup and not permanent path
 ownership. When no persisted local occurrence owns a relocation target, its
