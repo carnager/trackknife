@@ -8,6 +8,7 @@
 #include "trackknife/metadata/draft_document.hpp"
 #include "trackknife/metadata/field_suggestions.hpp"
 #include "trackknife/metadata/rule_script_import.hpp"
+#include "uicommon/metadata_transformation_interchange.hpp"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -16,10 +17,10 @@
 #include <QCompleter>
 #include <QDialogButtonBox>
 #include <QElapsedTimer>
-#include <QFile>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QFrame>
+#include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
@@ -64,6 +65,8 @@ class MetadataTransformationDialog final : public QDialog {
     using StageCallback =
         std::function<bool(const metadata::MetadataTransformationPreview& preview)>;
     using PreviewResult = core::Result<metadata::MetadataTransformationPreview>;
+    using NativeImportResult = core::Result<metadata::MetadataTransformationChain>;
+    using NativeExportResult = core::Result<void>;
 
     MetadataTransformationDialog(std::shared_ptr<const metadata::StagedMetadataSelection> selection,
                                  metadata::StagedMetadataPatchSet draft,
@@ -102,9 +105,23 @@ class MetadataTransformationDialog final : public QDialog {
         save_as_->setObjectName(QStringLiteral("bench-metadata-transformation-save-as-new"));
         delete_saved_ = new QPushButton(QStringLiteral("Delete"), this);
         delete_saved_->setObjectName(QStringLiteral("bench-metadata-transformation-delete"));
+        import_native_ = new QPushButton(QStringLiteral("Import…"), this);
+        import_native_->setObjectName(
+            QStringLiteral("bench-metadata-transformation-import-native"));
+        import_native_->setToolTip(
+            QStringLiteral("Open a complete native Trackbench tagging script as an unsaved "
+                           "definition for review"));
+        export_native_ = new QPushButton(QStringLiteral("Export…"), this);
+        export_native_->setObjectName(
+            QStringLiteral("bench-metadata-transformation-export-native"));
+        export_native_->setToolTip(
+            QStringLiteral("Write the complete current typed definition as versioned native "
+                           "JSON; saved identity and automatic state are not included"));
         catalog_row->addWidget(save_);
         catalog_row->addWidget(save_as_);
         catalog_row->addWidget(delete_saved_);
+        catalog_row->addWidget(import_native_);
+        catalog_row->addWidget(export_native_);
         layout->addLayout(catalog_row);
 
         content_splitter_ = new QSplitter(Qt::Horizontal, this);
@@ -384,6 +401,8 @@ class MetadataTransformationDialog final : public QDialog {
         connect(save_, &QPushButton::clicked, this, [this] { saveCurrent(false); });
         connect(save_as_, &QPushButton::clicked, this, [this] { saveCurrent(true); });
         connect(delete_saved_, &QPushButton::clicked, this, [this] { deleteSaved(); });
+        connect(import_native_, &QPushButton::clicked, this, [this] { importNative(); });
+        connect(export_native_, &QPushButton::clicked, this, [this] { exportNative(); });
         connect(add_, &QPushButton::clicked, this, [this] { addStep(); });
         for (auto* step_editor : {target_, input_, replacement_, capture_argument_}) {
             connect(step_editor, &QLineEdit::returnPressed, this, [this] { addStep(); });
@@ -781,6 +800,140 @@ class MetadataTransformationDialog final : public QDialog {
 
     [[nodiscard]] bool hasUnsavedChanges() const {
         return raw_modified_ || !clean_chain_ || currentChain() != *clean_chain_;
+    }
+
+    [[nodiscard]] static QString interchangeErrorText(const core::Error& error) {
+        auto message = display_utf8(error.message);
+        for (const auto& context : error.context) {
+            if (context.key == "location") {
+                message += QStringLiteral(" · %1").arg(display_utf8(context.value));
+            } else if (context.key == "action") {
+                message += QStringLiteral(" · step %1")
+                               .arg(QString::fromStdString(context.value).toULongLong() + 1U);
+            }
+        }
+        return message;
+    }
+
+    [[nodiscard]] bool confirmDiscardBeforeImport() {
+        if (!hasUnsavedChanges()) {
+            return true;
+        }
+        QMessageBox confirmation{
+            QMessageBox::Warning,
+            QStringLiteral("Discard unsaved script changes?"),
+            QStringLiteral("Importing a native tagging script replaces the current unsaved "
+                           "editor contents. Explicitly discard those changes to continue."),
+            QMessageBox::Discard | QMessageBox::Cancel,
+            this,
+        };
+        confirmation.setDefaultButton(QMessageBox::Cancel);
+        confirmation.setOption(QMessageBox::Option::DontUseNativeDialog);
+        return confirmation.exec() == QMessageBox::Discard;
+    }
+
+    void importNative() {
+        if (catalog_busy_ || !confirmDiscardBeforeImport()) {
+            return;
+        }
+        const auto path = QFileDialog::getOpenFileName(
+            this, QStringLiteral("Import Trackbench tagging script"), {},
+            QStringLiteral("Trackbench tagging scripts (*.tbtags.json *.json);;All files (*)"));
+        if (path.isEmpty()) {
+            return;
+        }
+
+        catalog_busy_ = true;
+        catalog_status_->setText(QStringLiteral("Importing native tagging script…"));
+        updateActions();
+        auto* watcher = new QFutureWatcher<std::shared_ptr<NativeImportResult>>(this);
+        const QPointer<MetadataTransformationDialog> self{this};
+        connect(watcher, &QFutureWatcherBase::finished, this, [self, watcher] {
+            const auto result = watcher->result();
+            watcher->deleteLater();
+            if (!self) {
+                return;
+            }
+            self->catalog_busy_ = false;
+            if (!result || !*result) {
+                self->catalog_status_->setText(
+                    QStringLiteral("Could not import native tagging script · %1")
+                        .arg(result ? interchangeErrorText(result->error())
+                                    : QStringLiteral("The import task returned no result")));
+                self->updateActions();
+                return;
+            }
+
+            auto chain = std::move(**result);
+            self->loading_definition_ = true;
+            self->selected_saved_.reset();
+            {
+                const QSignalBlocker blocker{self->saved_};
+                self->saved_->setCurrentIndex(0);
+            }
+            self->name_->setText(display_utf8(chain.name));
+            self->actions_ = std::move(chain.actions);
+            self->clearPreview();
+            self->rebuildSteps(0);
+            self->refreshRawFromActions();
+            self->clean_chain_.reset();
+            self->loading_definition_ = false;
+            self->invalidatePreview();
+            self->catalog_status_->setText(
+                QStringLiteral("Imported · review, preview, and Save to keep this script"));
+            self->updateActions();
+        });
+        watcher->setFuture(QtConcurrent::run([path] {
+            return std::make_shared<NativeImportResult>(
+                ui::loadMetadataTransformationChainFile(path));
+        }));
+    }
+
+    void exportNative() {
+        if (catalog_busy_ || actions_.empty() || (raw_modified_ && !raw_valid_)) {
+            return;
+        }
+        auto suggested_name = name_->text().trimmed();
+        suggested_name.replace(QChar{'/'}, QChar{'_'});
+        if (suggested_name.isEmpty()) {
+            suggested_name = QStringLiteral("tagging-script");
+        }
+        suggested_name += QStringLiteral(".tbtags.json");
+        const auto path = QFileDialog::getSaveFileName(
+            this, QStringLiteral("Export Trackbench tagging script"), suggested_name,
+            QStringLiteral("Trackbench tagging scripts (*.tbtags.json);;JSON files (*.json);;All "
+                           "files (*)"));
+        if (path.isEmpty()) {
+            return;
+        }
+
+        catalog_busy_ = true;
+        catalog_status_->setText(QStringLiteral("Exporting native tagging script…"));
+        updateActions();
+        auto* watcher = new QFutureWatcher<std::shared_ptr<NativeExportResult>>(this);
+        const QPointer<MetadataTransformationDialog> self{this};
+        connect(watcher, &QFutureWatcherBase::finished, this, [self, watcher] {
+            const auto result = watcher->result();
+            watcher->deleteLater();
+            if (!self) {
+                return;
+            }
+            self->catalog_busy_ = false;
+            if (!result || !*result) {
+                self->catalog_status_->setText(
+                    QStringLiteral("Could not export native tagging script · %1")
+                        .arg(result ? interchangeErrorText(result->error())
+                                    : QStringLiteral("The export task returned no result")));
+            } else {
+                self->catalog_status_->setText(QStringLiteral("Native tagging script exported"));
+            }
+            self->updateActions();
+        });
+        auto chain = currentChain();
+        watcher->setFuture(QtConcurrent::run([path, chain = std::move(chain)] {
+            return std::make_shared<NativeExportResult>(
+                ui::saveMetadataTransformationChainFile(path, chain));
+        }));
     }
 
     void refreshRawFromActions() {
@@ -1275,6 +1428,9 @@ class MetadataTransformationDialog final : public QDialog {
                              !actions_.empty() && !name_->text().trimmed().isEmpty());
         delete_saved_->setEnabled(editing_enabled && static_cast<bool>(store_.remove) &&
                                   selected_saved_.has_value());
+        import_native_->setEnabled(editing_enabled);
+        export_native_->setEnabled(editing_enabled && raw_ready && !actions_.empty() &&
+                                   !name_->text().trimmed().isEmpty());
         name_->setEnabled(editing_enabled);
         kind_->setEnabled(editing_enabled);
         target_->setEnabled(editing_enabled);
@@ -1406,6 +1562,8 @@ class MetadataTransformationDialog final : public QDialog {
     QPushButton* save_{nullptr};
     QPushButton* save_as_{nullptr};
     QPushButton* delete_saved_{nullptr};
+    QPushButton* import_native_{nullptr};
+    QPushButton* export_native_{nullptr};
     QLabel* catalog_status_{nullptr};
     QLineEdit* name_{nullptr};
     QTabWidget* editor_tabs_{nullptr};

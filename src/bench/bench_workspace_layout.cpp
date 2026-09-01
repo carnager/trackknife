@@ -173,11 +173,6 @@ void BenchMainWindow::buildWorkspace() {
     properties_action_->setEnabled(false);
     connect(properties_action_, &QAction::triggered, this,
             &BenchMainWindow::showMetadataProperties);
-    metadata_history_action_ = edit_menu->addAction(QStringLiteral("Preparation operations…"));
-    metadata_history_action_->setObjectName(QStringLiteral("action-metadata-operation-history"));
-    metadata_history_action_->setEnabled(false);
-    connect(metadata_history_action_, &QAction::triggered, this,
-            &BenchMainWindow::showMetadataOperationHistory);
     edit_menu->addSeparator();
     remove_selected_action_ = edit_menu->addAction(QStringLiteral("Remove selected"));
     remove_selected_action_->setObjectName(QStringLiteral("action-remove-selected-tracks"));

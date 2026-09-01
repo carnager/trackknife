@@ -9,12 +9,36 @@ The ordered delivery plan is [`../MILESTONES.md`](../MILESTONES.md).
 
 ## Current continuation point
 
-M5 is active, implementation is accepted through ADR-0071, and the persistence
-schema is version 20. Path-only Rename/Move now derives strictly from captured
+M5 is active, implementation is accepted through ADR-0085, and the persistence
+schema is version 24. Path-only Rename/Move now derives strictly from captured
 revision-qualified source tags, never manual drafts or automatic chains, when
 Save tags is off. The transformation editor also exposes a canonical Raw script
 view for the bounded cleanup subset with live typed translation and explicit
-dirty-state protection.
+dirty-state protection. Complete typed tagging scripts now import and export
+through the strict native version-1 JSON envelope without transferring saved
+identity or automatic-enable state. The journal and single-source executor now
+also qualify changed destination artifacts on either filesystem topology.
+Bounded preparation Apply now composes that executor with one atomic
+all-occurrence relocation and metadata refresh, so reviewed native-FLAC text
+changes plus Rename/Move are enabled and recover through the same durable path.
+Previously used destinations can be reused when only an unowned historical
+metadata cache remains, and a rolled-back source no longer invalidates exact
+directories that its executor created for the rest of the batch.
+Native FLAC picture blocks and exact configured external PNG/JPEG fallbacks now
+enter one bounded typed artwork inventory with source revisions, provenance,
+dimensions, SHA-256 identity, and duplicate linkage. Properties exposes the
+inventory lazily, follows the existing file selection, and caps inspection at
+64 physical sources. Native FLAC supports freshly reviewed Add/Replace/Remove
+plus Copy-to-Selection through one preservation-exact prepared-copy and
+journaled Apply path. Schema 24 stores only compact kind/ordinal/count/SHA
+recovery evidence; image bytes and inventory rows remain file/session-owned.
+Embedded and external rows can also be exported by a bounded cancellable
+no-overwrite job. Copy rereads embedded donors by revision/ordinal/hash without
+creating a temporary image. External files and non-FLAC containers remain
+unmodified donors/export sources. Repeated Rename/Move also reconciles an exact
+target occurrence pre-resolved by older relocation history, so returning files
+to their source paths outside Trackbench no longer turns a fully ready review
+into an Apply-time all-source failure.
 Start metadata and file-operation work with
 [`metadata-and-files.md`](metadata-and-files.md),
 [`adr/0066-explicit-semantic-and-freeform-field-identity.md`](adr/0066-explicit-semantic-and-freeform-field-identity.md),
@@ -22,20 +46,37 @@ Start metadata and file-operation work with
 [`adr/0068-versioned-metadata-capture-patterns.md`](adr/0068-versioned-metadata-capture-patterns.md),
 [`adr/0069-source-tag-authority-for-path-only-preparation.md`](adr/0069-source-tag-authority-for-path-only-preparation.md),
 [`adr/0070-canonical-raw-transformation-editor.md`](adr/0070-canonical-raw-transformation-editor.md),
+[`adr/0071-retire-trackknife-compatibility-shell.md`](adr/0071-retire-trackknife-compatibility-shell.md),
+[`adr/0072-native-metadata-transformation-chain-interchange.md`](adr/0072-native-metadata-transformation-chain-interchange.md),
+[`adr/0073-journaled-destination-artifact-publication.md`](adr/0073-journaled-destination-artifact-publication.md),
+[`adr/0074-composed-metadata-and-path-publication.md`](adr/0074-composed-metadata-and-path-publication.md),
+[`adr/0075-reused-target-cache-and-batch-directory-evidence.md`](adr/0075-reused-target-cache-and-batch-directory-evidence.md),
+[`adr/0076-bounded-artwork-inventory.md`](adr/0076-bounded-artwork-inventory.md),
+[`adr/0077-read-only-properties-artwork-section.md`](adr/0077-read-only-properties-artwork-section.md),
+[`adr/0078-immutable-native-flac-artwork-write-plan.md`](adr/0078-immutable-native-flac-artwork-write-plan.md),
+[`adr/0079-journaled-native-flac-artwork-publication.md`](adr/0079-journaled-native-flac-artwork-publication.md),
+[`adr/0080-properties-artwork-review-and-apply.md`](adr/0080-properties-artwork-review-and-apply.md),
+[`adr/0081-native-flac-artwork-add-export-and-copy.md`](adr/0081-native-flac-artwork-add-export-and-copy.md),
+[`adr/0082-pre-resolved-relocation-reconciliation.md`](adr/0082-pre-resolved-relocation-reconciliation.md),
+[`adr/0083-direct-apply-with-trusted-live-preview.md`](adr/0083-direct-apply-with-trusted-live-preview.md),
+[`adr/0084-silent-recovery-and-draft-color-semantics.md`](adr/0084-silent-recovery-and-draft-color-semantics.md),
 and
-[`adr/0071-retire-trackknife-compatibility-shell.md`](adr/0071-retire-trackknife-compatibility-shell.md).
+[`adr/0085-artwork-thumbnails-and-direct-apply.md`](adr/0085-artwork-thumbnails-and-direct-apply.md).
 The development, ASan/UBSan, TSan, and clang-tidy builds and their complete
-43/43 test suites pass at this continuation point (validated 2026-08-31).
+46/46 test suites pass at this continuation point (validated 2026-09-01).
 The TSan-only bench test shim routes Qt 6.9+'s uninstrumented
 `pthread_clockjoin_np` wait through TSan's intercepted blocking
 `pthread_join`; normal Trackbench builds are unchanged, and CTest retains the
-outer deadlock timeout.
+outer deadlock timeout. The preset also carries a symbol-specific suppression
+for Qt 6.11's inline `PagedTrackModel::Page` QtConcurrent dispatch because its
+real enqueue/dequeue happens-before edge lives inside the intentionally
+uninstrumented Qt shared library; the page generator and all application
+payloads remain instrumented.
 
-The next implementation slice is native transformation-chain interchange,
-followed by another preservation-proven writer or combined changed-content/
-destination publication. The exact current
-completion list and next marker live under **M5 — Fast tag workspace and safe
-file operations** in
+The next implementation slice qualifies the next real-file text writer and
+preservation matrix, beginning with WavPack. The exact current completion list
+and next marker live under
+**M5 — Fast tag workspace and safe file operations** in
 [`../MILESTONES.md`](../MILESTONES.md).
 
 ADR-0058 supersedes ADR-0025's permanent process split. If an older feature

@@ -2,16 +2,15 @@
 
 #include "bench/metadata_properties_dialog.hpp"
 
-#include "bench/file_publication_apply_dialog.hpp"
-#include "bench/metadata_apply_dialog.hpp"
-#include "bench/metadata_exact_value_dialog.hpp"
+#include "bench/metadata_artwork_section.hpp"
 #include "bench/metadata_dialog_helpers.hpp"
+#include "bench/metadata_exact_value_dialog.hpp"
 #include "bench/metadata_grid_model.hpp"
 #include "bench/metadata_rule_script_import_dialog.hpp"
 #include "bench/metadata_scalar_delegate.hpp"
 #include "bench/metadata_transformation_dialog.hpp"
 #include "bench/metadata_transformation_preview_model.hpp"
-#include "bench/preparation_plan_dialog.hpp"
+#include "bench/preparation_feedback_dialog.hpp"
 #include "trackknife/metadata/draft_document.hpp"
 #include "trackknife/metadata/field_suggestions.hpp"
 #include "trackknife/metadata/rule_script_import.hpp"
@@ -27,6 +26,7 @@
 #include <QEvent>
 #include <QFile>
 #include <QFileDialog>
+#include <QFontDatabase>
 #include <QFormLayout>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -39,22 +39,23 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QModelIndex>
-#include <QPersistentModelIndex>
-#include <QPainter>
 #include <QPaintEvent>
+#include <QPainter>
+#include <QPersistentModelIndex>
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
-#include <QStandardItemModel>
 #include <QSplitter>
+#include <QStandardItemModel>
 #include <QStringListModel>
 #include <QStyledItemDelegate>
 #include <QTabWidget>
 #include <QTableView>
 #include <QTimer>
 #include <QTreeView>
+#include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
 
@@ -68,6 +69,7 @@
 #include <ranges>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -116,8 +118,7 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
     FilePublicationApplyObserver file_apply_observer, QWidget* parent,
     MetadataDialogLayoutStore layout_store)
     : QDialog(parent), selection_watcher_(this), write_plan_watcher_(this),
-      metadata_apply_watcher_(this), file_apply_watcher_(this),
-      output_example_watcher_(this),
+      metadata_apply_watcher_(this), file_apply_watcher_(this), output_example_watcher_(this),
       source_reader_(std::move(source_reader)),
       plan_applier_factory_(std::move(plan_applier_factory)),
       apply_observer_(std::move(apply_observer)),
@@ -177,13 +178,12 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
 
     side_layout->addWidget(section_heading(
         QStringLiteral("When you apply"), QStringLiteral("bench-preparation-actions-heading"),
-        QStringLiteral("Every checked action is revalidated together in one preview before "
-                       "anything is written")));
+        QStringLiteral("Apply rechecks the files and runs every checked action together; "
+                       "problems stop the run before anything is written")));
     save_tags_check_ = new QCheckBox(QStringLiteral("Save tags"), side_panel);
     save_tags_check_->setObjectName(QStringLiteral("bench-preparation-save-tags"));
     save_tags_check_->setChecked(true);
-    save_tags_check_->setToolTip(
-        QStringLiteral("Write the drafted tag edits into the files"));
+    save_tags_check_->setToolTip(QStringLiteral("Write the drafted tag edits into the files"));
     side_layout->addWidget(save_tags_check_);
     rename_files_check_ = new QCheckBox(QStringLiteral("Rename files"), side_panel);
     rename_files_check_->setObjectName(QStringLiteral("bench-preparation-rename-files"));
@@ -200,15 +200,13 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
     rename_row->addWidget(output_layout_combo_, 1);
     auto* manage_layouts_button = new QPushButton(QStringLiteral("Edit…"), side_panel);
     manage_layouts_button->setObjectName(QStringLiteral("bench-output-layout-manage"));
-    manage_layouts_button->setToolTip(
-        QStringLiteral("Create, change, or remove naming layouts"));
+    manage_layouts_button->setToolTip(QStringLiteral("Create, change, or remove naming layouts"));
     rename_row->addWidget(manage_layouts_button);
     side_layout->addLayout(rename_row);
     move_files_check_ = new QCheckBox(QStringLiteral("Move files"), side_panel);
     move_files_check_->setObjectName(QStringLiteral("bench-preparation-move-files"));
     move_files_check_->setEnabled(false);
-    move_files_check_->setToolTip(
-        QStringLiteral("Choose a naming layout and a destination first"));
+    move_files_check_->setToolTip(QStringLiteral("Choose a naming layout and a destination first"));
     side_layout->addWidget(move_files_check_);
     auto* move_row = new QHBoxLayout;
     move_row->setContentsMargins(22, 0, 0, 0);
@@ -241,8 +239,8 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
 
     side_layout->addWidget(section_heading(
         QStringLiteral("Scripts"), QStringLiteral("bench-metadata-scripts-heading"),
-        QStringLiteral("Checked scripts run automatically whenever this draft is previewed and "
-                       "applied; the checked state is saved")));
+        QStringLiteral("Checked scripts run automatically whenever this draft is applied; "
+                       "the checked state is saved")));
     transformation_list_ =
         new EmptyStateListWidget(QStringLiteral("No saved scripts yet"), side_panel);
     transformation_list_->setObjectName(QStringLiteral("bench-metadata-transformation-list"));
@@ -266,39 +264,59 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
     layout_manager->setObjectName(QStringLiteral("bench-output-layout-manager"));
     layout_manager->setWindowTitle(QStringLiteral("Naming layouts"));
     layout_manager->setModal(false);
-    layout_manager->setMinimumWidth(460);
+    layout_manager->setMinimumSize(560, 380);
+    layout_manager->resize(820, 540);
     auto* layout_manager_box = new QVBoxLayout(layout_manager);
-    auto* layout_manager_hint = new QLabel(
-        QStringLiteral("Changes the layout currently selected in Track properties. "
-                       "“New” starts a blank layout."),
-        layout_manager);
+    auto* layout_manager_hint =
+        new QLabel(QStringLiteral("Changes the layout currently selected in Track properties. "
+                                  "“New” starts a blank layout."),
+                   layout_manager);
     layout_manager_hint->setWordWrap(true);
     layout_manager_box->addWidget(layout_manager_hint);
     auto* layout_form = new QFormLayout;
+    layout_form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     output_layout_name_ = new QLineEdit(layout_manager);
     output_layout_name_->setObjectName(QStringLiteral("bench-output-layout-name"));
     output_layout_name_->setPlaceholderText(QStringLiteral("For example: Album folders"));
     layout_form->addRow(QStringLiteral("Name:"), output_layout_name_);
+    const auto expression_font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     output_directory_expression_ = new QLineEdit(layout_manager);
     output_directory_expression_->setObjectName(
         QStringLiteral("bench-output-layout-directory-expression"));
     output_directory_expression_->setPlaceholderText(
         QStringLiteral("For example: %album artist%/%album%"));
+    output_directory_expression_->setFont(expression_font);
     layout_form->addRow(QStringLiteral("Folders:"), output_directory_expression_);
     output_basename_expression_ = new QLineEdit(layout_manager);
     output_basename_expression_->setObjectName(
         QStringLiteral("bench-output-layout-basename-expression"));
     output_basename_expression_->setPlaceholderText(
         QStringLiteral("For example: %tracknumber% - %title%"));
+    output_basename_expression_->setFont(expression_font);
     layout_form->addRow(QStringLiteral("Filename:"), output_basename_expression_);
     layout_manager_box->addLayout(layout_form);
-    output_layout_example_ = new QLabel(QStringLiteral("Example: waiting for a track…"),
-                                        layout_manager);
+    output_layout_example_ =
+        new QLabel(QStringLiteral("Preview: waiting for tracks…"), layout_manager);
     output_layout_example_->setObjectName(QStringLiteral("bench-output-layout-example"));
-    output_layout_example_->setAccessibleName(QStringLiteral("Naming layout live example"));
+    output_layout_example_->setAccessibleName(QStringLiteral("Naming layout preview status"));
     output_layout_example_->setTextFormat(Qt::PlainText);
     output_layout_example_->setWordWrap(true);
     layout_manager_box->addWidget(output_layout_example_);
+    output_layout_preview_ = new QTreeWidget(layout_manager);
+    output_layout_preview_->setObjectName(QStringLiteral("bench-output-layout-preview"));
+    output_layout_preview_->setAccessibleName(QStringLiteral("Naming layout live preview"));
+    output_layout_preview_->setColumnCount(2);
+    output_layout_preview_->setHeaderLabels(
+        {QStringLiteral("Current name"), QStringLiteral("New path")});
+    output_layout_preview_->setRootIsDecorated(false);
+    output_layout_preview_->setAlternatingRowColors(true);
+    output_layout_preview_->setUniformRowHeights(true);
+    output_layout_preview_->setTextElideMode(Qt::ElideMiddle);
+    output_layout_preview_->setSelectionMode(QAbstractItemView::NoSelection);
+    output_layout_preview_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    output_layout_preview_->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    output_layout_preview_->header()->setStretchLastSection(true);
+    layout_manager_box->addWidget(output_layout_preview_, 1);
     auto* layout_buttons = new QHBoxLayout;
     output_layout_new_button_ = new QPushButton(QStringLiteral("New"), layout_manager);
     output_layout_new_button_->setObjectName(QStringLiteral("bench-output-layout-new"));
@@ -319,10 +337,11 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
     layout_buttons->addWidget(layout_manager_close);
     layout_manager_box->addLayout(layout_buttons);
     connect(layout_manager_close, &QPushButton::clicked, layout_manager, &QDialog::close);
-    connect(manage_layouts_button, &QPushButton::clicked, layout_manager, [layout_manager] {
+    connect(manage_layouts_button, &QPushButton::clicked, this, [this, layout_manager] {
         layout_manager->show();
         layout_manager->raise();
         layout_manager->activateWindow();
+        scheduleOutputLayoutExample();
     });
 
     auto* destination_manager = new QDialog(this);
@@ -331,10 +350,10 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
     destination_manager->setModal(false);
     destination_manager->setMinimumWidth(460);
     auto* destination_manager_box = new QVBoxLayout(destination_manager);
-    auto* destination_manager_hint = new QLabel(
-        QStringLiteral("Changes the destination currently selected in Track properties. "
-                       "“New” starts a blank destination."),
-        destination_manager);
+    auto* destination_manager_hint =
+        new QLabel(QStringLiteral("Changes the destination currently selected in Track properties. "
+                                  "“New” starts a blank destination."),
+                   destination_manager);
     destination_manager_hint->setWordWrap(true);
     destination_manager_box->addWidget(destination_manager_hint);
     auto* destination_form = new QFormLayout;
@@ -371,8 +390,7 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
     destination_manager_close->setAutoDefault(false);
     destination_buttons->addWidget(destination_manager_close);
     destination_manager_box->addLayout(destination_buttons);
-    connect(destination_manager_close, &QPushButton::clicked, destination_manager,
-            &QDialog::close);
+    connect(destination_manager_close, &QPushButton::clicked, destination_manager, &QDialog::close);
     connect(manage_destinations_button, &QPushButton::clicked, destination_manager,
             [destination_manager] {
                 destination_manager->show();
@@ -429,13 +447,12 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
 
     buttons_ = new QDialogButtonBox(QDialogButtonBox::Close, this);
     buttons_->setObjectName(QStringLiteral("bench-metadata-buttons"));
-    preview_plan_button_ =
-        buttons_->addButton(QStringLiteral("Preview changes…"), QDialogButtonBox::ActionRole);
-    preview_plan_button_->setObjectName(QStringLiteral("bench-metadata-preview-write-plan"));
-    preview_plan_button_->setToolTip(QStringLiteral(
-        "Revalidate every enabled change against the files and review it before applying"));
-    preview_plan_button_->setEnabled(false);
-    preview_plan_button_->setDefault(true);
+    apply_plan_button_ = buttons_->addButton(QStringLiteral("Apply"), QDialogButtonBox::ActionRole);
+    apply_plan_button_->setObjectName(QStringLiteral("bench-metadata-apply-changes"));
+    apply_plan_button_->setToolTip(QStringLiteral(
+        "Recheck the files, then make every enabled change; problems stop the run and are shown"));
+    apply_plan_button_->setEnabled(false);
+    apply_plan_button_->setDefault(true);
     connect(buttons_, &QDialogButtonBox::rejected, this, &QDialog::close);
     connect(undo_button_, &QPushButton::clicked, this, [this] {
         if (grid_model_ != nullptr) {
@@ -548,8 +565,8 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
             updateWritePlanButton();
         });
     }
-    connect(preview_plan_button_, &QPushButton::clicked, this,
-            &MetadataPropertiesDialog::previewWritePlan);
+    connect(apply_plan_button_, &QPushButton::clicked, this,
+            &MetadataPropertiesDialog::startWritePlan);
     connect(&write_plan_watcher_, &QFutureWatcherBase::finished, this,
             &MetadataPropertiesDialog::finishWritePlan);
     connect(&metadata_apply_watcher_, &QFutureWatcherBase::finished, this,
@@ -574,6 +591,21 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
     footer_layout->setContentsMargins(0, 0, 0, 0);
     footer_layout->setSpacing(8);
     footer_layout->addWidget(read_only_, 1);
+    apply_progress_bar_ = new QProgressBar(footer);
+    apply_progress_bar_->setObjectName(QStringLiteral("bench-metadata-apply-progress"));
+    apply_progress_bar_->setAccessibleName(QStringLiteral("Apply progress"));
+    apply_progress_bar_->setFixedWidth(170);
+    apply_progress_bar_->setTextVisible(true);
+    apply_progress_bar_->hide();
+    footer_layout->addWidget(apply_progress_bar_);
+    apply_stop_button_ = new QPushButton(QStringLiteral("Stop"), footer);
+    apply_stop_button_->setObjectName(QStringLiteral("bench-metadata-apply-stop"));
+    apply_stop_button_->setToolTip(
+        QStringLiteral("Stop after the files already in progress are safe"));
+    apply_stop_button_->hide();
+    connect(apply_stop_button_, &QPushButton::clicked, this,
+            &MetadataPropertiesDialog::requestApplyStop);
+    footer_layout->addWidget(apply_stop_button_);
     footer_layout->addWidget(buttons_);
     root_layout_->addWidget(footer);
     loadTransformationCatalog();
@@ -613,6 +645,16 @@ MetadataPropertiesDialog::~MetadataPropertiesDialog() {
     }
     if (output_example_running_) {
         output_example_watcher_.waitForFinished();
+    }
+}
+
+void MetadataPropertiesDialog::setArtworkMutationServices(
+    ArtworkWritePlanApplierFactory applier_factory, ArtworkApplyObserver observer) {
+    artwork_plan_applier_factory_ = std::move(applier_factory);
+    artwork_apply_observer_ = std::move(observer);
+    if (artwork_section_ != nullptr) {
+        artwork_section_->setMutationServices(artwork_plan_applier_factory_,
+                                              artwork_apply_observer_);
     }
 }
 
@@ -821,8 +863,29 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
     fields_pane_layout->addWidget(fields_, 1);
     grid_tools_->show();
 
+    metadata_sections_ = new QTabWidget(metadata_splitter_);
+    metadata_sections_->setObjectName(QStringLiteral("bench-metadata-sections"));
+    metadata_sections_->setAccessibleName(QStringLiteral("Metadata property sections"));
+    metadata_sections_->addTab(fields_pane, QStringLiteral("Fields"));
+    artwork_section_ = new MetadataArtworkSection(metadata_sections_);
+    artwork_section_->setMutationServices(artwork_plan_applier_factory_, artwork_apply_observer_);
+    const auto artwork_page =
+        metadata_sections_->addTab(artwork_section_, QStringLiteral("Artwork"));
+    connect(artwork_section_, &MetadataArtworkSection::operationRunningChanged, this,
+            [this](const bool running) {
+                artwork_operation_running_ = running;
+                updateWritePlanButton();
+                updateTransformationButton();
+            });
+    connect(metadata_sections_, &QTabWidget::currentChanged, this,
+            [this, artwork_page](const int index) {
+                if (artwork_section_ != nullptr) {
+                    artwork_section_->setActive(index == artwork_page);
+                }
+            });
+
     metadata_splitter_->addWidget(file_list_);
-    metadata_splitter_->addWidget(fields_pane);
+    metadata_splitter_->addWidget(metadata_sections_);
     metadata_splitter_->setStretchFactor(0, 1);
     metadata_splitter_->setStretchFactor(1, 3);
     metadata_splitter_->setSizes({170, 390});
@@ -845,8 +908,10 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
     selection_debounce_->setInterval(40);
     connect(selection_debounce_, &QTimer::timeout, this,
             &MetadataPropertiesDialog::updateSelectionProjection);
-    connect(file_list_->selectionModel(), &QItemSelectionModel::selectionChanged, this,
-            [this] { scheduleSelectionProjection(); });
+    connect(file_list_->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this] {
+        scheduleSelectionProjection();
+        scheduleOutputLayoutExample();
+    });
     connect(fields_->selectionModel(), &QItemSelectionModel::currentChanged, this, [this] {
         updateFieldButtons();
         updateEditValuesButton();
@@ -922,9 +987,52 @@ void MetadataPropertiesDialog::updateSelectionProjection() {
                                              QStringLiteral("sources")))
                              .arg(loaded_field_count_);
     updateDraftState(draft_count_, undo_button_->isEnabled(), redo_button_->isEnabled());
+    updateArtworkScope(selected_items);
     aggregate_model_->setSelectedItems(std::move(selected_items));
     updateTransformationButton();
     scheduleOutputLayoutExample();
+}
+
+void MetadataPropertiesDialog::updateArtworkScope(
+    const std::span<const std::size_t> selected_items) {
+    if (artwork_section_ == nullptr || grid_model_ == nullptr) {
+        return;
+    }
+    std::vector<MetadataArtworkScopeSource> scope;
+    const auto bounded_source_capacity =
+        std::min(selected_items.size(), metadata_artwork_source_limit + 1U);
+    scope.reserve(bounded_source_capacity);
+    std::unordered_map<std::string_view, std::size_t> source_positions;
+    source_positions.reserve(bounded_source_capacity);
+    bool source_limit_exceeded = false;
+    for (const auto item_index : selected_items) {
+        const auto& source = grid_model_->selection().source(item_index);
+        const auto [position, inserted] = source_positions.emplace(source.raw_path, scope.size());
+        if (!inserted) {
+            auto& existing = scope[position->second];
+            existing.occurrence_indexes.push_back(item_index);
+            ++existing.occurrence_count;
+            if (existing.captured_revision != source.source_revision) {
+                existing.captured_revision_consistent = false;
+            }
+            continue;
+        }
+        const auto row = static_cast<int>(
+            std::min(item_index, static_cast<std::size_t>(std::numeric_limits<int>::max())));
+        scope.push_back(MetadataArtworkScopeSource{
+            .raw_path = source.raw_path,
+            .captured_revision = source.source_revision,
+            .label = grid_model_->trackLabel(row),
+            .occurrence_indexes = {item_index},
+            .occurrence_count = 1U,
+            .captured_revision_consistent = true,
+        });
+        if (scope.size() > metadata_artwork_source_limit) {
+            source_limit_exceeded = true;
+            break;
+        }
+    }
+    artwork_section_->setScope(std::move(scope), source_limit_exceeded);
 }
 
 void MetadataPropertiesDialog::updateDraftState(const int patch_count, const bool can_undo,
@@ -943,8 +1051,7 @@ void MetadataPropertiesDialog::updateDraftState(const int patch_count, const boo
                   "file's current tags")
             : (patch_count == 0
                    ? QStringLiteral("No pending edits")
-                   : QStringLiteral("Draft only · nothing is written until you preview and "
-                                    "apply")));
+                   : QStringLiteral("Draft only · nothing is written until you apply")));
     undo_button_->setEnabled(can_undo);
     redo_button_->setEnabled(can_redo);
     discard_button_->setEnabled(patch_count > 0);
@@ -984,8 +1091,7 @@ void MetadataPropertiesDialog::updateTransformationButton() {
                          aggregate_model_ != nullptr && aggregate_model_->summaryReady() &&
                          aggregate_model_->selectedItemCount() > 0U &&
                          exact_values_dialog_ == nullptr && field_name_dialog_ == nullptr &&
-                         !write_plan_running_ && !apply_running_ && write_plan_dialog_ == nullptr &&
-                         apply_dialog_ == nullptr;
+                         !write_plan_running_ && !apply_running_ && !artwork_operation_running_;
     transform_button_->setEnabled(enabled);
     if (transformation_list_ != nullptr) {
         transformation_list_->setEnabled(!transformation_catalog_loading_ &&
@@ -1060,11 +1166,10 @@ void MetadataPropertiesDialog::rebuildTransformationCatalogControls(
     const auto has_saved_scripts = !transformation_catalog_.empty();
     transformation_status_->setVisible(has_saved_scripts);
     transformation_status_->setText(
-        has_saved_scripts
-            ? QStringLiteral("%1 of %2 checked · run in the order shown")
-                  .arg(automatic_count)
-                  .arg(transformation_catalog_.size())
-            : QString{});
+        has_saved_scripts ? QStringLiteral("%1 of %2 checked · run in the order shown")
+                                .arg(automatic_count)
+                                .arg(transformation_catalog_.size())
+                          : QString{});
     updateTransformationButton();
     updateWritePlanButton();
 }
@@ -1104,11 +1209,9 @@ void MetadataPropertiesDialog::toggleAutomaticTransformation(const core::StableI
             *retained = updated;
         }
         self->rebuildTransformationCatalogControls(updated.id);
-        self->read_only_->setText(
-            QStringLiteral("%1 will %2run before every write preview; Apply still requires "
-                           "explicit confirmation.")
-                .arg(display_utf8(updated.chain.name),
-                     updated.automatic ? QString{} : QStringLiteral("not ")));
+        self->read_only_->setText(QStringLiteral("%1 will %2run whenever you apply.")
+                                      .arg(display_utf8(updated.chain.name),
+                                           updated.automatic ? QString{} : QStringLiteral("not ")));
     });
 }
 
@@ -1490,19 +1593,35 @@ void MetadataPropertiesDialog::startOutputLayoutExample() {
         return;
     }
     if (grid_model_ == nullptr) {
-        output_layout_example_->setText(QStringLiteral("Example: waiting for a track…"));
+        output_layout_example_->setText(QStringLiteral("Preview: waiting for tracks…"));
+        output_layout_preview_->clear();
         return;
     }
-    const auto selected_items = selectedItemIndexes();
-    if (selected_items.empty()) {
-        output_layout_example_->setText(QStringLiteral("Example: select a track to preview"));
+    // Selected tracks drive the preview; with no selection every track is
+    // previewed so the layout can be judged before anything is applied.
+    auto items = selectedItemIndexes();
+    if (items.empty()) {
+        items.reserve(grid_model_->selection().item_count());
+        for (std::size_t item_index = 0U; item_index < grid_model_->selection().item_count();
+             ++item_index) {
+            items.push_back(item_index);
+        }
+    }
+    if (items.empty()) {
+        output_layout_example_->setText(QStringLiteral("Preview: waiting for tracks…"));
+        output_layout_preview_->clear();
         return;
+    }
+    constexpr auto maximum_preview_items = std::size_t{100U};
+    const auto item_count = items.size();
+    const auto truncated = item_count > maximum_preview_items;
+    if (truncated) {
+        items.resize(maximum_preview_items);
     }
 
-    const auto item_index = selected_items.front();
     auto selection = grid_model_->sharedSelection();
-    auto draft = save_tags_check_->isChecked() ? grid_model_->patches()
-                                                : metadata::StagedMetadataPatchSet{};
+    auto draft =
+        save_tags_check_->isChecked() ? grid_model_->patches() : metadata::StagedMetadataPatchSet{};
     auto layout = operations::OutputLayoutProfile{
         .schema_version = 1U,
         .name = "Live example",
@@ -1515,33 +1634,37 @@ void MetadataPropertiesDialog::startOutputLayoutExample() {
     output_example_cancellation_ = core::CancellationSource{};
     const auto cancellation = output_example_cancellation_.token();
     output_example_running_ = true;
-    output_layout_example_->setText(QStringLiteral("Example: updating…"));
+    output_layout_example_->setText(QStringLiteral("Preview: updating…"));
 
     output_example_watcher_.setFuture(QtConcurrent::run(
-        [selection = std::move(selection), draft = std::move(draft), item_index,
-         layout = std::move(layout), cancellation]() mutable {
-            const std::array items{item_index};
+        [selection = std::move(selection), draft = std::move(draft), items = std::move(items),
+         item_count, truncated, layout = std::move(layout), cancellation]() mutable {
             auto documents =
                 metadata::materialize_metadata_draft(*selection, draft, items, cancellation);
             if (!documents) {
                 return std::make_shared<OutputLayoutExampleResult>(
                     std::unexpected(std::move(documents.error())));
             }
-            const auto& source = selection->source(item_index);
-            const auto revision = source.source_revision.value_or(core::LocalSourceRevision{
-                .device = 1U,
-                .inode = 1U,
-                .size = 1U,
-                .modification_time_seconds = 0,
-                .modification_time_nanoseconds = 0,
-            });
             constexpr auto preview_root = "/trackbench-layout-example";
-            const std::array planning_items{operations::OutputPathPlanningItem{
-                .item_index = item_index,
-                .source_raw_path = source.raw_path,
-                .source_revision = revision,
-                .final_metadata = std::move(documents->front()),
-            }};
+            std::vector<operations::OutputPathPlanningItem> planning_items;
+            planning_items.reserve(items.size());
+            for (std::size_t position = 0U; position < items.size(); ++position) {
+                const auto item_index = items[position];
+                const auto& source = selection->source(item_index);
+                const auto revision = source.source_revision.value_or(core::LocalSourceRevision{
+                    .device = 1U,
+                    .inode = 1U,
+                    .size = 1U,
+                    .modification_time_seconds = 0,
+                    .modification_time_nanoseconds = 0,
+                });
+                planning_items.push_back(operations::OutputPathPlanningItem{
+                    .item_index = item_index,
+                    .source_raw_path = source.raw_path,
+                    .source_revision = revision,
+                    .final_metadata = std::move((*documents)[position]),
+                });
+            }
             auto planned = operations::plan_output_paths(
                 planning_items, {.rename_files = true, .move_files = true}, std::move(layout),
                 operations::DestinationProfile{
@@ -1558,33 +1681,35 @@ void MetadataPropertiesDialog::startOutputLayoutExample() {
             const auto blocking = std::ranges::find_if(
                 planned->issues, [](const auto& issue) { return issue.blocking; });
             if (blocking != planned->issues.end()) {
-                return std::make_shared<OutputLayoutExampleResult>(
-                    std::unexpected(core::Error{
-                        .code = core::ErrorCode::invalid_argument,
-                        .message = blocking->message,
-                        .context = {},
-                    }));
+                return std::make_shared<OutputLayoutExampleResult>(std::unexpected(core::Error{
+                    .code = core::ErrorCode::invalid_argument,
+                    .message = blocking->message,
+                    .context = {},
+                }));
             }
-            if (planned->sources.size() != 1U) {
-                return std::make_shared<OutputLayoutExampleResult>(
-                    std::unexpected(core::Error{
-                        .code = core::ErrorCode::invariant,
-                        .message = "Naming layout example did not produce one path",
-                        .context = {},
-                    }));
-            }
-            auto relative_path = planned->sources.front().target_raw_path;
+            OutputLayoutPreview preview{
+                .rows = {},
+                .item_count = item_count,
+                .truncated = truncated,
+            };
+            preview.rows.reserve(planned->sources.size());
             constexpr std::string_view prefix = "/trackbench-layout-example/";
-            if (!relative_path.starts_with(prefix)) {
-                return std::make_shared<OutputLayoutExampleResult>(
-                    std::unexpected(core::Error{
+            for (const auto& planned_source : planned->sources) {
+                auto relative_path = planned_source.target_raw_path;
+                if (!relative_path.starts_with(prefix)) {
+                    return std::make_shared<OutputLayoutExampleResult>(std::unexpected(core::Error{
                         .code = core::ErrorCode::invariant,
-                        .message = "Naming layout example escaped its preview root",
+                        .message = "Naming layout preview escaped its preview root",
                         .context = {},
                     }));
+                }
+                relative_path.erase(0U, prefix.size());
+                preview.rows.push_back(OutputLayoutPreviewRow{
+                    .source_raw_path = planned_source.source_raw_path,
+                    .target_relative_path = std::move(relative_path),
+                });
             }
-            relative_path.erase(0U, prefix.size());
-            return std::make_shared<OutputLayoutExampleResult>(std::move(relative_path));
+            return std::make_shared<OutputLayoutExampleResult>(std::move(preview));
         }));
 }
 
@@ -1593,13 +1718,31 @@ void MetadataPropertiesDialog::finishOutputLayoutExample() {
     const auto result = output_example_watcher_.result();
     if (output_example_job_generation_ == output_example_generation_ && result) {
         if (*result) {
+            const auto& preview = **result;
+            output_layout_preview_->clear();
+            for (const auto& row : preview.rows) {
+                const auto source =
+                    QString::fromStdString(core::escape_raw_path(row.source_raw_path));
+                const auto target =
+                    QString::fromStdString(core::escape_raw_path(row.target_relative_path));
+                auto* item = new QTreeWidgetItem(output_layout_preview_,
+                                                 {source.section(QChar{'/'}, -1), target});
+                item->setToolTip(0, source);
+                item->setToolTip(1, target);
+            }
             output_layout_example_->setText(
-                QStringLiteral("Example: %1")
-                    .arg(QString::fromStdString(core::escape_raw_path(**result))));
+                preview.truncated
+                    ? QStringLiteral("Preview: first %1 of %2 tracks")
+                          .arg(preview.rows.size())
+                          .arg(preview.item_count)
+                    : QStringLiteral("Preview: %1 %2")
+                          .arg(preview.rows.size())
+                          .arg(pluralized(preview.rows.size(), QStringLiteral("track"),
+                                          QStringLiteral("tracks"))));
         } else if (result->error().code != core::ErrorCode::cancelled) {
+            output_layout_preview_->clear();
             output_layout_example_->setText(
-                QStringLiteral("Example error: %1")
-                    .arg(display_utf8(result->error().message)));
+                QStringLiteral("Preview error: %1").arg(display_utf8(result->error().message)));
         }
     }
     if (output_example_pending_) {
@@ -1609,7 +1752,7 @@ void MetadataPropertiesDialog::finishOutputLayoutExample() {
 }
 
 void MetadataPropertiesDialog::updateWritePlanButton() {
-    if (preview_plan_button_ == nullptr) {
+    if (apply_plan_button_ == nullptr) {
         return;
     }
     const auto has_automatic = std::ranges::any_of(transformation_catalog_, [](const auto& entry) {
@@ -1618,10 +1761,10 @@ void MetadataPropertiesDialog::updateWritePlanButton() {
     const auto has_metadata_effect =
         save_tags_check_->isChecked() && (draft_count_ > 0 || has_automatic);
     const auto has_path_effect = rename_files_check_->isChecked() || move_files_check_->isChecked();
-    preview_plan_button_->setEnabled(
-        grid_model_ != nullptr && (has_metadata_effect || has_path_effect) &&
-        !transformation_catalog_loading_ && !write_plan_running_ && !apply_running_ &&
-        write_plan_dialog_ == nullptr && apply_dialog_ == nullptr);
+    apply_plan_button_->setEnabled(grid_model_ != nullptr &&
+                                   (has_metadata_effect || has_path_effect) &&
+                                   !transformation_catalog_loading_ && !write_plan_running_ &&
+                                   !apply_running_ && !artwork_operation_running_);
     updateTransformationButton();
 }
 
@@ -1629,13 +1772,10 @@ void MetadataPropertiesDialog::invalidateWritePlan() {
     ++write_plan_generation_;
     write_plan_cancellation_.request_cancellation();
     write_plan_cancellation_ = core::CancellationSource{};
-    if (write_plan_dialog_ != nullptr) {
-        write_plan_dialog_->close();
-    }
     updateWritePlanButton();
 }
 
-void MetadataPropertiesDialog::previewWritePlan() {
+void MetadataPropertiesDialog::startWritePlan() {
     const operations::PreparationOperationSelection operation_selection{
         .save_tags = save_tags_check_->isChecked(),
         .rename_files = rename_files_check_->isChecked(),
@@ -1653,7 +1793,7 @@ void MetadataPropertiesDialog::previewWritePlan() {
     std::optional<operations::DestinationProfile> destination;
     if (has_path_operation) {
         if (!editing_output_layout_id_) {
-            read_only_->setText(QStringLiteral("Select a saved naming layout before preview"));
+            read_only_->setText(QStringLiteral("Select a saved naming layout before applying"));
             return;
         }
         const auto layout = std::ranges::find(output_layout_catalog_, *editing_output_layout_id_,
@@ -1666,7 +1806,7 @@ void MetadataPropertiesDialog::previewWritePlan() {
         if (operation_selection.move_files) {
             if (!editing_destination_id_) {
                 read_only_->setText(
-                    QStringLiteral("Select a saved move destination before preview"));
+                    QStringLiteral("Select a saved move destination before applying"));
                 return;
             }
             const auto selected_destination =
@@ -1694,7 +1834,7 @@ void MetadataPropertiesDialog::previewWritePlan() {
                 read_only_->setText(
                     QStringLiteral(
                         "Automatic transformations exceed the %1-step combined limit; disable or "
-                        "shorten a chain before previewing the preparation.")
+                        "shorten a chain before applying.")
                         .arg(limits.actions));
                 return;
             }
@@ -1723,17 +1863,12 @@ void MetadataPropertiesDialog::previewWritePlan() {
     const auto automatic_action_count = combined.actions.size();
     write_plan_running_ = true;
     updateWritePlanButton();
-    read_only_->setText(
-        !operation_selection.save_tags && has_path_operation
-            ? QStringLiteral("Planning Rename/Move strictly from current source tags, then "
-                             "freshly preflighting every path…")
-        : automatic_action_count == 0U
-            ? QStringLiteral("Rechecking every enabled change against the files…")
-            : QStringLiteral("Running %1 checked %2, then rechecking every enabled "
-                             "change…")
-                  .arg(automatic_action_count)
-                  .arg(automatic_action_count == 1U ? QStringLiteral("step")
-                                                    : QStringLiteral("steps")));
+    read_only_->setText(automatic_action_count == 0U
+                            ? QStringLiteral("Checking files…")
+                            : QStringLiteral("Running %1 script %2, then checking files…")
+                                  .arg(automatic_action_count)
+                                  .arg(automatic_action_count == 1U ? QStringLiteral("step")
+                                                                    : QStringLiteral("steps")));
     write_plan_watcher_.setFuture(
         QtConcurrent::run([selection, draft = std::move(draft), items = std::move(items),
                            combined = std::move(combined), operation_selection,
@@ -1862,43 +1997,116 @@ void MetadataPropertiesDialog::finishWritePlan() {
     if (!result || !*result) {
         const auto message = result ? display_utf8(result->error().message)
                                     : QStringLiteral("The preparation task returned no result");
-        read_only_->setText(QStringLiteral("Preparation preview failed · %1").arg(message));
+        read_only_->setText(QStringLiteral("Nothing was changed · %1").arg(message));
         return;
     }
 
     auto plan = std::make_shared<const operations::PreparationPlan>(std::move(**result));
-    const auto source_count = plan->output_paths
-                                  ? plan->output_paths->sources.size()
-                                  : (plan->metadata ? plan->metadata->sources.size() : 0U);
-    const auto blocker_count = plan->blocking_issue_count();
-    auto* dialog = createPreparationPlanDialog(
-        plan,
-        [this](std::shared_ptr<const operations::PreparationPlan> ready_plan) {
-            startApply(std::move(ready_plan));
-        },
-        this);
-    write_plan_dialog_ = dialog;
+    if (plan->ready()) {
+        startApply(std::move(plan));
+        return;
+    }
+
+    // Blocked: nothing was written; list only what needs attention.
+    std::vector<PreparationFeedbackRow> rows;
+    const auto add_row = [&rows](const std::string& raw_path, const QString& detail) {
+        rows.push_back(PreparationFeedbackRow{
+            .file = raw_path.empty() ? QStringLiteral("Selection")
+                                     : QString::fromStdString(core::escape_raw_path(raw_path)),
+            .detail = detail,
+        });
+    };
+    for (const auto& issue : plan->issues) {
+        if (issue.blocking) {
+            add_row({}, display_utf8(issue.message));
+        }
+    }
+    if (plan->metadata) {
+        for (const auto& source : plan->metadata->sources) {
+            for (const auto& issue : source.issues) {
+                if (issue.blocking) {
+                    add_row(
+                        source.raw_path,
+                        QStringLiteral("%1: %2").arg(
+                            display_utf8(metadata::metadata_write_plan_issue_kind_name(issue.kind)),
+                            display_utf8(issue.error.message)));
+                }
+            }
+        }
+    }
+    if (plan->output_paths) {
+        for (const auto& issue : plan->output_paths->issues) {
+            if (issue.blocking) {
+                add_row(issue.source_raw_path.value_or(std::string{}),
+                        QStringLiteral("%1: %2").arg(
+                            display_utf8(operations::output_path_plan_issue_kind_name(issue.kind)),
+                            display_utf8(issue.message)));
+            }
+        }
+    }
+    if (plan->path_preflight) {
+        for (const auto& issue : plan->path_preflight->issues) {
+            if (issue.blocking) {
+                add_row(
+                    issue.source_raw_path,
+                    QStringLiteral("%1: %2").arg(
+                        display_utf8(operations::output_path_preflight_issue_kind_name(issue.kind)),
+                        display_utf8(issue.message)));
+            }
+        }
+    }
+    read_only_->setText(
+        QStringLiteral("Nothing was changed · %1 %2")
+            .arg(rows.size())
+            .arg(pluralized(rows.size(), QStringLiteral("problem"), QStringLiteral("problems"))));
+    showPreparationFeedback(
+        QStringLiteral("Apply blocked"),
+        QStringLiteral("Nothing was changed. Fix the %1 below, then apply again.")
+            .arg(pluralized(rows.size(), QStringLiteral("problem"), QStringLiteral("problems"))),
+        std::move(rows));
+}
+
+void MetadataPropertiesDialog::showPreparationFeedback(const QString& window_title,
+                                                       const QString& summary,
+                                                       std::vector<PreparationFeedbackRow> rows) {
+    if (feedback_dialog_ != nullptr) {
+        feedback_dialog_->close();
+    }
+    auto* dialog = createPreparationFeedbackDialog(window_title, summary, rows, this);
+    feedback_dialog_ = dialog;
     connect(dialog, &QDialog::finished, this, [this, dialog] {
-        if (write_plan_dialog_ == dialog) {
-            write_plan_dialog_ = nullptr;
+        if (feedback_dialog_ == dialog) {
+            feedback_dialog_ = nullptr;
+        }
+        if (apply_committed_) {
+            QTimer::singleShot(0, this, &QDialog::close);
+        } else {
             updateWritePlanButton();
         }
     });
     dialog->show();
     dialog->raise();
     dialog->activateWindow();
-    read_only_->setText(
-        QStringLiteral("Fresh preparation review · %1 physical %2 · %3 blocking %4 · %5")
-            .arg(source_count)
-            .arg(source_count == 1U ? QStringLiteral("source") : QStringLiteral("sources"))
-            .arg(blocker_count)
-            .arg(blocker_count == 1U ? QStringLiteral("issue") : QStringLiteral("issues"))
-            .arg(plan->ready() ? QStringLiteral("explicit Apply is available")
-                               : QStringLiteral("Apply is blocked")));
+}
+
+void MetadataPropertiesDialog::requestApplyStop() {
+    if (!apply_running_ || apply_stop_requested_) {
+        return;
+    }
+    apply_stop_requested_ = true;
+    apply_stop_button_->setEnabled(false);
+    apply_cancellation_.request_cancellation();
+    read_only_->setText(QStringLiteral("Stopping after the files already in progress are safe…"));
+}
+
+void MetadataPropertiesDialog::setApplyProgressVisible(const bool visible) {
+    apply_progress_bar_->setVisible(visible);
+    apply_stop_button_->setVisible(visible);
+    apply_stop_button_->setEnabled(visible && !apply_stop_requested_);
 }
 
 void MetadataPropertiesDialog::startApply(std::shared_ptr<const operations::PreparationPlan> plan) {
-    if (!plan || !plan->ready() || apply_running_ || apply_dialog_ != nullptr) {
+    if (!plan || !plan->ready() || apply_running_) {
         return;
     }
     if (plan->has_path_operation()) {
@@ -1919,9 +2127,6 @@ void MetadataPropertiesDialog::startMetadataApply(
         read_only_->setText(QStringLiteral("Metadata Apply is unavailable"));
         return;
     }
-    if (write_plan_dialog_ != nullptr) {
-        write_plan_dialog_->close();
-    }
     apply_cancellation_.request_cancellation();
     apply_cancellation_ = core::CancellationSource{};
     apply_progress_state_ = std::make_shared<MetadataApplyProgressState>();
@@ -1931,26 +2136,14 @@ void MetadataPropertiesDialog::startMetadataApply(
     file_apply_progress_state_.reset();
     apply_running_ = true;
     applying_file_paths_ = false;
+    apply_stop_requested_ = false;
     apply_committed_ = false;
     updateWritePlanButton();
-    read_only_->setText(QStringLiteral("Applying tag changes…"));
-
-    auto* dialog = createMetadataApplyDialog(
-        *plan->metadata, [this] { apply_cancellation_.request_cancellation(); }, this);
-    apply_dialog_ = dialog;
-    connect(dialog, &QDialog::finished, this, [this, dialog] {
-        if (apply_dialog_ == dialog) {
-            apply_dialog_ = nullptr;
-        }
-        if (apply_committed_) {
-            QTimer::singleShot(0, this, &QDialog::close);
-        } else {
-            updateWritePlanButton();
-        }
-    });
-    dialog->show();
-    dialog->raise();
-    dialog->activateWindow();
+    const auto total = plan->metadata->sources.size();
+    read_only_->setText(QStringLiteral("Saving tags · 0 of %1").arg(total));
+    apply_progress_bar_->setRange(0, static_cast<int>(total));
+    apply_progress_bar_->setValue(0);
+    setApplyProgressVisible(true);
     apply_progress_timer_->start();
 
     const auto cancellation = apply_cancellation_.token();
@@ -1984,9 +2177,6 @@ void MetadataPropertiesDialog::startFileApply(
         read_only_->setText(QStringLiteral("File publication Apply is unavailable"));
         return;
     }
-    if (write_plan_dialog_ != nullptr) {
-        write_plan_dialog_->close();
-    }
     apply_cancellation_.request_cancellation();
     apply_cancellation_ = core::CancellationSource{};
     file_apply_progress_state_ = std::make_shared<FilePublicationApplyProgressState>();
@@ -1996,27 +2186,14 @@ void MetadataPropertiesDialog::startFileApply(
     apply_progress_state_.reset();
     apply_running_ = true;
     applying_file_paths_ = true;
+    apply_stop_requested_ = false;
     apply_committed_ = false;
     updateWritePlanButton();
-    read_only_->setText(
-        QStringLiteral("Applying file renames and moves…"));
-
-    auto* dialog = createFilePublicationApplyDialog(
-        *plan->path_preflight, [this] { apply_cancellation_.request_cancellation(); }, this);
-    apply_dialog_ = dialog;
-    connect(dialog, &QDialog::finished, this, [this, dialog] {
-        if (apply_dialog_ == dialog) {
-            apply_dialog_ = nullptr;
-        }
-        if (apply_committed_) {
-            QTimer::singleShot(0, this, &QDialog::close);
-        } else {
-            updateWritePlanButton();
-        }
-    });
-    dialog->show();
-    dialog->raise();
-    dialog->activateWindow();
+    const auto total = plan->path_preflight->sources.size();
+    read_only_->setText(QStringLiteral("Updating files · 0 of %1").arg(total));
+    apply_progress_bar_->setRange(0, static_cast<int>(total));
+    apply_progress_bar_->setValue(0);
+    setApplyProgressVisible(true);
     apply_progress_timer_->start();
 
     const auto cancellation = apply_cancellation_.token();
@@ -2035,25 +2212,41 @@ void MetadataPropertiesDialog::startFileApply(
                     progress_state->completed_sources = update.completed_sources;
                 };
             return std::make_shared<core::Result<operations::FilePublicationApplyResult>>(
-                applier(*plan->path_preflight, progress, cancellation));
+                applier(*plan, progress, cancellation));
         }));
 }
 
 void MetadataPropertiesDialog::updateApplyProgress() {
-    if (apply_dialog_ == nullptr) {
+    if (!apply_running_) {
         return;
     }
+    std::size_t completed = 0U;
+    std::size_t total = 0U;
     if (applying_file_paths_ && file_apply_progress_state_) {
-        updateFilePublicationApplyDialog(*apply_dialog_, *file_apply_progress_state_);
+        std::scoped_lock lock{file_apply_progress_state_->mutex};
+        completed = file_apply_progress_state_->completed_sources;
+        total = file_apply_progress_state_->states.size();
     } else if (apply_progress_state_) {
-        updateMetadataApplyDialog(*apply_dialog_, *apply_progress_state_);
+        std::scoped_lock lock{apply_progress_state_->mutex};
+        completed = apply_progress_state_->completed_sources;
+        total = apply_progress_state_->states.size();
+    } else {
+        return;
     }
+    apply_progress_bar_->setValue(static_cast<int>(completed));
+    read_only_->setText(
+        QStringLiteral("%1 · %2 of %3%4")
+            .arg(applying_file_paths_ ? QStringLiteral("Updating files")
+                                      : QStringLiteral("Saving tags"))
+            .arg(completed)
+            .arg(total)
+            .arg(apply_stop_requested_ ? QStringLiteral(" · stopping…") : QString{}));
 }
 
 void MetadataPropertiesDialog::finishMetadataApply() {
     apply_running_ = false;
     apply_progress_timer_->stop();
-    updateApplyProgress();
+    setApplyProgressVisible(false);
     const auto result = metadata_apply_watcher_.result();
     if (result && *result) {
         apply_committed_ = (**result).committed_source_count() > 0U;
@@ -2061,41 +2254,58 @@ void MetadataPropertiesDialog::finishMetadataApply() {
             apply_observer_(**result);
         }
     }
-    if (apply_dialog_ != nullptr) {
-        if (result) {
-            finishMetadataApplyDialog(*apply_dialog_, *result);
-        } else {
-            finishMetadataApplyDialog(*apply_dialog_, std::unexpected(core::Error{
-                .code = core::ErrorCode::invariant,
-                .message = "The metadata Apply task returned no result",
-                .context = {},
-            }));
-        }
-    }
-    if (!result || !*result) {
-        const auto message = result ? display_utf8(result->error().message)
-                                    : QStringLiteral("The Apply task returned no result");
-        read_only_->setText(QStringLiteral("Metadata Apply failed · %1").arg(message));
-    } else if (apply_committed_) {
-        read_only_->setText(
-            QStringLiteral("Metadata Apply committed %1 physical %2 · close results to refresh "
-                           "Properties")
-                .arg((**result).committed_source_count())
-                .arg((**result).committed_source_count() == 1U ? QStringLiteral("source")
-                                                               : QStringLiteral("sources")));
-    } else {
-        read_only_->setText(
-            QStringLiteral("No sources were committed · preview again before retrying"));
-    }
     ++write_plan_generation_;
     apply_progress_state_.reset();
     updateWritePlanButton();
+    if (!result || !*result) {
+        const auto message = result ? display_utf8(result->error().message)
+                                    : QStringLiteral("The Apply task returned no result");
+        read_only_->setText(QStringLiteral("Saving tags failed · %1").arg(message));
+        showPreparationFeedback(QStringLiteral("Saving tags failed"), message, {});
+        return;
+    }
+    const auto& outcome = **result;
+    const auto saved = outcome.committed_source_count();
+    if (saved == outcome.sources.size()) {
+        read_only_->setText(
+            QStringLiteral("Saved %1 %2")
+                .arg(saved)
+                .arg(pluralized(saved, QStringLiteral("file"), QStringLiteral("files"))));
+        QTimer::singleShot(0, this, &QDialog::close);
+        return;
+    }
+    std::vector<PreparationFeedbackRow> rows;
+    for (const auto& source : outcome.sources) {
+        if (source.state == operations::MetadataApplySourceState::committed) {
+            continue;
+        }
+        rows.push_back(PreparationFeedbackRow{
+            .file = QString::fromStdString(core::escape_raw_path(source.raw_path)),
+            .detail =
+                source.issue ? display_utf8(source.issue->message) : apply_state_text(source.state),
+        });
+    }
+    const auto stopped =
+        outcome.cancelled_source_count() > 0U && outcome.failed_source_count() == 0U;
+    const auto summary =
+        QStringLiteral("%1 saved · %2 failed · %3 stopped. Saved files are done; the files below "
+                       "were not touched.")
+            .arg(saved)
+            .arg(outcome.failed_source_count())
+            .arg(outcome.cancelled_source_count());
+    read_only_->setText(QStringLiteral("%1 saved · %2 failed · %3 stopped")
+                            .arg(saved)
+                            .arg(outcome.failed_source_count())
+                            .arg(outcome.cancelled_source_count()));
+    showPreparationFeedback(stopped ? QStringLiteral("Save stopped")
+                                    : QStringLiteral("Saved with problems"),
+                            summary, std::move(rows));
 }
 
 void MetadataPropertiesDialog::finishFileApply() {
     apply_running_ = false;
     apply_progress_timer_->stop();
-    updateApplyProgress();
+    setApplyProgressVisible(false);
     const auto result = file_apply_watcher_.result();
     if (result && *result) {
         apply_committed_ = (**result).committed_source_count() > 0U;
@@ -2103,36 +2313,55 @@ void MetadataPropertiesDialog::finishFileApply() {
             file_apply_observer_(**result);
         }
     }
-    if (apply_dialog_ != nullptr) {
-        if (result) {
-            finishFilePublicationApplyDialog(*apply_dialog_, *result);
-        } else {
-            finishFilePublicationApplyDialog(*apply_dialog_, std::unexpected(core::Error{
-                .code = core::ErrorCode::invariant,
-                .message = "The file-publication Apply task returned no result",
-                .context = {},
-            }));
-        }
-    }
-    if (!result || !*result) {
-        const auto message = result ? display_utf8(result->error().message)
-                                    : QStringLiteral("The Apply task returned no result");
-        read_only_->setText(QStringLiteral("File publication failed · %1").arg(message));
-    } else if (apply_committed_) {
-        read_only_->setText(
-            QStringLiteral("Published %1 physical %2 and reconciled every occurrence · close "
-                           "results to refresh Properties")
-                .arg((**result).committed_source_count())
-                .arg((**result).committed_source_count() == 1U ? QStringLiteral("source")
-                                                               : QStringLiteral("sources")));
-    } else {
-        read_only_->setText(
-            QStringLiteral("No path changes were committed · preview again before retrying"));
-    }
     ++write_plan_generation_;
     file_apply_progress_state_.reset();
     applying_file_paths_ = false;
     updateWritePlanButton();
+    if (!result || !*result) {
+        const auto message = result ? display_utf8(result->error().message)
+                                    : QStringLiteral("The Apply task returned no result");
+        read_only_->setText(QStringLiteral("Updating files failed · %1").arg(message));
+        showPreparationFeedback(QStringLiteral("Updating files failed"), message, {});
+        return;
+    }
+    const auto& outcome = **result;
+    const auto changed = outcome.committed_source_count();
+    const auto unchanged = outcome.unchanged_source_count();
+    if (changed + unchanged == outcome.sources.size()) {
+        read_only_->setText(
+            QStringLiteral("Updated %1 %2")
+                .arg(changed)
+                .arg(pluralized(changed, QStringLiteral("file"), QStringLiteral("files"))));
+        QTimer::singleShot(0, this, &QDialog::close);
+        return;
+    }
+    std::vector<PreparationFeedbackRow> rows;
+    for (const auto& source : outcome.sources) {
+        if (source.state == operations::FilePublicationApplySourceState::committed ||
+            source.state == operations::FilePublicationApplySourceState::unchanged) {
+            continue;
+        }
+        rows.push_back(PreparationFeedbackRow{
+            .file = QString::fromStdString(core::escape_raw_path(source.source_raw_path)),
+            .detail = source.issue ? display_utf8(source.issue->message)
+                                   : file_apply_state_text(source.state),
+        });
+    }
+    const auto stopped =
+        outcome.cancelled_source_count() > 0U && outcome.failed_source_count() == 0U;
+    const auto summary =
+        QStringLiteral("%1 updated · %2 failed · %3 stopped. Updated files are done; the files "
+                       "below were not touched.")
+            .arg(changed)
+            .arg(outcome.failed_source_count())
+            .arg(outcome.cancelled_source_count());
+    read_only_->setText(QStringLiteral("%1 updated · %2 failed · %3 stopped")
+                            .arg(changed)
+                            .arg(outcome.failed_source_count())
+                            .arg(outcome.cancelled_source_count()));
+    showPreparationFeedback(stopped ? QStringLiteral("Update stopped")
+                                    : QStringLiteral("Updated with problems"),
+                            summary, std::move(rows));
 }
 
 QStringList MetadataPropertiesDialog::metadataFieldNameSuggestions(const QString& query) const {
@@ -2375,7 +2604,7 @@ void MetadataPropertiesDialog::promptTransformation(
     if (grid_model_ == nullptr || aggregate_model_ == nullptr ||
         !aggregate_model_->summaryReady() || aggregate_model_->selectedItemCount() == 0U ||
         exact_values_dialog_ != nullptr || field_name_dialog_ != nullptr || write_plan_running_ ||
-        apply_running_ || write_plan_dialog_ != nullptr || apply_dialog_ != nullptr) {
+        apply_running_ || artwork_operation_running_) {
         return;
     }
     auto items = selectedItemIndexes();
@@ -2439,6 +2668,13 @@ bool MetadataPropertiesDialog::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void MetadataPropertiesDialog::closeEvent(QCloseEvent* event) {
+    if (artwork_operation_running_) {
+        artwork_section_->requestOperationCancellation();
+        read_only_->setText(
+            QStringLiteral("Cancelling artwork work after in-flight files become safe…"));
+        event->ignore();
+        return;
+    }
     if (apply_running_) {
         apply_cancellation_.request_cancellation();
         read_only_->setText(

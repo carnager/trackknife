@@ -13,12 +13,10 @@ qt_add_library(
     bench_track_views.cpp
     bench_transport.cpp
     bench_workspace_layout.cpp
-    file_publication_apply_dialog.cpp
-    file_publication_apply_dialog.hpp
     local_list_model.cpp
     local_list_model.hpp
-    metadata_apply_dialog.cpp
-    metadata_apply_dialog.hpp
+    metadata_artwork_section.cpp
+    metadata_artwork_section.hpp
     metadata_dialog_helpers.cpp
     metadata_dialog_helpers.hpp
     metadata_exact_value_dialog.cpp
@@ -35,8 +33,8 @@ qt_add_library(
     metadata_transformation_dialog.hpp
     metadata_transformation_preview_model.cpp
     metadata_transformation_preview_model.hpp
-    preparation_plan_dialog.cpp
-    preparation_plan_dialog.hpp
+    preparation_feedback_dialog.cpp
+    preparation_feedback_dialog.hpp
 )
 add_library(Trackknife::BenchUi ALIAS trackknife_bench_ui)
 

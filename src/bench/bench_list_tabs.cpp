@@ -504,10 +504,6 @@ void BenchMainWindow::refreshActiveContext() {
     if (buffer_menu_ != nullptr) {
         buffer_menu_->setEnabled(!mpd);
     }
-    if (metadata_history_action_ != nullptr) {
-        metadata_history_action_->setEnabled(!mpd && !metadata_operation_running_ &&
-                                             metadata_operation_snapshot_ != nullptr);
-    }
     if (context_changed && device_menu_ != nullptr) {
         rebuildDeviceMenu();
     }

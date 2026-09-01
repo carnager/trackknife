@@ -560,7 +560,7 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
    references, provenance, and confidence, proven by internal use before any
    online provider (M6) or public plugin ABI.
 
-### Current progress (2026-08-30)
+### Current progress (2026-09-01)
 
 - Done: ADR-0033 establishes the first Qt-free M5 metadata/source boundary.
   Ordered arbitrary values retain native and canonical names, qualifiers, and
@@ -770,7 +770,8 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   produces ordered no-op/commit/failure/cancellation results, serialized
   monotonic progress, fresh per-source admission, and automatic same/cross-
   filesystem dispatch on at most 1–8 workers. Shared reviewed missing-directory
-  prefixes serialize only until successful batch evidence establishes them;
+  prefixes serialize only until executor-proven batch creation establishes
+  them; ADR-0075 retains that evidence through a later source rollback, and
   independent file I/O then proceeds in parallel.
 - Done: ADR-0064 and reversible migration 17 expose bounded Unicode-scalar
   prefix extraction as a typed saved metadata action. **Keep first characters
@@ -829,10 +830,145 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   unsupported typed steps fail visibly into read-only raw mode, and dirty edits
   require explicit Save or discard. Typed actions remain the persisted
   authority, so no schema migration or opaque script execution is introduced.
-- Next: add native transformation-chain interchange, then qualify another
-  preservation-proven writer or the combined
-  destination-artifact path without weakening the immutable preparation
-  boundary. Artwork management remains required for the M5 exit.
+- Done: ADR-0072 adds the strict version-1 native tagging-script JSON envelope.
+  Every current typed action, exact ordered value, match/capture mode, and full
+  `tkfmt-1`/`tkcapture-1` dialect identity round-trips without exporting saved
+  UUID or automatic state. Import creates a dirty unsaved definition for review;
+  unknown structure fails closed, I/O is bounded and off-thread, and export is
+  atomic. No persistence migration is required.
+- Done: ADR-0073 and reversible migration 21 separate file topology from
+  content intent and qualify the single-source destination-artifact executor.
+  Changed content now follows journal-before-preparation, direct destination
+  sibling creation, no-replace publication, dependent commit before exact
+  source removal, conservative recovery, and explicit reconciliation on an
+  unrecorded artifact. A real rich native-FLAC plan writes and rereads its
+  preservation-verified result directly at a changed destination. Combined
+  publication was deliberately not exposed through Properties until its batch
+  and durable dependent-state composition were qualified.
+- Done: ADR-0074 and reversible migration 22 compose changed native-FLAC text
+  metadata plus Rename/Move through the bounded preparation Apply job. Exact
+  source/revision pairing gates the plan; one transaction relocates every
+  occurrence, preserves logical overlays, installs the verified target metadata
+  and revision, and records idempotent refresh intent. Metadata-only members of
+  a mixed batch retain journaled metadata Apply, path-only members retain the
+  byte-preserving executor, and startup recovery rereads the exact published
+  artifact before using the same combined callback. Trackbench reconciles the
+  active player and visible rows, while changed artifacts remain explicitly
+  non-undoable.
+- Done: ADR-0075 corrects real destination reuse without another migration.
+  A historical metadata cache with no persisted target occurrence is atomically
+  superseded instead of reserving that pathname forever. The executor also
+  reports exact directory-creation evidence before later work can fail, so a
+  rolled-back source no longer makes its own reviewed directories look external
+  to the remaining bounded batch. Active target occurrences and unexplained
+  directory appearances still fail closed.
+- Done: ADR-0076 adds the first Qt-free artwork-management boundary. Native
+  FLAC picture blocks and exact configured sibling PNG/JPEG names become one
+  bounded typed inventory with exact native type, Trackbench role, MIME,
+  dimensions, size, SHA-256 identity, provenance, raw source path/revision,
+  ordinal, issues, and cross-provenance duplicate linkage. The real embedded-
+  PNG FLAC fixture proves inventory, external fallback, limits, cancellation,
+  and unchanged typed picture evidence after an unrelated text rewrite. Native
+  FLAC advertises picture reads; no artwork write or action was enabled by this
+  read boundary.
+- Done: ADR-0077 exposes that inventory in a lazy read-only **Artwork** section
+  beneath Properties' existing file selector. One cancellable worker collapses
+  repeated logical occurrences and accepts at most 64 exact physical sources;
+  larger scopes ask for a narrower selection instead of truncating. Separate
+  capability, inventory, and issue tables show embedded/external read support,
+  revision agreement, native type, role, dimensions, size, complete SHA-256,
+  raw provenance, ordinal, and duplicate linkage. No pixels, inventory rows,
+  image data, or backups enter SQLite; mutation controls remained gated until
+  ADR-0080.
+- Done: ADR-0078 adds the first immutable native-FLAC embedded-artwork
+  replace/remove plan and preservation-verified prepared-copy adapter. Repeated
+  logical occurrences collapse only when ordinal, original SHA-256, intent, and
+  replacement path agree; media, target, physical-alias, replacement, limit,
+  and cancellation conflicts remain explicit blockers. A replacement plan
+  retains only path/revision/MIME/dimensions/size/SHA evidence, never encoded
+  bytes. Real multi-picture FLAC tests prove exact unrelated picture payloads,
+  unchanged comments and unknown blocks, byte-identical compressed audio,
+  equal decoded PCM, and source immutability for replace and remove. Native
+  FLAC now advertises picture-writer adapter capability, but Properties stays
+  read-only and no artwork plan, image, prepared file, or backup enters SQLite.
+- Done: ADR-0079 and reversible migration 23 extend the existing metadata
+  journal with explicit artwork kind, ordinal, count, target/replacement hash,
+  and complete original/planned inventory digests without storing image bytes
+  or inventory rows. Text and artwork now share one locked unchanged-path
+  publication lifecycle. Real multi-picture tests prove atomic replace,
+  retained exact-inode undo, all-occurrence revision refresh, and restart
+  recovery after publication through a reopened SQLite journal.
+- Done: ADR-0080 exposes native-FLAC embedded-row **Replace…** and **Remove**
+  beneath the shared Properties file scope. Every action builds a cancellable
+  fresh immutable review; wholly ready batches enter a two-worker job with
+  ordered progress, safe cancellation, truthful partial results, mandatory
+  fresh-review retry, all-occurrence refresh, and live inventory reload. The
+  prepared copy now rewrites only the reviewed native FLAC picture block and
+  streams every unrelated metadata/padding block and compressed-audio byte
+  unchanged, avoiding collateral whole-file TagLib normalization. Qt-free
+  batch tests plus a real untouched single-picture offscreen Apply prove the
+  complete path without storing image payloads in SQLite.
+- Done: ADR-0081 and reversible migration 24 extend the immutable artwork plan
+  and journal to native-FLAC **Add…**. Fresh validation derives the append
+  ordinal, rejects duplicate image bytes, and retains only role/description and
+  image evidence. The direct writer inserts one picture block while preserving
+  every existing picture, unrelated metadata/padding block, and compressed
+  audio byte; publication, recovery, refresh, and exact Undo stay on the
+  existing journaled path. **Copy to Selection** reuses Add with a revision/
+  ordinal/hash-qualified embedded or external donor and creates no temp image.
+  **Export…** uses a separate two-worker cancellable job with ordered partial
+  results, exact-byte reread, deterministic names, and exclusive no-overwrite
+  output; it creates neither SQLite evidence nor retained backups. External
+  artwork remains an unmodified donor/export source, and other container
+  writers remain visibly read-only.
+- Done: ADR-0082 fixes repeated Rename/Move after the same physical files were
+  returned to their source paths outside Trackbench. When older durable
+  relocation history pre-resolves a freshly reviewed source occurrence to the
+  absent target, the dependent transaction now accepts only that exact
+  revision-matching target set, advances it to the verified published revision
+  and metadata, and records ordinary idempotency evidence. Active target
+  collisions, mismatched revisions, and missing occurrences still fail closed;
+  schema 24 is unchanged.
+- Done: ADR-0083 makes Apply direct. The routine review dialog and both modal
+  progress dialogs are gone: a wholly ready tag/path plan enters the bounded
+  Apply job immediately, progress and Stop live in the Properties footer, and
+  only blocked, stopped, or failed runs open one compact feedback window
+  listing the untouched files. The resizable naming-layout manager gains a
+  live bounded preview table (current name → resulting path) over the
+  selected tracks so the format string is trusted before applying. Planning,
+  preflight, journals, recovery, and history are unchanged.
+- Done: ADR-0084 removes the Preparation operations history/undo window and
+  its permanently-dead Undo/Delete buttons. Crash recovery still runs at
+  startup but silently; only operations recovery could neither finish nor
+  safely roll back surface once, in the compact feedback window, with
+  acknowledged incidents remembered. Undo backups are released at startup
+  since no undo surface remains. The tag grid gains Picard-style draft
+  colors on the changed content only (green added, orange changed, red
+  struck-through removed) across the per-file grid and Field/Original/Draft
+  rows. Also fixes a real progress race in the artwork batch executor where
+  the completed count was published outside the delivery lock.
+- Done: ADR-0085 turns the Artwork tab into a picture-first surface. Every
+  inventory row leads with a background-decoded, revision-qualified
+  thumbnail; the columns compress to File/Role/Image/Source with hashes,
+  native types, and ordinals in tooltips; the storage note and the always-on
+  capabilities table are gone, with genuinely view-only files reported once
+  in the problems pane. Add/Replace/Remove/Copy and Export now follow the
+  ADR-0083 contract: direct apply with inline progress and Stop, compact
+  problems-only feedback, and no review or modal progress dialogs.
+- Fixed: Properties now resolves a requested freeform field against both
+  logical and exact-native identities before extending its grid. Editing an
+  existing native `TEST` field as `test` no longer emits a false Qt column
+  insertion or invalidates the bottom-right index of a 20-file selection; an
+  offscreen regression retains that exact model shape and requires zero insert
+  signals.
+- Fixed: Trackbench's always-live MPD queue can request covers while its tab is
+  hidden. The adapter no longer treats an ordinary server-limited binary chunk
+  as the end of the image; socket-level coverage assembles both `albumart` and
+  `readpicture` through the explicit empty response, preventing truncated JPEG
+  bytes from reaching Qt.
+- Next: qualify the next real-file text writer and preservation matrix,
+  beginning with WavPack, without inferring artwork-write support from its
+  existing read capability.
 
 ### Exit criteria
 

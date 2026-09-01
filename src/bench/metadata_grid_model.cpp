@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <map>
 #include <set>
@@ -37,6 +38,31 @@ namespace {
         label[0] = label[0].toUpper();
     }
     return label;
+}
+
+// Picard-style draft semantics on the changed content only: green text =
+// field added, orange text = values changed, red struck-through text = field
+// removed. Medium-strength hues read on both light and dark palettes; the
+// cell background is never painted.
+enum class DraftChangeKind : std::uint8_t { added, changed, removed };
+
+[[nodiscard]] QBrush draft_change_brush(const DraftChangeKind kind) {
+    switch (kind) {
+    case DraftChangeKind::added:
+        return QBrush{QColor{46, 160, 67}};
+    case DraftChangeKind::changed:
+        return QBrush{QColor{230, 126, 34}};
+    case DraftChangeKind::removed:
+        return QBrush{QColor{231, 76, 60}};
+    }
+    return {};
+}
+
+[[nodiscard]] QFont draft_change_font(const DraftChangeKind kind) {
+    auto font = QApplication::font();
+    font.setItalic(true);
+    font.setStrikeOut(kind == DraftChangeKind::removed);
+    return font;
 }
 
 [[nodiscard]] QStringList display_values(const std::vector<std::string>& values) {
@@ -180,18 +206,16 @@ QVariant MetadataGridModel::data(const QModelIndex& index, const int role) const
         return values.empty() ? QStringLiteral("(empty field)")
                               : values.join(QStringLiteral("  ·  "));
     }
+    if ((role == Qt::ForegroundRole || role == Qt::FontRole) && projected.patch != nullptr) {
+        const auto kind =
+            projected.patch->kind == metadata::StagedMetadataPatchKind::remove_field
+                ? DraftChangeKind::removed
+                : (cell == nullptr ? DraftChangeKind::added : DraftChangeKind::changed);
+        return role == Qt::ForegroundRole ? QVariant{draft_change_brush(kind)}
+                                          : QVariant{draft_change_font(kind)};
+    }
     if (role == Qt::ForegroundRole && !projected.present) {
         return QApplication::palette().brush(QPalette::PlaceholderText);
-    }
-    if (role == Qt::BackgroundRole && projected.patch != nullptr) {
-        auto color = QApplication::palette().color(QPalette::Highlight);
-        color.setAlpha(42);
-        return QBrush{color};
-    }
-    if (role == Qt::FontRole && projected.patch != nullptr) {
-        auto font = QApplication::font();
-        font.setItalic(true);
-        return font;
     }
     if (role == Qt::ToolTipRole) {
         if (projected.patch != nullptr) {
@@ -300,14 +324,25 @@ core::Result<MetadataFieldInsertion> MetadataGridModel::ensureField(const QStrin
             .context = {{.key = "limit", .value = std::to_string(maximum_field_name_bytes)}},
         });
     }
-    if (const auto existing = selection_->field_index(bytes)) {
-        return MetadataFieldInsertion{.field_index = *existing, .inserted = false};
+    if (const auto existing_column = fieldColumn(trimmed)) {
+        return MetadataFieldInsertion{
+            .field_index = static_cast<std::size_t>(*existing_column - 1),
+            .inserted = false,
+        };
     }
 
+    const auto old_field_count = selection_->field_count();
     auto extended = std::make_shared<metadata::StagedMetadataSelection>(*selection_);
     const auto added = extended->ensure_missing_field(bytes, bytes);
     if (!added) {
         return std::unexpected(added.error());
+    }
+    if (extended->field_count() != old_field_count + 1U || *added != old_field_count) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invariant,
+            .message = "metadata field insertion did not append one field",
+            .context = {},
+        });
     }
     const auto column = static_cast<int>(*added) + 1;
     beginInsertColumns({}, column, column);
@@ -1109,15 +1144,15 @@ QVariant MetadataAggregateModel::draftData(const std::size_t field_index, const 
     if (role == metadata_cell_baseline_values_role) {
         return originalData(field_index, metadata_cell_values_role);
     }
-    if (role == Qt::BackgroundRole && staged_count > 0U) {
-        auto color = QApplication::palette().color(QPalette::Highlight);
-        color.setAlpha(42);
-        return QBrush{color};
-    }
-    if (role == Qt::FontRole && staged_count > 0U) {
-        auto font = QApplication::font();
-        font.setItalic(true);
-        return font;
+    if ((role == Qt::ForegroundRole || role == Qt::FontRole) && staged_count > 0U) {
+        const auto kind =
+            uniform != uniform_drafts_.end() &&
+                    uniform->second.kind == metadata::StagedMetadataPatchKind::remove_field
+                ? DraftChangeKind::removed
+                : (subset_fields_[field_index].present_item_count == 0U ? DraftChangeKind::added
+                                                                        : DraftChangeKind::changed);
+        return role == Qt::ForegroundRole ? QVariant{draft_change_brush(kind)}
+                                          : QVariant{draft_change_font(kind)};
     }
 
     if (!draft_ready_ && (!draft_counts_ready_ || staged_count > 0U)) {

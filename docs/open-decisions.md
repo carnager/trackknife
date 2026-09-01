@@ -1,6 +1,6 @@
 # Open decisions
 
-Accepted foundations are recorded in ADRs through 0067. ADR-0058 supersedes
+Accepted foundations are recorded in ADRs through 0079. ADR-0058 supersedes
 ADR-0025's permanent process split: Trackbench is the primary workspace and
 hosts authority-bound MPD Queue and Local Queue tabs. The active primary tab
 switches the server-library/local-folders sidebar, MPD/PipeWire output selector,
@@ -110,14 +110,41 @@ startup replay. ADR-0059–0063 add the concrete dependent path transaction,
 same-filesystem undo, cross-filesystem execution, active-playback relocation,
 and bounded multi-source Apply. ADR-0067 exposes path-only Rename/Move through
 one final-metadata/path review, bounded Apply, both startup recovery paths,
-unified operation history, and same-filesystem undo; changed content plus paths
-remains blocked until direct destination-artifact publication exists. Cross-
-filesystem undo, portable/custom sanitization and Unicode normalization,
-grouped numbering, richer match dialects, native chain interchange, other exact
-format writers, artwork mutation, and sidecars remain open M5 decisions and
+unified operation history, and same-filesystem undo. ADR-0073 and migration 21
+qualify the journaled single-source destination-artifact core with a real
+native-FLAC writer. ADR-0074 and migration 22 compose it into bounded Apply,
+atomic all-occurrence metadata/path reconciliation, visible/player refresh, and
+published-artifact startup recovery. Cross-filesystem and changed-artifact undo,
+portable/custom sanitization and Unicode normalization,
+grouped numbering, richer match dialects, other exact format writers, artwork
+publication/UI, thumbnail presentation, and sidecars remain open M5 decisions and
 capability work. ADR-0068 separately fixes the `tkcapture-1` grammar, bounded
 ambiguity policy, four source kinds, multi-target chain behavior, and schema-20
-saved action.
+saved action. ADR-0072 fixes the strict native JSON interchange schema for the
+complete current typed chain while excluding catalog identity and automatic
+state. ADR-0073 fixes the orthogonal file-publication content intent and
+conservative prepared-artifact recovery boundary. ADR-0074 fixes exact
+metadata/path pairing, the combined dependent transaction, and the recovery
+reread contract without serializing metadata into the file journal. ADR-0075
+fixes reused-target cache replacement and exact executor-created directory
+evidence after a later source rollback.
+ADR-0076 separately fixes the bounded read-only native-FLAC/external artwork
+inventory, exact type/role/provenance/source-revision evidence, and content-hash
+duplicate linkage without qualifying a picture write.
+ADR-0077 fixes the lazy Properties presentation, shared file-selection scope,
+64-physical-source UI bound, explicit capability/issues surfaces, and
+session-only no-SQLite inventory policy without exposing a picture write.
+ADR-0078 fixes native-FLAC embedded-picture replace/remove plan identity,
+replacement evidence, and prepared-copy preservation/verification without
+adding durable image data. ADR-0079 fixes compact migration-23 artwork
+operation/inventory-digest evidence plus unchanged-path publication, restart
+recovery, all-occurrence revision refresh, and exact undo without persisting
+image bytes or inventory rows. ADR-0080 fixes embedded-row Replace/Remove,
+fresh immutable review, bounded cancellable Apply, ordered partial results,
+all-occurrence refresh, and preservation-exact native FLAC block rewriting.
+ADR-0081 fixes native-FLAC append planning/publication, migration-24 Add
+evidence, temp-free embedded-donor Copy, and bounded cancellable no-overwrite
+Export. Other container writers and configurable export naming remain open.
 
 ## Needed to finish the unified workspace migration
 

@@ -160,14 +160,12 @@ class BenchMainWindow final : public QMainWindow {
     void playCurrentRow();
     void showMetadataProperties();
     void startMetadataOperationRecovery();
-    void requestMetadataOperationHistoryReload();
-    void startMetadataUndo(const core::StableId& journal_id);
-    void startFilePublicationUndo(const core::StableId& journal_id);
-    void startMetadataBackupRelease(const core::StableId& journal_id);
     void finishMetadataOperationJob();
-    void showMetadataOperationHistory();
+    void presentInterruptedOperations();
     void applyCommittedMetadata(const operations::MetadataCommitResult& result);
     void applyCommittedRelocation(const operations::FilePublicationCommitResult& result);
+    void applyCommittedPublicationMetadata(const operations::FilePublicationCommitResult& result,
+                                           const metadata::MetadataDocument& document);
     void removeSelectedRows();
     void transferSelectedRows(QTableView* source, const QString& target_id, bool move);
     [[nodiscard]] ui::TrackViewLayout
@@ -282,7 +280,6 @@ class BenchMainWindow final : public QMainWindow {
     QAction* close_tab_action_{nullptr};
     QAction* play_selected_action_{nullptr};
     QAction* properties_action_{nullptr};
-    QAction* metadata_history_action_{nullptr};
     QAction* remove_selected_action_{nullptr};
     QAction* folder_add_to_list_action_{nullptr};
     QAction* folder_toggle_expanded_action_{nullptr};
@@ -371,10 +368,9 @@ class BenchMainWindow final : public QMainWindow {
     QFutureWatcher<std::shared_ptr<MetadataOperationJobOutcome>> metadata_operation_watcher_;
     std::shared_ptr<MetadataOperationJobOutcome> metadata_operation_snapshot_;
     core::CancellationSource metadata_operation_cancellation_;
-    QPointer<QDialog> metadata_history_dialog_;
+    QPointer<QDialog> interrupted_operations_dialog_;
     bool metadata_operation_running_{false};
     bool metadata_recovery_started_{false};
-    bool metadata_history_reload_pending_{false};
 
     // Paths opened before the asynchronous list restore finishes are queued
     // and flushed into the initial tab once it exists.

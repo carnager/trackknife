@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "bench/metadata_artwork_section.hpp"
+#include "bench/preparation_feedback_dialog.hpp"
 #include "trackknife/metadata/write_plan.hpp"
 #include "trackknife/operations/file_publication_apply.hpp"
 #include "trackknife/operations/metadata_apply.hpp"
@@ -17,6 +19,7 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -34,17 +37,19 @@ class QLabel;
 class QInputDialog;
 class QLineEdit;
 class QListWidget;
+class QProgressBar;
 class QPushButton;
 class QSplitter;
+class QTabWidget;
 class QTableView;
 class QTimer;
+class QTreeWidget;
 class QVBoxLayout;
 
 namespace trackknife::bench {
 
 class MetadataGridModel;
 class MetadataAggregateModel;
-
 struct MetadataPropertiesSource {
     metadata::StagedMetadataSource source;
     QString track_label;
@@ -59,8 +64,8 @@ using MetadataWritePlanApplierFactory = std::function<MetadataWritePlanApplier()
 using MetadataApplyObserver = std::function<void(const operations::MetadataApplyResult&)>;
 using FilePublicationPlanApplier =
     std::function<core::Result<operations::FilePublicationApplyResult>(
-        const operations::OutputPathPreflight&,
-        const operations::FilePublicationApplyProgressCallback&, const core::CancellationToken&)>;
+        const operations::PreparationPlan&, const operations::FilePublicationApplyProgressCallback&,
+        const core::CancellationToken&)>;
 using FilePublicationPlanApplierFactory = std::function<FilePublicationPlanApplier()>;
 using FilePublicationApplyObserver =
     std::function<void(const operations::FilePublicationApplyResult&)>;
@@ -96,8 +101,21 @@ struct MetadataDialogLayoutStore {
     std::function<void(QString, QByteArray, Completion)> save;
 };
 
-struct MetadataApplyProgressState;
-struct FilePublicationApplyProgressState;
+// Shared between the UI thread and the background Apply worker; the worker
+// writes under the mutex and the footer progress readout copies under it.
+struct MetadataApplyProgressState {
+    mutable std::mutex mutex;
+    std::vector<operations::MetadataApplySourceState> states;
+    std::vector<std::optional<core::Error>> issues;
+    std::size_t completed_sources{0U};
+};
+
+struct FilePublicationApplyProgressState {
+    mutable std::mutex mutex;
+    std::vector<operations::FilePublicationApplySourceState> states;
+    std::vector<std::optional<core::Error>> issues;
+    std::size_t completed_sources{0U};
+};
 
 class MetadataPropertiesDialog final : public QDialog {
     Q_OBJECT
@@ -116,10 +134,22 @@ class MetadataPropertiesDialog final : public QDialog {
                              MetadataDialogLayoutStore layout_store = {});
     ~MetadataPropertiesDialog() override;
 
+    void setArtworkMutationServices(ArtworkWritePlanApplierFactory applier_factory,
+                                    ArtworkApplyObserver observer);
+
   private:
     using SelectionResult = core::Result<metadata::StagedMetadataSelection>;
     using WritePlanResult = core::Result<operations::PreparationPlan>;
-    using OutputLayoutExampleResult = core::Result<std::string>;
+    struct OutputLayoutPreviewRow {
+        std::string source_raw_path;
+        std::string target_relative_path;
+    };
+    struct OutputLayoutPreview {
+        std::vector<OutputLayoutPreviewRow> rows;
+        std::size_t item_count{0U};
+        bool truncated{false};
+    };
+    using OutputLayoutExampleResult = core::Result<OutputLayoutPreview>;
 
     void captureSources();
     void startSelection();
@@ -127,6 +157,7 @@ class MetadataPropertiesDialog final : public QDialog {
     void buildGrid(metadata::StagedMetadataSelection selection);
     void scheduleSelectionProjection();
     void updateSelectionProjection();
+    void updateArtworkScope(std::span<const std::size_t> selected_items);
     void updateDraftState(int patch_count, bool can_undo, bool can_redo);
     void updateFieldButtons();
     void updateEditValuesButton();
@@ -153,8 +184,12 @@ class MetadataPropertiesDialog final : public QDialog {
     void finishOutputLayoutExample();
     void updateWritePlanButton();
     void invalidateWritePlan();
-    void previewWritePlan();
+    void startWritePlan();
     void finishWritePlan();
+    void showPreparationFeedback(const QString& window_title, const QString& summary,
+                                 std::vector<PreparationFeedbackRow> rows);
+    void requestApplyStop();
+    void setApplyProgressVisible(bool visible);
     void startApply(std::shared_ptr<const operations::PreparationPlan> plan);
     void startMetadataApply(std::shared_ptr<const operations::PreparationPlan> plan);
     void startFileApply(std::shared_ptr<const operations::PreparationPlan> plan);
@@ -183,6 +218,8 @@ class MetadataPropertiesDialog final : public QDialog {
     MetadataPropertiesSourceReader source_reader_;
     MetadataWritePlanApplierFactory plan_applier_factory_;
     MetadataApplyObserver apply_observer_;
+    ArtworkWritePlanApplierFactory artwork_plan_applier_factory_;
+    ArtworkApplyObserver artwork_apply_observer_;
     MetadataTransformationStore transformation_store_;
     OutputProfileStore output_profile_store_;
     FilePublicationPlanApplierFactory file_plan_applier_factory_;
@@ -233,11 +270,16 @@ class MetadataPropertiesDialog final : public QDialog {
     QPushButton* destination_remove_button_{nullptr};
     QLabel* output_profile_status_{nullptr};
     QLabel* output_layout_example_{nullptr};
-    QPushButton* preview_plan_button_{nullptr};
+    QTreeWidget* output_layout_preview_{nullptr};
+    QPushButton* apply_plan_button_{nullptr};
+    QProgressBar* apply_progress_bar_{nullptr};
+    QPushButton* apply_stop_button_{nullptr};
     MetadataGridModel* grid_model_{nullptr};
     MetadataAggregateModel* aggregate_model_{nullptr};
     QTableView* fields_{nullptr};
     QTableView* file_list_{nullptr};
+    QTabWidget* metadata_sections_{nullptr};
+    MetadataArtworkSection* artwork_section_{nullptr};
     QSplitter* content_splitter_{nullptr};
     QSplitter* metadata_splitter_{nullptr};
     QTimer* selection_debounce_{nullptr};
@@ -246,8 +288,7 @@ class MetadataPropertiesDialog final : public QDialog {
     QPointer<QDialog> exact_values_dialog_;
     QPointer<QInputDialog> field_name_dialog_;
     QPointer<QDialog> transformation_dialog_;
-    QPointer<QDialog> write_plan_dialog_;
-    QPointer<QDialog> apply_dialog_;
+    QPointer<QDialog> feedback_dialog_;
     std::shared_ptr<MetadataApplyProgressState> apply_progress_state_;
     std::shared_ptr<FilePublicationApplyProgressState> file_apply_progress_state_;
     QString selection_summary_;
@@ -274,7 +315,9 @@ class MetadataPropertiesDialog final : public QDialog {
     std::string destination_root_raw_path_;
     bool write_plan_running_{false};
     bool apply_running_{false};
+    bool artwork_operation_running_{false};
     bool applying_file_paths_{false};
+    bool apply_stop_requested_{false};
     bool apply_committed_{false};
     bool layout_state_saved_{false};
     bool output_example_running_{false};

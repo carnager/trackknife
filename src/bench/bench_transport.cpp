@@ -164,9 +164,7 @@ BenchMainWindow::BenchMainWindow(QWidget* parent) : QMainWindow(parent) {
     refreshTransport();
 }
 
-BenchMainWindow::~BenchMainWindow() {
-    stopBackgroundWork();
-}
+BenchMainWindow::~BenchMainWindow() { stopBackgroundWork(); }
 
 void BenchMainWindow::buildTransport() {
     auto* bar = addToolBar(QStringLiteral("Transport"));

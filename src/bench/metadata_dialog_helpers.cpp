@@ -2,10 +2,8 @@
 
 #include "bench/metadata_dialog_helpers.hpp"
 
-#include "trackknife/metadata/write_plan.hpp"
 #include "trackknife/operations/file_publication_apply.hpp"
 #include "trackknife/operations/metadata_apply.hpp"
-#include "trackknife/operations/output_path_preflight.hpp"
 
 #include <QStringList>
 
@@ -48,12 +46,6 @@ QString display_plan_values(const std::vector<std::string>& values) {
     return visible.join(QStringLiteral("  ·  "));
 }
 
-bool has_conflict(const metadata::MetadataWritePlanSource& source) {
-    return std::ranges::any_of(source.issues, [](const auto& issue) {
-        return issue.blocking && issue.error.code == core::ErrorCode::conflict;
-    });
-}
-
 QString apply_state_text(const operations::MetadataApplySourceState state) {
     using State = operations::MetadataApplySourceState;
     switch (state) {
@@ -88,19 +80,6 @@ QString file_apply_state_text(const operations::FilePublicationApplySourceState 
         return QStringLiteral("Cancelled");
     }
     return QStringLiteral("Unknown");
-}
-
-QString publication_kind_text(const operations::OutputPathPublicationKind publication) {
-    using Kind = operations::OutputPathPublicationKind;
-    switch (publication) {
-    case Kind::no_change:
-        return QStringLiteral("No path change");
-    case Kind::same_filesystem_rename:
-        return QStringLiteral("Rename on this filesystem");
-    case Kind::cross_filesystem_copy:
-        return QStringLiteral("Copy, verify, then remove the original");
-    }
-    return QStringLiteral("Unknown file operation");
 }
 
 } // namespace trackknife::bench

@@ -477,9 +477,12 @@ script** tab. Valid raw edits immediately regenerate the typed action list;
 invalid text blocks Preview and Save, while typed-only actions make Raw mode
 read-only with an exact step diagnostic. The typed actions remain the saved
 authority, so pasted whitespace and spelling are canonicalized after reload.
-Dirty name, typed, pasted, and raw edits require Save or explicit discard. Full
-chain interchange, grouped numbering, and richer match dialects remain future
-slices.
+Dirty name, typed, pasted, and raw edits require Save or explicit discard.
+ADR-0072 adds the separate strict native JSON interchange form for the complete
+typed chain, including exact ordered values and dialect-qualified formatting
+and capture actions. It deliberately omits saved identity and automatic state;
+an import is an unsaved definition that still needs review, preview, and Save.
+Grouped numbering and richer match dialects remain future slices.
 
 ## Artwork
 
@@ -497,6 +500,90 @@ MIME type, description, dimensions, byte size, and provenance. Support:
 For Vorbis-comment containers, `METADATA_BLOCK_PICTURE` is the preferred
 interoperable embedded representation. FLAC uses native picture blocks; ID3 uses
 APIC; MP4 uses `covr`. Exact mappings belong to adapter specs/tests.
+
+**Trackbench decision (ADR-0076):** the first read-only artwork boundary
+inventories every native FLAC picture block and only exact caller-configured
+sibling basenames. Default external fallback order covers `cover`, `folder`,
+`Folder`, and `front` JPEG/PNG names without globbing, recursion, case folding,
+or UTF-8 conversion of raw path bytes. Each item retains its exact native type,
+smaller Trackbench role, MIME, description, optional dimensions, encoded size,
+SHA-256 identity, embedded/external provenance, raw source path and revision,
+and ordinal. Equal bytes retain both records with explicit duplicate linkage.
+Missing external names are ordinary absence; present malformed, unreadable,
+changing, or oversized files produce typed issues. Encoded bytes are inspected
+transiently and never persisted. This read boundary alone qualifies no picture
+write; export, copy, and every non-FLAC embedded mapping remain unqualified.
+
+**Trackbench decision (ADR-0077):** Properties places **Fields** and
+**Artwork** beneath the same file selector; the selected rows remain the sole
+scope for either section. Artwork inventory begins only while its section is
+active, collapses repeated logical occurrences by exact raw media path, and
+runs sequentially on one cancellable worker. A scope above 64 physical sources
+is rejected visibly rather than partially inventoried. Source rows expose
+embedded and exact-sibling read capability, then-unavailable change capability, and
+captured-versus-observed revision state. Inventory and issue rows expose the
+complete typed ADR-0076 evidence without decoding pixels. The presentation is
+session-only: no inventory row or encoded image is stored in SQLite. ADR-0080
+supersedes the read-only control state for qualified native FLAC sources.
+
+**Trackbench decision (ADR-0078):** the first immutable artwork write plan
+addresses one exact native-FLAC embedded picture by captured media revision,
+native ordinal, and original SHA-256. Equal logical intents collapse by raw
+media path; revision disagreements, conflicting intents, physical aliases,
+missing/changed targets, and stale or unsupported replacement input block the
+source visibly. Replace rereads one exact PNG/JPEG path and retains only its
+revision, MIME, dimensions, size, and SHA-256 evidence in the plan. It changes
+the selected picture's bytes/MIME/dimensions while retaining native type and
+description; remove deletes only that ordinal. The prepared-copy adapter proves
+the final inventory, exact serialization/order of unrelated pictures, unchanged
+text and non-picture/non-padding blocks, and byte-identical compressed audio.
+No encoded image is retained or stored in SQLite. ADR-0079 supplies the journal
+extension and recovery verifier, and ADR-0080 now publishes this plan from
+Properties.
+
+**Trackbench decision (ADR-0079):** reversible migration 23 gives the existing
+metadata-operation journal a text-versus-embedded-artwork content kind and one
+compact artwork evidence row. It records the reviewed ordinal, item counts,
+target/replacement SHA-256 identities, and versioned SHA-256 digests of the
+complete original and planned ordered embedded inventories. It records no
+image payload, pixel data, replacement file, or inventory row. Artwork and text
+share the same locked prepared-sibling, retained-old-inode, atomic replacement,
+dependent-state, rollback, undo, and restart-recovery lifecycle. Recovery
+rereads the published source and proves its revision and complete planned
+inventory before replaying the idempotent all-occurrence metadata refresh; undo
+proves the complete original inventory. ADR-0080 now qualifies bounded review
+and Apply.
+
+**Trackbench decision (ADR-0080):** Properties enables **Replace…** and
+**Remove** only for selected embedded rows from revision-matching native-FLAC
+sources with the durable mutation service available. The shared file selector
+expands each selected target to every matching logical occurrence; external
+sibling images remain read-only. Each action builds a new cancellable,
+immutable fresh-file review with per-source operation, target role/ordinal,
+replacement path, affected tracks, and blockers. Apply exists only for a
+wholly ready plan. A two-worker Qt-free job reports ordered per-source progress
+and partial results, cancellation stops new admission, and retry always begins
+with another fresh review. Successful sources use the schema-23 journal,
+refresh every durable and visible occurrence, advance the section revision,
+and trigger a new file-backed inventory without closing Properties. The
+prepared-copy adapter now rewrites only the selected native FLAC picture block
+and streams every other block plus compressed audio byte-for-byte; TagLib does
+not save the whole file and cannot normalize unrelated metadata.
+
+**Trackbench decision (ADR-0081):** **Add…** applies one selected PNG/JPEG and
+canonical role to every revision-matching native-FLAC source in the Properties
+file scope. Fresh validation derives an append ordinal and rejects duplicate
+encoded SHA-256 content. Schema 24 represents Add with a null original target,
+replacement hash, original/planned counts, and complete inventory digests;
+publication, restart recovery, refresh, and exact Undo remain the ADR-0079
+lifecycle. **Copy to Selection** is Add with one inventoried donor: embedded
+donors are reread transiently by exact revision/ordinal/hash without a temp
+file, retain role/description, and exclude their own media source. External
+siblings can be donors but are never modified. **Export…** rereads selected
+embedded or external rows in a two-worker cancellable job and exclusively
+creates deterministic `artwork-N-role` outputs with a MIME-derived suffix; it
+never overwrites, journals, or retains backups. Other container writers remain
+unavailable.
 
 ## Filesystem rename, copy, and move
 
@@ -617,13 +704,15 @@ enters a bounded 1–8-worker Apply job and returns ordered results for every
 physical source, including explicit no-change, failure, and cancellation
 states. Each admitted source receives a fresh single-source preflight before
 same/cross-filesystem dispatch. Sources sharing a reviewed missing-directory
-root serialize until successful in-batch evidence establishes each required
-path; unrelated and already-established targets may publish concurrently.
+root serialize until executor-proven in-batch creation establishes each
+required path; unrelated and already-established targets may publish
+concurrently. ADR-0075 retains that exact directory evidence if later work for
+the creating source rolls back, without trusting an externally appeared path.
 Progress delivery and completed counts are serialized, cancellation stops new
 admission, and in-flight executors reach their journaled safe boundary.
 ADR-0067 adds workspace controls; cross-filesystem undo remains unavailable.
 
-**Trackbench decision (ADRs 0067 and 0069):** Properties retains tag effects,
+**Trackbench decision (ADRs 0067, 0069, and 0074):** Properties retains tag effects,
 pure paths, and live filesystem preflight in one immutable preparation review.
 It materializes the final manual-plus-automatic metadata draft only when Save
 tags participates. Rename and Move
@@ -634,12 +723,89 @@ the core rejects such a malformed plan. Path-only Apply first persists the
 captured workspace, then uses the bounded ADR-0063 job and
 the composed active-player plus all-occurrence dependent callback; progress,
 partial results, cancellation, visible-source refresh, and fresh-preview retry
-remain explicit. Changed tags plus Rename/Move stays blocked because the
-qualified executors cannot yet prepare one changed artifact directly at the
-destination. Startup recovers both filesystem state machines, presents their
-records beside metadata operations, and offers linked same-filesystem undo when
-no non-rolled-back reversal exists. Cross-filesystem moves remain visible but
-truthfully non-undoable.
+remain explicit. ADR-0074 removes the earlier changed-tags blocker for a fully
+ready native-FLAC text plan: exact path/revision pairing selects the composed
+artifact executor and one durable metadata-plus-relocation callback. Startup
+recovers both filesystem state machines, presents their records beside metadata
+operations, and offers linked same-filesystem undo only for byte-preserving
+publication when no non-rolled-back reversal exists. Cross-filesystem moves and
+changed artifacts remain visible but truthfully non-undoable.
+
+**Trackbench decision (ADR-0073):** file-publication topology and content intent
+are orthogonal durable evidence. Reversible migration 21 distinguishes an
+exact byte-preserving path operation from a verified changed destination
+artifact. The latter always prepares an executor-owned sibling in the target
+directory, even on the source filesystem; publishes without replacement;
+commits dependent state while the exact original still exists; and only then
+removes that locked original. Recovery uses exact byte comparison for ordinary
+copies, but uses the durably recorded artifact revision after `target_prepared`
+because changed metadata cannot equal the source bytes. A changed artifact
+found before that revision transition is retained for reconciliation rather
+than adopted or deleted. The real native-FLAC writer proves this single-source
+path directly at a changed destination. ADR-0074 composes that core into
+bounded Apply and startup recovery; path-only behavior is unchanged.
+
+**Trackbench decision (ADR-0074):** one ready preparation batch may contain
+metadata-only, path-only, combined metadata/path, and no-change physical
+sources. Metadata and path work pair only on an exact raw source path and
+captured revision. Combined native-FLAC work prepares and verifies the changed
+artifact directly beside its reviewed destination; the active-player barrier
+then composes with one schema-22 transaction that relocates every occurrence,
+preserves logical overlays, installs the published embedded/stream metadata and
+target revision, and records idempotent refresh intent. Startup recovery rereads
+the exact published artifact and uses the same transaction rather than storing
+a duplicate metadata document in the file journal. Visible rows receive both
+the target path and published metadata. Changed artifacts have no current undo
+surface.
+
+**Trackbench decision (ADR-0083, M5 direct apply):** the immutable preparation
+plan is no longer presented in a routine review dialog, and Apply progress no
+longer opens a modal window. **Apply** plans, preflights, and — when every
+enabled effect is ready — immediately runs the same bounded Apply job, with a
+progress bar, `n of N` status, and **Stop** in the Properties footer. Blocked
+plans change nothing and open one compact feedback window listing only the
+offending files; stopped and failed runs report untouched files the same way,
+while fully committed runs close Properties silently. Trust in file naming
+moves to the resizable naming-layout manager, whose live bounded preview table
+shows each selected track's resulting path as the expressions change. The
+revalidation, preflight, journal, recovery, and history contracts of ADRs
+0042–0082 are unchanged; ADR-0085 later extends the same contract to artwork.
+
+**Trackbench decision (ADR-0084, M5 silent recovery):** the Preparation
+operations history/undo window is removed. Journaled crash recovery still runs
+at every startup, but silently; only operations recovery could neither finish
+nor safely roll back appear — exactly once each — in the compact ADR-0083
+feedback window, with acknowledged incidents remembered in settings. Undo
+backups are still created inside the atomic commit protocol but are released
+at startup, since no undo surface consumes them; same-filesystem move undo is
+gone with its only entry point. In exchange, the tag grid itself now carries
+Picard-style change semantics on the changed content only: added fields in
+green text, changed values in orange, removed fields in struck-through red,
+across both the per-file grid and the Field/Original/Draft rows, with no
+background painting.
+
+**Trackbench decision (ADR-0085, M5 artwork thumbnails and direct apply):**
+the Artwork tab presents pictures, not plumbing. Every inventory row leads
+with a thumbnail decoded in the existing background job from transient
+revision-qualified rereads; columns compress to File/Role/Image/Source with
+fingerprints, native types, and ordinals in tooltips. The storage note and
+the permanent capabilities table are gone — only genuinely view-only files
+appear in the problems pane, with one plain reason. Add/Replace/Remove/Copy
+revalidate as before but a ready plan enters the bounded batch executor
+immediately; progress and Stop are inline beside the status, Export drops
+its modal progress dialog for the same pattern, and blocked, stopped, or
+failed work opens the compact ADR-0083 feedback window. The inventory core,
+write plans, journaled commits, and recovery are unchanged.
+
+**Trackbench decision (ADR-0075):** a revision-qualified metadata source cache
+is durable correctness state, not an audio-file backup and not permanent path
+ownership. When no persisted local occurrence owns a relocation target, its
+historical cache is atomically removed and replaced by the current source cache
+or verified published document. An active target occurrence still blocks.
+File executors also report exact descriptor-created and synced directories
+before artifact or dependent work can fail, allowing remaining batch members
+to use them after a source rollback while unexplained appearances still fail
+closed.
 
 ### Plan pipeline
 
