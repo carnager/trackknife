@@ -40,11 +40,19 @@ and reviewable before anything is written.
 
 - `propose_selection_consistency` derives album groups from the
   draft-effective selection and proposes only what the selection itself
-  proves: a missing ALBUMARTIST when the group's present album artists (or,
+  proves: a missing ALBUMARTIST when the group's visible album artists (or,
   failing that, every track's complete artist value list) agree exactly, and
-  TOTALTRACKS when the group's track numbers are exactly the contiguous run
+  track totals when the group's track numbers are exactly the contiguous run
   1..N. Both carry confidence 1.0 and a rationale naming the album;
   disagreement or gaps propose nothing.
+- "Already satisfied" and "unchanged" are judged against the *writable*
+  state — the staged draft, else embedded-provenance baseline fields only.
+  Cached-snapshot and stream-projected values can make a tag look present in
+  the effective document while no writable tag exists; such phantoms never
+  suppress a proposal. TRACKTOTAL and TOTALTRACKS are distinct logical
+  spellings of the same meaning: either satisfies, and new totals proposals
+  reuse the spelling the album already carries (defaulting to TOTALTRACKS)
+  so one album never ends up with a mix.
 - Properties exposes it as **Suggest** beside the grid tools: it runs in the
   background over the selected files (all files when none are selected),
   stages the surviving cells as one transaction, and reports the count and

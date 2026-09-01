@@ -44,6 +44,31 @@ namespace {
     return value;
 }
 
+// The values a write would actually compete with: the staged draft when one
+// exists, otherwise only embedded-provenance baseline fields. Cached
+// snapshots and stream projections can make a tag look present in the
+// effective document while no writable tag exists in the file; treating such
+// phantoms as satisfied silently skips exactly the files that need the tag.
+[[nodiscard]] std::vector<std::string> writable_values(const StagedMetadataSelection& selection,
+                                                       const StagedMetadataPatchSet& draft,
+                                                       const std::size_t item_index,
+                                                       const std::string& canonical_field) {
+    if (const auto field_index = selection.field_index(canonical_field)) {
+        if (const auto* patch = draft.patch(item_index, *field_index)) {
+            return patch->kind == StagedMetadataPatchKind::remove_field ? std::vector<std::string>{}
+                                                                        : patch->values;
+        }
+    }
+    std::vector<std::string> values;
+    for (const auto& field : selection.source(item_index).baseline.fields) {
+        if (field.canonical_name == canonical_field &&
+            field.provenance == FieldProvenance::embedded) {
+            values.insert(values.end(), field.values.begin(), field.values.end());
+        }
+    }
+    return values;
+}
+
 } // namespace
 
 std::size_t MetadataProposalSet::field_proposal_count() const noexcept {
@@ -144,7 +169,10 @@ core::Result<MetadataTransformationPreview> metadata_proposal_preview(
                 continue;
             }
             auto before = document.effective_values(field.canonical_field);
-            if (before == field.values) {
+            // Unchanged means the WRITABLE state already matches; an equal
+            // cached or stream projection is not a written tag.
+            if (writable_values(selection, draft, item.item_index, field.canonical_field) ==
+                field.values) {
                 if (before.empty()) {
                     ++preview.unchanged_missing_cell_count;
                 } else {
@@ -227,16 +255,16 @@ core::Result<MetadataProposalSet> propose_selection_consistency(
             continue;
         }
 
-        // ALBUMARTIST: exact agreement only. Either every present album
-        // artist matches and some files miss it, or nobody has one and every
-        // track shares the identical complete artist value list.
+        // ALBUMARTIST: exact agreement only, judged over what the user sees.
+        // Either every visible album artist matches, or nobody has one and
+        // every track shares the identical complete artist value list.
         std::optional<std::vector<std::string>> agreed_album_artist;
         auto album_artist_consistent = true;
-        std::vector<std::size_t> missing_album_artist;
+        auto album_artist_missing = false;
         for (const auto position : positions) {
             auto values = (*documents)[position].effective_values("albumartist");
             if (values.empty()) {
-                missing_album_artist.push_back(position);
+                album_artist_missing = true;
                 continue;
             }
             if (!agreed_album_artist) {
@@ -246,7 +274,7 @@ core::Result<MetadataProposalSet> propose_selection_consistency(
                 break;
             }
         }
-        if (album_artist_consistent && !agreed_album_artist && !missing_album_artist.empty()) {
+        if (album_artist_consistent && !agreed_album_artist && album_artist_missing) {
             std::optional<std::vector<std::string>> agreed_artist;
             auto artist_consistent = true;
             for (const auto position : positions) {
@@ -267,13 +295,20 @@ core::Result<MetadataProposalSet> propose_selection_consistency(
             }
         }
         if (album_artist_consistent && agreed_album_artist) {
-            for (const auto position : missing_album_artist) {
+            // Receiving a proposal is decided by the writable state, so a
+            // value that only exists as a cached or stream projection still
+            // gets the real tag.
+            for (const auto position : positions) {
+                if (writable_values(selection, draft, item_indexes[position], "albumartist") ==
+                    *agreed_album_artist) {
+                    continue;
+                }
                 propose(position, "Album Artist", *agreed_album_artist,
                         "Every track of \"" + album + "\" in this selection shares this artist");
             }
         }
 
-        // TOTALTRACKS: only when the group's track numbers are exactly the
+        // Track totals: only when the group's track numbers are exactly the
         // contiguous run 1..N for the N selected tracks.
         std::set<std::size_t> numbers;
         auto numbers_valid = true;
@@ -288,12 +323,31 @@ core::Result<MetadataProposalSet> propose_selection_consistency(
         if (numbers_valid && numbers.size() == positions.size() &&
             *numbers.rbegin() == positions.size()) {
             const auto total = std::to_string(positions.size());
+            const std::vector<std::string> total_values{total};
+            // TRACKTOTAL and TOTALTRACKS are distinct logical fields with the
+            // same meaning. Either spelling satisfies, and new proposals use
+            // the spelling the album already carries so one album never ends
+            // up with a mix.
+            auto group_uses_tracktotal = false;
+            auto group_uses_totaltracks = false;
             for (const auto position : positions) {
-                const auto existing = (*documents)[position].effective_values("totaltracks");
-                if (existing == std::vector<std::string>{total}) {
+                const auto item_index = item_indexes[position];
+                if (!writable_values(selection, draft, item_index, "tracktotal").empty()) {
+                    group_uses_tracktotal = true;
+                }
+                if (!writable_values(selection, draft, item_index, "totaltracks").empty()) {
+                    group_uses_totaltracks = true;
+                }
+            }
+            const auto* display_field =
+                group_uses_tracktotal && !group_uses_totaltracks ? "TRACKTOTAL" : "Total Tracks";
+            for (const auto position : positions) {
+                const auto item_index = item_indexes[position];
+                if (writable_values(selection, draft, item_index, "totaltracks") == total_values ||
+                    writable_values(selection, draft, item_index, "tracktotal") == total_values) {
                     continue;
                 }
-                propose(position, "Total Tracks", {total},
+                propose(position, display_field, total_values,
                         "\"" + album + "\" has the complete run of tracks 1–" + total +
                             " in this selection");
             }

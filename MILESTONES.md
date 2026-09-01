@@ -964,6 +964,14 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   end behind the Properties **Suggest** button: exact-agreement ALBUMARTIST
   fill and contiguous-run TOTALTRACKS per album group, with Qt-free and
   offscreen coverage. M6 MusicBrainz implements this same contract.
+- Fixed: Suggest no longer skips files whose totals or album artist exist
+  only as cached-snapshot/stream projections, and it recognizes TRACKTOTAL
+  and TOTALTRACKS as the same meaning: either spelling satisfies, and new
+  totals proposals reuse the spelling the album already carries. Satisfied
+  and unchanged checks now compare against the writable (draft-or-embedded)
+  state, proven by Qt-free provenance/spelling regressions and a real-file
+  pipeline reproduction. Known limit: a phantom value exactly equal to the
+  proposal still collapses at the shared no-op staging boundary.
 - Fixed: Properties now resolves a requested freeform field against both
   logical and exact-native identities before extending its grid. Editing an
   existing native `TEST` field as `test` no longer emits a false Qt column

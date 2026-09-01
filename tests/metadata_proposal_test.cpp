@@ -4,8 +4,10 @@
 #include "trackknife/metadata/staged_patch.hpp"
 #include "trackknife/metadata/staged_selection.hpp"
 
+#include <algorithm>
 #include <iostream>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -28,13 +30,15 @@ using trackknife::metadata::MetadataField;
 using trackknife::metadata::StagedMetadataSelection;
 using trackknife::metadata::StagedMetadataSource;
 
-MetadataField field(std::string name, std::vector<std::string> values) {
+MetadataField field(std::string name, std::vector<std::string> values,
+                    const trackknife::metadata::FieldProvenance provenance =
+                        trackknife::metadata::FieldProvenance::embedded) {
     return MetadataField{
         .canonical_name = trackknife::metadata::canonicalize_field_name(name),
         .native_name = std::move(name),
         .values = std::move(values),
         .qualifier = {},
-        .provenance = trackknife::metadata::FieldProvenance::embedded,
+        .provenance = provenance,
     };
 }
 
@@ -146,6 +150,69 @@ void draftValuesDriveTheDerivation() {
     CHECK(album_artist != nullptr && album_artist->values == std::vector<std::string>{"Band"});
 }
 
+void tracktotalSpellingSatisfiesAndIsReused() {
+    // Two files already carry the common Vorbis TRACKTOTAL spelling; the
+    // third gets the proposal in that same spelling, and nobody receives a
+    // second differently spelled totals tag.
+    const auto selection = StagedMetadataSelection::create({
+        source("/music/1.flac", {field("ALBUM", {"Alpha"}), field("TRACKNUMBER", {"1"}),
+                                 field("TRACKTOTAL", {"3"})}),
+        source("/music/2.flac", {field("ALBUM", {"Alpha"}), field("TRACKNUMBER", {"2"}),
+                                 field("TRACKTOTAL", {"3"})}),
+        source("/music/3.flac", {field("ALBUM", {"Alpha"}), field("TRACKNUMBER", {"3"})}),
+    });
+    CHECK(selection.has_value());
+    const trackknife::metadata::StagedMetadataPatchSet draft;
+    const std::vector<std::size_t> items{0U, 1U, 2U};
+    const auto proposals =
+        trackknife::metadata::propose_selection_consistency(*selection, draft, items);
+    CHECK(proposals.has_value());
+    CHECK(proposals->field_proposal_count() == 1U);
+    const auto* totals = proposed_field(*proposals, 2U, "tracktotal");
+    CHECK(totals != nullptr && totals->display_field == "TRACKTOTAL" &&
+          totals->values == std::vector<std::string>{"3"});
+    CHECK(proposed_field(*proposals, 0U, "tracktotal") == nullptr);
+    CHECK(proposed_field(*proposals, 0U, "totaltracks") == nullptr);
+}
+
+void phantomProvenanceDoesNotSatisfy() {
+    using trackknife::metadata::FieldProvenance;
+    // File 1's totals and album artist exist only as cached/stream
+    // projections — visible in the app but absent from the writable file.
+    // Both must still be proposed so the real tag gets written.
+    const auto selection = StagedMetadataSelection::create({
+        source("/music/1.flac", {field("ALBUM", {"Alpha"}), field("TRACKNUMBER", {"1"}),
+                                 field("TOTALTRACKS", {"2"}, FieldProvenance::stream),
+                                 field("ALBUMARTIST", {"Band"}, FieldProvenance::cached_snapshot)}),
+        source("/music/2.flac", {field("ALBUM", {"Alpha"}), field("TRACKNUMBER", {"2"}),
+                                 field("ALBUMARTIST", {"Band"})}),
+    });
+    CHECK(selection.has_value());
+    const trackknife::metadata::StagedMetadataPatchSet draft;
+    const std::vector<std::size_t> items{0U, 1U};
+    const auto proposals =
+        trackknife::metadata::propose_selection_consistency(*selection, draft, items);
+    CHECK(proposals.has_value());
+    const auto* phantom_totals = proposed_field(*proposals, 0U, "totaltracks");
+    const auto* phantom_album_artist = proposed_field(*proposals, 0U, "albumartist");
+    CHECK(phantom_totals != nullptr && phantom_totals->values == std::vector<std::string>{"2"});
+    CHECK(phantom_album_artist != nullptr &&
+          phantom_album_artist->values == std::vector<std::string>{"Band"});
+    // The file with the real embedded tag receives no album artist proposal.
+    CHECK(proposed_field(*proposals, 1U, "albumartist") == nullptr);
+
+    const auto preview =
+        trackknife::metadata::metadata_proposal_preview(*selection, draft, *proposals, 0.75);
+    CHECK(preview.has_value());
+    // The phantom-backed proposals survive the unchanged-drop because the
+    // writable state does not match, even though the effective view does.
+    const auto phantom_cells = std::ranges::count_if(preview->cells, [](const auto& cell) {
+        return cell.item_index == 0U &&
+               (cell.canonical_field == "totaltracks" || cell.canonical_field == "albumartist");
+    });
+    CHECK(phantom_cells == 2);
+}
+
 void previewStagesOnlyConfidentChanges() {
     const auto selection = StagedMetadataSelection::create({
         source("/music/1.flac", {field("ALBUM", {"Alpha"}), field("ALBUMARTIST", {"Band"})}),
@@ -254,6 +321,8 @@ int main() {
     disagreementAndGapsProposeNothing();
     presentAlbumArtistFillsOnlyMissingFiles();
     draftValuesDriveTheDerivation();
+    tracktotalSpellingSatisfiesAndIsReused();
+    phantomProvenanceDoesNotSatisfy();
     previewStagesOnlyConfidentChanges();
     previewRejectsMalformedProposals();
     if (failures != 0) {
