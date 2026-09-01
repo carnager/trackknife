@@ -5,6 +5,8 @@
 - Owners: Trackknife project
 - Extends: ADR-0045 provenance-aware metadata cache and ADR-0057 journaled
   same-filesystem file publication
+- Partially superseded by: ADR-0082, which accepts an exact revision-matching
+  occurrence already pre-resolved to the reviewed target
 
 ## Context
 

@@ -19,6 +19,28 @@ add_test(
     COMMAND trackknife_metadata_reader_tests "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
 )
 
+add_executable(trackknife_metadata_artwork_tests metadata_artwork_test.cpp)
+target_link_libraries(
+    trackknife_metadata_artwork_tests
+    PRIVATE Trackknife::Metadata Trackknife::Formats trackknife_project_options
+            trackknife_project_warnings
+)
+add_test(
+    NAME metadata-artwork
+    COMMAND trackknife_metadata_artwork_tests "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
+)
+
+add_executable(trackknife_artwork_export_tests artwork_export_test.cpp)
+target_link_libraries(
+    trackknife_artwork_export_tests
+    PRIVATE Trackknife::Operations Trackknife::Formats Threads::Threads trackknife_project_options
+            trackknife_project_warnings
+)
+add_test(
+    NAME artwork-export
+    COMMAND trackknife_artwork_export_tests "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
+)
+
 add_executable(trackknife_metadata_selection_tests metadata_selection_test.cpp)
 target_link_libraries(
     trackknife_metadata_selection_tests
@@ -50,7 +72,7 @@ add_test(NAME metadata-write-plan COMMAND trackknife_metadata_write_plan_tests)
 add_executable(trackknife_metadata_flac_writer_tests metadata_flac_writer_test.cpp)
 target_link_libraries(
     trackknife_metadata_flac_writer_tests
-    PRIVATE Trackknife::Metadata Trackknife::Formats trackknife_project_options
+    PRIVATE Trackknife::Metadata Trackknife::Formats PkgConfig::TAGLIB trackknife_project_options
             trackknife_project_warnings
 )
 add_test(
@@ -100,7 +122,7 @@ set_tests_properties(file-publication-apply PROPERTIES TIMEOUT 30)
 add_executable(trackknife_metadata_commit_tests metadata_commit_test.cpp)
 target_link_libraries(
     trackknife_metadata_commit_tests
-    PRIVATE Trackknife::Operations Trackknife::Persistence Threads::Threads
+    PRIVATE Trackknife::Operations Trackknife::Persistence Threads::Threads PkgConfig::TAGLIB
             trackknife_project_options trackknife_project_warnings
 )
 add_test(
@@ -256,6 +278,20 @@ add_test(
 )
 
 if(TRACKKNIFE_BUILD_UI)
+    qt_add_executable(
+        trackknife_metadata_transformation_interchange_tests
+        metadata_transformation_interchange_test.cpp
+    )
+    target_link_libraries(
+        trackknife_metadata_transformation_interchange_tests
+        PRIVATE Trackknife::UiCommon Qt6::Test trackknife_project_options
+                trackknife_project_warnings
+    )
+    add_test(
+        NAME metadata-transformation-interchange
+        COMMAND trackknife_metadata_transformation_interchange_tests
+    )
+
     qt_add_executable(trackknife_panel_layout_tests panel_layout_test.cpp)
     target_link_libraries(
         trackknife_panel_layout_tests

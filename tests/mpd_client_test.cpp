@@ -175,6 +175,27 @@ class FakeMpdServer final {
                               "Album: Complete Release\nTrack: 1\nTitle: First\n"
                               "file: Artist/Release/02.flac\nAlbumArtist: Credited Artist\n"
                               "Album: Complete Release\nTrack: 2\nTitle: Second\nOK\n");
+        } else if (command.starts_with("albumart ") || command.starts_with("readpicture ")) {
+            constexpr std::string_view artwork{"0123456789ABCDEFGHIJ"};
+            constexpr std::size_t binary_limit = 8U;
+            const auto separator = command.find_last_of(' ');
+            require(separator != std::string_view::npos, "artwork command must include an offset");
+            auto offset_text = command.substr(separator + 1U);
+            if (offset_text.size() >= 2U && offset_text.front() == '"' &&
+                offset_text.back() == '"') {
+                offset_text.remove_prefix(1U);
+                offset_text.remove_suffix(1U);
+            }
+            const std::string offset_storage{offset_text};
+            char* end = nullptr;
+            const auto offset = std::strtoul(offset_storage.c_str(), &end, 10);
+            require(end != nullptr && *end == '\0' && offset <= artwork.size(),
+                    "artwork offset must advance within the fixture");
+            const auto count = std::min(binary_limit, artwork.size() - offset);
+            write_all(client, "size: " + std::to_string(artwork.size()) +
+                                  "\nbinary: " + std::to_string(count) + "\n");
+            write_all(client, artwork.substr(offset, count));
+            write_all(client, "\nOK\n");
         } else if (command == "listplaylists") {
             write_all(client, "playlist: Road mix\nLast-Modified: 2026-08-24T11:00:00Z\n"
                               "playlist: Quiet mix\nOK\n");
@@ -294,6 +315,17 @@ void client_negotiates_and_preserves_extensions() {
             "a library-tree branch cannot exceed the adapter bound");
     require(!client.list_tag("not a real tag") && !client.artwork("", false),
             "invalid tag and artwork requests must fail before protocol I/O");
+    constexpr std::string_view expected_artwork{"0123456789ABCDEFGHIJ"};
+    const auto album_artwork = client.artwork("Artist/Release/01.flac", false);
+    require(album_artwork && album_artwork->size() == expected_artwork.size() &&
+                std::memcmp(album_artwork->data(), expected_artwork.data(),
+                            expected_artwork.size()) == 0,
+            "folder artwork must assemble every MPD binary-response chunk");
+    const auto embedded_artwork = client.artwork("Artist/Release/01.flac", true);
+    require(embedded_artwork && embedded_artwork->size() == expected_artwork.size() &&
+                std::memcmp(embedded_artwork->data(), expected_artwork.data(),
+                            expected_artwork.size()) == 0,
+            "embedded artwork must assemble every MPD binary-response chunk");
     const auto searched = client.search_any("Credited Artist", 0U, 2U);
     require(searched && searched->size() == 2U &&
                 searched->front().musicbrainz.recording_ids ==

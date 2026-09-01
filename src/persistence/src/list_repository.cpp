@@ -21,7 +21,7 @@
 namespace trackknife::persistence {
 namespace {
 
-constexpr unsigned current_schema_version = 20U;
+constexpr unsigned current_schema_version = 24U;
 constexpr std::size_t maximum_documents = 1'024U;
 constexpr std::size_t maximum_items_per_document = 1'000'000U;
 constexpr std::size_t maximum_fields_per_item = 4'096U;
@@ -713,6 +713,86 @@ read_optional_revision(sqlite3_stmt* statement, const int first,
             "DROP TABLE metadata_transformation_action_values_v19;"
             "DROP TABLE metadata_transformation_actions_v19;"
             "UPDATE schema_version SET version = 20;";
+        if (auto result = execute(database, migration); !result) {
+            rollback();
+            return result;
+        }
+    }
+    if (version <= 20) {
+        constexpr auto migration =
+            "ALTER TABLE file_publication_journal ADD COLUMN content_kind INTEGER NOT NULL "
+            "DEFAULT 0 CHECK(content_kind BETWEEN 0 AND 1);"
+            "UPDATE schema_version SET version = 21;";
+        if (auto result = execute(database, migration); !result) {
+            rollback();
+            return result;
+        }
+    }
+    if (version <= 21) {
+        constexpr auto migration =
+            "ALTER TABLE local_source_relocations ADD COLUMN metadata_refreshed INTEGER NOT NULL "
+            "DEFAULT 0 CHECK(metadata_refreshed IN (0,1));"
+            "UPDATE schema_version SET version = 22;";
+        if (auto result = execute(database, migration); !result) {
+            rollback();
+            return result;
+        }
+    }
+    if (version <= 22) {
+        constexpr auto migration =
+            "ALTER TABLE operation_journal ADD COLUMN content_kind INTEGER NOT NULL DEFAULT 0 "
+            "CHECK(content_kind BETWEEN 0 AND 1);"
+            "CREATE TABLE operation_journal_artwork ("
+            "journal_id TEXT PRIMARY KEY NOT NULL REFERENCES operation_journal(id) ON DELETE "
+            "CASCADE, intent_kind INTEGER NOT NULL CHECK(intent_kind BETWEEN 0 AND 1), "
+            "target_ordinal INTEGER NOT NULL CHECK(target_ordinal >= 0), "
+            "original_item_count INTEGER NOT NULL CHECK(original_item_count > 0), "
+            "planned_item_count INTEGER NOT NULL CHECK(planned_item_count >= 0), "
+            "original_target_fingerprint BLOB NOT NULL "
+            "CHECK(length(original_target_fingerprint) = 32), replacement_fingerprint BLOB "
+            "CHECK(replacement_fingerprint IS NULL OR length(replacement_fingerprint) = 32), "
+            "original_inventory_fingerprint BLOB NOT NULL "
+            "CHECK(length(original_inventory_fingerprint) = 32), "
+            "planned_inventory_fingerprint BLOB NOT NULL "
+            "CHECK(length(planned_inventory_fingerprint) = 32), "
+            "CHECK((intent_kind = 0 AND replacement_fingerprint IS NOT NULL AND "
+            "planned_item_count = original_item_count) OR "
+            "(intent_kind = 1 AND replacement_fingerprint IS NULL AND "
+            "planned_item_count + 1 = original_item_count)));"
+            "UPDATE schema_version SET version = 23;";
+        if (auto result = execute(database, migration); !result) {
+            rollback();
+            return result;
+        }
+    }
+    if (version <= 23) {
+        constexpr auto migration =
+            "ALTER TABLE operation_journal_artwork RENAME TO operation_journal_artwork_v23;"
+            "CREATE TABLE operation_journal_artwork ("
+            "journal_id TEXT PRIMARY KEY NOT NULL REFERENCES operation_journal(id) ON DELETE "
+            "CASCADE, intent_kind INTEGER NOT NULL CHECK(intent_kind BETWEEN 0 AND 2), "
+            "target_ordinal INTEGER NOT NULL CHECK(target_ordinal >= 0), "
+            "original_item_count INTEGER NOT NULL CHECK(original_item_count >= 0), "
+            "planned_item_count INTEGER NOT NULL CHECK(planned_item_count >= 0), "
+            "original_target_fingerprint BLOB CHECK(original_target_fingerprint IS NULL OR "
+            "length(original_target_fingerprint) = 32), replacement_fingerprint BLOB "
+            "CHECK(replacement_fingerprint IS NULL OR length(replacement_fingerprint) = 32), "
+            "original_inventory_fingerprint BLOB NOT NULL "
+            "CHECK(length(original_inventory_fingerprint) = 32), "
+            "planned_inventory_fingerprint BLOB NOT NULL "
+            "CHECK(length(planned_inventory_fingerprint) = 32), "
+            "CHECK((intent_kind = 0 AND original_target_fingerprint IS NOT NULL AND "
+            "replacement_fingerprint IS NOT NULL AND planned_item_count = original_item_count "
+            "AND target_ordinal < original_item_count) OR "
+            "(intent_kind = 1 AND original_target_fingerprint IS NOT NULL AND "
+            "replacement_fingerprint IS NULL AND planned_item_count + 1 = original_item_count "
+            "AND target_ordinal < original_item_count) OR "
+            "(intent_kind = 2 AND original_target_fingerprint IS NULL AND "
+            "replacement_fingerprint IS NOT NULL AND target_ordinal = original_item_count AND "
+            "planned_item_count = original_item_count + 1)));"
+            "INSERT INTO operation_journal_artwork SELECT * FROM operation_journal_artwork_v23;"
+            "DROP TABLE operation_journal_artwork_v23;"
+            "UPDATE schema_version SET version = 24;";
         if (auto result = execute(database, migration); !result) {
             rollback();
             return result;
@@ -2030,6 +2110,14 @@ ListRepository::relocate_local_source(const LocalSourceRelocation& relocation) {
             .context = {},
         });
     }
+    std::optional<std::vector<SnapshotField>> published_fields;
+    if (relocation.published_document) {
+        auto flattened = flatten_source_fields(*relocation.published_document);
+        if (!flattened) {
+            return std::unexpected(std::move(flattened.error()));
+        }
+        published_fields = std::move(*flattened);
+    }
 
     auto* database = implementation_->database;
     if (auto result = execute(database, "BEGIN IMMEDIATE"); !result) {
@@ -2043,7 +2131,7 @@ ListRepository::relocate_local_source(const LocalSourceRelocation& relocation) {
         "SELECT source_reference, target_reference, previous_device, previous_inode, "
         "previous_size, previous_mtime_seconds, previous_mtime_nanoseconds, published_device, "
         "published_inode, published_size, published_mtime_seconds, "
-        "published_mtime_nanoseconds, affected_occurrences, cache_rekeyed "
+        "published_mtime_nanoseconds, affected_occurrences, cache_rekeyed, metadata_refreshed "
         "FROM local_source_relocations WHERE operation_id = ?");
     if (!replay || !bind_text(replay->get(), 1, operation_id)) {
         auto error = replay ? database_error(database, "Could not bind relocation replay")
@@ -2057,6 +2145,7 @@ ListRepository::relocate_local_source(const LocalSourceRelocation& relocation) {
         auto published_revision = read_revision(replay->get(), 7, "Local-source relocation");
         const auto affected = sqlite3_column_int64(replay->get(), 12);
         const auto cache_rekeyed = sqlite3_column_int(replay->get(), 13);
+        const auto metadata_refreshed = sqlite3_column_int(replay->get(), 14);
         if (!previous_revision) {
             auto error = std::move(previous_revision.error());
             rollback();
@@ -2072,7 +2161,9 @@ ListRepository::relocate_local_source(const LocalSourceRelocation& relocation) {
             *previous_revision != relocation.previous_revision ||
             *published_revision != relocation.published_revision || affected <= 0 ||
             static_cast<std::uint64_t>(affected) > maximum_refresh_occurrences ||
-            (cache_rekeyed != 0 && cache_rekeyed != 1)) {
+            (cache_rekeyed != 0 && cache_rekeyed != 1) ||
+            (metadata_refreshed != 0 && metadata_refreshed != 1) ||
+            (metadata_refreshed != 0) != published_fields.has_value()) {
             rollback();
             return std::unexpected(core::Error{
                 .code = core::ErrorCode::conflict,
@@ -2084,6 +2175,7 @@ ListRepository::relocate_local_source(const LocalSourceRelocation& relocation) {
         return LocalSourceRelocationResult{
             .affected_occurrences = static_cast<std::size_t>(affected),
             .cache_rekeyed = cache_rekeyed != 0,
+            .metadata_refreshed = metadata_refreshed != 0,
             .already_applied = true,
         };
     }
@@ -2093,84 +2185,128 @@ ListRepository::relocate_local_source(const LocalSourceRelocation& relocation) {
         return std::unexpected(std::move(error));
     }
 
-    auto occurrences = prepare(
-        database, "SELECT observed_device, observed_inode, observed_size, observed_mtime_seconds, "
-                  "observed_mtime_nanoseconds FROM list_items WHERE source = ? "
-                  "AND source_reference = ? ORDER BY document_id, position");
-    if (!occurrences ||
-        sqlite3_bind_int(occurrences->get(), 1, static_cast<int>(ListSource::local)) != SQLITE_OK ||
-        !bind_blob(occurrences->get(), 2, relocation.source_reference)) {
-        auto error = occurrences ? database_error(database, "Could not bind relocation occurrences")
-                                 : std::move(occurrences.error());
+    struct RelocatedOccurrence {
+        std::string document_id;
+        sqlite3_int64 position{0};
+        std::vector<SnapshotField> retained_fields;
+    };
+    std::vector<RelocatedOccurrence> relocated_occurrences;
+    const auto enumerate_occurrences =
+        [&](const std::string& source_reference) -> core::Result<void> {
+        auto occurrences =
+            prepare(database, "SELECT li.document_id, li.position, li.logical_reference, "
+                              "EXISTS(SELECT 1 FROM list_item_fields f "
+                              "WHERE f.document_id = li.document_id "
+                              "AND f.item_position = li.position AND f.provenance = 0), "
+                              "li.observed_device, li.observed_inode, li.observed_size, "
+                              "li.observed_mtime_seconds, li.observed_mtime_nanoseconds "
+                              "FROM list_items li WHERE li.source = ? AND li.source_reference = ? "
+                              "ORDER BY li.document_id, li.position");
+        if (!occurrences ||
+            sqlite3_bind_int(occurrences->get(), 1, static_cast<int>(ListSource::local)) !=
+                SQLITE_OK ||
+            !bind_blob(occurrences->get(), 2, source_reference)) {
+            return std::unexpected(
+                occurrences ? database_error(database, "Could not bind relocation occurrences")
+                            : std::move(occurrences.error()));
+        }
+        int occurrence_step = SQLITE_ROW;
+        while ((occurrence_step = sqlite3_step(occurrences->get())) == SQLITE_ROW) {
+            if (relocated_occurrences.size() >= maximum_refresh_occurrences) {
+                return std::unexpected(core::Error{
+                    .code = core::ErrorCode::limit_exceeded,
+                    .message = "Local-source relocation exceeds the occurrence limit",
+                    .context = {{"source_path", relocation.source_reference}},
+                });
+            }
+            const auto logical = sqlite3_column_type(occurrences->get(), 2) != SQLITE_NULL;
+            const auto legacy_snapshot = sqlite3_column_int(occurrences->get(), 3) != 0;
+            if (published_fields && logical && legacy_snapshot) {
+                return std::unexpected(core::Error{
+                    .code = core::ErrorCode::conflict,
+                    .message = "Logical tracks must be freshly probed before combined publication",
+                    .context = {{"source_path", relocation.source_reference}},
+                });
+            }
+            const auto position = sqlite3_column_int64(occurrences->get(), 1);
+            if (position < 0) {
+                return std::unexpected(
+                    database_error(database, "Relocated occurrence has an invalid position"));
+            }
+            auto revision = read_optional_revision(occurrences->get(), 4, "Relocated list item");
+            if (!revision) {
+                return std::unexpected(std::move(revision.error()));
+            }
+            if (!*revision || **revision != relocation.previous_revision) {
+                return std::unexpected(core::Error{
+                    .code = core::ErrorCode::conflict,
+                    .message = "Every relocated occurrence must identify the published source",
+                    .context = {{"source_path", relocation.source_reference}},
+                });
+            }
+            relocated_occurrences.push_back(RelocatedOccurrence{
+                .document_id = column_text(occurrences->get(), 0),
+                .position = position,
+                .retained_fields = {},
+            });
+        }
+        if (occurrence_step != SQLITE_DONE) {
+            return std::unexpected(
+                database_error(database, "Could not enumerate relocation occurrences"));
+        }
+        return {};
+    };
+    if (auto enumerated = enumerate_occurrences(relocation.source_reference); !enumerated) {
+        auto error = std::move(enumerated.error());
         rollback();
         return std::unexpected(std::move(error));
     }
-    std::size_t affected_occurrences = 0U;
-    int occurrence_step = SQLITE_ROW;
-    while ((occurrence_step = sqlite3_step(occurrences->get())) == SQLITE_ROW) {
-        if (affected_occurrences >= maximum_refresh_occurrences) {
-            rollback();
-            return std::unexpected(core::Error{
-                .code = core::ErrorCode::limit_exceeded,
-                .message = "Local-source relocation exceeds the occurrence limit",
-                .context = {{"source_path", relocation.source_reference}},
-            });
-        }
-        auto revision = read_optional_revision(occurrences->get(), 0, "Relocated list item");
-        if (!revision) {
-            auto error = std::move(revision.error());
+    auto occurrences_already_at_target = false;
+    if (relocated_occurrences.empty()) {
+        if (auto enumerated = enumerate_occurrences(relocation.target_reference); !enumerated) {
+            auto error = std::move(enumerated.error());
             rollback();
             return std::unexpected(std::move(error));
         }
-        if (!*revision || **revision != relocation.previous_revision) {
+        occurrences_already_at_target = !relocated_occurrences.empty();
+        if (!occurrences_already_at_target) {
             rollback();
             return std::unexpected(core::Error{
-                .code = core::ErrorCode::conflict,
-                .message = "Every relocated occurrence must identify the published source",
+                .code = core::ErrorCode::not_found,
+                .message = "Relocated source has no persisted list occurrence",
                 .context = {{"source_path", relocation.source_reference}},
             });
         }
-        ++affected_occurrences;
     }
-    if (occurrence_step != SQLITE_DONE) {
-        auto error = database_error(database, "Could not enumerate relocation occurrences");
-        rollback();
-        return std::unexpected(std::move(error));
-    }
-    if (affected_occurrences == 0U) {
-        rollback();
-        return std::unexpected(core::Error{
-            .code = core::ErrorCode::not_found,
-            .message = "Relocated source has no persisted list occurrence",
-            .context = {{"source_path", relocation.source_reference}},
-        });
-    }
+    const auto affected_occurrences = relocated_occurrences.size();
 
-    auto target_occurrence = prepare(
-        database, "SELECT 1 FROM list_items WHERE source = ? AND source_reference = ? LIMIT 1");
-    if (!target_occurrence ||
-        sqlite3_bind_int(target_occurrence->get(), 1, static_cast<int>(ListSource::local)) !=
-            SQLITE_OK ||
-        !bind_blob(target_occurrence->get(), 2, relocation.target_reference)) {
-        auto error = target_occurrence
-                         ? database_error(database, "Could not bind relocation target")
-                         : std::move(target_occurrence.error());
-        rollback();
-        return std::unexpected(std::move(error));
-    }
-    const auto target_step = sqlite3_step(target_occurrence->get());
-    if (target_step == SQLITE_ROW) {
-        rollback();
-        return std::unexpected(core::Error{
-            .code = core::ErrorCode::conflict,
-            .message = "Relocation target already has a persisted local source",
-            .context = {{"target_path", relocation.target_reference}},
-        });
-    }
-    if (target_step != SQLITE_DONE) {
-        auto error = database_error(database, "Could not inspect relocation target");
-        rollback();
-        return std::unexpected(std::move(error));
+    if (!occurrences_already_at_target) {
+        auto target_occurrence = prepare(
+            database, "SELECT 1 FROM list_items WHERE source = ? AND source_reference = ? LIMIT 1");
+        if (!target_occurrence ||
+            sqlite3_bind_int(target_occurrence->get(), 1, static_cast<int>(ListSource::local)) !=
+                SQLITE_OK ||
+            !bind_blob(target_occurrence->get(), 2, relocation.target_reference)) {
+            auto error = target_occurrence
+                             ? database_error(database, "Could not bind relocation target")
+                             : std::move(target_occurrence.error());
+            rollback();
+            return std::unexpected(std::move(error));
+        }
+        const auto target_step = sqlite3_step(target_occurrence->get());
+        if (target_step == SQLITE_ROW) {
+            rollback();
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::conflict,
+                .message = "Relocation target already has a persisted local source",
+                .context = {{"target_path", relocation.target_reference}},
+            });
+        }
+        if (target_step != SQLITE_DONE) {
+            auto error = database_error(database, "Could not inspect relocation target");
+            rollback();
+            return std::unexpected(std::move(error));
+        }
     }
 
     const auto cache_exists = [&](const std::string& source_reference) -> core::Result<bool> {
@@ -2197,13 +2333,84 @@ ListRepository::relocate_local_source(const LocalSourceRelocation& relocation) {
         rollback();
         return std::unexpected(std::move(error));
     }
-    if (*target_cache) {
-        rollback();
-        return std::unexpected(core::Error{
-            .code = core::ErrorCode::conflict,
-            .message = "Relocation target already owns a metadata source cache",
-            .context = {{"target_path", relocation.target_reference}},
-        });
+    if (*target_cache &&
+        (!occurrences_already_at_target || *source_cache || published_fields.has_value())) {
+        auto delete_target_cache =
+            prepare(database, "DELETE FROM local_metadata_cache WHERE source_reference = ?");
+        if (!delete_target_cache ||
+            !bind_blob(delete_target_cache->get(), 1, relocation.target_reference)) {
+            auto error = delete_target_cache
+                             ? database_error(database, "Could not bind unowned target cache")
+                             : std::move(delete_target_cache.error());
+            rollback();
+            return std::unexpected(std::move(error));
+        }
+        if (auto removed = step_done(database, delete_target_cache->get(),
+                                     "Could not remove unowned target metadata cache");
+            !removed) {
+            rollback();
+            return std::unexpected(std::move(removed.error()));
+        }
+    }
+
+    if (published_fields) {
+        auto retained_query =
+            prepare(database, "SELECT name, value, native_name, provenance, language, description "
+                              "FROM list_item_fields WHERE document_id = ? AND item_position = ? "
+                              "AND provenance NOT IN (0, 2, 3) ORDER BY position");
+        if (!retained_query) {
+            auto error = std::move(retained_query.error());
+            rollback();
+            return std::unexpected(std::move(error));
+        }
+        for (auto& occurrence : relocated_occurrences) {
+            auto* statement = retained_query->get();
+            if (!bind_text(statement, 1, occurrence.document_id) ||
+                sqlite3_bind_int64(statement, 2, occurrence.position) != SQLITE_OK) {
+                auto error =
+                    database_error(database, "Could not bind retained publication metadata");
+                rollback();
+                return std::unexpected(std::move(error));
+            }
+            int step = SQLITE_ROW;
+            while ((step = sqlite3_step(statement)) == SQLITE_ROW) {
+                const auto provenance = sqlite3_column_int(statement, 3);
+                if (provenance < static_cast<int>(metadata::FieldProvenance::annotation) ||
+                    provenance > static_cast<int>(metadata::FieldProvenance::sidecar) ||
+                    provenance == static_cast<int>(metadata::FieldProvenance::embedded) ||
+                    provenance == static_cast<int>(metadata::FieldProvenance::stream)) {
+                    auto error = database_error(
+                        database, "Combined publication has invalid retained metadata provenance");
+                    rollback();
+                    return std::unexpected(std::move(error));
+                }
+                occurrence.retained_fields.push_back(SnapshotField{
+                    .name = column_blob(statement, 0),
+                    .value = column_blob(statement, 1),
+                    .native_name = column_blob(statement, 2),
+                    .provenance = static_cast<metadata::FieldProvenance>(provenance),
+                    .language = optional_blob(statement, 4),
+                    .description = optional_blob(statement, 5),
+                });
+            }
+            sqlite3_reset(statement);
+            sqlite3_clear_bindings(statement);
+            if (step != SQLITE_DONE || occurrence.retained_fields.size() >
+                                           maximum_fields_per_item - published_fields->size()) {
+                if (step != SQLITE_DONE) {
+                    auto error = database_error(
+                        database, "Could not load retained combined-publication metadata");
+                    rollback();
+                    return std::unexpected(std::move(error));
+                }
+                rollback();
+                return std::unexpected(core::Error{
+                    .code = core::ErrorCode::limit_exceeded,
+                    .message = "Combined publication occurrence exceeds the field limit",
+                    .context = {{"source_path", relocation.source_reference}},
+                });
+            }
+        }
     }
 
     auto update_occurrences = prepare(
@@ -2216,7 +2423,9 @@ ListRepository::relocate_local_source(const LocalSourceRelocation& relocation) {
         !bind_revision(update_occurrences->get(), 2, relocation.published_revision) ||
         sqlite3_bind_int(update_occurrences->get(), 7, static_cast<int>(ListSource::local)) !=
             SQLITE_OK ||
-        !bind_blob(update_occurrences->get(), 8, relocation.source_reference)) {
+        !bind_blob(update_occurrences->get(), 8,
+                   occurrences_already_at_target ? relocation.target_reference
+                                                 : relocation.source_reference)) {
         auto error = update_occurrences
                          ? database_error(database, "Could not bind relocated occurrences")
                          : std::move(update_occurrences.error());
@@ -2234,7 +2443,75 @@ ListRepository::relocate_local_source(const LocalSourceRelocation& relocation) {
         return std::unexpected(std::move(error));
     }
 
-    if (*source_cache) {
+    if (published_fields) {
+        auto delete_fields = prepare(
+            database, "DELETE FROM list_item_fields WHERE document_id = ? AND item_position = ?");
+        auto insert_field = prepare(
+            database,
+            "INSERT INTO list_item_fields(document_id, item_position, position, name, value, "
+            "native_name, provenance, language, description) VALUES(?,?,?,?,?,?,?,?,?)");
+        if (!delete_fields || !insert_field) {
+            auto error =
+                !delete_fields ? std::move(delete_fields.error()) : std::move(insert_field.error());
+            rollback();
+            return std::unexpected(std::move(error));
+        }
+        for (const auto& occurrence : relocated_occurrences) {
+            auto* deletion = delete_fields->get();
+            if (!bind_text(deletion, 1, occurrence.document_id) ||
+                sqlite3_bind_int64(deletion, 2, occurrence.position) != SQLITE_OK) {
+                auto error =
+                    database_error(database, "Could not bind combined-publication occurrence");
+                rollback();
+                return std::unexpected(std::move(error));
+            }
+            if (auto deleted =
+                    step_done(database, deletion, "Could not clear combined-publication metadata");
+                !deleted) {
+                rollback();
+                return std::unexpected(std::move(deleted.error()));
+            }
+            std::size_t position = 0U;
+            const auto store_fields =
+                [&](const std::span<const SnapshotField> fields) -> core::Result<void> {
+                for (const auto& field : fields) {
+                    auto* insertion = insert_field->get();
+                    if (!bind_text(insertion, 1, occurrence.document_id) ||
+                        sqlite3_bind_int64(insertion, 2, occurrence.position) != SQLITE_OK ||
+                        sqlite3_bind_int64(insertion, 3, static_cast<sqlite3_int64>(position)) !=
+                            SQLITE_OK ||
+                        !bind_blob(insertion, 4, field.name) ||
+                        !bind_blob(insertion, 5, field.value) ||
+                        !bind_blob(insertion, 6, field.native_name) ||
+                        sqlite3_bind_int(insertion, 7, static_cast<int>(field.provenance)) !=
+                            SQLITE_OK ||
+                        !bind_optional_blob(insertion, 8, field.language) ||
+                        !bind_optional_blob(insertion, 9, field.description)) {
+                        return std::unexpected(database_error(
+                            database, "Could not bind combined-publication metadata field"));
+                    }
+                    if (auto stored =
+                            step_done(database, insertion,
+                                      "Could not store combined-publication metadata field");
+                        !stored) {
+                        return stored;
+                    }
+                    ++position;
+                }
+                return {};
+            };
+            if (auto stored = store_fields(*published_fields); !stored) {
+                rollback();
+                return std::unexpected(std::move(stored.error()));
+            }
+            if (auto stored = store_fields(occurrence.retained_fields); !stored) {
+                rollback();
+                return std::unexpected(std::move(stored.error()));
+            }
+        }
+    }
+
+    if (*source_cache && !published_fields) {
         auto copy_cache = prepare(
             database,
             "INSERT INTO local_metadata_cache(source_reference, previous_device, previous_inode, "
@@ -2287,6 +2564,72 @@ ListRepository::relocate_local_source(const LocalSourceRelocation& relocation) {
             return std::unexpected(std::move(removed.error()));
         }
     }
+    if (published_fields) {
+        auto delete_source_cache =
+            prepare(database, "DELETE FROM local_metadata_cache WHERE source_reference = ?");
+        auto insert_target_cache = prepare(
+            database,
+            "INSERT INTO local_metadata_cache(source_reference, previous_device, previous_inode, "
+            "previous_size, previous_mtime_seconds, previous_mtime_nanoseconds, published_device, "
+            "published_inode, published_size, published_mtime_seconds, "
+            "published_mtime_nanoseconds) VALUES(?,?,?,?,?,?,?,?,?,?,?)");
+        auto insert_target_field = prepare(
+            database,
+            "INSERT INTO local_metadata_cache_fields(source_reference, position, name, value, "
+            "native_name, provenance, language, description) VALUES(?,?,?,?,?,?,?,?)");
+        if (!delete_source_cache || !insert_target_cache || !insert_target_field) {
+            auto error = !delete_source_cache   ? std::move(delete_source_cache.error())
+                         : !insert_target_cache ? std::move(insert_target_cache.error())
+                                                : std::move(insert_target_field.error());
+            rollback();
+            return std::unexpected(std::move(error));
+        }
+        if (!bind_blob(delete_source_cache->get(), 1, relocation.source_reference) ||
+            !bind_blob(insert_target_cache->get(), 1, relocation.target_reference) ||
+            !bind_revision(insert_target_cache->get(), 2, relocation.previous_revision) ||
+            !bind_revision(insert_target_cache->get(), 7, relocation.published_revision)) {
+            auto error =
+                database_error(database, "Could not bind combined-publication metadata cache");
+            rollback();
+            return std::unexpected(std::move(error));
+        }
+        if (auto removed = step_done(database, delete_source_cache->get(),
+                                     "Could not remove prior publication metadata cache");
+            !removed) {
+            rollback();
+            return std::unexpected(std::move(removed.error()));
+        }
+        if (auto stored = step_done(database, insert_target_cache->get(),
+                                    "Could not store published metadata cache");
+            !stored) {
+            rollback();
+            return std::unexpected(std::move(stored.error()));
+        }
+        for (std::size_t position = 0U; position < published_fields->size(); ++position) {
+            const auto& field = (*published_fields)[position];
+            auto* statement = insert_target_field->get();
+            if (!bind_blob(statement, 1, relocation.target_reference) ||
+                sqlite3_bind_int64(statement, 2, static_cast<sqlite3_int64>(position)) !=
+                    SQLITE_OK ||
+                !bind_blob(statement, 3, field.name) || !bind_blob(statement, 4, field.value) ||
+                !bind_blob(statement, 5, field.native_name) ||
+                sqlite3_bind_int(statement, 6, static_cast<int>(field.provenance)) != SQLITE_OK ||
+                !bind_optional_blob(statement, 7, field.language) ||
+                !bind_optional_blob(statement, 8, field.description)) {
+                auto error = database_error(
+                    database, "Could not bind combined-publication metadata-cache field");
+                rollback();
+                return std::unexpected(std::move(error));
+            }
+            if (auto stored =
+                    step_done(database, statement,
+                              "Could not store combined-publication metadata-cache field");
+                !stored) {
+                rollback();
+                return std::unexpected(std::move(stored.error()));
+            }
+        }
+    }
 
     auto insert_relocation = prepare(
         database,
@@ -2294,7 +2637,7 @@ ListRepository::relocate_local_source(const LocalSourceRelocation& relocation) {
         "previous_device, previous_inode, previous_size, previous_mtime_seconds, "
         "previous_mtime_nanoseconds, published_device, published_inode, published_size, "
         "published_mtime_seconds, published_mtime_nanoseconds, affected_occurrences, "
-        "cache_rekeyed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+        "cache_rekeyed, metadata_refreshed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
     if (!insert_relocation || !bind_text(insert_relocation->get(), 1, operation_id) ||
         !bind_blob(insert_relocation->get(), 2, relocation.source_reference) ||
         !bind_blob(insert_relocation->get(), 3, relocation.target_reference) ||
@@ -2302,7 +2645,8 @@ ListRepository::relocate_local_source(const LocalSourceRelocation& relocation) {
         !bind_revision(insert_relocation->get(), 9, relocation.published_revision) ||
         sqlite3_bind_int64(insert_relocation->get(), 14,
                            static_cast<sqlite3_int64>(affected_occurrences)) != SQLITE_OK ||
-        sqlite3_bind_int(insert_relocation->get(), 15, *source_cache ? 1 : 0) != SQLITE_OK) {
+        sqlite3_bind_int(insert_relocation->get(), 15, *source_cache ? 1 : 0) != SQLITE_OK ||
+        sqlite3_bind_int(insert_relocation->get(), 16, published_fields ? 1 : 0) != SQLITE_OK) {
         auto error = insert_relocation
                          ? database_error(database, "Could not bind local-source relocation")
                          : std::move(insert_relocation.error());
@@ -2322,6 +2666,7 @@ ListRepository::relocate_local_source(const LocalSourceRelocation& relocation) {
     return LocalSourceRelocationResult{
         .affected_occurrences = affected_occurrences,
         .cache_rekeyed = *source_cache,
+        .metadata_refreshed = published_fields.has_value(),
         .already_applied = false,
     };
 }

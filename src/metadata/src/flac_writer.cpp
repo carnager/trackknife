@@ -6,6 +6,7 @@
 #include "trackknife/metadata/local_reader.hpp"
 
 #include <flacfile.h>
+#include <flacpicture.h>
 #include <tpropertymap.h>
 #include <tstring.h>
 #include <tstringlist.h>
@@ -13,12 +14,15 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
+#include <memory>
 #include <ranges>
 #include <string>
 #include <string_view>
@@ -36,6 +40,7 @@ constexpr std::size_t comparison_buffer_size = 64U * 1024U;
 constexpr std::size_t maximum_metadata_blocks = 4'096U;
 constexpr std::uint8_t padding_block_type = 1U;
 constexpr std::uint8_t vorbis_comment_block_type = 4U;
+constexpr std::uint8_t picture_block_type = 6U;
 
 class Descriptor final {
   public:
@@ -94,6 +99,7 @@ struct FlacBlock {
 };
 
 struct FlacLayout {
+    std::vector<FlacBlock> blocks;
     std::vector<FlacBlock> preserved_blocks;
     std::uint64_t audio_offset{0U};
     std::uint64_t file_size{0U};
@@ -125,7 +131,7 @@ struct FlacLayout {
 
 [[nodiscard]] core::Error cancelled(const std::string& source_raw_path,
                                     const std::string& prepared_raw_path) {
-    return writer_error(core::ErrorCode::cancelled, "prepared FLAC metadata write was cancelled",
+    return writer_error(core::ErrorCode::cancelled, "prepared FLAC write was cancelled",
                         source_raw_path, prepared_raw_path);
 }
 
@@ -218,7 +224,8 @@ struct FlacLayout {
 
 [[nodiscard]] core::Result<FlacLayout> parse_flac_layout(const std::string& raw_path,
                                                          const std::string& source_raw_path,
-                                                         const std::string& prepared_raw_path) {
+                                                         const std::string& prepared_raw_path,
+                                                         const std::uint8_t mutable_block_type) {
     std::ifstream input{std::filesystem::path{raw_path}, std::ios::binary};
     if (!input) {
         return std::unexpected(writer_error(core::ErrorCode::io,
@@ -241,7 +248,8 @@ struct FlacLayout {
                                             prepared_raw_path));
     }
 
-    FlacLayout layout{.preserved_blocks = {}, .audio_offset = 0U, .file_size = file_size};
+    FlacLayout layout{
+        .blocks = {}, .preserved_blocks = {}, .audio_offset = 0U, .file_size = file_size};
     std::uint64_t offset = marker.size();
     std::size_t block_count = 0U;
     bool last = false;
@@ -271,10 +279,11 @@ struct FlacLayout {
                                                 "FLAC metadata block payload is truncated",
                                                 source_raw_path, prepared_raw_path));
         }
-        if (type != padding_block_type && type != vorbis_comment_block_type) {
+        if (type != padding_block_type && type != mutable_block_type) {
             layout.preserved_blocks.push_back(
                 FlacBlock{.type = type, .data_offset = offset, .length = length});
         }
+        layout.blocks.push_back(FlacBlock{.type = type, .data_offset = offset, .length = length});
         offset += length;
         input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
         if (!input) {
@@ -328,15 +337,16 @@ compare_region(std::ifstream& source, const std::uint64_t source_offset, std::if
     return {};
 }
 
-[[nodiscard]] core::Result<void>
-verify_flac_binary_preservation(const std::string& source_raw_path,
-                                const std::string& prepared_raw_path,
-                                const core::CancellationToken& cancellation) {
-    auto source_layout = parse_flac_layout(source_raw_path, source_raw_path, prepared_raw_path);
+[[nodiscard]] core::Result<void> verify_flac_binary_preservation(
+    const std::string& source_raw_path, const std::string& prepared_raw_path,
+    const std::uint8_t mutable_block_type, const core::CancellationToken& cancellation) {
+    auto source_layout =
+        parse_flac_layout(source_raw_path, source_raw_path, prepared_raw_path, mutable_block_type);
     if (!source_layout) {
         return std::unexpected(std::move(source_layout.error()));
     }
-    auto prepared_layout = parse_flac_layout(prepared_raw_path, source_raw_path, prepared_raw_path);
+    auto prepared_layout = parse_flac_layout(prepared_raw_path, source_raw_path, prepared_raw_path,
+                                             mutable_block_type);
     if (!prepared_layout) {
         return std::unexpected(std::move(prepared_layout.error()));
     }
@@ -572,6 +582,378 @@ using EffectiveNativeText = std::map<std::string, EffectiveNativeTextField>;
     return {};
 }
 
+[[nodiscard]] core::Result<std::vector<unsigned char>>
+read_planned_replacement(const ArtworkWritePlanSource& source_plan,
+                         const std::string& prepared_raw_path,
+                         const core::CancellationToken& cancellation) {
+    const auto& replacement = *source_plan.change.replacement;
+    auto bytes = read_artwork_image_bytes(replacement, replacement.byte_size, cancellation);
+    if (!bytes) {
+        auto error = std::move(bytes.error());
+        error.context.push_back(
+            {.key = "target", .value = core::escape_raw_path(source_plan.raw_media_path)});
+        error.context.push_back(
+            {.key = "prepared", .value = core::escape_raw_path(prepared_raw_path)});
+        return std::unexpected(std::move(error));
+    }
+    return bytes;
+}
+
+[[nodiscard]] core::Result<LocalArtworkInventory>
+read_embedded_inventory(const std::string& raw_path, const core::CancellationToken& cancellation) {
+    auto policy = default_artwork_inventory_policy();
+    policy.external_patterns.clear();
+    return read_local_artwork_inventory(raw_path, policy, cancellation);
+}
+
+using PicturePayloads = std::vector<std::vector<unsigned char>>;
+
+[[nodiscard]] TagLib::FLAC::Picture::Type canonical_picture_type(const ArtworkRole role) {
+    using Picture = TagLib::FLAC::Picture;
+    switch (role) {
+    case ArtworkRole::front:
+        return Picture::FrontCover;
+    case ArtworkRole::back:
+        return Picture::BackCover;
+    case ArtworkRole::artist:
+        return Picture::Artist;
+    case ArtworkRole::disc:
+        return Picture::Media;
+    case ArtworkRole::icon:
+        return Picture::FileIcon;
+    case ArtworkRole::other:
+        return Picture::Other;
+    }
+    return Picture::Other;
+}
+
+[[nodiscard]] core::Result<PicturePayloads>
+read_picture_payloads(const std::string& raw_path, const ArtworkWritePlanSource& source_plan,
+                      const std::string& prepared_raw_path) {
+    TagLib::FLAC::File file{raw_path.c_str(), false};
+    if (!file.isValid()) {
+        return std::unexpected(writer_error(core::ErrorCode::backend,
+                                            "TagLib rejected FLAC picture verification",
+                                            source_plan.raw_media_path, prepared_raw_path));
+    }
+    const auto pictures = file.pictureList();
+    PicturePayloads result;
+    result.reserve(pictures.size());
+    for (const auto* picture : pictures) {
+        if (picture == nullptr) {
+            return std::unexpected(writer_error(core::ErrorCode::backend,
+                                                "FLAC picture verification found a null picture",
+                                                source_plan.raw_media_path, prepared_raw_path));
+        }
+        const auto payload = picture->render();
+        const auto* begin = reinterpret_cast<const unsigned char*>(payload.data());
+        result.emplace_back(begin, begin + payload.size());
+    }
+    return result;
+}
+
+[[nodiscard]] core::Result<void>
+rewrite_artwork_change(const ArtworkWritePlanSource& source_plan,
+                       const std::string& prepared_raw_path,
+                       const std::vector<unsigned char>& replacement_bytes,
+                       const core::CancellationToken& cancellation) {
+    TagLib::FLAC::File source_file{source_plan.raw_media_path.c_str(), false};
+    if (!source_file.isValid()) {
+        return std::unexpected(writer_error(core::ErrorCode::backend,
+                                            "TagLib rejected the FLAC artwork source",
+                                            source_plan.raw_media_path, prepared_raw_path));
+    }
+    const auto pictures = source_file.pictureList();
+    const auto add = source_plan.change.kind == ArtworkWritePlanIntentKind::add;
+    if ((!add &&
+         (source_plan.change.target_ordinal >= pictures.size() ||
+          pictures[static_cast<unsigned int>(source_plan.change.target_ordinal)] == nullptr)) ||
+        (add && source_plan.change.target_ordinal != pictures.size())) {
+        return std::unexpected(
+            writer_error(core::ErrorCode::conflict,
+                         add ? "FLAC source picture count differs from the plan"
+                             : "FLAC source no longer contains the planned picture",
+                         source_plan.raw_media_path, prepared_raw_path));
+    }
+    const auto remove = source_plan.change.kind == ArtworkWritePlanIntentKind::remove;
+    std::vector<unsigned char> replacement_payload;
+    if (!remove) {
+        const auto* current =
+            add ? nullptr : pictures[static_cast<unsigned int>(source_plan.change.target_ordinal)];
+        const auto& replacement = *source_plan.change.replacement;
+        TagLib::FLAC::Picture picture;
+        picture.setType(add ? canonical_picture_type(source_plan.change.added_role)
+                            : current->type());
+        picture.setMimeType(TagLib::String{replacement.mime_type, TagLib::String::UTF8});
+        picture.setDescription(
+            add ? TagLib::String{source_plan.change.added_description, TagLib::String::UTF8}
+                : current->description());
+        picture.setWidth(static_cast<int>(*replacement.width));
+        picture.setHeight(static_cast<int>(*replacement.height));
+        picture.setColorDepth(0);
+        picture.setNumColors(0);
+        picture.setData(TagLib::ByteVector{
+            reinterpret_cast<const char*>(replacement_bytes.data()),
+            static_cast<unsigned int>(replacement_bytes.size()),
+        });
+        const auto rendered = picture.render();
+        const auto* begin = reinterpret_cast<const unsigned char*>(rendered.data());
+        replacement_payload.assign(begin, begin + rendered.size());
+        if (replacement_payload.size() > 0xFF'FF'FFU) {
+            return std::unexpected(writer_error(core::ErrorCode::limit_exceeded,
+                                                "replacement FLAC picture block is too large",
+                                                source_plan.raw_media_path, prepared_raw_path));
+        }
+    }
+
+    auto layout = parse_flac_layout(source_plan.raw_media_path, source_plan.raw_media_path,
+                                    prepared_raw_path, picture_block_type);
+    if (!layout) {
+        return std::unexpected(std::move(layout.error()));
+    }
+    std::size_t picture_ordinal = 0U;
+    std::optional<std::size_t> target_block;
+    std::size_t insertion_block = layout->blocks.size();
+    for (std::size_t index = 0U; index < layout->blocks.size(); ++index) {
+        if (layout->blocks[index].type != picture_block_type) {
+            if (picture_ordinal == 0U && insertion_block == layout->blocks.size() &&
+                layout->blocks[index].type == padding_block_type) {
+                insertion_block = index;
+            }
+            continue;
+        }
+        insertion_block = index + 1U;
+        if (picture_ordinal == source_plan.change.target_ordinal) {
+            target_block = index;
+        }
+        ++picture_ordinal;
+    }
+    if (!add && !target_block) {
+        return std::unexpected(writer_error(core::ErrorCode::conflict,
+                                            "FLAC picture block order differs from the plan",
+                                            source_plan.raw_media_path, prepared_raw_path));
+    }
+
+    std::ifstream input{std::filesystem::path{source_plan.raw_media_path}, std::ios::binary};
+    std::ofstream output{std::filesystem::path{prepared_raw_path},
+                         std::ios::binary | std::ios::trunc};
+    if (!input || !output) {
+        return std::unexpected(writer_error(core::ErrorCode::io,
+                                            "opening the native FLAC artwork rewrite failed",
+                                            source_plan.raw_media_path, prepared_raw_path));
+    }
+    constexpr std::array<char, 4> marker{'f', 'L', 'a', 'C'};
+    output.write(marker.data(), static_cast<std::streamsize>(marker.size()));
+    const auto output_block_count = layout->blocks.size() - (remove ? 1U : 0U) + (add ? 1U : 0U);
+    if (output_block_count == 0U) {
+        return std::unexpected(writer_error(core::ErrorCode::backend,
+                                            "FLAC artwork rewrite would remove all metadata",
+                                            source_plan.raw_media_path, prepared_raw_path));
+    }
+
+    std::array<char, comparison_buffer_size> buffer{};
+    std::size_t output_index = 0U;
+    const auto copy_region = [&](const std::uint64_t offset,
+                                 const std::uint64_t length) -> core::Result<void> {
+        input.clear();
+        input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+        if (!input) {
+            return std::unexpected(writer_error(core::ErrorCode::io,
+                                                "seeking native FLAC artwork input failed",
+                                                source_plan.raw_media_path, prepared_raw_path));
+        }
+        std::uint64_t copied = 0U;
+        while (copied < length) {
+            if (cancellation.is_cancellation_requested()) {
+                return std::unexpected(cancelled(source_plan.raw_media_path, prepared_raw_path));
+            }
+            const auto amount =
+                static_cast<std::size_t>(std::min<std::uint64_t>(buffer.size(), length - copied));
+            input.read(buffer.data(), static_cast<std::streamsize>(amount));
+            if (input.gcount() != static_cast<std::streamsize>(amount)) {
+                return std::unexpected(writer_error(core::ErrorCode::io,
+                                                    "reading native FLAC artwork input failed",
+                                                    source_plan.raw_media_path, prepared_raw_path));
+            }
+            output.write(buffer.data(), static_cast<std::streamsize>(amount));
+            if (!output) {
+                return std::unexpected(writer_error(core::ErrorCode::io,
+                                                    "writing native FLAC artwork output failed",
+                                                    source_plan.raw_media_path, prepared_raw_path));
+            }
+            copied += amount;
+        }
+        return {};
+    };
+
+    const auto write_block_header = [&](const std::uint8_t type,
+                                        const std::size_t length) -> core::Result<void> {
+        const auto last = output_index + 1U == output_block_count;
+        std::array<unsigned char, 4> header{
+            static_cast<unsigned char>(type | (last ? 0x80U : 0U)),
+            static_cast<unsigned char>((length >> 16U) & 0xFFU),
+            static_cast<unsigned char>((length >> 8U) & 0xFFU),
+            static_cast<unsigned char>(length & 0xFFU),
+        };
+        output.write(reinterpret_cast<const char*>(header.data()),
+                     static_cast<std::streamsize>(header.size()));
+        if (!output) {
+            return std::unexpected(writer_error(core::ErrorCode::io,
+                                                "writing native FLAC metadata header failed",
+                                                source_plan.raw_media_path, prepared_raw_path));
+        }
+        ++output_index;
+        return {};
+    };
+    const auto write_added_picture = [&]() -> core::Result<void> {
+        auto header = write_block_header(picture_block_type, replacement_payload.size());
+        if (!header) {
+            return header;
+        }
+        output.write(reinterpret_cast<const char*>(replacement_payload.data()),
+                     static_cast<std::streamsize>(replacement_payload.size()));
+        if (!output) {
+            return std::unexpected(writer_error(core::ErrorCode::io,
+                                                "writing added native FLAC picture failed",
+                                                source_plan.raw_media_path, prepared_raw_path));
+        }
+        return {};
+    };
+
+    for (std::size_t index = 0U; index < layout->blocks.size(); ++index) {
+        if (add && index == insertion_block) {
+            auto inserted = write_added_picture();
+            if (!inserted) {
+                return inserted;
+            }
+        }
+        const auto& block = layout->blocks[index];
+        if (remove && index == *target_block) {
+            continue;
+        }
+        const auto replacement = !add && !remove && index == *target_block;
+        const auto length = replacement ? replacement_payload.size() : block.length;
+        auto header = write_block_header(block.type, length);
+        if (!header) {
+            return header;
+        }
+        if (replacement) {
+            output.write(reinterpret_cast<const char*>(replacement_payload.data()),
+                         static_cast<std::streamsize>(replacement_payload.size()));
+        } else {
+            auto copied = copy_region(block.data_offset, block.length);
+            if (!copied) {
+                return copied;
+            }
+        }
+        if (!output) {
+            return std::unexpected(writer_error(core::ErrorCode::io,
+                                                "writing native FLAC metadata block failed",
+                                                source_plan.raw_media_path, prepared_raw_path));
+        }
+    }
+    if (add && insertion_block == layout->blocks.size()) {
+        auto inserted = write_added_picture();
+        if (!inserted) {
+            return inserted;
+        }
+    }
+    auto audio_copied = copy_region(layout->audio_offset, layout->file_size - layout->audio_offset);
+    if (!audio_copied) {
+        return audio_copied;
+    }
+    output.flush();
+    if (!output) {
+        return std::unexpected(writer_error(core::ErrorCode::io,
+                                            "flushing native FLAC artwork output failed",
+                                            source_plan.raw_media_path, prepared_raw_path));
+    }
+    return {};
+}
+
+[[nodiscard]] core::Result<void>
+verify_picture_payload_result(const PicturePayloads& before, const PicturePayloads& after,
+                              const ArtworkWritePlanSource& source_plan,
+                              const std::string& prepared_raw_path) {
+    const auto target = source_plan.change.target_ordinal;
+    const auto remove = source_plan.change.kind == ArtworkWritePlanIntentKind::remove;
+    const auto add = source_plan.change.kind == ArtworkWritePlanIntentKind::add;
+    if ((!remove && !add && before.size() != after.size()) ||
+        (add && before.size() + 1U != after.size()) ||
+        (remove && (before.empty() || before.size() - 1U != after.size()))) {
+        return std::unexpected(writer_error(core::ErrorCode::conflict,
+                                            "prepared FLAC picture count differs from the plan",
+                                            source_plan.raw_media_path, prepared_raw_path));
+    }
+    if (add && target != before.size()) {
+        return std::unexpected(writer_error(core::ErrorCode::conflict,
+                                            "prepared FLAC added picture at an unexpected ordinal",
+                                            source_plan.raw_media_path, prepared_raw_path));
+    }
+    for (std::size_t after_index = 0U; after_index < after.size(); ++after_index) {
+        if (add && after_index == target) {
+            continue;
+        }
+        const auto before_index = remove && after_index >= target ? after_index + 1U : after_index;
+        if ((!remove && !add && after_index == target) ||
+            before[before_index] == after[after_index]) {
+            continue;
+        }
+        return std::unexpected(
+            writer_error(core::ErrorCode::conflict,
+                         "prepared FLAC changed an unrelated serialized picture block",
+                         source_plan.raw_media_path, prepared_raw_path));
+    }
+    return {};
+}
+
+[[nodiscard]] core::Result<void> verify_artwork_inventory_result(
+    const LocalArtworkInventory& before, const LocalArtworkInventory& after,
+    const ArtworkWritePlanSource& source_plan, const std::string& prepared_raw_path) {
+    const auto target = source_plan.change.target_ordinal;
+    const auto remove = source_plan.change.kind == ArtworkWritePlanIntentKind::remove;
+    const auto add = source_plan.change.kind == ArtworkWritePlanIntentKind::add;
+    if ((!remove && !add && before.items.size() != after.items.size()) ||
+        (add && before.items.size() + 1U != after.items.size()) ||
+        (remove && (before.items.empty() || before.items.size() - 1U != after.items.size()))) {
+        return std::unexpected(writer_error(core::ErrorCode::conflict,
+                                            "prepared FLAC artwork inventory differs from the plan",
+                                            source_plan.raw_media_path, prepared_raw_path));
+    }
+    if (remove) {
+        return {};
+    }
+    if (target >= after.items.size()) {
+        return std::unexpected(writer_error(core::ErrorCode::conflict,
+                                            "prepared FLAC replacement picture is missing",
+                                            source_plan.raw_media_path, prepared_raw_path));
+    }
+    const auto& replacement = *source_plan.change.replacement;
+    const auto& result = after.items[target];
+    const auto expected_role =
+        add ? source_plan.change.added_role : source_plan.change.original->role;
+    const auto expected_description =
+        add ? source_plan.change.added_description : source_plan.change.original->description;
+    const auto expected_native_type =
+        TagLib::FLAC::Picture::typeToString(canonical_picture_type(expected_role)).to8Bit(true);
+    const auto native_type_matches =
+        add ? result.native_type ==
+                  std::string{expected_native_type.data(), expected_native_type.size()}
+            : result.native_type == source_plan.change.original->native_type;
+    if (result.role != expected_role || !native_type_matches ||
+        result.description != expected_description || result.mime_type != replacement.mime_type ||
+        result.width != replacement.width || result.height != replacement.height ||
+        result.byte_size != replacement.byte_size ||
+        result.content_fingerprint != replacement.content_fingerprint ||
+        result.provenance != ArtworkProvenance::embedded || result.source_ordinal != target) {
+        return std::unexpected(
+            writer_error(core::ErrorCode::conflict,
+                         "prepared FLAC replacement picture differs from the reviewed result",
+                         source_plan.raw_media_path, prepared_raw_path));
+    }
+    return {};
+}
+
 } // namespace
 
 core::Result<PreparedFlacMetadataWrite>
@@ -676,8 +1058,8 @@ prepare_flac_metadata_write_copy(const MetadataWritePlanSource& source_plan,
     if (!text_verified) {
         return std::unexpected(std::move(text_verified.error()));
     }
-    auto binary_verified =
-        verify_flac_binary_preservation(source_plan.raw_path, prepared_raw_path, cancellation);
+    auto binary_verified = verify_flac_binary_preservation(source_plan.raw_path, prepared_raw_path,
+                                                           vorbis_comment_block_type, cancellation);
     if (!binary_verified) {
         return std::unexpected(std::move(binary_verified.error()));
     }
@@ -703,6 +1085,207 @@ prepare_flac_metadata_write_copy(const MetadataWritePlanSource& source_plan,
         .prepared_revision = after->source_revision,
         .document = std::move(after->document),
         .field_change_count = source_plan.changes.size(),
+    };
+}
+
+core::Result<PreparedFlacArtworkWrite>
+prepare_flac_artwork_write_copy(const ArtworkWritePlanSource& source_plan,
+                                const std::string& prepared_raw_path,
+                                const core::CancellationToken& cancellation) {
+    if (cancellation.is_cancellation_requested()) {
+        return std::unexpected(cancelled(source_plan.raw_media_path, prepared_raw_path));
+    }
+    const auto replace = source_plan.change.kind == ArtworkWritePlanIntentKind::replace;
+    const auto add = source_plan.change.kind == ArtworkWritePlanIntentKind::add;
+    const auto uses_replacement = replace || add;
+    const auto replacement_representable =
+        !uses_replacement ||
+        (source_plan.change.replacement && source_plan.change.replacement->width &&
+         source_plan.change.replacement->height && source_plan.change.replacement->byte_size > 0U &&
+         (*source_plan.change.replacement->width <= static_cast<std::uint32_t>(INT_MAX)) &&
+         (*source_plan.change.replacement->height <= static_cast<std::uint32_t>(INT_MAX)) &&
+         (source_plan.change.replacement->mime_type == "image/png" ||
+          source_plan.change.replacement->mime_type == "image/jpeg"));
+    if (source_plan.raw_media_path.empty() || prepared_raw_path.empty() ||
+        source_plan.raw_media_path.find('\0') != std::string::npos ||
+        prepared_raw_path.find('\0') != std::string::npos ||
+        source_plan.raw_media_path == prepared_raw_path || !source_plan.ready() ||
+        source_plan.adapter_name != "taglib-flac-picture-v1" ||
+        !source_plan.expected_media_revision || !source_plan.observed_media_revision ||
+        *source_plan.expected_media_revision != *source_plan.observed_media_revision ||
+        source_plan.occurrence_indexes.empty() ||
+        uses_replacement != source_plan.change.replacement.has_value() ||
+        !replacement_representable || (add && source_plan.change.original) ||
+        (!add &&
+         (!source_plan.change.original ||
+          source_plan.change.original->provenance != ArtworkProvenance::embedded ||
+          source_plan.change.original->raw_source_path != source_plan.raw_media_path ||
+          source_plan.change.original->source_revision != *source_plan.observed_media_revision ||
+          source_plan.change.original->source_ordinal != source_plan.change.target_ordinal ||
+          source_plan.change.original->content_fingerprint !=
+              source_plan.change.expected_target_fingerprint))) {
+        return std::unexpected(
+            writer_error(core::ErrorCode::invalid_argument,
+                         "prepared FLAC artwork write requires one complete ready source plan",
+                         source_plan.raw_media_path, prepared_raw_path));
+    }
+
+    auto observed = core::observe_local_source_revision(source_plan.raw_media_path);
+    if (!observed) {
+        return std::unexpected(std::move(observed.error()));
+    }
+    if (*observed != *source_plan.observed_media_revision) {
+        return std::unexpected(writer_error(
+            core::ErrorCode::conflict, "FLAC source changed after the artwork plan was previewed",
+            source_plan.raw_media_path, prepared_raw_path));
+    }
+    auto before_inventory = read_embedded_inventory(source_plan.raw_media_path, cancellation);
+    if (!before_inventory) {
+        return std::unexpected(std::move(before_inventory.error()));
+    }
+    if (before_inventory->media_revision != *source_plan.observed_media_revision ||
+        before_inventory->embedded_adapter_name != "taglib-flac-picture-v1") {
+        return std::unexpected(
+            writer_error(core::ErrorCode::conflict,
+                         "FLAC artwork source no longer matches the previewed adapter and revision",
+                         source_plan.raw_media_path, prepared_raw_path));
+    }
+    if (add) {
+        if (source_plan.change.target_ordinal != before_inventory->items.size()) {
+            return std::unexpected(writer_error(
+                core::ErrorCode::conflict,
+                "fresh FLAC artwork count differs from the previewed insertion ordinal",
+                source_plan.raw_media_path, prepared_raw_path));
+        }
+        const auto duplicate = std::ranges::find_if(before_inventory->items, [&](const auto& item) {
+            return item.content_fingerprint == source_plan.change.replacement->content_fingerprint;
+        });
+        if (duplicate != before_inventory->items.end()) {
+            return std::unexpected(writer_error(core::ErrorCode::conflict,
+                                                "fresh FLAC already contains the added image",
+                                                source_plan.raw_media_path, prepared_raw_path));
+        }
+    } else {
+        const auto target = std::ranges::find_if(before_inventory->items, [&](const auto& item) {
+            return item.provenance == ArtworkProvenance::embedded &&
+                   item.source_ordinal == source_plan.change.target_ordinal;
+        });
+        if (target == before_inventory->items.end() || *target != *source_plan.change.original ||
+            target->content_fingerprint != source_plan.change.expected_target_fingerprint) {
+            return std::unexpected(
+                writer_error(core::ErrorCode::conflict,
+                             "fresh FLAC artwork differs from the previewed target picture",
+                             source_plan.raw_media_path, prepared_raw_path));
+        }
+    }
+
+    std::vector<unsigned char> replacement_bytes;
+    if (uses_replacement) {
+        auto loaded = read_planned_replacement(source_plan, prepared_raw_path, cancellation);
+        if (!loaded) {
+            return std::unexpected(std::move(loaded.error()));
+        }
+        replacement_bytes = std::move(*loaded);
+    }
+    auto before_document = read_local_metadata(source_plan.raw_media_path, cancellation);
+    if (!before_document) {
+        return std::unexpected(std::move(before_document.error()));
+    }
+    if (before_document->source_revision != *source_plan.observed_media_revision ||
+        before_document->adapter_name != "taglib-flac-v1") {
+        return std::unexpected(writer_error(
+            core::ErrorCode::conflict, "FLAC metadata changed after the artwork plan was previewed",
+            source_plan.raw_media_path, prepared_raw_path));
+    }
+    auto before_payloads =
+        read_picture_payloads(source_plan.raw_media_path, source_plan, prepared_raw_path);
+    if (!before_payloads) {
+        return std::unexpected(std::move(before_payloads.error()));
+    }
+
+    PreparedPathGuard prepared_guard{prepared_raw_path};
+    auto source_mode =
+        copy_source_exclusively(source_plan.raw_media_path, *source_plan.observed_media_revision,
+                                prepared_raw_path, cancellation, prepared_guard);
+    if (!source_mode) {
+        return std::unexpected(std::move(source_mode.error()));
+    }
+    auto applied =
+        rewrite_artwork_change(source_plan, prepared_raw_path, replacement_bytes, cancellation);
+    if (!applied) {
+        return std::unexpected(std::move(applied.error()));
+    }
+    if (::chmod(prepared_raw_path.c_str(), *source_mode) != 0) {
+        return std::unexpected(system_error("restoring prepared FLAC permissions failed", errno,
+                                            source_plan.raw_media_path, prepared_raw_path));
+    }
+    if (cancellation.is_cancellation_requested()) {
+        return std::unexpected(cancelled(source_plan.raw_media_path, prepared_raw_path));
+    }
+
+    auto after_document = read_local_metadata(prepared_raw_path, cancellation);
+    if (!after_document) {
+        return std::unexpected(std::move(after_document.error()));
+    }
+    if (after_document->document != before_document->document) {
+        return std::unexpected(
+            writer_error(core::ErrorCode::conflict,
+                         "prepared FLAC artwork write changed the text metadata document",
+                         source_plan.raw_media_path, prepared_raw_path));
+    }
+    auto after_inventory = read_embedded_inventory(prepared_raw_path, cancellation);
+    if (!after_inventory) {
+        return std::unexpected(std::move(after_inventory.error()));
+    }
+    if (after_inventory->media_revision != after_document->source_revision ||
+        after_inventory->embedded_adapter_name != "taglib-flac-picture-v1") {
+        return std::unexpected(writer_error(core::ErrorCode::conflict,
+                                            "prepared FLAC artwork and metadata rereads disagree",
+                                            source_plan.raw_media_path, prepared_raw_path));
+    }
+    auto inventory_verified = verify_artwork_inventory_result(*before_inventory, *after_inventory,
+                                                              source_plan, prepared_raw_path);
+    if (!inventory_verified) {
+        return std::unexpected(std::move(inventory_verified.error()));
+    }
+    auto after_payloads = read_picture_payloads(prepared_raw_path, source_plan, prepared_raw_path);
+    if (!after_payloads) {
+        return std::unexpected(std::move(after_payloads.error()));
+    }
+    auto pictures_verified = verify_picture_payload_result(*before_payloads, *after_payloads,
+                                                           source_plan, prepared_raw_path);
+    if (!pictures_verified) {
+        return std::unexpected(std::move(pictures_verified.error()));
+    }
+    auto binary_verified = verify_flac_binary_preservation(
+        source_plan.raw_media_path, prepared_raw_path, picture_block_type, cancellation);
+    if (!binary_verified) {
+        return std::unexpected(std::move(binary_verified.error()));
+    }
+    auto source_after = core::observe_local_source_revision(source_plan.raw_media_path);
+    if (!source_after) {
+        return std::unexpected(std::move(source_after.error()));
+    }
+    if (*source_after != *source_plan.observed_media_revision) {
+        return std::unexpected(
+            writer_error(core::ErrorCode::conflict,
+                         "FLAC source changed while the prepared artwork copy was being verified",
+                         source_plan.raw_media_path, prepared_raw_path));
+    }
+    if (cancellation.is_cancellation_requested()) {
+        return std::unexpected(cancelled(source_plan.raw_media_path, prepared_raw_path));
+    }
+
+    prepared_guard.release();
+    return PreparedFlacArtworkWrite{
+        .source_raw_path = source_plan.raw_media_path,
+        .prepared_raw_path = prepared_raw_path,
+        .source_revision = *source_after,
+        .prepared_revision = after_document->source_revision,
+        .document = std::move(after_document->document),
+        .inventory = std::move(*after_inventory),
+        .kind = source_plan.change.kind,
+        .target_ordinal = source_plan.change.target_ordinal,
     };
 }
 

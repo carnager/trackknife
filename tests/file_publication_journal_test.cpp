@@ -17,6 +17,7 @@ namespace core = trackknife::core;
 namespace operations = trackknife::operations;
 namespace persistence = trackknife::persistence;
 using Kind = operations::OutputPathPublicationKind;
+using Content = operations::FilePublicationContentKind;
 using State = operations::FilePublicationJournalState;
 using Record = operations::FilePublicationJournalRecord;
 using Transition = operations::FilePublicationJournalTransition;
@@ -66,6 +67,7 @@ Record planned_record(const Kind kind) {
         .id = core::StableId::random(),
         .state = State::planned,
         .publication = kind,
+        .content = Content::preserve_source_bytes,
         .source_raw_path = std::string{"/incoming/source-\xff.flac", 23U},
         .target_raw_path = "/library/Artist/Album/track.flac",
         .prepared_raw_path = {},
@@ -82,6 +84,69 @@ Record planned_record(const Kind kind) {
             operations::file_publication_prepared_path(record.target_raw_path, record.id).native();
     }
     return record;
+}
+
+void sameFilesystemDestinationArtifactUsesPreparedLifecycle() {
+    TemporaryDatabase database;
+    auto opened = persistence::SqliteFilePublicationJournal::open(database.path());
+    require(opened.has_value(), "destination-artifact journal must open");
+    auto journal = std::move(*opened);
+    auto planned = planned_record(Kind::same_filesystem_rename);
+    planned.content = Content::prepared_destination_artifact;
+    planned.prepared_raw_path =
+        operations::file_publication_prepared_path(planned.target_raw_path, planned.id).native();
+    require(journal.create(planned).has_value(),
+            "same-filesystem destination artifact must persist before preparation");
+    const auto initially_loaded = journal.load(planned.id);
+    require(initially_loaded && *initially_loaded == std::optional{planned},
+            "destination-artifact content intent must survive restart storage");
+
+    const auto artifact = revision(91U);
+    require(journal
+                .transition(planned.id, Transition{.expected_state = State::planned,
+                                                   .state = State::target_prepared,
+                                                   .prepared_revision = artifact,
+                                                   .target_revision = std::nullopt,
+                                                   .failure = std::nullopt})
+                .has_value(),
+            "same-filesystem changed content must enter the prepared state");
+    require(journal
+                .transition(planned.id, Transition{.expected_state = State::target_prepared,
+                                                   .state = State::target_published,
+                                                   .prepared_revision = artifact,
+                                                   .target_revision = artifact,
+                                                   .failure = std::nullopt})
+                .has_value(),
+            "same-filesystem changed content must publish the prepared inode");
+    require(journal
+                .transition(planned.id, Transition{.expected_state = State::target_published,
+                                                   .state = State::dependent_state_committed,
+                                                   .prepared_revision = artifact,
+                                                   .target_revision = artifact,
+                                                   .failure = std::nullopt})
+                .has_value(),
+            "destination artifact must commit dependent state before source removal");
+    require(
+        journal
+            .transition(planned.id, Transition{.expected_state = State::dependent_state_committed,
+                                               .state = State::source_removed,
+                                               .prepared_revision = artifact,
+                                               .target_revision = artifact,
+                                               .failure = std::nullopt})
+            .has_value(),
+        "destination artifact must retain a distinct source-removed boundary");
+    require(journal
+                .transition(planned.id, Transition{.expected_state = State::source_removed,
+                                                   .state = State::complete,
+                                                   .prepared_revision = artifact,
+                                                   .target_revision = artifact,
+                                                   .failure = std::nullopt})
+                .has_value(),
+            "destination-artifact journal must complete from source-removed");
+    const auto loaded = journal.load(planned.id);
+    require(loaded && *loaded && (**loaded).state == State::complete &&
+                (**loaded).content == Content::prepared_destination_artifact,
+            "complete destination-artifact evidence must retain its content kind");
 }
 
 void sameFilesystemStateMachineIsDurableAndOptimistic() {
@@ -309,6 +374,7 @@ void reversalRelationsRoundTripAndRequireAnExistingOriginal() {
 
 int main() {
     sameFilesystemStateMachineIsDurableAndOptimistic();
+    sameFilesystemDestinationArtifactUsesPreparedLifecycle();
     crossFilesystemStateMachinePreservesEveryRecoveryBoundary();
     failureEvidenceIsValidatedAndReconciliationRemainsVisible();
     reversalRelationsRoundTripAndRequireAnExistingOriginal();

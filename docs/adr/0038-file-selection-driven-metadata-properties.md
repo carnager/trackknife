@@ -7,6 +7,8 @@
 - Complements: ADR-0035 bounded metadata drafts and ADR-0037 exact ordered value editing
 - Extended by: ADR-0039 dynamic metadata field vocabulary
 - Draft projection extended by: ADR-0041 background metadata Draft projection
+- Artwork presentation extended by: ADR-0077 read-only Properties artwork
+  section
 
 ## Context
 
@@ -76,6 +78,8 @@ budget while still making small and complete selections immediate.
   removing the mode switch and very wide metadata matrix.
 - Future filename capture, transformation, and provider proposals can use the
   same selected-file scope and preview surface.
+- ADR-0077 later adds sibling Fields and read-only Artwork sections below the
+  same selector without restoring a second metadata editing mode.
 
 ## Validation
 

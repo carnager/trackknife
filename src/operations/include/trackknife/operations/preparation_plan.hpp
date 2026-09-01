@@ -30,7 +30,7 @@ enum class PreparationPlanIssueKind : std::uint8_t {
     metadata_plan_missing,
     path_plan_missing,
     path_preflight_missing,
-    combined_content_path_publication_unavailable,
+    combined_source_mismatch,
     replaygain_unavailable,
 };
 
@@ -46,9 +46,8 @@ struct PreparationPlanIssue {
 
 // One immutable preparation review. Metadata and output-path components retain
 // their complete native plans so the UI never rebuilds execution input from
-// displayed strings. The current publisher deliberately blocks a content
-// rewrite combined with a path change until it can prepare one final artifact
-// directly at the destination.
+// displayed strings. A combined content/path plan retains exact source pairing
+// so Apply can prepare one final artifact directly at each changed destination.
 struct PreparationPlan {
     PreparationOperationSelection operations;
     std::size_t metadata_context_change_count{0U};

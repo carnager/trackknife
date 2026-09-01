@@ -28,14 +28,21 @@ enum class FilePublicationJournalState : std::uint8_t {
     needs_reconciliation = 7,
 };
 
+enum class FilePublicationContentKind : std::uint8_t {
+    preserve_source_bytes = 0,
+    prepared_destination_artifact = 1,
+};
+
 struct FilePublicationJournalRecord {
     core::StableId id;
     FilePublicationJournalState state{FilePublicationJournalState::planned};
     OutputPathPublicationKind publication{OutputPathPublicationKind::same_filesystem_rename};
+    FilePublicationContentKind content{FilePublicationContentKind::preserve_source_bytes};
     std::string source_raw_path;
     std::string target_raw_path;
-    // Empty for same-filesystem rename. Cross-filesystem publication uses the
-    // exact executor-owned sibling returned by file_publication_prepared_path.
+    // Empty only for a byte-preserving same-filesystem rename. Prepared-copy
+    // and changed-artifact lifecycles use the exact executor-owned sibling
+    // returned by file_publication_prepared_path.
     std::string prepared_raw_path;
     core::LocalSourceRevision expected_source_revision;
     std::optional<core::LocalSourceRevision> prepared_revision;
@@ -66,6 +73,13 @@ file_publication_prepared_path(const std::filesystem::path& target,
 [[nodiscard]] core::Result<FilePublicationJournalRecord>
 make_file_publication_journal_record(const OutputPathPreflight& preflight, std::size_t source_index,
                                      const core::StableId& journal_id);
+
+// Selects the prepared-artifact lifecycle on either filesystem topology. The
+// artifact itself is created only after this record has been durably stored.
+[[nodiscard]] core::Result<FilePublicationJournalRecord>
+make_destination_artifact_journal_record(const OutputPathPreflight& preflight,
+                                         std::size_t source_index,
+                                         const core::StableId& journal_id);
 
 class FilePublicationJournal {
   public:

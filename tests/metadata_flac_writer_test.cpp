@@ -4,11 +4,16 @@
 #include "trackknife/core/stable_id.hpp"
 #include "trackknife/formats/artwork.hpp"
 #include "trackknife/formats/decoder.hpp"
+#include "trackknife/metadata/artwork.hpp"
+#include "trackknife/metadata/artwork_write_plan.hpp"
 #include "trackknife/metadata/flac_writer.hpp"
 #include "trackknife/metadata/local_reader.hpp"
 #include "trackknife/metadata/staged_patch.hpp"
 #include "trackknife/metadata/staged_selection.hpp"
 #include "trackknife/metadata/write_plan.hpp"
+
+#include <flacfile.h>
+#include <flacpicture.h>
 
 #include <algorithm>
 #include <array>
@@ -124,6 +129,13 @@ decode_base64_file(const std::filesystem::path& path) {
     return {std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
 }
 
+void write_bytes(const std::filesystem::path& path, const std::vector<unsigned char>& bytes) {
+    std::ofstream output{path, std::ios::binary | std::ios::trunc};
+    output.write(reinterpret_cast<const char*>(bytes.data()),
+                 static_cast<std::streamsize>(bytes.size()));
+    CHECK(output.good());
+}
+
 void add_unknown_application_block(const std::filesystem::path& path) {
     auto bytes = read_bytes(path);
     CHECK(bytes.size() >= 42U);
@@ -147,6 +159,27 @@ void add_unknown_application_block(const std::filesystem::path& path) {
     output.write(reinterpret_cast<const char*>(bytes.data()),
                  static_cast<std::streamsize>(bytes.size()));
     CHECK(output.good());
+}
+
+void add_secondary_picture(const std::filesystem::path& path,
+                           const std::vector<unsigned char>& encoded) {
+    TagLib::FLAC::File file{path.c_str(), false};
+    CHECK(file.isValid());
+    if (!file.isValid()) {
+        return;
+    }
+    auto* picture = new TagLib::FLAC::Picture;
+    picture->setType(TagLib::FLAC::Picture::BackCover);
+    picture->setMimeType(TagLib::String{"image/jpeg", TagLib::String::UTF8});
+    picture->setDescription(TagLib::String{"Secondary", TagLib::String::UTF8});
+    picture->setWidth(8);
+    picture->setHeight(6);
+    picture->setColorDepth(24);
+    picture->setNumColors(0);
+    picture->setData(TagLib::ByteVector{reinterpret_cast<const char*>(encoded.data()),
+                                        static_cast<unsigned int>(encoded.size())});
+    file.addPicture(picture);
+    CHECK(file.save());
 }
 
 [[nodiscard]] std::vector<std::vector<unsigned char>>
@@ -449,12 +482,17 @@ void preservesEmbeddedArtworkAndDecodedAudio(const std::filesystem::path& fixtur
     const auto source =
         materialize(fixture_directory, "art-tone-flac.b64", directory.path() / "art-source.flac");
     const auto artwork = trackknife::formats::load_embedded_artwork(source.native());
+    auto artwork_policy = trackknife::metadata::default_artwork_inventory_policy();
+    artwork_policy.external_patterns.clear();
+    const auto inventory =
+        trackknife::metadata::read_local_artwork_inventory(source.native(), artwork_policy);
     const auto pcm = decode_all(source);
     const auto read = trackknife::metadata::read_local_metadata(source.native());
     CHECK(artwork.has_value());
+    CHECK(inventory.has_value());
     CHECK(pcm.has_value());
     CHECK(read.has_value());
-    if (!artwork || !pcm || !read) {
+    if (!artwork || !inventory || !pcm || !read) {
         return;
     }
     auto selection = selection_for(*read);
@@ -478,8 +516,242 @@ void preservesEmbeddedArtworkAndDecodedAudio(const std::filesystem::path& fixtur
         plan->sources.front(), destination.native());
     CHECK(prepared.has_value());
     const auto prepared_artwork = trackknife::formats::load_embedded_artwork(destination.native());
+    const auto prepared_inventory =
+        trackknife::metadata::read_local_artwork_inventory(destination.native(), artwork_policy);
     CHECK(prepared_artwork == artwork);
+    CHECK(prepared_inventory.has_value());
+    CHECK(prepared_inventory && prepared_inventory->items.size() == inventory->items.size());
+    if (prepared_inventory && prepared_inventory->items.size() == inventory->items.size()) {
+        for (std::size_t index = 0U; index < inventory->items.size(); ++index) {
+            const auto& before = inventory->items[index];
+            const auto& after = prepared_inventory->items[index];
+            CHECK(after.role == before.role);
+            CHECK(after.native_type == before.native_type);
+            CHECK(after.mime_type == before.mime_type);
+            CHECK(after.description == before.description);
+            CHECK(after.width == before.width);
+            CHECK(after.height == before.height);
+            CHECK(after.byte_size == before.byte_size);
+            CHECK(after.content_fingerprint == before.content_fingerprint);
+            CHECK(after.provenance == before.provenance);
+            CHECK(after.source_ordinal == before.source_ordinal);
+            CHECK(after.duplicate_of == before.duplicate_of);
+        }
+    }
     CHECK(decode_all(destination) == pcm);
+}
+
+void preparesVerifiedArtworkReplaceAndRemove(const std::filesystem::path& fixture_directory) {
+    using trackknife::metadata::ArtworkProvenance;
+    using trackknife::metadata::ArtworkWritePlanIntent;
+    using trackknife::metadata::ArtworkWritePlanIntentKind;
+
+    TemporaryDirectory directory;
+    const auto source = materialize(fixture_directory, "art-tone-flac.b64",
+                                    directory.path() / "artwork-source.flac");
+    const auto replacement = materialize(fixture_directory, "external-blue-jpeg.b64",
+                                         directory.path() / "replacement.jpg");
+    const auto replacement_bytes = read_bytes(replacement);
+    add_secondary_picture(source, replacement_bytes);
+    add_unknown_application_block(source);
+
+    auto artwork_policy = trackknife::metadata::default_artwork_inventory_policy();
+    artwork_policy.external_patterns.clear();
+    const auto source_inventory =
+        trackknife::metadata::read_local_artwork_inventory(source.native(), artwork_policy);
+    const auto source_document = trackknife::metadata::read_local_metadata(source.native());
+    const auto source_pcm = decode_all(source);
+    const auto source_applications = application_payloads(source);
+    const auto source_bytes = read_bytes(source);
+    CHECK(source_inventory.has_value());
+    CHECK(source_inventory && source_inventory->items.size() == 2U);
+    CHECK(source_document.has_value());
+    CHECK(source_pcm.has_value());
+    CHECK(source_applications.size() == 1U);
+    if (!source_inventory || source_inventory->items.size() != 2U || !source_document ||
+        !source_pcm) {
+        return;
+    }
+    CHECK(source_inventory->items[1].role == trackknife::metadata::ArtworkRole::back);
+    CHECK(source_inventory->items[1].native_type == "Back Cover");
+    CHECK(source_inventory->items[1].description == "Secondary");
+
+    const ArtworkWritePlanIntent replace_intent{
+        .occurrence_index = 3U,
+        .raw_media_path = source.native(),
+        .expected_media_revision = source_inventory->media_revision,
+        .target_ordinal = 0U,
+        .expected_target_fingerprint = source_inventory->items[0].content_fingerprint,
+        .kind = ArtworkWritePlanIntentKind::replace,
+        .replacement_raw_path = replacement.native(),
+        .added_role = trackknife::metadata::ArtworkRole::front,
+        .added_description = {},
+        .replacement_embedded_source = std::nullopt,
+    };
+    const auto replace_plan = trackknife::metadata::revalidate_artwork_write_plan({replace_intent});
+    CHECK(replace_plan.has_value());
+    CHECK(replace_plan && replace_plan->ready());
+    if (!replace_plan || !replace_plan->ready()) {
+        return;
+    }
+    const auto replaced_path = directory.path() / "replaced.flac";
+    const auto replaced = trackknife::metadata::prepare_flac_artwork_write_copy(
+        replace_plan->sources.front(), replaced_path.native());
+    CHECK(replaced.has_value());
+    if (!replaced) {
+        std::cerr << replaced.error().message << '\n';
+        return;
+    }
+    CHECK(read_bytes(source) == source_bytes);
+    CHECK(application_payloads(replaced_path) == source_applications);
+    CHECK(replaced->document == source_document->document);
+    CHECK(replaced->inventory.items.size() == 2U);
+    CHECK(replaced->inventory.items[0].mime_type == "image/jpeg");
+    CHECK(replaced->inventory.items[0].width == 8U);
+    CHECK(replaced->inventory.items[0].height == 6U);
+    CHECK(replaced->inventory.items[0].content_fingerprint ==
+          replace_plan->sources.front().change.replacement->content_fingerprint);
+    CHECK(replaced->inventory.items[0].native_type == source_inventory->items[0].native_type);
+    CHECK(replaced->inventory.items[0].description == source_inventory->items[0].description);
+    CHECK(replaced->inventory.items[1].content_fingerprint ==
+          source_inventory->items[1].content_fingerprint);
+    CHECK(replaced->inventory.items[1].native_type == source_inventory->items[1].native_type);
+    CHECK(replaced->inventory.items[1].description == source_inventory->items[1].description);
+    CHECK(replaced->inventory.items[1].source_ordinal == 1U);
+    CHECK(decode_all(replaced_path) == source_pcm);
+
+    auto distinct_replacement_bytes = replacement_bytes;
+    distinct_replacement_bytes.push_back(0U);
+    const auto add_replacement = directory.path() / "add-replacement.jpg";
+    write_bytes(add_replacement, distinct_replacement_bytes);
+    auto add_intent = replace_intent;
+    add_intent.kind = ArtworkWritePlanIntentKind::add;
+    add_intent.target_ordinal = 999U;
+    add_intent.expected_target_fingerprint = {};
+    add_intent.replacement_raw_path = add_replacement.native();
+    add_intent.added_role = trackknife::metadata::ArtworkRole::artist;
+    add_intent.added_description = "Tour portrait";
+    const auto add_plan = trackknife::metadata::revalidate_artwork_write_plan({add_intent});
+    CHECK(add_plan.has_value());
+    CHECK(add_plan && add_plan->ready());
+    if (!add_plan || !add_plan->ready()) {
+        return;
+    }
+    const auto added_path = directory.path() / "added.flac";
+    const auto added = trackknife::metadata::prepare_flac_artwork_write_copy(
+        add_plan->sources.front(), added_path.native());
+    CHECK(added.has_value());
+    if (!added) {
+        std::cerr << added.error().message << '\n';
+        return;
+    }
+    CHECK(read_bytes(source) == source_bytes);
+    CHECK(application_payloads(added_path) == source_applications);
+    CHECK(added->document == source_document->document);
+    CHECK(added->inventory.items.size() == 3U);
+    CHECK(added->inventory.items[0].content_fingerprint ==
+          source_inventory->items[0].content_fingerprint);
+    CHECK(added->inventory.items[0].native_type == source_inventory->items[0].native_type);
+    CHECK(added->inventory.items[0].description == source_inventory->items[0].description);
+    CHECK(added->inventory.items[1].content_fingerprint ==
+          source_inventory->items[1].content_fingerprint);
+    CHECK(added->inventory.items[1].native_type == source_inventory->items[1].native_type);
+    CHECK(added->inventory.items[1].description == source_inventory->items[1].description);
+    CHECK(added->inventory.items[2].role == trackknife::metadata::ArtworkRole::artist);
+    CHECK(added->inventory.items[2].native_type == "Artist");
+    CHECK(added->inventory.items[2].description == "Tour portrait");
+    CHECK(added->inventory.items[2].mime_type == "image/jpeg");
+    CHECK(added->inventory.items[2].content_fingerprint ==
+          add_plan->sources.front().change.replacement->content_fingerprint);
+    CHECK(added->inventory.items[2].source_ordinal == 2U);
+    CHECK(decode_all(added_path) == source_pcm);
+
+    const auto copy_target = materialize(fixture_directory, "tagged-tone-flac.b64",
+                                         directory.path() / "embedded-copy-target.flac");
+    const auto copy_target_inventory =
+        trackknife::metadata::read_local_artwork_inventory(copy_target.native(), artwork_policy);
+    CHECK(copy_target_inventory && copy_target_inventory->items.empty());
+    if (!copy_target_inventory) {
+        return;
+    }
+    const ArtworkWritePlanIntent copy_intent{
+        .occurrence_index = 8U,
+        .raw_media_path = copy_target.native(),
+        .expected_media_revision = copy_target_inventory->media_revision,
+        .target_ordinal = 0U,
+        .expected_target_fingerprint = {},
+        .kind = ArtworkWritePlanIntentKind::add,
+        .replacement_raw_path = source.native(),
+        .added_role = source_inventory->items[0].role,
+        .added_description = source_inventory->items[0].description,
+        .replacement_embedded_source = source_inventory->items[0],
+    };
+    const auto copy_plan = trackknife::metadata::revalidate_artwork_write_plan({copy_intent});
+    CHECK(copy_plan && copy_plan->ready());
+    if (!copy_plan || !copy_plan->ready()) {
+        return;
+    }
+    const auto copied_path = directory.path() / "embedded-copied.flac";
+    const auto copied = trackknife::metadata::prepare_flac_artwork_write_copy(
+        copy_plan->sources.front(), copied_path.native());
+    CHECK(copied && copied->inventory.items.size() == 1U &&
+          copied->inventory.items.front().content_fingerprint ==
+              source_inventory->items.front().content_fingerprint &&
+          copied->inventory.items.front().role == source_inventory->items.front().role);
+
+    auto remove_intent = replace_intent;
+    remove_intent.kind = ArtworkWritePlanIntentKind::remove;
+    remove_intent.replacement_raw_path.reset();
+    const auto remove_plan = trackknife::metadata::revalidate_artwork_write_plan({remove_intent});
+    CHECK(remove_plan.has_value());
+    CHECK(remove_plan && remove_plan->ready());
+    if (!remove_plan || !remove_plan->ready()) {
+        return;
+    }
+    const auto removed_path = directory.path() / "removed.flac";
+    const auto removed = trackknife::metadata::prepare_flac_artwork_write_copy(
+        remove_plan->sources.front(), removed_path.native());
+    CHECK(removed.has_value());
+    if (!removed) {
+        std::cerr << removed.error().message << '\n';
+        return;
+    }
+    CHECK(read_bytes(source) == source_bytes);
+    CHECK(application_payloads(removed_path) == source_applications);
+    CHECK(removed->document == source_document->document);
+    CHECK(removed->inventory.items.size() == 1U);
+    CHECK(removed->inventory.items.front().provenance == ArtworkProvenance::embedded);
+    CHECK(removed->inventory.items.front().content_fingerprint ==
+          source_inventory->items[1].content_fingerprint);
+    CHECK(removed->inventory.items.front().native_type == source_inventory->items[1].native_type);
+    CHECK(removed->inventory.items.front().description == source_inventory->items[1].description);
+    CHECK(removed->inventory.items.front().source_ordinal == 0U);
+    CHECK(decode_all(removed_path) == source_pcm);
+
+    const auto replaced_bytes = read_bytes(replaced_path);
+    const auto existing = trackknife::metadata::prepare_flac_artwork_write_copy(
+        replace_plan->sources.front(), replaced_path.native());
+    CHECK(!existing.has_value());
+    CHECK(!existing && existing.error().code == trackknife::core::ErrorCode::conflict);
+    CHECK(read_bytes(replaced_path) == replaced_bytes);
+
+    const auto replacement_time = std::filesystem::last_write_time(replacement);
+    std::filesystem::last_write_time(replacement, replacement_time + std::chrono::seconds{1});
+    const auto stale_path = directory.path() / "stale-artwork.flac";
+    const auto stale = trackknife::metadata::prepare_flac_artwork_write_copy(
+        replace_plan->sources.front(), stale_path.native());
+    CHECK(!stale.has_value());
+    CHECK(!stale && stale.error().code == trackknife::core::ErrorCode::conflict);
+    CHECK(!std::filesystem::exists(stale_path));
+
+    trackknife::core::CancellationSource cancellation;
+    cancellation.request_cancellation();
+    const auto cancelled_path = directory.path() / "cancelled-artwork.flac";
+    const auto cancelled = trackknife::metadata::prepare_flac_artwork_write_copy(
+        remove_plan->sources.front(), cancelled_path.native(), cancellation.token());
+    CHECK(!cancelled.has_value());
+    CHECK(!cancelled && cancelled.error().code == trackknife::core::ErrorCode::cancelled);
+    CHECK(!std::filesystem::exists(cancelled_path));
 }
 
 void blocksUnrepresentablePlansAndStaleOrCancelledWrites(
@@ -602,6 +874,7 @@ int main(const int argc, char** argv) {
         preservesNativeFlacWhileApplyingExactTextChanges(fixture_directory);
         freeformFieldNeverAliasesAConventionalNeighbor(fixture_directory);
         preservesEmbeddedArtworkAndDecodedAudio(fixture_directory);
+        preparesVerifiedArtworkReplaceAndRemove(fixture_directory);
         blocksUnrepresentablePlansAndStaleOrCancelledWrites(fixture_directory);
     }
     return failures == 0 ? 0 : 1;

@@ -31,6 +31,7 @@ constexpr std::size_t maximum_recent_records = 1'024U;
 constexpr std::size_t maximum_text_bytes = 64U * 1024U * 1024U;
 
 using Kind = operations::OutputPathPublicationKind;
+using Content = operations::FilePublicationContentKind;
 using State = operations::FilePublicationJournalState;
 using Record = operations::FilePublicationJournalRecord;
 using Transition = operations::FilePublicationJournalTransition;
@@ -243,31 +244,34 @@ valid_optional_revision(const std::optional<core::LocalSourceRevision>& revision
     return !revision || valid_revision(*revision);
 }
 
-[[nodiscard]] bool valid_state_for_kind(const Kind kind, const State state) {
-    return kind == Kind::cross_filesystem_copy ||
+[[nodiscard]] bool prepared_lifecycle(const Kind kind, const Content content) {
+    return kind == Kind::cross_filesystem_copy || content == Content::prepared_destination_artifact;
+}
+
+[[nodiscard]] bool valid_state_for_kind(const Kind kind, const Content content, const State state) {
+    return prepared_lifecycle(kind, content) ||
            (state != State::target_prepared && state != State::source_removed);
 }
 
-[[nodiscard]] bool legal_transition(const Kind kind, const State from, const State to) {
+[[nodiscard]] bool legal_transition(const Kind kind, const Content content, const State from,
+                                    const State to) {
+    const auto prepared = prepared_lifecycle(kind, content);
     if (to == State::needs_reconciliation) {
         return from != State::complete && from != State::rolled_back &&
                from != State::needs_reconciliation;
     }
     switch (from) {
     case State::planned:
-        return (kind == Kind::same_filesystem_rename && to == State::target_published) ||
-               (kind == Kind::cross_filesystem_copy && to == State::target_prepared) ||
-               to == State::rolled_back;
+        return (!prepared && to == State::target_published) ||
+               (prepared && to == State::target_prepared) || to == State::rolled_back;
     case State::target_prepared:
-        return kind == Kind::cross_filesystem_copy &&
-               (to == State::target_published || to == State::rolled_back);
+        return prepared && (to == State::target_published || to == State::rolled_back);
     case State::target_published:
         return to == State::dependent_state_committed || to == State::rolled_back;
     case State::dependent_state_committed:
-        return (kind == Kind::same_filesystem_rename && to == State::complete) ||
-               (kind == Kind::cross_filesystem_copy && to == State::source_removed);
+        return (!prepared && to == State::complete) || (prepared && to == State::source_removed);
     case State::source_removed:
-        return kind == Kind::cross_filesystem_copy && to == State::complete;
+        return prepared && to == State::complete;
     case State::complete:
     case State::rolled_back:
     case State::needs_reconciliation:
@@ -277,10 +281,10 @@ valid_optional_revision(const std::optional<core::LocalSourceRevision>& revision
 }
 
 [[nodiscard]] bool
-valid_nonterminal_evidence(const Kind kind, const State state,
+valid_nonterminal_evidence(const Kind kind, const Content content, const State state,
                            const std::optional<core::LocalSourceRevision>& prepared_revision,
                            const std::optional<core::LocalSourceRevision>& target_revision) {
-    if (kind == Kind::same_filesystem_rename) {
+    if (!prepared_lifecycle(kind, content)) {
         if (prepared_revision) {
             return false;
         }
@@ -304,17 +308,19 @@ valid_nonterminal_evidence(const Kind kind, const State state,
 }
 
 [[nodiscard]] bool
-valid_failure_evidence(const Kind kind,
+valid_failure_evidence(const Kind kind, const Content content,
                        const std::optional<core::LocalSourceRevision>& prepared_revision,
                        const std::optional<core::LocalSourceRevision>& target_revision) {
-    return kind == Kind::same_filesystem_rename ? !prepared_revision
-                                                : (!target_revision || prepared_revision);
+    return !prepared_lifecycle(kind, content) ? !prepared_revision
+                                              : (!target_revision || prepared_revision);
 }
 
 [[nodiscard]] core::Result<void> validate_structure(const Record& record) {
     if (record.id.is_nil() ||
         (record.publication != Kind::same_filesystem_rename &&
          record.publication != Kind::cross_filesystem_copy) ||
+        (record.content != Content::preserve_source_bytes &&
+         record.content != Content::prepared_destination_artifact) ||
         !normal_absolute_file_path(record.source_raw_path) ||
         !normal_absolute_file_path(record.target_raw_path) ||
         record.source_raw_path == record.target_raw_path ||
@@ -324,12 +330,14 @@ valid_failure_evidence(const Kind kind,
         record.occurrence_indexes.size() > maximum_occurrences ||
         record.planned_missing_directory_raw_paths.size() > maximum_directories ||
         (record.reverses_journal_id && (record.reverses_journal_id == record.id ||
-                                        record.publication != Kind::same_filesystem_rename)) ||
+                                        record.publication != Kind::same_filesystem_rename ||
+                                        record.content != Content::preserve_source_bytes)) ||
         (record.failure && !record.failure->context.empty())) {
         return std::unexpected(invalid_record("Invalid file-publication journal structure"));
     }
-    if ((record.publication == Kind::same_filesystem_rename && !record.prepared_raw_path.empty()) ||
-        (record.publication == Kind::cross_filesystem_copy &&
+    if ((!prepared_lifecycle(record.publication, record.content) &&
+         !record.prepared_raw_path.empty()) ||
+        (prepared_lifecycle(record.publication, record.content) &&
          (!normal_absolute_file_path(record.prepared_raw_path) ||
           std::filesystem::path{record.prepared_raw_path} !=
               operations::file_publication_prepared_path(
@@ -393,7 +401,7 @@ valid_failure_evidence(const Kind kind,
         database,
         "SELECT state, publication_kind, source_path, target_path, target_device, target_inode, "
         "target_size, target_mtime_seconds, target_mtime_nanoseconds, reverses_id "
-        "FROM file_publication_journal WHERE id = ?");
+        ", content_kind FROM file_publication_journal WHERE id = ?");
     if (!parent || !bind_blob(parent->get(), 1, record.reverses_journal_id->to_string())) {
         return std::unexpected(parent ? database_error(database, "Could not bind reversal parent")
                                       : std::move(parent.error()));
@@ -415,6 +423,7 @@ valid_failure_evidence(const Kind kind,
         column_blob(parent->get(), 3) != record.source_raw_path || !*target_revision ||
         **target_revision != record.expected_source_revision ||
         sqlite3_column_type(parent->get(), 9) != SQLITE_NULL ||
+        sqlite3_column_int(parent->get(), 10) != static_cast<int>(Content::preserve_source_bytes) ||
         !record.planned_missing_directory_raw_paths.empty()) {
         return std::unexpected(
             invalid_record("File-publication reversal does not match its completed original"));
@@ -452,9 +461,9 @@ valid_failure_evidence(const Kind kind,
     return {};
 }
 
-[[nodiscard]] core::Result<void> validate_transition(const Kind kind,
+[[nodiscard]] core::Result<void> validate_transition(const Kind kind, const Content content,
                                                      const Transition& transition) {
-    if (!legal_transition(kind, transition.expected_state, transition.state)) {
+    if (!legal_transition(kind, content, transition.expected_state, transition.state)) {
         return std::unexpected(invalid_record("Invalid file-publication state transition"));
     }
     const bool failure_state =
@@ -467,16 +476,16 @@ valid_failure_evidence(const Kind kind,
             invalid_record("File-publication failure state has invalid evidence"));
     }
     if (failure_state) {
-        if (!valid_nonterminal_evidence(kind, transition.expected_state,
+        if (!valid_nonterminal_evidence(kind, content, transition.expected_state,
                                         transition.prepared_revision, transition.target_revision) ||
-            !valid_failure_evidence(kind, transition.prepared_revision,
+            !valid_failure_evidence(kind, content, transition.prepared_revision,
                                     transition.target_revision)) {
             return std::unexpected(
                 invalid_record("File-publication failure lost its current revision evidence"));
         }
         return {};
     }
-    if (!valid_nonterminal_evidence(kind, transition.state, transition.prepared_revision,
+    if (!valid_nonterminal_evidence(kind, content, transition.state, transition.prepared_revision,
                                     transition.target_revision)) {
         return std::unexpected(
             invalid_record("File-publication transition has invalid revision evidence"));
@@ -485,17 +494,17 @@ valid_failure_evidence(const Kind kind,
 }
 
 [[nodiscard]] bool valid_loaded_evidence(const Record& record) {
-    if (!valid_state_for_kind(record.publication, record.state)) {
+    if (!valid_state_for_kind(record.publication, record.content, record.state)) {
         return false;
     }
     if (record.state == State::rolled_back || record.state == State::needs_reconciliation) {
         return record.failure &&
-               valid_failure_evidence(record.publication, record.prepared_revision,
+               valid_failure_evidence(record.publication, record.content, record.prepared_revision,
                                       record.target_revision);
     }
     return !record.failure &&
-           valid_nonterminal_evidence(record.publication, record.state, record.prepared_revision,
-                                      record.target_revision);
+           valid_nonterminal_evidence(record.publication, record.content, record.state,
+                                      record.prepared_revision, record.target_revision);
 }
 
 [[nodiscard]] core::Result<void> step_done(sqlite3* database, sqlite3_stmt* statement,
@@ -570,6 +579,7 @@ valid_failure_evidence(const Kind kind,
         auto parsed_id = core::StableId::parse(id_text);
         const auto state_value = sqlite3_column_int(statement->get(), 1);
         const auto kind_value = sqlite3_column_int(statement->get(), 2);
+        const auto content_value = sqlite3_column_int(statement->get(), 24);
         auto expected = read_revision(statement->get(), 6);
         auto prepared_revision = read_optional_revision(statement->get(), 11);
         auto target_revision = read_optional_revision(statement->get(), 16);
@@ -584,7 +594,9 @@ valid_failure_evidence(const Kind kind,
         }
         if (!parsed_id || parsed_id->is_nil() || state_value < 0 || state_value > 7 ||
             kind_value < static_cast<int>(Kind::same_filesystem_rename) ||
-            kind_value > static_cast<int>(Kind::cross_filesystem_copy) || !expected ||
+            kind_value > static_cast<int>(Kind::cross_filesystem_copy) ||
+            content_value < static_cast<int>(Content::preserve_source_bytes) ||
+            content_value > static_cast<int>(Content::prepared_destination_artifact) || !expected ||
             !prepared_revision || !target_revision) {
             return std::unexpected(
                 database_error(database, "Invalid file-publication journal row"));
@@ -610,6 +622,7 @@ valid_failure_evidence(const Kind kind,
         Record record{.id = *parsed_id,
                       .state = static_cast<State>(state_value),
                       .publication = static_cast<Kind>(kind_value),
+                      .content = static_cast<Content>(content_value),
                       .source_raw_path = column_blob(statement->get(), 3),
                       .target_raw_path = column_blob(statement->get(), 4),
                       .prepared_raw_path = column_blob(statement->get(), 5),
@@ -641,7 +654,8 @@ constexpr auto record_columns =
     "expected_inode, expected_size, expected_mtime_seconds, expected_mtime_nanoseconds, "
     "prepared_device, prepared_inode, prepared_size, prepared_mtime_seconds, "
     "prepared_mtime_nanoseconds, target_device, target_inode, target_size, "
-    "target_mtime_seconds, target_mtime_nanoseconds, error_code, error_message, reverses_id ";
+    "target_mtime_seconds, target_mtime_nanoseconds, error_code, error_message, reverses_id, "
+    "content_kind ";
 
 } // namespace
 
@@ -711,7 +725,7 @@ SqliteFilePublicationJournal::create(const operations::FilePublicationJournalRec
         return std::unexpected(std::move(error));
     }
     const auto insert_sql = "INSERT INTO file_publication_journal(" + std::string{record_columns} +
-                            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+                            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
     auto insert = prepare(database, insert_sql.c_str());
     const auto id = record.id.to_string();
     if (!insert || !bind_blob(insert->get(), 1, id) ||
@@ -725,7 +739,8 @@ SqliteFilePublicationJournal::create(const operations::FilePublicationJournalRec
         !bind_optional_revision(insert->get(), 17, record.target_revision) ||
         sqlite3_bind_null(insert->get(), 22) != SQLITE_OK ||
         sqlite3_bind_null(insert->get(), 23) != SQLITE_OK ||
-        !bind_optional_id(insert->get(), 24, record.reverses_journal_id)) {
+        !bind_optional_id(insert->get(), 24, record.reverses_journal_id) ||
+        sqlite3_bind_int(insert->get(), 25, static_cast<int>(record.content)) != SQLITE_OK) {
         auto error = insert ? database_error(database, "Could not bind file-publication journal")
                             : std::move(insert.error());
         rollback();
@@ -789,8 +804,9 @@ core::Result<void> SqliteFilePublicationJournal::transition(
     }
     std::scoped_lock lock{implementation_->mutex};
     auto* database = implementation_->database;
-    auto kind_query = prepare(database, "SELECT publication_kind FROM file_publication_journal "
-                                        "WHERE id = ?");
+    auto kind_query =
+        prepare(database,
+                "SELECT publication_kind, content_kind FROM file_publication_journal WHERE id = ?");
     if (!kind_query || !bind_blob(kind_query->get(), 1, id.to_string())) {
         return std::unexpected(kind_query ? database_error(database, "Could not bind publication")
                                           : std::move(kind_query.error()));
@@ -807,12 +823,17 @@ core::Result<void> SqliteFilePublicationJournal::transition(
         return std::unexpected(database_error(database, "Could not load publication"));
     }
     const auto kind_value = sqlite3_column_int(kind_query->get(), 0);
+    const auto content_value = sqlite3_column_int(kind_query->get(), 1);
     kind_query->reset();
     if (kind_value < static_cast<int>(Kind::same_filesystem_rename) ||
-        kind_value > static_cast<int>(Kind::cross_filesystem_copy)) {
+        kind_value > static_cast<int>(Kind::cross_filesystem_copy) ||
+        content_value < static_cast<int>(Content::preserve_source_bytes) ||
+        content_value > static_cast<int>(Content::prepared_destination_artifact)) {
         return std::unexpected(database_error(database, "Invalid publication kind"));
     }
-    if (auto valid = validate_transition(static_cast<Kind>(kind_value), transition); !valid) {
+    if (auto valid = validate_transition(static_cast<Kind>(kind_value),
+                                         static_cast<Content>(content_value), transition);
+        !valid) {
         return valid;
     }
     if (auto begun = execute(database, "BEGIN IMMEDIATE"); !begun) {

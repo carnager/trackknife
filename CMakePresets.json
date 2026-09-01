@@ -129,7 +129,7 @@
         "outputOnFailure": true
       },
       "environment": {
-        "TSAN_OPTIONS": "halt_on_error=1:ignore_noninstrumented_modules=1:report_thread_leaks=0"
+        "TSAN_OPTIONS": "halt_on_error=1:ignore_noninstrumented_modules=1:report_thread_leaks=0:suppressions=${sourceDir}/tests/tsan.supp"
       }
     },
     {

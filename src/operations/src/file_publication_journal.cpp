@@ -2,6 +2,8 @@
 
 #include "trackknife/operations/file_publication_journal.hpp"
 
+#include <utility>
+
 namespace trackknife::operations {
 
 std::filesystem::path file_publication_prepared_path(const std::filesystem::path& target,
@@ -36,6 +38,7 @@ make_file_publication_journal_record(const OutputPathPreflight& preflight,
         .id = journal_id,
         .state = FilePublicationJournalState::planned,
         .publication = source.publication,
+        .content = FilePublicationContentKind::preserve_source_bytes,
         .source_raw_path = source.planned.source_raw_path,
         .target_raw_path = source.planned.target_raw_path,
         .prepared_raw_path = prepared,
@@ -47,6 +50,20 @@ make_file_publication_journal_record(const OutputPathPreflight& preflight,
         .reverses_journal_id = std::nullopt,
         .failure = std::nullopt,
     };
+}
+
+core::Result<FilePublicationJournalRecord>
+make_destination_artifact_journal_record(const OutputPathPreflight& preflight,
+                                         const std::size_t source_index,
+                                         const core::StableId& journal_id) {
+    auto record = make_file_publication_journal_record(preflight, source_index, journal_id);
+    if (!record) {
+        return std::unexpected(std::move(record.error()));
+    }
+    record->content = FilePublicationContentKind::prepared_destination_artifact;
+    record->prepared_raw_path =
+        file_publication_prepared_path(record->target_raw_path, journal_id).native();
+    return record;
 }
 
 } // namespace trackknife::operations

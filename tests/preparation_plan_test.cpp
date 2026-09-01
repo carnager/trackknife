@@ -96,7 +96,7 @@ trackknife::metadata::MetadataWritePlan metadata_plan() {
             .occurrence_indexes = {0U},
             .expected_revision = revision(),
             .observed_revision = revision(),
-            .adapter_name = "native-flac-v1",
+            .adapter_name = "taglib-flac-v1",
             .changes = {},
             .issues = {},
         }},
@@ -143,7 +143,7 @@ void draftProjectionPreservesSemanticAndExactNativeIdentity() {
           std::vector<std::string>{"Old"});
 }
 
-void pathOnlyPreparationIsReadyAndCombinedContentIsBlocked() {
+void pathOnlyAndCombinedContentPreparationAreReady() {
     using namespace trackknife;
     auto pure = path_plan();
     auto checked = preflight();
@@ -166,10 +166,18 @@ void pathOnlyPreparationIsReadyAndCombinedContentIsBlocked() {
         {.save_tags = true, .rename_files = true, .move_files = false, .replaygain = false}, 1U,
         metadata_plan(), path_plan(), preflight());
     CHECK(combined.has_value());
-    CHECK(combined && !combined->ready());
-    CHECK(combined && std::ranges::any_of(combined->issues, [](const auto& issue) {
-              return issue.kind == operations::PreparationPlanIssueKind::
-                                       combined_content_path_publication_unavailable;
+    CHECK(combined && combined->ready());
+    CHECK(combined && combined->blocking_issue_count() == 0U);
+
+    auto mismatched_metadata = metadata_plan();
+    mismatched_metadata.sources.front().observed_revision->inode += 1U;
+    auto mismatched = operations::assemble_preparation_plan(
+        {.save_tags = true, .rename_files = true, .move_files = false, .replaygain = false}, 1U,
+        std::move(mismatched_metadata), path_plan(), preflight());
+    CHECK(mismatched.has_value());
+    CHECK(mismatched && !mismatched->ready());
+    CHECK(mismatched && std::ranges::any_of(mismatched->issues, [](const auto& issue) {
+              return issue.kind == operations::PreparationPlanIssueKind::combined_source_mismatch;
           }));
 }
 
@@ -187,7 +195,7 @@ void metadataOnlyPreparationRetainsExistingApplyBoundary() {
 
 int main() {
     draftProjectionPreservesSemanticAndExactNativeIdentity();
-    pathOnlyPreparationIsReadyAndCombinedContentIsBlocked();
+    pathOnlyAndCombinedContentPreparationAreReady();
     metadataOnlyPreparationRetainsExistingApplyBoundary();
     return failures == 0 ? 0 : 1;
 }

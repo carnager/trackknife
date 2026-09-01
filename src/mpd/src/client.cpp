@@ -418,7 +418,7 @@ core::Result<std::vector<std::byte>> Client::artwork(const std::string_view uri,
     const std::string uri_text{uri};
     std::vector<std::byte> result;
     std::vector<std::byte> chunk(chunk_size);
-    while (result.size() < maximum_artwork_size) {
+    while (true) {
         const auto offset = static_cast<unsigned>(result.size());
         const auto received =
             embedded ? mpd_run_readpicture(implementation_->connection.get(), uri_text.c_str(),
@@ -439,9 +439,8 @@ core::Result<std::vector<std::byte>> Client::artwork(const std::string_view uri,
                                                .context = {}});
         }
         result.insert(result.end(), chunk.begin(), chunk.begin() + received);
-        if (count < chunk.size()) {
-            break;
-        }
+        // MPD's negotiated binary-response limit is independent of this
+        // receive buffer's capacity. Only an empty response means EOF.
     }
     return result;
 }

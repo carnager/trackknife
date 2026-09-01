@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,7 @@ namespace trackknife::operations {
 
 struct FilePublicationCommitResult {
     core::StableId journal_id;
+    FilePublicationContentKind content{FilePublicationContentKind::preserve_source_bytes};
     std::string source_raw_path;
     std::string target_raw_path;
     core::LocalSourceRevision source_revision;
@@ -31,6 +33,16 @@ struct FilePublicationCommitResult {
 
 using FilePublicationDependentStateCommitter =
     std::function<core::Result<void>(const FilePublicationCommitResult&)>;
+using FilePublicationDirectoryCreationObserver =
+    std::function<void(std::span<const std::string> created_raw_paths)>;
+
+// Creates and fully verifies one exclusive regular file at prepared_raw_path.
+// Failure must leave no path; success returns its final observed revision. The
+// executor reapplies source filesystem metadata, locks and syncs the artifact,
+// and revalidates both source and artifact before publication.
+using FilePublicationDestinationArtifactPreparer =
+    std::function<core::Result<core::LocalSourceRevision>(
+        const std::string& prepared_raw_path, const core::CancellationToken& cancellation)>;
 
 // Executes one ready same-filesystem source preflight. The caller runs this
 // synchronous operation on a bounded mutation worker. The dependent-state
@@ -39,7 +51,8 @@ using FilePublicationDependentStateCommitter =
 [[nodiscard]] core::Result<FilePublicationCommitResult> commit_same_filesystem_publication(
     const OutputPathPreflight& preflight, std::size_t source_index, FilePublicationJournal& journal,
     const FilePublicationDependentStateCommitter& dependent_state_committer,
-    const core::CancellationToken& cancellation = {});
+    const core::CancellationToken& cancellation = {},
+    const FilePublicationDirectoryCreationObserver& directory_creation_observer = {});
 
 // Reverses one completed same-filesystem publication as a second journaled
 // no-replace rename. The reverse record has its own dependent-state identity,
@@ -56,7 +69,19 @@ using FilePublicationDependentStateCommitter =
 [[nodiscard]] core::Result<FilePublicationCommitResult> commit_cross_filesystem_publication(
     const OutputPathPreflight& preflight, std::size_t source_index, FilePublicationJournal& journal,
     const FilePublicationDependentStateCommitter& dependent_state_committer,
-    const core::CancellationToken& cancellation = {});
+    const core::CancellationToken& cancellation = {},
+    const FilePublicationDirectoryCreationObserver& directory_creation_observer = {});
+
+// Publishes one changed-content artifact directly at the reviewed destination.
+// This never rewrites the source and then renames it: publication, dependent
+// state, and exact source removal share the prepared-artifact journal lifecycle
+// on both same- and cross-filesystem paths.
+[[nodiscard]] core::Result<FilePublicationCommitResult> commit_destination_artifact_publication(
+    const OutputPathPreflight& preflight, std::size_t source_index, FilePublicationJournal& journal,
+    const FilePublicationDestinationArtifactPreparer& artifact_preparer,
+    const FilePublicationDependentStateCommitter& dependent_state_committer,
+    const core::CancellationToken& cancellation = {},
+    const FilePublicationDirectoryCreationObserver& directory_creation_observer = {});
 
 enum class FilePublicationRecoveryOutcome : std::uint8_t {
     completed,
@@ -73,8 +98,8 @@ struct FilePublicationRecoveryResult {
                            const FilePublicationRecoveryResult&) = default;
 };
 
-// Recovers incomplete same-filesystem records and leaves cross-filesystem
-// records for their distinct prepared-copy/source-removal state machine.
+// Recovers incomplete byte-preserving same-filesystem renames and leaves every
+// prepared-copy/artifact record for its distinct source-removal state machine.
 [[nodiscard]] core::Result<std::vector<FilePublicationRecoveryResult>>
 recover_same_filesystem_publications(
     FilePublicationJournal& journal,
@@ -82,7 +107,7 @@ recover_same_filesystem_publications(
     const core::CancellationToken& cancellation = {});
 
 // Recovers exact prepared, published, dependent-committed, and source-removed
-// cross-filesystem boundaries. Ambiguous evidence is retained for manual
+// copy/artifact boundaries. Ambiguous evidence is retained for manual
 // reconciliation and is never deleted by inference.
 [[nodiscard]] core::Result<std::vector<FilePublicationRecoveryResult>>
 recover_cross_filesystem_publications(

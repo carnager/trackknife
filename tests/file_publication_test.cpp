@@ -526,6 +526,7 @@ void realPublicationCommitsTheAllOccurrenceRelocationTransaction() {
                 .target_reference = result.target_raw_path,
                 .previous_revision = result.source_revision,
                 .published_revision = result.target_revision,
+                .published_document = std::nullopt,
             });
             return relocated ? core::Result<void>{} : std::unexpected(std::move(relocated.error()));
         });
@@ -553,6 +554,7 @@ void realPublicationCommitsTheAllOccurrenceRelocationTransaction() {
                 .target_reference = result.target_raw_path,
                 .previous_revision = result.source_revision,
                 .published_revision = result.target_revision,
+                .published_document = std::nullopt,
             });
             return relocated ? core::Result<void>{} : std::unexpected(std::move(relocated.error()));
         });
@@ -944,6 +946,85 @@ void crossFilesystemRecoveryInfersPublishedAndRemovedBoundaries() {
             "recovery must infer an already removed source without replaying dependent state");
 }
 
+void destinationArtifactPublishesChangedContentAndRecoversItsJournalBoundary() {
+    TemporaryDirectory directory;
+    const auto source = directory.path() / "source.flac";
+    const auto target = directory.path() / "Artist" / "changed.flac";
+    write_file(source, "original source bytes");
+    require(::chmod(source.c_str(), 0640) == 0,
+            "destination-artifact source permissions must be set");
+    const auto checked = preflight(source, target);
+    auto durable = open_journal(directory, "destination-artifact.sqlite3");
+    FailingOnceTransitionJournal failing{durable, State::dependent_state_committed};
+    std::size_t prepare_count = 0U;
+    const auto preparer = [&](const std::string& prepared_raw_path,
+                              const core::CancellationToken& cancellation)
+        -> core::Result<core::LocalSourceRevision> {
+        ++prepare_count;
+        require(!cancellation.is_cancellation_requested() && std::filesystem::exists(source),
+                "artifact preparation must run while the unchanged source is locked in place");
+        write_file(prepared_raw_path, "verified changed destination bytes");
+        return core::observe_local_source_revision(prepared_raw_path);
+    };
+    std::size_t callback_count = 0U;
+    const auto callback =
+        [&](const operations::FilePublicationCommitResult& result) -> core::Result<void> {
+        ++callback_count;
+        require(std::filesystem::exists(source) &&
+                    read_file(target) == "verified changed destination bytes" &&
+                    result.source_revision != result.target_revision &&
+                    result.content ==
+                        operations::FilePublicationContentKind::prepared_destination_artifact,
+                "dependent state must see both original and changed destination identities");
+        return {};
+    };
+    const auto interrupted = operations::commit_destination_artifact_publication(
+        checked, 0U, failing, preparer, callback);
+    require(!interrupted && interrupted.error().code == core::ErrorCode::database &&
+                prepare_count == 1U && callback_count == 1U && std::filesystem::exists(source) &&
+                read_file(source) == "original source bytes" &&
+                read_file(target) == "verified changed destination bytes",
+            "post-dependent journal failure must retain the recoverable two-file boundary");
+    const auto incomplete = durable.load_incomplete();
+    require(incomplete && incomplete->size() == 1U &&
+                incomplete->front().state == State::target_published &&
+                incomplete->front().publication ==
+                    operations::OutputPathPublicationKind::same_filesystem_rename &&
+                incomplete->front().content ==
+                    operations::FilePublicationContentKind::prepared_destination_artifact,
+            "same-filesystem changed content must use durable prepared-artifact evidence");
+
+    const auto recovered = operations::recover_cross_filesystem_publications(durable, callback);
+    require(
+        recovered && recovered->size() == 1U &&
+            recovered->front().outcome == operations::FilePublicationRecoveryOutcome::completed &&
+            callback_count == 2U && !std::filesystem::exists(source) &&
+            read_file(target) == "verified changed destination bytes" &&
+            (std::filesystem::status(target).permissions() & std::filesystem::perms::owner_all) ==
+                (std::filesystem::perms::owner_read | std::filesystem::perms::owner_write),
+        "artifact recovery must replay state, preserve permissions, then remove the source");
+
+    const auto orphan_source = directory.path() / "orphan-source.flac";
+    const auto orphan_target = directory.path() / "orphan-target.flac";
+    write_file(orphan_source, "orphan original bytes");
+    const auto orphan_checked = preflight(orphan_source, orphan_target);
+    auto orphan_journal = open_journal(directory, "destination-artifact-orphan.sqlite3");
+    auto orphan_record = operations::make_destination_artifact_journal_record(
+        orphan_checked, 0U, core::StableId::random());
+    require(orphan_record && orphan_journal.create(*orphan_record),
+            "planned destination-artifact evidence must be durable");
+    write_file(orphan_record->prepared_raw_path, "unrecorded changed artifact");
+    const auto orphan_recovery = operations::recover_cross_filesystem_publications(
+        orphan_journal, successful_dependent_commit);
+    require(orphan_recovery && orphan_recovery->size() == 1U &&
+                orphan_recovery->front().outcome ==
+                    operations::FilePublicationRecoveryOutcome::needs_reconciliation &&
+                read_file(orphan_source) == "orphan original bytes" &&
+                read_file(orphan_record->prepared_raw_path) == "unrecorded changed artifact" &&
+                !std::filesystem::exists(orphan_target),
+            "recovery must not infer ownership or intent for an unrecorded changed artifact");
+}
+
 void cancellationBeforeCommitCreatesNoJournal() {
     TemporaryDirectory directory;
     const auto source = directory.path() / "source.flac";
@@ -982,6 +1063,7 @@ int main() {
     crossFilesystemRecoveryReplaysDependentStateThenRemovesSource();
     crossFilesystemRecoveryAdoptsOnlyAnExactUnrecordedPreparedCopy();
     crossFilesystemRecoveryInfersPublishedAndRemovedBoundaries();
+    destinationArtifactPublishesChangedContentAndRecoversItsJournalBoundary();
     cancellationBeforeCommitCreatesNoJournal();
     std::cout << "file publication executor tests passed\n";
     return 0;

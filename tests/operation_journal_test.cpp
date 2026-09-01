@@ -60,6 +60,14 @@ class TemporaryDatabase final {
     };
 }
 
+[[nodiscard]] trackknife::core::ContentFingerprint fingerprint(const std::uint8_t seed) {
+    trackknife::core::ContentFingerprint result;
+    for (std::size_t index = 0U; index < result.sha256.size(); ++index) {
+        result.sha256[index] = static_cast<std::uint8_t>(seed + index);
+    }
+    return result;
+}
+
 [[nodiscard]] Record planned_record() {
     return Record{
         .id = trackknife::core::StableId::random(),
@@ -71,6 +79,7 @@ class TemporaryDatabase final {
         .prepared_revision = std::nullopt,
         .published_revision = std::nullopt,
         .occurrence_indexes = {7U, 2U, 99U},
+        .content_kind = trackknife::operations::MetadataOperationContentKind::text_fields,
         .changes =
             {
                 trackknife::operations::MetadataOperationJournalChange{
@@ -96,6 +105,7 @@ class TemporaryDatabase final {
                     .exact_native_name = std::optional<std::string>{"comment"},
                 },
             },
+        .artwork = std::nullopt,
         .failure = std::nullopt,
     };
 }
@@ -247,9 +257,58 @@ void journal_round_trips_and_guards_state_transitions() {
             "the backup lifecycle and undo identity must survive reopening");
 }
 
+void artwork_evidence_survives_reopen_without_image_payloads() {
+    TemporaryDatabase database;
+    auto opened = trackknife::persistence::SqliteMetadataOperationJournal::open(database.path());
+    require(opened.has_value(), "artwork journal database must open");
+    auto journal = std::move(*opened);
+    const auto id = trackknife::core::StableId::random();
+    const Record artwork{
+        .id = id,
+        .state = State::planned,
+        .source_raw_path = "music/artwork.flac",
+        .prepared_raw_path = "music/.artwork-prepared",
+        .backup_raw_path = "music/.artwork-backup",
+        .expected_revision = revision(70U),
+        .prepared_revision = std::nullopt,
+        .published_revision = std::nullopt,
+        .occurrence_indexes = {1U, 8U},
+        .content_kind = trackknife::operations::MetadataOperationContentKind::embedded_artwork,
+        .changes = {},
+        .artwork =
+            trackknife::operations::MetadataOperationJournalArtwork{
+                .kind = trackknife::metadata::ArtworkWritePlanIntentKind::replace,
+                .target_ordinal = 1U,
+                .original_item_count = 2U,
+                .planned_item_count = 2U,
+                .original_target_fingerprint = fingerprint(1U),
+                .replacement_fingerprint = fingerprint(2U),
+                .original_inventory_fingerprint = fingerprint(3U),
+                .planned_inventory_fingerprint = fingerprint(4U),
+            },
+        .failure = std::nullopt,
+    };
+    require(journal.create(artwork).has_value(),
+            "compact artwork recovery evidence must be durable");
+
+    auto reopened = trackknife::persistence::SqliteMetadataOperationJournal::open(database.path());
+    require(reopened.has_value(), "artwork journal must reopen");
+    const auto loaded = reopened->load(id);
+    require(loaded && *loaded && **loaded == artwork,
+            "artwork kind, counts, ordinals, and fingerprints must survive reopening");
+
+    auto invalid = artwork;
+    invalid.id = trackknife::core::StableId::random();
+    invalid.artwork->replacement_fingerprint.reset();
+    const auto rejected = reopened->create(invalid);
+    require(!rejected && rejected.error().code == trackknife::core::ErrorCode::invalid_argument,
+            "artwork journal shape must reject incomplete recovery evidence");
+}
+
 } // namespace
 
 int main() {
     journal_round_trips_and_guards_state_transitions();
+    artwork_evidence_survives_reopen_without_image_payloads();
     return EXIT_SUCCESS;
 }

@@ -215,7 +215,9 @@ Initial browsing is server-backed:
 - server-side exact filtering and search rather than downloading the complete
   database to filter on the UI thread;
 - `window` pagination where supported, with bounded fallback requests;
-- album art/readpicture fetched asynchronously in bounded chunks;
+- album art/readpicture fetched asynchronously in bounded chunks, advancing
+  offsets until MPD explicitly returns an empty chunk rather than mistaking a
+  server-selected short binary response for end-of-file;
 - database/update idle events invalidate only affected views where possible.
 
 The left Server tab uses the configurable hierarchy accepted in ADR-0019. It

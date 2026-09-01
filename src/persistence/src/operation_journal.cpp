@@ -6,6 +6,7 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -31,6 +32,7 @@ constexpr std::size_t maximum_total_values = 100'000U;
 constexpr std::size_t maximum_total_intents = 100'000U;
 constexpr std::size_t maximum_incomplete_records = 10'000U;
 constexpr std::size_t maximum_backup_records = 10'000U;
+constexpr std::size_t maximum_artwork_items = 64U;
 constexpr std::size_t maximum_text_bytes = 64U * 1024U * 1024U;
 
 struct StatementDeleter {
@@ -48,6 +50,7 @@ using Transition = operations::MetadataOperationJournalTransition;
 using BackupState = operations::MetadataOperationBackupState;
 using BackupRecord = operations::MetadataOperationBackupRecord;
 using BackupTransition = operations::MetadataOperationBackupTransition;
+using ContentKind = operations::MetadataOperationContentKind;
 
 [[nodiscard]] core::Error database_error(sqlite3* database, std::string message) {
     if (database != nullptr) {
@@ -95,6 +98,19 @@ using BackupTransition = operations::MetadataOperationBackupTransition;
            SQLITE_OK;
 }
 
+[[nodiscard]] bool bind_fingerprint(sqlite3_stmt* statement, const int index,
+                                    const core::ContentFingerprint& fingerprint) {
+    return sqlite3_bind_blob64(statement, index, fingerprint.sha256.data(),
+                               fingerprint.sha256.size(), SQLITE_TRANSIENT) == SQLITE_OK;
+}
+
+[[nodiscard]] bool
+bind_optional_fingerprint(sqlite3_stmt* statement, const int index,
+                          const std::optional<core::ContentFingerprint>& fingerprint) {
+    return fingerprint ? bind_fingerprint(statement, index, *fingerprint)
+                       : sqlite3_bind_null(statement, index) == SQLITE_OK;
+}
+
 [[nodiscard]] bool bind_optional_blob(sqlite3_stmt* statement, const int index,
                                       const std::optional<std::string>& value) {
     return value ? bind_blob(statement, index, *value)
@@ -111,6 +127,32 @@ using BackupTransition = operations::MetadataOperationBackupTransition;
     return sqlite3_column_type(statement, column) == SQLITE_NULL
                ? std::nullopt
                : std::optional<std::string>{column_blob(statement, column)};
+}
+
+[[nodiscard]] core::Result<core::ContentFingerprint> read_fingerprint(sqlite3_stmt* statement,
+                                                                      const int column) {
+    if (sqlite3_column_type(statement, column) == SQLITE_NULL ||
+        sqlite3_column_bytes(statement, column) != 32) {
+        return std::unexpected(
+            database_error(sqlite3_db_handle(statement),
+                           "Operation journal contains an invalid artwork fingerprint"));
+    }
+    core::ContentFingerprint result;
+    const auto* data = static_cast<const std::uint8_t*>(sqlite3_column_blob(statement, column));
+    std::ranges::copy(std::span{data, result.sha256.size()}, result.sha256.begin());
+    return result;
+}
+
+[[nodiscard]] core::Result<std::optional<core::ContentFingerprint>>
+read_optional_fingerprint(sqlite3_stmt* statement, const int column) {
+    if (sqlite3_column_type(statement, column) == SQLITE_NULL) {
+        return std::optional<core::ContentFingerprint>{};
+    }
+    auto fingerprint = read_fingerprint(statement, column);
+    if (!fingerprint) {
+        return std::unexpected(std::move(fingerprint.error()));
+    }
+    return std::optional{*fingerprint};
 }
 
 [[nodiscard]] std::string encode_unsigned(const std::uint64_t value) {
@@ -249,6 +291,11 @@ read_optional_revision(sqlite3_stmt* statement, const int first) {
            value <= static_cast<int>(State::needs_reconciliation);
 }
 
+[[nodiscard]] bool valid_content_kind(const int value) {
+    return value >= static_cast<int>(ContentKind::text_fields) &&
+           value <= static_cast<int>(ContentKind::embedded_artwork);
+}
+
 [[nodiscard]] bool valid_backup_state(const int value) {
     return value >= static_cast<int>(BackupState::retained) &&
            value <= static_cast<int>(BackupState::needs_reconciliation);
@@ -362,9 +409,35 @@ read_optional_revision(sqlite3_stmt* statement, const int first) {
         record.backup_raw_path.find('\0') != std::string::npos ||
         record.source_raw_path == record.prepared_raw_path ||
         record.source_raw_path == record.backup_raw_path ||
-        record.prepared_raw_path == record.backup_raw_path || record.occurrence_indexes.empty() ||
-        record.changes.empty()) {
+        record.prepared_raw_path == record.backup_raw_path || record.occurrence_indexes.empty()) {
         return std::unexpected(invalid_record("Invalid metadata-operation journal structure"));
+    }
+    const bool text_record = record.content_kind == ContentKind::text_fields;
+    const bool artwork_record = record.content_kind == ContentKind::embedded_artwork;
+    if ((!text_record && !artwork_record) ||
+        (text_record && (record.changes.empty() || record.artwork)) ||
+        (artwork_record && (!record.changes.empty() || !record.artwork))) {
+        return std::unexpected(invalid_record("Invalid metadata-operation content evidence"));
+    }
+    if (record.artwork) {
+        const auto& artwork = *record.artwork;
+        const bool replacing = artwork.kind == metadata::ArtworkWritePlanIntentKind::replace;
+        const bool removing = artwork.kind == metadata::ArtworkWritePlanIntentKind::remove;
+        const bool adding = artwork.kind == metadata::ArtworkWritePlanIntentKind::add;
+        if ((!replacing && !removing && !adding) ||
+            artwork.original_item_count > maximum_artwork_items ||
+            artwork.planned_item_count > maximum_artwork_items ||
+            ((replacing || removing) && (!artwork.original_target_fingerprint ||
+                                         artwork.target_ordinal >= artwork.original_item_count)) ||
+            (replacing && (!artwork.replacement_fingerprint ||
+                           artwork.planned_item_count != artwork.original_item_count)) ||
+            (removing && (artwork.replacement_fingerprint ||
+                          artwork.planned_item_count + 1U != artwork.original_item_count)) ||
+            (adding && (artwork.original_target_fingerprint || !artwork.replacement_fingerprint ||
+                        artwork.target_ordinal != artwork.original_item_count ||
+                        artwork.planned_item_count != artwork.original_item_count + 1U))) {
+            return std::unexpected(invalid_record("Invalid artwork-operation journal evidence"));
+        }
     }
     if (record.occurrence_indexes.size() > maximum_occurrences ||
         record.changes.size() > maximum_changes) {
@@ -629,6 +702,50 @@ read_optional_revision(sqlite3_stmt* statement, const int first) {
     if (intent_result != SQLITE_DONE) {
         return std::unexpected(database_error(database, "Could not read journal intents"));
     }
+
+    auto artwork = prepare(
+        database, "SELECT intent_kind, target_ordinal, original_item_count, planned_item_count, "
+                  "original_target_fingerprint, replacement_fingerprint, "
+                  "original_inventory_fingerprint, planned_inventory_fingerprint "
+                  "FROM operation_journal_artwork WHERE journal_id = ?");
+    if (!artwork || !bind_blob(artwork->get(), 1, id)) {
+        return std::unexpected(artwork ? database_error(database, "Could not bind journal ID")
+                                       : std::move(artwork.error()));
+    }
+    const auto artwork_result = sqlite3_step(artwork->get());
+    if (artwork_result == SQLITE_ROW) {
+        const auto kind = sqlite3_column_int(artwork->get(), 0);
+        auto target_ordinal = read_index(artwork->get(), 1);
+        auto original_item_count = read_index(artwork->get(), 2);
+        auto planned_item_count = read_index(artwork->get(), 3);
+        auto original_target = read_optional_fingerprint(artwork->get(), 4);
+        auto replacement = read_optional_fingerprint(artwork->get(), 5);
+        auto original_inventory = read_fingerprint(artwork->get(), 6);
+        auto planned_inventory = read_fingerprint(artwork->get(), 7);
+        if (kind < static_cast<int>(metadata::ArtworkWritePlanIntentKind::replace) ||
+            kind > static_cast<int>(metadata::ArtworkWritePlanIntentKind::add) || !target_ordinal ||
+            !original_item_count || !planned_item_count || !original_target || !replacement ||
+            !original_inventory || !planned_inventory) {
+            return std::unexpected(
+                database_error(database, "Operation journal contains invalid artwork evidence"));
+        }
+        record.artwork = operations::MetadataOperationJournalArtwork{
+            .kind = static_cast<metadata::ArtworkWritePlanIntentKind>(kind),
+            .target_ordinal = *target_ordinal,
+            .original_item_count = *original_item_count,
+            .planned_item_count = *planned_item_count,
+            .original_target_fingerprint = *original_target,
+            .replacement_fingerprint = *replacement,
+            .original_inventory_fingerprint = *original_inventory,
+            .planned_inventory_fingerprint = *planned_inventory,
+        };
+        if (sqlite3_step(artwork->get()) != SQLITE_DONE) {
+            return std::unexpected(
+                database_error(database, "Operation journal contains duplicate artwork evidence"));
+        }
+    } else if (artwork_result != SQLITE_DONE) {
+        return std::unexpected(database_error(database, "Could not read journal artwork"));
+    }
     return {};
 }
 
@@ -647,11 +764,12 @@ read_optional_revision(sqlite3_stmt* statement, const int first) {
         const auto id_text = column_blob(statement->get(), 0);
         auto parsed_id = core::StableId::parse(id_text);
         const auto state_value = sqlite3_column_int(statement->get(), 1);
+        const auto content_kind = sqlite3_column_int(statement->get(), 22);
         auto expected = read_revision(statement->get(), 5);
         auto prepared_revision = read_optional_revision(statement->get(), 10);
         auto published_revision = read_optional_revision(statement->get(), 15);
-        if (!parsed_id || !valid_state(state_value) || !expected || !prepared_revision ||
-            !published_revision) {
+        if (!parsed_id || !valid_state(state_value) || !valid_content_kind(content_kind) ||
+            !expected || !prepared_revision || !published_revision) {
             return std::unexpected(core::Error{
                 .code = core::ErrorCode::database,
                 .message = "Operation journal contains an invalid record",
@@ -698,7 +816,9 @@ read_optional_revision(sqlite3_stmt* statement, const int first) {
             .prepared_revision = *prepared_revision,
             .published_revision = *published_revision,
             .occurrence_indexes = {},
+            .content_kind = static_cast<ContentKind>(content_kind),
             .changes = {},
+            .artwork = std::nullopt,
             .failure = std::move(failure),
         });
     }
@@ -811,7 +931,8 @@ load_backup_records(sqlite3* database, const char* sql, const std::string_view i
         "expected_inode, expected_size, expected_mtime_seconds, expected_mtime_nanoseconds, "
         "prepared_device, prepared_inode, prepared_size, prepared_mtime_seconds, "
         "prepared_mtime_nanoseconds, published_device, published_inode, published_size, "
-        "published_mtime_seconds, published_mtime_nanoseconds, error_code, error_message "
+        "published_mtime_seconds, published_mtime_nanoseconds, error_code, error_message, "
+        "content_kind "
         "FROM operation_journal WHERE id = ?";
     std::vector<BackupRecord> backups;
     backups.reserve(rows.size());
@@ -907,8 +1028,9 @@ SqliteMetadataOperationJournal::create(const operations::MetadataOperationJourna
         "expected_inode, expected_size, expected_mtime_seconds, expected_mtime_nanoseconds, "
         "prepared_device, prepared_inode, prepared_size, prepared_mtime_seconds, "
         "prepared_mtime_nanoseconds, published_device, published_inode, published_size, "
-        "published_mtime_seconds, published_mtime_nanoseconds, error_code, error_message) "
-        "VALUES(?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        "published_mtime_seconds, published_mtime_nanoseconds, error_code, error_message, "
+        "content_kind) "
+        "VALUES(?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     const auto id = record.id.to_string();
     if (!insert || !bind_blob(insert->get(), 1, id) ||
         sqlite3_bind_int(insert->get(), 2, static_cast<int>(record.state)) != SQLITE_OK ||
@@ -919,7 +1041,8 @@ SqliteMetadataOperationJournal::create(const operations::MetadataOperationJourna
         !bind_optional_revision(insert->get(), 11, record.prepared_revision) ||
         !bind_optional_revision(insert->get(), 16, record.published_revision) ||
         sqlite3_bind_null(insert->get(), 21) != SQLITE_OK ||
-        sqlite3_bind_null(insert->get(), 22) != SQLITE_OK) {
+        sqlite3_bind_null(insert->get(), 22) != SQLITE_OK ||
+        sqlite3_bind_int(insert->get(), 23, static_cast<int>(record.content_kind)) != SQLITE_OK) {
         auto error = insert ? database_error(database, "Could not bind operation journal")
                             : std::move(insert.error());
         rollback();
@@ -946,11 +1069,20 @@ SqliteMetadataOperationJournal::create(const operations::MetadataOperationJourna
     auto intent_insert =
         prepare(database, "INSERT INTO operation_journal_intents("
                           "journal_id, change_position, position, item_index) VALUES(?, ?, ?, ?)");
-    if (!occurrence_insert || !change_insert || !value_insert || !intent_insert) {
+    auto artwork_insert =
+        prepare(database,
+                "INSERT INTO operation_journal_artwork("
+                "journal_id, intent_kind, target_ordinal, original_item_count, planned_item_count, "
+                "original_target_fingerprint, replacement_fingerprint, "
+                "original_inventory_fingerprint, planned_inventory_fingerprint) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    if (!occurrence_insert || !change_insert || !value_insert || !intent_insert ||
+        !artwork_insert) {
         auto error = !occurrence_insert ? std::move(occurrence_insert.error())
                      : !change_insert   ? std::move(change_insert.error())
                      : !value_insert    ? std::move(value_insert.error())
-                                        : std::move(intent_insert.error());
+                     : !intent_insert   ? std::move(intent_insert.error())
+                                        : std::move(artwork_insert.error());
         rollback();
         return std::unexpected(std::move(error));
     }
@@ -965,6 +1097,30 @@ SqliteMetadataOperationJournal::create(const operations::MetadataOperationJourna
         }
         if (auto stepped = step_done(database, occurrence_insert->get(),
                                      "Could not store operation occurrence");
+            !stepped) {
+            rollback();
+            return stepped;
+        }
+    }
+    if (record.artwork) {
+        const auto& artwork = *record.artwork;
+        if (!bind_blob(artwork_insert->get(), 1, id) ||
+            sqlite3_bind_int(artwork_insert->get(), 2, static_cast<int>(artwork.kind)) !=
+                SQLITE_OK ||
+            !bind_index(artwork_insert->get(), 3, artwork.target_ordinal) ||
+            !bind_index(artwork_insert->get(), 4, artwork.original_item_count) ||
+            !bind_index(artwork_insert->get(), 5, artwork.planned_item_count) ||
+            !bind_optional_fingerprint(artwork_insert->get(), 6,
+                                       artwork.original_target_fingerprint) ||
+            !bind_optional_fingerprint(artwork_insert->get(), 7, artwork.replacement_fingerprint) ||
+            !bind_fingerprint(artwork_insert->get(), 8, artwork.original_inventory_fingerprint) ||
+            !bind_fingerprint(artwork_insert->get(), 9, artwork.planned_inventory_fingerprint)) {
+            auto error = database_error(database, "Could not bind operation artwork evidence");
+            rollback();
+            return std::unexpected(std::move(error));
+        }
+        if (auto stepped = step_done(database, artwork_insert->get(),
+                                     "Could not store operation artwork evidence");
             !stepped) {
             rollback();
             return stepped;
@@ -1135,7 +1291,8 @@ SqliteMetadataOperationJournal::load(const core::StableId& id) const {
         "expected_inode, expected_size, expected_mtime_seconds, expected_mtime_nanoseconds, "
         "prepared_device, prepared_inode, prepared_size, prepared_mtime_seconds, "
         "prepared_mtime_nanoseconds, published_device, published_inode, published_size, "
-        "published_mtime_seconds, published_mtime_nanoseconds, error_code, error_message "
+        "published_mtime_seconds, published_mtime_nanoseconds, error_code, error_message, "
+        "content_kind "
         "FROM operation_journal WHERE id = ?";
     auto records = load_records(implementation_->database, sql, id.to_string());
     if (!records) {
@@ -1159,7 +1316,8 @@ SqliteMetadataOperationJournal::load_incomplete() const {
         "expected_inode, expected_size, expected_mtime_seconds, expected_mtime_nanoseconds, "
         "prepared_device, prepared_inode, prepared_size, prepared_mtime_seconds, "
         "prepared_mtime_nanoseconds, published_device, published_inode, published_size, "
-        "published_mtime_seconds, published_mtime_nanoseconds, error_code, error_message "
+        "published_mtime_seconds, published_mtime_nanoseconds, error_code, error_message, "
+        "content_kind "
         "FROM operation_journal WHERE state NOT IN (3, 4) ORDER BY rowid LIMIT 10001";
     auto records = load_records(implementation_->database, sql);
     if (!records) {

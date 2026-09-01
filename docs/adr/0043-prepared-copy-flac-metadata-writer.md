@@ -121,3 +121,7 @@ meaning.
 - typed artwork or ReplayGain mutation is added;
 - Ogg FLAC or ID3-prefixed FLAC gets its own preservation corpus;
 - additional TagLib versions require separate adapter qualification.
+
+ADR-0078 resolves the typed-artwork revisit for native-FLAC embedded-picture
+replace/remove plans and a separate preservation-verified prepared-copy path.
+ADR-0079 independently qualifies their journaled publication and recovery.

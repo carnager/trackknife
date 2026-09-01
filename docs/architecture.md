@@ -39,9 +39,17 @@ conditional removal (ADR-0065), and explicit semantic/freeform metadata field
 identity (ADR-0066), plus the immutable final-metadata/path review, qualified
 Rename/Move UI, and unified file recovery/history (ADR-0067), and bounded
 versioned multi-target metadata capture patterns (ADR-0068), plus strict
-source-tag authority for path-only preparation (ADR-0069) and canonical raw
-transformation editing with dirty-state protection (ADR-0070); decisions are
-accepted through ADR-0070.
+source-tag authority for path-only preparation (ADR-0069), canonical raw
+transformation editing with dirty-state protection (ADR-0070), and strict
+native typed-chain interchange (ADR-0072), plus journaled changed-content
+destination artifacts (ADR-0073), and composed metadata/path publication
+(ADR-0074), reused-target cache and batch-directory evidence (ADR-0075),
+bounded typed artwork inventory (ADR-0076), and lazy read-only Properties
+artwork presentation (ADR-0077), plus immutable preservation-verified native-
+FLAC artwork planning (ADR-0078), and compact journaled native-FLAC artwork
+publication/recovery (ADR-0079), and bounded Properties artwork review/Apply
+with preservation-exact native block rewriting (ADR-0080); decisions are
+accepted through ADR-0080.
 Backend selection is not a capability claim; protocol and file behavior still
 require fixtures and measurements.
 
@@ -159,6 +167,28 @@ compiler/matcher remain in this module. One capture action may expose several
 semantic and exact-freeform preview targets while still staging atomically.
 The bounded cleanup importer also owns a verified canonical source projection
 for representable typed actions; persisted typed actions remain authoritative.
+The first artwork reader inventories native FLAC picture blocks and exact
+configured sibling PNG/JPEG files as bounded revision-qualified records with
+typed roles, exact native type, MIME, dimensions, SHA-256 content identity,
+provenance, and duplicate linkage. ADR-0078 adds the distinct immutable native-
+FLAC replace/remove plan and prepared-copy adapter. It rereads replacement
+PNG/JPEG input from captured path/revision/hash evidence and proves the final
+picture inventory, exact unrelated picture payloads, untouched text/unknown
+blocks, and compressed audio without retaining encoded blobs in a plan.
+ADR-0079 routes that plan through the shared unchanged-path metadata executor;
+migration 23 stores only operation kind, ordinal/count/hash evidence, and
+complete-inventory digests needed for recovery. Published artwork rereads feed
+the existing all-occurrence revision/document refresh without making SQLite an
+artwork cache. ADR-0080 exposes exact embedded-row Replace/Remove through fresh
+immutable review and a two-worker cancellable Apply job. Its native prepared
+copy changes only the reviewed FLAC picture block and streams every unrelated
+metadata block and compressed audio byte unchanged.
+ADR-0081 extends the plan with native-FLAC append semantics and schema-24 Add
+evidence. Embedded Copy donors remain compact revision/ordinal/hash input
+evidence and are reread only while preparing each destination; they never
+become temp files or SQLite blobs. The separate bounded Export service is a
+non-mutating exclusive-output boundary over the same transient image reader
+and therefore owns neither a mutation journal nor retained Undo artifacts.
 Saved definitions cross the `persistence` boundary only as validated
 declarative data. Each adapter
 publishes independent
@@ -187,10 +217,14 @@ retention with publication state. A Qt-free two-worker Apply orchestrator now
 consumes only wholly ready plans, serializes progress delivery, stops new
 admission on cancellation, and preserves ordered per-source partial results.
 Trackbench composes final tag context and file paths into one immutable
-preparation review; changed-content plus path publication remains blocked until
-one destination-artifact executor can satisfy that combined plan. A path-only
-review carries no metadata plan or synthetic context and evaluates from the
-captured revision-qualified source tags.
+preparation review. Exact raw-path/revision pairing now dispatches metadata-only,
+path-only, combined metadata/path, and no-change sources through one bounded
+preparation Apply. Combined work prepares a verified destination artifact and
+supplies its reread document to one durable all-occurrence relocation and cache
+refresh. A path-only review carries no metadata plan or synthetic context and
+evaluates from the captured revision-qualified source tags. Executor-proven
+directory creation remains batch-owned if later work rolls back, while an
+unexplained path appearance still fails admission (ADR-0075).
 
 ### `jobs`
 
@@ -208,6 +242,13 @@ inside a database transaction. Verified metadata publication refreshes every
 matching local occurrence and a raw-path source cache in one idempotent
 transaction; provenance keeps logical-track overlays separate, and the source
 cache prevents a delayed ordinary workspace save from restoring stale fields.
+Combined publication relocates all occurrences and installs the verified target
+document and revision in that same transaction, while retaining logical
+CUE/chapter/subsong/annotation overlays. Schema-22 idempotency evidence records
+whether a relocation included this metadata refresh. A historical target cache
+with no persisted owning occurrence is superseded atomically when the pathname
+is reused; it is durable correctness data rather than permanent path ownership
+(ADR-0075).
 The operation journal also guards retained-backup state and unique reverse
 operation identities for crash-recoverable undo. Apply first persists a
 UI-captured workspace snapshot on this worker so a newly opened occurrence
@@ -227,8 +268,12 @@ Panel layout
 owns only placement and sizing of registered instances, never application
 state. ADR-0052 hosts each captured metadata Properties task as a temporary
 protected tab in the Track Lists surface while excluding it from durable list
-documents. Track-view presentation separately owns semantic column placement and
-group geometry, never queue/list occurrence state. UI consumes C++
+documents. ADR-0077 keeps the existing Properties file selector as the shared
+scope for sibling Fields and Artwork sections. Artwork inspection starts only
+while that section is active, runs through one cancellable worker, rejects more
+than 64 distinct sources visibly, and retains neither encoded pixels nor
+inventory state in SQLite. Track-view presentation separately owns semantic
+column placement and group geometry, never queue/list occurrence state. UI consumes C++
 `QAbstractItemModel` and controller objects; no
 `QQuickWidget` hybrid.
 
@@ -335,8 +380,16 @@ local, mapped-local, writable, and decodable sources before offering actions.
   preview, write, journal, and recovery. ADR-0070 adds a deterministic raw
   cleanup-source projection, live translation, and explicit dirty-state
   protection while keeping typed actions as the only persisted authority.
-  Other format and artwork writes remain disabled until their real
-  preservation tests pass.
+  ADR-0072 losslessly imports and exports the complete current typed chain in a
+  strict versioned JSON envelope without transferring catalog identity or
+  automatic state.
+  ADR-0078 separately qualifies native-FLAC embedded-picture replace/remove at
+  the plan and verified prepared-copy boundary. ADR-0079 adds compact durable
+  complete-inventory evidence and reuses the locked unchanged-path publication,
+  rollback, recovery, undo, and all-occurrence refresh lifecycle. ADR-0080 adds
+  Properties selection, immutable review, bounded progress/cancellation,
+  fresh-retry behavior, and exact native block rewriting. Other format artwork
+  writers still require real preservation tests.
 - **Loudness:** libebur128 behind Trackknife-owned ReplayGain policy.
 - **Preparation:** ADR-0054 composes tag persistence, qualified ReplayGain
   storage, and filesystem rename/move into one immutable per-source review and
@@ -362,8 +415,10 @@ local, mapped-local, writable, and decodable sources before offering actions.
   connects both publication recovery state machines plus same-filesystem undo
   to the preparation-operation history. ADR-0069 excludes manual drafts and
   checked automatic chains from path evaluation whenever Save tags is off and
-  makes a metadata-bearing path-only plan structurally invalid. Combined
-  changed-content publication and cross-filesystem undo remain to qualify.
+  makes a metadata-bearing path-only plan structurally invalid. ADR-0074 adds
+  exact metadata/path pairing, bounded changed-artifact Apply, atomic
+  metadata-plus-relocation persistence, and published-artifact recovery.
+  Artwork mutation and cross-filesystem undo remain to qualify.
 - **State:** SQLite with explicit reversible development migrations, including
   normalized ordered schema-1 metadata transformation definitions owned by the
   serialized persistence worker, including their automatic tagging policy
@@ -385,9 +440,8 @@ combining their queues or controllers:
 4. ~~Shared-library build restructure and the `trackbench` executable.~~
 5. ~~Migrate local playback/ingestion into Trackbench and retain separate MPD
    and local controllers.~~
-6. Finish the Trackbench tag grid and mutation framework, including
-   destination-artifact publication for combined changed metadata plus paths;
-   then add MusicBrainz providers.
+6. Finish the Trackbench tag grid and mutation framework, including artwork
+   management; then add MusicBrainz providers.
 7. Parallel ReplayGain, then converter/resampler and organized output.
 8. Melody endpoint in Trackbench's MPD authority; hardening and packaging
    (the compatibility shell was retired in ADR-0071).

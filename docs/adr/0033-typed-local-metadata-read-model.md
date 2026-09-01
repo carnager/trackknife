@@ -5,6 +5,8 @@
 - Owners: Trackknife project
 - Complements: ADR-0006 focused media/storage backends and ADR-0025 the
   standalone Trackbench application
+- Amended by: ADR-0076 bounded typed artwork inventory, ADR-0078 immutable
+  native-FLAC artwork write plans, and ADR-0079 journaled artwork publication
 
 ## Context
 
@@ -53,9 +55,11 @@ or prove that a format can be rewritten without losing native data.
   values. They are sufficient for fast restart display, but omit source
   revisions and are never authority for a later tag commit. A mutation must
   freshly read and revalidate the physical source.
-- The adapter advertises field-read capability only. Field writes, picture
-  reads/writes, and unknown-data preservation remain false until each format
-  passes repository-owned native round-trip and preservation tests.
+- The initial adapter advertised field-read capability only. ADR-0043 later
+  qualified native-FLAC text writes and preservation, while ADR-0076 qualifies
+  native-FLAC picture reads through a separate bounded inventory. Picture
+  writes and other embedded mappings remain false until each format passes
+  repository-owned native round-trip and preservation tests.
 
 ## Alternatives considered
 
@@ -112,7 +116,7 @@ revision-aware lifecycle.
 
 ## Revisit when
 
-- the staged editor needs picture/native-object read types;
+- the staged editor presents ADR-0076 picture inventories;
 - the first per-format writer and preservation corpus are ready;
 - sidecar format and annotation namespaces are accepted;
 - source revisions gain an optional metadata-region hash.

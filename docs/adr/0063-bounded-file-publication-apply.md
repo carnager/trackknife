@@ -6,6 +6,8 @@
 - Extends: ADR-0047 bounded metadata Apply jobs, ADR-0056 fresh file
   preflight, ADR-0061 verified cross-filesystem publication, ADR-0062 active-
   playback relocation
+- Amended by: ADR-0075 executor-proven directory creation remains batch-owned
+  when later work rolls back
 
 ## Context
 
@@ -63,17 +65,19 @@ also needlessly serializes independent verified copies.
 - Sources whose reviewed missing-directory chains begin at the same raw path
   share one topology admission group. Refresh plus the first publication that
   still needs directories stays under that group lock.
-- A successful source records only the missing directories its journaled
-  executor necessarily created. A later source may accept a shortened missing
-  chain only when every appeared prefix has that exact in-batch evidence.
+- An executor records only the missing directories its descriptor-relative
+  creation routine necessarily created, immediately after it has opened and
+  synced the exact chain. A later source may accept a shortened missing chain
+  only when every appeared prefix has that exact in-batch evidence.
   Otherwise an externally appeared directory remains a conflict.
 - Once a source refreshes with no directories left to create, it releases the
   group before file publication. Multiple copies into the now-established
   album tree can therefore proceed in parallel. Different missing roots never
   block one another.
-- A failed directory-creating publication contributes no trusted batch
-  evidence. Later related sources fail closed if its directories nevertheless
-  remain, leaving a fresh preview to reconcile their topology.
+- If later preparation or dependent-state work fails, the source publication
+  still rolls back but its already proven directory-creation evidence remains
+  valid for related batch members. A directory that appeared before the
+  executor proved creation contributes no evidence and still fails closed.
 
 ### Cancellation and progress
 
@@ -103,8 +107,8 @@ copy buffers, and journal pressure.
 ### Accept any directory that appears after preview
 
 Rejected. An external path or symlink race must not be mistaken for another
-batch member. Only exact directories recorded after a successful related
-publication may shorten a reviewed missing chain.
+batch member. Only exact directories reported after the related executor's
+successful descriptor-relative creation may shorten a reviewed missing chain.
 
 ### Roll the entire batch back after one failure
 

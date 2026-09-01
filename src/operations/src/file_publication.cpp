@@ -32,12 +32,22 @@ namespace trackknife::operations {
 namespace {
 
 using State = FilePublicationJournalState;
+using Content = FilePublicationContentKind;
 constexpr auto lock_retry_interval = std::chrono::milliseconds{10};
 constexpr std::size_t copy_buffer_bytes = 1024U * 1024U;
 constexpr std::size_t maximum_xattr_name_bytes = 1U * 1024U * 1024U;
 constexpr std::size_t maximum_xattr_count = 4'096U;
 constexpr std::size_t maximum_xattr_value_bytes = 16U * 1024U * 1024U;
 constexpr std::size_t maximum_total_xattr_bytes = 64U * 1024U * 1024U;
+
+[[nodiscard]] bool prepared_lifecycle(const FilePublicationJournalRecord& record) noexcept {
+    return record.publication == OutputPathPublicationKind::cross_filesystem_copy ||
+           record.content == Content::prepared_destination_artifact;
+}
+
+[[nodiscard]] bool preserves_source_bytes(const FilePublicationJournalRecord& record) noexcept {
+    return record.content == Content::preserve_source_bytes;
+}
 
 class Descriptor final {
   public:
@@ -919,6 +929,113 @@ copy_source_to_prepared(const LockedSource& source, const Descriptor& target_par
     return PreparedCopy{.descriptor = std::move(prepared), .revision = prepared_revision};
 }
 
+[[nodiscard]] core::Result<PreparedCopy>
+prepare_destination_artifact(const LockedSource& source, const Descriptor& target_parent,
+                             const FilePublicationJournalRecord& record,
+                             const FilePublicationDestinationArtifactPreparer& artifact_preparer,
+                             const core::CancellationToken& cancellation) {
+    struct stat source_status{};
+    if (::fstat(source.source.get(), &source_status) != 0 ||
+        revision_from_stat(source_status) != source.revision) {
+        return std::unexpected(publication_error(
+            core::ErrorCode::conflict, "Source changed before destination-artifact preparation",
+            record.source_raw_path, record.target_raw_path, record.id));
+    }
+    auto source_attributes = read_extended_attributes(source.source, record, "the locked source");
+    if (!source_attributes) {
+        return std::unexpected(std::move(source_attributes.error()));
+    }
+    auto existing = observe_direct_revision(record.prepared_raw_path, record.source_raw_path,
+                                            record.target_raw_path, record.id);
+    if (!existing) {
+        return std::unexpected(std::move(existing.error()));
+    }
+    if (*existing) {
+        return std::unexpected(
+            publication_error(core::ErrorCode::conflict, "Destination-artifact path already exists",
+                              record.source_raw_path, record.target_raw_path, record.id));
+    }
+
+    auto prepared_result = artifact_preparer(record.prepared_raw_path, cancellation);
+    if (!prepared_result) {
+        auto remained = observe_direct_revision(record.prepared_raw_path, record.source_raw_path,
+                                                record.target_raw_path, record.id);
+        if (!remained) {
+            return std::unexpected(std::move(remained.error()));
+        }
+        if (*remained) {
+            return std::unexpected(publication_error(
+                core::ErrorCode::conflict,
+                "Destination-artifact preparer left an unjournaled file after failure",
+                record.source_raw_path, record.target_raw_path, record.id));
+        }
+        return std::unexpected(std::move(prepared_result.error()));
+    }
+
+    const auto prepared_path = std::filesystem::path{record.prepared_raw_path};
+    Descriptor prepared{::openat(target_parent.get(), prepared_path.filename().c_str(),
+                                 O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)};
+    if (!prepared.valid()) {
+        return std::unexpected(system_error("Opening the prepared destination artifact failed",
+                                            errno, record.source_raw_path, record.target_raw_path,
+                                            record.id));
+    }
+    if (auto locked = lock_descriptor(prepared, cancellation, record.source_raw_path,
+                                      record.target_raw_path, record.id);
+        !locked) {
+        return std::unexpected(std::move(locked.error()));
+    }
+    struct stat prepared_status{};
+    if (::fstat(prepared.get(), &prepared_status) != 0 || !S_ISREG(prepared_status.st_mode) ||
+        prepared_status.st_nlink != 1 || prepared_status.st_size < 0 ||
+        revision_from_stat(prepared_status) != *prepared_result) {
+        return std::unexpected(publication_error(
+            core::ErrorCode::conflict,
+            "Prepared destination artifact differs from the preparer's verified revision",
+            record.source_raw_path, record.target_raw_path, record.id));
+    }
+    const auto cleanup = [&](core::Error failure) -> core::Result<PreparedCopy> {
+        const auto current_revision = revision_from_stat(prepared_status);
+        auto removed =
+            remove_descriptor_entry(prepared, target_parent, prepared_path.filename().native(),
+                                    current_revision, record, "prepared destination artifact");
+        return std::unexpected(removed ? std::move(failure) : std::move(removed.error()));
+    };
+    if (auto current =
+            require_descriptor_entry(prepared, target_parent, prepared_path.filename().native(),
+                                     *prepared_result, record, "prepared destination artifact");
+        !current) {
+        return cleanup(std::move(current.error()));
+    }
+    if (auto current_source = require_locked_source_entry(
+            source, std::filesystem::path{record.source_raw_path}.filename().native(), record);
+        !current_source) {
+        return cleanup(std::move(current_source.error()));
+    }
+    if (auto metadata = apply_copy_filesystem_metadata(source, source_status, *source_attributes,
+                                                       prepared, record);
+        !metadata) {
+        return cleanup(std::move(metadata.error()));
+    }
+    if (::fsync(prepared.get()) != 0 || ::fsync(target_parent.get()) != 0) {
+        return cleanup(system_error("Making the destination artifact durable failed", errno,
+                                    record.source_raw_path, record.target_raw_path, record.id));
+    }
+    if (::fstat(prepared.get(), &prepared_status) != 0 ||
+        revision_from_stat(prepared_status) != *prepared_result) {
+        return cleanup(
+            publication_error(core::ErrorCode::conflict,
+                              "Prepared destination artifact changed while becoming durable",
+                              record.source_raw_path, record.target_raw_path, record.id));
+    }
+    if (auto current_source = require_locked_source_entry(
+            source, std::filesystem::path{record.source_raw_path}.filename().native(), record);
+        !current_source) {
+        return cleanup(std::move(current_source.error()));
+    }
+    return PreparedCopy{.descriptor = std::move(prepared), .revision = *prepared_result};
+}
+
 [[nodiscard]] core::Result<void>
 verify_published_topology(const FilePublicationJournalRecord& record,
                           const core::LocalSourceRevision& target_revision) {
@@ -1141,6 +1258,7 @@ commit_result(const FilePublicationJournalRecord& record,
               const core::LocalSourceRevision& target_revision) {
     return {
         .journal_id = record.id,
+        .content = record.content,
         .source_raw_path = record.source_raw_path,
         .target_raw_path = record.target_raw_path,
         .source_revision = record.expected_source_revision,
@@ -1241,6 +1359,145 @@ commit_result(const FilePublicationJournalRecord& record,
     return result;
 }
 
+[[nodiscard]] core::Result<FilePublicationCommitResult> execute_prepared_publication(
+    FilePublicationJournalRecord record, const LockedSource& source,
+    const Descriptor& target_parent, const PreparedCopy& prepared, FilePublicationJournal& journal,
+    const FilePublicationDependentStateCommitter& dependent_state_committer,
+    const core::CancellationToken& cancellation) {
+    const auto target_path = std::filesystem::path{record.target_raw_path};
+    const auto rollback_prepared =
+        [&](const core::Error& failure) -> core::Result<FilePublicationCommitResult> {
+        const auto removed = remove_descriptor_entry(
+            prepared.descriptor, target_parent,
+            std::filesystem::path{record.prepared_raw_path}.filename().native(), prepared.revision,
+            record, "prepared target artifact");
+        auto terminal =
+            cross_terminal_transition(journal, record, State::target_prepared, prepared.revision,
+                                      std::nullopt, failure, removed.has_value());
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(removed ? failure : removed.error());
+    };
+    if (cancellation.is_cancellation_requested()) {
+        return rollback_prepared(cancelled(record.source_raw_path, record.target_raw_path));
+    }
+    if (auto current = require_descriptor_entry(
+            prepared.descriptor, target_parent,
+            std::filesystem::path{record.prepared_raw_path}.filename().native(), prepared.revision,
+            record, "prepared target artifact");
+        !current) {
+        return rollback_prepared(current.error());
+    }
+    if (auto absent = require_target_absent(target_parent, target_path.filename().native(), record);
+        !absent) {
+        return rollback_prepared(absent.error());
+    }
+    if (auto published = rename_no_replace(
+            target_parent, std::filesystem::path{record.prepared_raw_path}.filename().native(),
+            target_parent, target_path.filename().native(), record);
+        !published) {
+        return rollback_prepared(published.error());
+    }
+    const auto target_revision = prepared.revision;
+    if (auto synced = sync_publication_directories(target_parent, target_parent, record); !synced) {
+        const auto rolled_back = rollback_locked_cross_filesystem_target(
+            record, prepared.descriptor, target_parent, target_revision);
+        auto terminal =
+            cross_terminal_transition(journal, record, State::target_prepared, prepared.revision,
+                                      std::nullopt, synced.error(), rolled_back.has_value());
+        if (!terminal) {
+            return std::unexpected(terminal.error());
+        }
+        return std::unexpected(rolled_back ? synced.error() : rolled_back.error());
+    }
+    if (auto verified = verify_cross_published_topology(record, prepared.revision, target_revision);
+        !verified) {
+        const auto rolled_back = rollback_locked_cross_filesystem_target(
+            record, prepared.descriptor, target_parent, target_revision);
+        auto terminal =
+            cross_terminal_transition(journal, record, State::target_prepared, prepared.revision,
+                                      std::nullopt, verified.error(), rolled_back.has_value());
+        if (!terminal) {
+            return std::unexpected(terminal.error());
+        }
+        return std::unexpected(rolled_back ? verified.error() : rolled_back.error());
+    }
+    if (auto published_state =
+            cross_transition(journal, record, State::target_prepared, State::target_published,
+                             prepared.revision, target_revision);
+        !published_state) {
+        const auto rolled_back = rollback_locked_cross_filesystem_target(
+            record, prepared.descriptor, target_parent, target_revision);
+        auto terminal = cross_terminal_transition(journal, record, State::target_prepared,
+                                                  prepared.revision, std::nullopt,
+                                                  published_state.error(), rolled_back.has_value());
+        if (!terminal) {
+            return std::unexpected(terminal.error());
+        }
+        return std::unexpected(rolled_back ? published_state.error() : rolled_back.error());
+    }
+    record.state = State::target_published;
+    record.target_revision = target_revision;
+    auto result = commit_result(record, target_revision);
+    if (auto dependent = dependent_state_committer(result); !dependent) {
+        const auto rolled_back = rollback_locked_cross_filesystem_target(
+            record, prepared.descriptor, target_parent, target_revision);
+        auto terminal =
+            cross_terminal_transition(journal, record, State::target_published, prepared.revision,
+                                      target_revision, dependent.error(), rolled_back.has_value());
+        if (!terminal) {
+            return std::unexpected(terminal.error());
+        }
+        return std::unexpected(rolled_back ? dependent.error() : rolled_back.error());
+    }
+    if (auto verified = verify_cross_published_topology(record, prepared.revision, target_revision);
+        !verified) {
+        auto terminal =
+            cross_terminal_transition(journal, record, State::target_published, prepared.revision,
+                                      target_revision, verified.error(), false);
+        return std::unexpected(terminal ? verified.error() : std::move(terminal.error()));
+    }
+    if (auto dependent_state =
+            cross_transition(journal, record, State::target_published,
+                             State::dependent_state_committed, prepared.revision, target_revision);
+        !dependent_state) {
+        return std::unexpected(std::move(dependent_state.error()));
+    }
+    record.state = State::dependent_state_committed;
+    if (auto current_target = require_descriptor_entry(prepared.descriptor, target_parent,
+                                                       target_path.filename().native(),
+                                                       target_revision, record, "published target");
+        !current_target) {
+        return std::unexpected(std::move(current_target.error()));
+    }
+    const auto source_name = std::filesystem::path{record.source_raw_path}.filename().native();
+    if (auto removed =
+            remove_descriptor_entry(source.source, source.parent, source_name,
+                                    record.expected_source_revision, record, "publication source");
+        !removed) {
+        return std::unexpected(std::move(removed.error()));
+    }
+    if (auto verified = verify_cross_source_removed_topology(record, target_revision); !verified) {
+        auto terminal =
+            cross_terminal_transition(journal, record, State::dependent_state_committed,
+                                      prepared.revision, target_revision, verified.error(), false);
+        return std::unexpected(terminal ? verified.error() : std::move(terminal.error()));
+    }
+    if (auto removed_state =
+            cross_transition(journal, record, State::dependent_state_committed,
+                             State::source_removed, prepared.revision, target_revision);
+        !removed_state) {
+        return std::unexpected(std::move(removed_state.error()));
+    }
+    if (auto completed = cross_transition(journal, record, State::source_removed, State::complete,
+                                          prepared.revision, target_revision);
+        !completed) {
+        return std::unexpected(std::move(completed.error()));
+    }
+    return result;
+}
+
 [[nodiscard]] core::Result<void> mark_reconciliation(FilePublicationJournal& journal,
                                                      const FilePublicationJournalRecord& record,
                                                      const core::Error& issue) {
@@ -1260,7 +1517,8 @@ core::Result<FilePublicationCommitResult> commit_same_filesystem_publication(
     const OutputPathPreflight& preflight, const std::size_t source_index,
     FilePublicationJournal& journal,
     const FilePublicationDependentStateCommitter& dependent_state_committer,
-    const core::CancellationToken& cancellation) {
+    const core::CancellationToken& cancellation,
+    const FilePublicationDirectoryCreationObserver& directory_creation_observer) {
     if (cancellation.is_cancellation_requested()) {
         const auto source = source_index < preflight.sources.size()
                                 ? preflight.sources[source_index].planned.source_raw_path
@@ -1365,6 +1623,9 @@ core::Result<FilePublicationCommitResult> commit_same_filesystem_publication(
     if (!target_parent) {
         return finish_before_publication(target_parent.error());
     }
+    if (directory_creation_observer && !record->planned_missing_directory_raw_paths.empty()) {
+        directory_creation_observer(record->planned_missing_directory_raw_paths);
+    }
     struct stat created_parent_status{};
     if (::fstat(target_parent->descriptor.get(), &created_parent_status) != 0 ||
         static_cast<std::uint64_t>(created_parent_status.st_dev) !=
@@ -1404,8 +1665,8 @@ core::Result<FilePublicationCommitResult> undo_same_filesystem_publication(
     }
     const auto& original = **loaded;
     if (original.publication != OutputPathPublicationKind::same_filesystem_rename ||
-        original.state != State::complete || !original.target_revision ||
-        original.reverses_journal_id) {
+        !preserves_source_bytes(original) || original.state != State::complete ||
+        !original.target_revision || original.reverses_journal_id) {
         return std::unexpected(
             publication_error(core::ErrorCode::conflict,
                               "Only a completed original same-filesystem publication can be undone",
@@ -1497,7 +1758,8 @@ core::Result<FilePublicationCommitResult> commit_cross_filesystem_publication(
     const OutputPathPreflight& preflight, const std::size_t source_index,
     FilePublicationJournal& journal,
     const FilePublicationDependentStateCommitter& dependent_state_committer,
-    const core::CancellationToken& cancellation) {
+    const core::CancellationToken& cancellation,
+    const FilePublicationDirectoryCreationObserver& directory_creation_observer) {
     if (cancellation.is_cancellation_requested()) {
         const auto source = source_index < preflight.sources.size()
                                 ? preflight.sources[source_index].planned.source_raw_path
@@ -1608,6 +1870,9 @@ core::Result<FilePublicationCommitResult> commit_cross_filesystem_publication(
     if (!target_parent) {
         return finish_planned(target_parent.error());
     }
+    if (directory_creation_observer && !record->planned_missing_directory_raw_paths.empty()) {
+        directory_creation_observer(record->planned_missing_directory_raw_paths);
+    }
     if (::fstat(target_parent->descriptor.get(), &target_parent_status) != 0 ||
         static_cast<std::uint64_t>(target_parent_status.st_dev) !=
             checked.target_filesystem_device) {
@@ -1643,143 +1908,167 @@ core::Result<FilePublicationCommitResult> commit_cross_filesystem_publication(
     }
     record->state = State::target_prepared;
     record->prepared_revision = prepared->revision;
-    const auto rollback_prepared =
+    return execute_prepared_publication(std::move(*record), *source, target_parent->descriptor,
+                                        *prepared, journal, dependent_state_committer,
+                                        cancellation);
+}
+
+core::Result<FilePublicationCommitResult> commit_destination_artifact_publication(
+    const OutputPathPreflight& preflight, const std::size_t source_index,
+    FilePublicationJournal& journal,
+    const FilePublicationDestinationArtifactPreparer& artifact_preparer,
+    const FilePublicationDependentStateCommitter& dependent_state_committer,
+    const core::CancellationToken& cancellation,
+    const FilePublicationDirectoryCreationObserver& directory_creation_observer) {
+    if (cancellation.is_cancellation_requested()) {
+        const auto source = source_index < preflight.sources.size()
+                                ? preflight.sources[source_index].planned.source_raw_path
+                                : std::string{};
+        return std::unexpected(cancelled(source));
+    }
+    if (!artifact_preparer || !dependent_state_committer || !preflight.ready() ||
+        source_index >= preflight.sources.size()) {
+        return std::unexpected(publication_error(
+            core::ErrorCode::invalid_argument,
+            "Destination-artifact publication requires a ready source, preparer, and state "
+            "committer",
+            {}));
+    }
+    const auto& checked = preflight.sources[source_index];
+    const bool valid_topology =
+        (checked.publication == OutputPathPublicationKind::same_filesystem_rename &&
+         checked.target_filesystem_device == checked.observed_revision.device) ||
+        (checked.publication == OutputPathPublicationKind::cross_filesystem_copy &&
+         checked.target_filesystem_device != checked.observed_revision.device);
+    if (checked.publication == OutputPathPublicationKind::no_change || checked.planned.no_change ||
+        checked.observed_revision != checked.planned.source_revision || !valid_topology) {
+        return std::unexpected(publication_error(
+            core::ErrorCode::invalid_argument,
+            "Destination-artifact executor requires one ready changed output path",
+            checked.planned.source_raw_path, checked.planned.target_raw_path));
+    }
+
+    auto source = open_locked_source(checked.planned.source_raw_path, checked.observed_revision,
+                                     cancellation, checked.planned.target_raw_path);
+    if (!source) {
+        return std::unexpected(std::move(source.error()));
+    }
+    const auto target_path = std::filesystem::path{checked.planned.target_raw_path};
+    auto fresh_target =
+        walk_directory(target_path.parent_path().native(), true, checked.planned.source_raw_path,
+                       checked.planned.target_raw_path);
+    if (!fresh_target) {
+        return std::unexpected(std::move(fresh_target.error()));
+    }
+    if (fresh_target->missing_raw_paths != checked.missing_directory_raw_paths) {
+        return std::unexpected(publication_error(
+            core::ErrorCode::conflict,
+            "Target directory topology changed after destination-artifact preflight",
+            checked.planned.source_raw_path, checked.planned.target_raw_path));
+    }
+    struct stat target_parent_status{};
+    if (::fstat(fresh_target->descriptor.get(), &target_parent_status) != 0 ||
+        static_cast<std::uint64_t>(target_parent_status.st_dev) !=
+            checked.target_filesystem_device ||
+        ::faccessat(source->parent.get(), ".", W_OK | X_OK, 0) != 0 ||
+        ::faccessat(fresh_target->descriptor.get(), ".", W_OK | X_OK, 0) != 0) {
+        return std::unexpected(publication_error(
+            core::ErrorCode::conflict,
+            "Destination-artifact filesystem or directory permissions changed after preflight",
+            checked.planned.source_raw_path, checked.planned.target_raw_path));
+    }
+    const auto journal_id = core::StableId::random();
+    auto record = make_destination_artifact_journal_record(preflight, source_index, journal_id);
+    if (!record) {
+        return std::unexpected(std::move(record.error()));
+    }
+    if (fresh_target->missing_raw_paths.empty()) {
+        if (auto absent = require_target_absent(fresh_target->descriptor,
+                                                target_path.filename().native(), *record);
+            !absent) {
+            return std::unexpected(std::move(absent.error()));
+        }
+        auto prepared = observe_direct_revision(record->prepared_raw_path, record->source_raw_path,
+                                                record->target_raw_path, record->id);
+        if (!prepared) {
+            return std::unexpected(std::move(prepared.error()));
+        }
+        if (*prepared) {
+            return std::unexpected(publication_error(
+                core::ErrorCode::conflict, "Destination-artifact path already exists",
+                record->source_raw_path, record->target_raw_path, record->id));
+        }
+    }
+    if (auto created = journal.create(*record); !created) {
+        return std::unexpected(std::move(created.error()));
+    }
+    const auto finish_planned =
         [&](const core::Error& failure) -> core::Result<FilePublicationCommitResult> {
-        const auto removed = remove_descriptor_entry(
-            prepared->descriptor, target_parent->descriptor,
-            std::filesystem::path{record->prepared_raw_path}.filename().native(),
-            prepared->revision, *record, "prepared target copy");
-        auto terminal =
-            cross_terminal_transition(journal, *record, State::target_prepared, prepared->revision,
-                                      std::nullopt, failure, removed.has_value());
+        auto persisted_source = observe_direct_revision(
+            record->source_raw_path, record->source_raw_path, record->target_raw_path, record->id);
+        auto prepared = observe_direct_revision(record->prepared_raw_path, record->source_raw_path,
+                                                record->target_raw_path, record->id);
+        auto target = observe_direct_revision(record->target_raw_path, record->source_raw_path,
+                                              record->target_raw_path, record->id);
+        const bool rolled_back = persisted_source && prepared && target && *persisted_source &&
+                                 **persisted_source == record->expected_source_revision &&
+                                 !*prepared && !*target;
+        auto terminal = cross_terminal_transition(journal, *record, State::planned, std::nullopt,
+                                                  std::nullopt, failure, rolled_back);
         if (!terminal) {
             return std::unexpected(std::move(terminal.error()));
         }
-        return std::unexpected(removed ? failure : removed.error());
+        return std::unexpected(failure);
     };
     if (cancellation.is_cancellation_requested()) {
-        return rollback_prepared(cancelled(record->source_raw_path, record->target_raw_path));
+        return finish_planned(cancelled(record->source_raw_path, record->target_raw_path));
     }
-    if (auto current = require_descriptor_entry(
-            prepared->descriptor, target_parent->descriptor,
-            std::filesystem::path{record->prepared_raw_path}.filename().native(),
-            prepared->revision, *record, "prepared target copy");
-        !current) {
-        return rollback_prepared(current.error());
+    auto target_parent = create_planned_directories(*record);
+    if (!target_parent) {
+        return finish_planned(target_parent.error());
+    }
+    if (directory_creation_observer && !record->planned_missing_directory_raw_paths.empty()) {
+        directory_creation_observer(record->planned_missing_directory_raw_paths);
+    }
+    if (::fstat(target_parent->descriptor.get(), &target_parent_status) != 0 ||
+        static_cast<std::uint64_t>(target_parent_status.st_dev) !=
+            checked.target_filesystem_device) {
+        return finish_planned(
+            publication_error(core::ErrorCode::conflict,
+                              "Created destination-artifact parent is on another filesystem",
+                              record->source_raw_path, record->target_raw_path, record->id));
     }
     if (auto absent = require_target_absent(target_parent->descriptor,
                                             target_path.filename().native(), *record);
         !absent) {
-        return rollback_prepared(absent.error());
+        return finish_planned(absent.error());
     }
-    if (auto published =
-            rename_no_replace(target_parent->descriptor,
-                              std::filesystem::path{record->prepared_raw_path}.filename().native(),
-                              target_parent->descriptor, target_path.filename().native(), *record);
-        !published) {
-        return rollback_prepared(published.error());
+    auto prepared = prepare_destination_artifact(*source, target_parent->descriptor, *record,
+                                                 artifact_preparer, cancellation);
+    if (!prepared) {
+        return finish_planned(prepared.error());
     }
-    const auto target_revision = prepared->revision;
-    if (auto synced = sync_publication_directories(target_parent->descriptor,
-                                                   target_parent->descriptor, *record);
-        !synced) {
-        const auto rolled_back = rollback_locked_cross_filesystem_target(
-            *record, prepared->descriptor, target_parent->descriptor, target_revision);
+    if (auto prepared_state =
+            cross_transition(journal, *record, State::planned, State::target_prepared,
+                             prepared->revision, std::nullopt);
+        !prepared_state) {
+        const auto removed = remove_descriptor_entry(
+            prepared->descriptor, target_parent->descriptor,
+            std::filesystem::path{record->prepared_raw_path}.filename().native(),
+            prepared->revision, *record, "prepared destination artifact");
         auto terminal =
-            cross_terminal_transition(journal, *record, State::target_prepared, prepared->revision,
-                                      std::nullopt, synced.error(), rolled_back.has_value());
+            cross_terminal_transition(journal, *record, State::planned, std::nullopt, std::nullopt,
+                                      prepared_state.error(), removed.has_value());
         if (!terminal) {
-            return std::unexpected(terminal.error());
+            return std::unexpected(std::move(terminal.error()));
         }
-        return std::unexpected(rolled_back ? synced.error() : rolled_back.error());
+        return std::unexpected(removed ? prepared_state.error() : removed.error());
     }
-    if (auto verified =
-            verify_cross_published_topology(*record, prepared->revision, target_revision);
-        !verified) {
-        const auto rolled_back = rollback_locked_cross_filesystem_target(
-            *record, prepared->descriptor, target_parent->descriptor, target_revision);
-        auto terminal =
-            cross_terminal_transition(journal, *record, State::target_prepared, prepared->revision,
-                                      std::nullopt, verified.error(), rolled_back.has_value());
-        if (!terminal) {
-            return std::unexpected(terminal.error());
-        }
-        return std::unexpected(rolled_back ? verified.error() : rolled_back.error());
-    }
-    if (auto published_state =
-            cross_transition(journal, *record, State::target_prepared, State::target_published,
-                             prepared->revision, target_revision);
-        !published_state) {
-        const auto rolled_back = rollback_locked_cross_filesystem_target(
-            *record, prepared->descriptor, target_parent->descriptor, target_revision);
-        auto terminal = cross_terminal_transition(journal, *record, State::target_prepared,
-                                                  prepared->revision, std::nullopt,
-                                                  published_state.error(), rolled_back.has_value());
-        if (!terminal) {
-            return std::unexpected(terminal.error());
-        }
-        return std::unexpected(rolled_back ? published_state.error() : rolled_back.error());
-    }
-    record->state = State::target_published;
-    record->target_revision = target_revision;
-    auto result = commit_result(*record, target_revision);
-    if (auto dependent = dependent_state_committer(result); !dependent) {
-        const auto rolled_back = rollback_locked_cross_filesystem_target(
-            *record, prepared->descriptor, target_parent->descriptor, target_revision);
-        auto terminal =
-            cross_terminal_transition(journal, *record, State::target_published, prepared->revision,
-                                      target_revision, dependent.error(), rolled_back.has_value());
-        if (!terminal) {
-            return std::unexpected(terminal.error());
-        }
-        return std::unexpected(rolled_back ? dependent.error() : rolled_back.error());
-    }
-    if (auto verified =
-            verify_cross_published_topology(*record, prepared->revision, target_revision);
-        !verified) {
-        auto terminal =
-            cross_terminal_transition(journal, *record, State::target_published, prepared->revision,
-                                      target_revision, verified.error(), false);
-        return std::unexpected(terminal ? verified.error() : std::move(terminal.error()));
-    }
-    if (auto dependent_state =
-            cross_transition(journal, *record, State::target_published,
-                             State::dependent_state_committed, prepared->revision, target_revision);
-        !dependent_state) {
-        return std::unexpected(std::move(dependent_state.error()));
-    }
-    record->state = State::dependent_state_committed;
-    if (auto current_target = require_descriptor_entry(
-            prepared->descriptor, target_parent->descriptor, target_path.filename().native(),
-            target_revision, *record, "published target");
-        !current_target) {
-        return std::unexpected(std::move(current_target.error()));
-    }
-    const auto source_name = std::filesystem::path{record->source_raw_path}.filename().native();
-    if (auto removed = remove_descriptor_entry(source->source, source->parent, source_name,
-                                               record->expected_source_revision, *record,
-                                               "cross-filesystem source");
-        !removed) {
-        return std::unexpected(std::move(removed.error()));
-    }
-    if (auto verified = verify_cross_source_removed_topology(*record, target_revision); !verified) {
-        auto terminal =
-            cross_terminal_transition(journal, *record, State::dependent_state_committed,
-                                      prepared->revision, target_revision, verified.error(), false);
-        return std::unexpected(terminal ? verified.error() : std::move(terminal.error()));
-    }
-    if (auto removed_state =
-            cross_transition(journal, *record, State::dependent_state_committed,
-                             State::source_removed, prepared->revision, target_revision);
-        !removed_state) {
-        return std::unexpected(std::move(removed_state.error()));
-    }
-    if (auto completed = cross_transition(journal, *record, State::source_removed, State::complete,
-                                          prepared->revision, target_revision);
-        !completed) {
-        return std::unexpected(std::move(completed.error()));
-    }
-    return result;
+    record->state = State::target_prepared;
+    record->prepared_revision = prepared->revision;
+    return execute_prepared_publication(std::move(*record), *source, target_parent->descriptor,
+                                        *prepared, journal, dependent_state_committer,
+                                        cancellation);
 }
 
 core::Result<std::vector<FilePublicationRecoveryResult>> recover_same_filesystem_publications(
@@ -1798,7 +2087,8 @@ core::Result<std::vector<FilePublicationRecoveryResult>> recover_same_filesystem
     std::vector<FilePublicationRecoveryResult> results;
     results.reserve(records->size());
     for (auto& record : *records) {
-        if (record.publication != OutputPathPublicationKind::same_filesystem_rename) {
+        if (record.publication != OutputPathPublicationKind::same_filesystem_rename ||
+            prepared_lifecycle(record)) {
             continue;
         }
         if (cancellation.is_cancellation_requested()) {
@@ -2014,7 +2304,7 @@ core::Result<std::vector<FilePublicationRecoveryResult>> recover_cross_filesyste
     };
 
     for (auto& record : *records) {
-        if (record.publication != OutputPathPublicationKind::cross_filesystem_copy) {
+        if (!prepared_lifecycle(record)) {
             continue;
         }
         if (cancellation.is_cancellation_requested()) {
@@ -2063,6 +2353,17 @@ core::Result<std::vector<FilePublicationRecoveryResult>> recover_cross_filesyste
                 auto issue = publication_error(
                     core::ErrorCode::conflict,
                     "Interrupted copy has ambiguous source, prepared, and target identities",
+                    record.source_raw_path, record.target_raw_path, record.id);
+                if (auto marked = reconcile(record, std::move(issue)); !marked) {
+                    return std::unexpected(std::move(marked.error()));
+                }
+                continue;
+            }
+            if (!preserves_source_bytes(record)) {
+                auto issue = publication_error(
+                    core::ErrorCode::conflict,
+                    "Interrupted destination-artifact preparation lacks a durable verified "
+                    "revision",
                     record.source_raw_path, record.target_raw_path, record.id);
                 if (auto marked = reconcile(record, std::move(issue)); !marked) {
                     return std::unexpected(std::move(marked.error()));
@@ -2165,17 +2466,19 @@ core::Result<std::vector<FilePublicationRecoveryResult>> recover_cross_filesyste
                     }
                     continue;
                 }
-                if (auto exact =
-                        verify_exact_copy(*locked_source, *locked_prepared, record, cancellation);
-                    !exact) {
-                    auto issue = std::move(exact.error());
-                    if (issue.code == core::ErrorCode::cancelled) {
-                        return std::unexpected(std::move(issue));
+                if (preserves_source_bytes(record)) {
+                    if (auto exact = verify_exact_copy(*locked_source, *locked_prepared, record,
+                                                       cancellation);
+                        !exact) {
+                        auto issue = std::move(exact.error());
+                        if (issue.code == core::ErrorCode::cancelled) {
+                            return std::unexpected(std::move(issue));
+                        }
+                        if (auto marked = reconcile(record, std::move(issue)); !marked) {
+                            return std::unexpected(std::move(marked.error()));
+                        }
+                        continue;
                     }
-                    if (auto marked = reconcile(record, std::move(issue)); !marked) {
-                        return std::unexpected(std::move(marked.error()));
-                    }
-                    continue;
                 }
                 const auto prepared_path = std::filesystem::path{record.prepared_raw_path};
                 const auto target_path = std::filesystem::path{record.target_raw_path};
@@ -2259,17 +2562,19 @@ core::Result<std::vector<FilePublicationRecoveryResult>> recover_cross_filesyste
                 }
                 continue;
             }
-            if (auto exact =
-                    verify_exact_copy(*locked_source, *locked_target, record, cancellation);
-                !exact) {
-                auto issue = std::move(exact.error());
-                if (issue.code == core::ErrorCode::cancelled) {
-                    return std::unexpected(std::move(issue));
+            if (preserves_source_bytes(record)) {
+                if (auto exact =
+                        verify_exact_copy(*locked_source, *locked_target, record, cancellation);
+                    !exact) {
+                    auto issue = std::move(exact.error());
+                    if (issue.code == core::ErrorCode::cancelled) {
+                        return std::unexpected(std::move(issue));
+                    }
+                    if (auto marked = reconcile(record, std::move(issue)); !marked) {
+                        return std::unexpected(std::move(marked.error()));
+                    }
+                    continue;
                 }
-                if (auto marked = reconcile(record, std::move(issue)); !marked) {
-                    return std::unexpected(std::move(marked.error()));
-                }
-                continue;
             }
             if (auto verified = verify_cross_published_topology(record, *record.prepared_revision,
                                                                 *record.target_revision);
@@ -2382,17 +2687,19 @@ core::Result<std::vector<FilePublicationRecoveryResult>> recover_cross_filesyste
                 continue;
             }
             if (locked_source) {
-                if (auto exact =
-                        verify_exact_copy(*locked_source, *locked_target, record, cancellation);
-                    !exact) {
-                    auto issue = std::move(exact.error());
-                    if (issue.code == core::ErrorCode::cancelled) {
-                        return std::unexpected(std::move(issue));
+                if (preserves_source_bytes(record)) {
+                    if (auto exact =
+                            verify_exact_copy(*locked_source, *locked_target, record, cancellation);
+                        !exact) {
+                        auto issue = std::move(exact.error());
+                        if (issue.code == core::ErrorCode::cancelled) {
+                            return std::unexpected(std::move(issue));
+                        }
+                        if (auto marked = reconcile(record, std::move(issue)); !marked) {
+                            return std::unexpected(std::move(marked.error()));
+                        }
+                        continue;
                     }
-                    if (auto marked = reconcile(record, std::move(issue)); !marked) {
-                        return std::unexpected(std::move(marked.error()));
-                    }
-                    continue;
                 }
                 if (auto removed = remove_descriptor_entry(
                         locked_source->source, locked_source->parent,

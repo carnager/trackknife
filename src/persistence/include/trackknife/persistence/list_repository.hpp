@@ -144,11 +144,16 @@ struct LocalSourceRelocation {
     std::string target_reference;
     core::LocalSourceRevision previous_revision;
     core::LocalSourceRevision published_revision;
+    // Present only when publication changed embedded content. The same
+    // transaction then replaces embedded/stream occurrence fields and the
+    // destination metadata cache instead of copying stale source metadata.
+    std::optional<metadata::MetadataDocument> published_document;
 };
 
 struct LocalSourceRelocationResult {
     std::size_t affected_occurrences{0U};
     bool cache_rekeyed{false};
+    bool metadata_refreshed{false};
     bool already_applied{false};
 
     friend bool operator==(const LocalSourceRelocationResult&,
@@ -173,9 +178,11 @@ class ListRepository final {
     [[nodiscard]] core::Result<LocalMetadataRefreshResult>
     refresh_local_metadata(const LocalMetadataRefresh& refresh);
     // Atomically re-keys every revision-matching local occurrence and its
-    // source cache. Durable relocation history prevents a delayed workspace
-    // snapshot from resurrecting an earlier path and makes recovery replay a
-    // no-op.
+    // source cache. When published_document is present, the same transaction
+    // also replaces embedded/stream occurrence fields and the destination
+    // cache with the published document. Durable relocation history prevents
+    // a delayed workspace snapshot from resurrecting earlier path or metadata
+    // state and makes recovery replay a no-op.
     [[nodiscard]] core::Result<LocalSourceRelocationResult>
     relocate_local_source(const LocalSourceRelocation& relocation);
     [[nodiscard]] core::Result<std::vector<ConnectionProfile>> load_profiles() const;

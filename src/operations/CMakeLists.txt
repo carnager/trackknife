@@ -4,6 +4,8 @@ find_package(Threads REQUIRED)
 
 add_library(
     trackknife_operations STATIC
+    src/artwork_apply.cpp
+    src/artwork_export.cpp
     src/file_publication.cpp
     src/file_publication_apply.cpp
     src/file_publication_journal.cpp

@@ -30,8 +30,8 @@ std::string_view preparation_plan_issue_kind_name(const PreparationPlanIssueKind
         return "path plan missing";
     case PreparationPlanIssueKind::path_preflight_missing:
         return "path preflight missing";
-    case PreparationPlanIssueKind::combined_content_path_publication_unavailable:
-        return "combined content and path publication unavailable";
+    case PreparationPlanIssueKind::combined_source_mismatch:
+        return "combined metadata and path source mismatch";
     case PreparationPlanIssueKind::replaygain_unavailable:
         return "ReplayGain unavailable";
     }
@@ -135,11 +135,21 @@ assemble_preparation_plan(const PreparationOperationSelection operations,
         add_issue(PreparationPlanIssueKind::path_preflight_missing,
                   "Ready output paths have not passed fresh filesystem preflight");
     }
-    if (operations.save_tags && metadata_context_change_count > 0U && has_path) {
-        add_issue(PreparationPlanIssueKind::combined_content_path_publication_unavailable,
-                  "Saving tag changes together with Rename or Move is blocked until one verified "
-                  "artifact can be prepared directly at the destination; turn off Save tags to "
-                  "plan paths strictly from the current source tags");
+    if (operations.save_tags && metadata_context_change_count > 0U && has_path && plan.metadata &&
+        plan.output_paths) {
+        for (const auto& source : plan.metadata->sources) {
+            const auto path_source = std::ranges::find(plan.output_paths->sources, source.raw_path,
+                                                       &PlannedOutputPathSource::source_raw_path);
+            if (path_source == plan.output_paths->sources.end() || !source.expected_revision ||
+                !source.observed_revision ||
+                *source.expected_revision != *source.observed_revision ||
+                path_source->source_revision != *source.observed_revision) {
+                add_issue(PreparationPlanIssueKind::combined_source_mismatch,
+                          "A changed metadata source does not match the exact reviewed path source "
+                          "revision");
+                break;
+            }
+        }
     }
     if (operations.save_tags && metadata_context_change_count == 0U && !has_path) {
         add_issue(PreparationPlanIssueKind::no_effect,

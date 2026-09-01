@@ -101,7 +101,7 @@ void list_documents_round_trip_transactionally() {
         }
         require(opened.has_value(), "list repository must create and migrate a new database");
         auto repository = std::move(*opened);
-        require(repository.schema_version() == 20U, "state repository schema must be explicit");
+        require(repository.schema_version() == 24U, "state repository schema must be explicit");
         require(repository.replace_all(expected).has_value(),
                 "valid list documents must commit in one transaction");
         require(repository.load_all() == expected,
@@ -456,7 +456,7 @@ void output_layout_and_destination_profiles_round_trip_transactionally() {
         auto opened = persistence::ListRepository::open(database_path);
         require(opened.has_value(), "output-profile repository must open");
         auto repository = std::move(*opened);
-        require(repository.schema_version() == 20U,
+        require(repository.schema_version() == 24U,
                 "output profiles must survive the explicit schema-18 migration");
         require(repository.upsert_output_layout_profile(expected_layout).has_value() &&
                     repository.upsert_destination_profile(expected_destination).has_value(),
@@ -958,11 +958,24 @@ void committed_source_relocation_rekeys_every_occurrence_and_stale_snapshot() {
         .target_reference = middle,
         .previous_revision = tagged,
         .published_revision = copied,
+        .published_document =
+            metadata::MetadataDocument{
+                .fields = {metadata::MetadataField{
+                    .canonical_name = "title",
+                    .native_name = "TITLE",
+                    .values = {"After combined publication"},
+                    .qualifier = {},
+                    .provenance = embedded,
+                }},
+                .unsupported_native_objects = {},
+            },
     };
     require(repository.relocate_local_source(first) ==
-                persistence::LocalSourceRelocationResult{
-                    .affected_occurrences = 3U, .cache_rekeyed = true, .already_applied = false},
-            "one transaction must re-key every duplicate and the source cache");
+                persistence::LocalSourceRelocationResult{.affected_occurrences = 3U,
+                                                         .cache_rekeyed = true,
+                                                         .metadata_refreshed = true,
+                                                         .already_applied = false},
+            "one transaction must re-key every duplicate and refresh the destination cache");
     auto loaded = repository.load_all();
     require(loaded.has_value(), "relocated documents must load");
     require((*loaded)[0].items[0].source_reference == middle &&
@@ -970,14 +983,23 @@ void committed_source_relocation_rekeys_every_occurrence_and_stale_snapshot() {
                 (*loaded)[1].items[0].source_reference == middle &&
                 (*loaded)[0].items[0].source_revision == copied &&
                 (*loaded)[0].items[1].fields.back().value == "CUE title" &&
-                (*loaded)[0].items[0].fields.front().value == "After tagging" &&
+                (*loaded)[0].items[0].fields.front().value == "After combined publication" &&
                 (*loaded)[0].items[2].source == persistence::ListSource::mpd &&
                 (*loaded)[0].items[2].source_reference == middle,
             "relocation must preserve metadata overlays and leave MPD authority untouched");
     require(repository.relocate_local_source(first) ==
-                persistence::LocalSourceRelocationResult{
-                    .affected_occurrences = 3U, .cache_rekeyed = true, .already_applied = true},
+                persistence::LocalSourceRelocationResult{.affected_occurrences = 3U,
+                                                         .cache_rekeyed = true,
+                                                         .metadata_refreshed = true,
+                                                         .already_applied = true},
             "recovery replay must be an idempotent no-op");
+    auto missing_combined_document = first;
+    missing_combined_document.published_document.reset();
+    const auto rejected_content_replay =
+        repository.relocate_local_source(missing_combined_document);
+    require(!rejected_content_replay &&
+                rejected_content_replay.error().code == core::ErrorCode::conflict,
+            "combined relocation evidence cannot replay as a path-only transaction");
     auto mismatched = first;
     mismatched.target_reference = target;
     const auto rejected_replay = repository.relocate_local_source(mismatched);
@@ -989,8 +1011,8 @@ void committed_source_relocation_rekeys_every_occurrence_and_stale_snapshot() {
     loaded = repository.load_all();
     require(loaded && (*loaded)[0].items[0].source_reference == middle &&
                 (*loaded)[0].items[0].source_revision == copied &&
-                (*loaded)[0].items[0].fields.front().value == "After tagging",
-            "relocation history and the re-keyed cache must dominate a stale snapshot");
+                (*loaded)[0].items[0].fields.front().value == "After combined publication",
+            "relocation history and the refreshed cache must dominate a stale snapshot");
 
     const persistence::LocalSourceRelocation second{
         .operation_id = core::StableId::random(),
@@ -998,10 +1020,13 @@ void committed_source_relocation_rekeys_every_occurrence_and_stale_snapshot() {
         .target_reference = target,
         .previous_revision = copied,
         .published_revision = copied_again,
+        .published_document = std::nullopt,
     };
     require(repository.relocate_local_source(second) ==
-                persistence::LocalSourceRelocationResult{
-                    .affected_occurrences = 3U, .cache_rekeyed = true, .already_applied = false},
+                persistence::LocalSourceRelocationResult{.affected_occurrences = 3U,
+                                                         .cache_rekeyed = true,
+                                                         .metadata_refreshed = false,
+                                                         .already_applied = false},
             "a later relocation must advance the same physical source again");
     require(repository.replace_all(*stale_snapshot).has_value(),
             "a snapshot from before both relocations may still be submitted");
@@ -1010,7 +1035,7 @@ void committed_source_relocation_rekeys_every_occurrence_and_stale_snapshot() {
                 (*loaded)[0].items[1].source_reference == target &&
                 (*loaded)[1].items[0].source_reference == target &&
                 (*loaded)[0].items[0].source_revision == copied_again &&
-                (*loaded)[0].items[0].fields.front().value == "After tagging",
+                (*loaded)[0].items[0].fields.front().value == "After combined publication",
             "relocation replay must follow the ordered source-to-target chain");
 
     const core::LocalSourceRevision reused_path_revision{.device = 90,
@@ -1045,14 +1070,271 @@ void committed_source_relocation_rekeys_every_occurrence_and_stale_snapshot() {
         .target_reference = target,
         .previous_revision = reused_path_revision,
         .published_revision = reused_path_revision,
+        .published_document = std::nullopt,
     });
     require(!collision && collision.error().code == core::ErrorCode::conflict &&
                 repository.load_all() == loaded,
             "a persisted target collision must reject the complete relocation transaction");
     auto reopened = persistence::ListRepository::open(database_path);
-    require(reopened && reopened->schema_version() == 20U && reopened->load_all() == loaded,
+    require(reopened && reopened->schema_version() == 24U && reopened->load_all() == loaded,
             "relocation evidence and resolved paths must survive reopening schema 18");
 
+    cleanup();
+}
+
+void unowned_target_metadata_cache_is_superseded_by_relocation() {
+    namespace core = trackknife::core;
+    namespace metadata = trackknife::metadata;
+    namespace persistence = trackknife::persistence;
+    const auto database_path = std::filesystem::temp_directory_path() /
+                               ("trackknife-reused-relocation-target-" +
+                                core::StableId::random().to_string() + ".sqlite3");
+    const auto cleanup = [&] {
+        std::error_code ignored;
+        std::filesystem::remove(database_path, ignored);
+        std::filesystem::remove(database_path.string() + "-wal", ignored);
+        std::filesystem::remove(database_path.string() + "-shm", ignored);
+    };
+    const std::string old_source{"/music/old-source.flac"};
+    const std::string current_source{"/music/current-source.flac"};
+    const std::string reused_target{"/music/reused-target.flac"};
+    const core::LocalSourceRevision old_revision{.device = 1,
+                                                 .inode = 2,
+                                                 .size = 3,
+                                                 .modification_time_seconds = 4,
+                                                 .modification_time_nanoseconds = 5};
+    const core::LocalSourceRevision old_tagged{.device = 1,
+                                               .inode = 6,
+                                               .size = 7,
+                                               .modification_time_seconds = 8,
+                                               .modification_time_nanoseconds = 9};
+    const core::LocalSourceRevision old_target_revision{.device = 1,
+                                                        .inode = 6,
+                                                        .size = 7,
+                                                        .modification_time_seconds = 10,
+                                                        .modification_time_nanoseconds = 11};
+    const core::LocalSourceRevision current_revision{.device = 1,
+                                                     .inode = 12,
+                                                     .size = 13,
+                                                     .modification_time_seconds = 14,
+                                                     .modification_time_nanoseconds = 15};
+    const core::LocalSourceRevision published_revision{.device = 1,
+                                                       .inode = 16,
+                                                       .size = 17,
+                                                       .modification_time_seconds = 18,
+                                                       .modification_time_nanoseconds = 19};
+    const auto document_id = core::StableId::random();
+    const auto list_document = [&](const std::string& source,
+                                   const core::LocalSourceRevision& revision,
+                                   const std::string& title) {
+        return persistence::ListDocument{
+            .id = document_id,
+            .kind = persistence::ListKind::scratch,
+            .name = "Reused target",
+            .pinned = false,
+            .dirty = true,
+            .items = {persistence::ListItem{
+                .source = persistence::ListSource::local,
+                .profile_id = std::nullopt,
+                .source_reference = source,
+                .logical_reference = std::nullopt,
+                .segment = std::nullopt,
+                .source_selection = std::nullopt,
+                .duration_ms = std::nullopt,
+                .source_revision = revision,
+                .fields = {{.name = "title",
+                            .value = title,
+                            .native_name = "TITLE",
+                            .provenance = metadata::FieldProvenance::embedded}},
+            }},
+        };
+    };
+    const auto metadata_document = [](const std::string& title) {
+        return metadata::MetadataDocument{
+            .fields = {metadata::MetadataField{
+                .canonical_name = "title",
+                .native_name = "TITLE",
+                .values = {title},
+                .qualifier = {},
+                .provenance = metadata::FieldProvenance::embedded,
+            }},
+            .unsupported_native_objects = {},
+        };
+    };
+
+    auto opened = persistence::ListRepository::open(database_path);
+    require(opened.has_value(), "reused-target repository must open");
+    auto repository = std::move(*opened);
+    const std::vector old_documents{list_document(old_source, old_revision, "Old title")};
+    require(repository.replace_all(old_documents).has_value(),
+            "old target owner must persist before the first publication");
+    require(repository
+                .refresh_local_metadata(persistence::LocalMetadataRefresh{
+                    .operation_id = core::StableId::random(),
+                    .source_reference = old_source,
+                    .previous_revision = old_revision,
+                    .published_revision = old_tagged,
+                    .document = metadata_document("Old cached title"),
+                })
+                .has_value(),
+            "the first publication must establish a source metadata cache");
+    require(repository
+                .relocate_local_source(persistence::LocalSourceRelocation{
+                    .operation_id = core::StableId::random(),
+                    .source_reference = old_source,
+                    .target_reference = reused_target,
+                    .previous_revision = old_tagged,
+                    .published_revision = old_target_revision,
+                    .published_document = std::nullopt,
+                })
+                .has_value(),
+            "the first path publication must establish the historical target cache");
+
+    const std::vector current_documents{
+        list_document(current_source, current_revision, "Current source title")};
+    require(repository.replace_all(current_documents).has_value(),
+            "the historical target cache may outlive its last list occurrence");
+    const auto combined = repository.relocate_local_source(persistence::LocalSourceRelocation{
+        .operation_id = core::StableId::random(),
+        .source_reference = current_source,
+        .target_reference = reused_target,
+        .previous_revision = current_revision,
+        .published_revision = published_revision,
+        .published_document = metadata_document("New published title"),
+    });
+    require(combined == persistence::LocalSourceRelocationResult{.affected_occurrences = 1U,
+                                                                 .cache_rekeyed = false,
+                                                                 .metadata_refreshed = true,
+                                                                 .already_applied = false},
+            "an unowned historical target cache must be atomically superseded");
+    auto loaded = repository.load_all();
+    require(loaded && loaded->front().items.front().source_reference == reused_target &&
+                loaded->front().items.front().source_revision == published_revision &&
+                loaded->front().items.front().fields.front().value == "New published title",
+            "the reused target must expose only its newly verified revision and metadata");
+    require(repository.replace_all(current_documents).has_value(),
+            "a delayed current-source snapshot must still follow the new relocation");
+    loaded = repository.load_all();
+    require(loaded && loaded->front().items.front().source_reference == reused_target &&
+                loaded->front().items.front().source_revision == published_revision &&
+                loaded->front().items.front().fields.front().value == "New published title",
+            "the replacement cache must continue to dominate a delayed workspace snapshot");
+    cleanup();
+}
+
+void previously_resolved_target_reconciles_fresh_relocation() {
+    namespace core = trackknife::core;
+    namespace metadata = trackknife::metadata;
+    namespace persistence = trackknife::persistence;
+    const auto database_path =
+        std::filesystem::temp_directory_path() /
+        ("trackknife-pre-resolved-relocation-" + core::StableId::random().to_string() + ".sqlite3");
+    const auto cleanup = [&database_path] {
+        std::error_code ignored;
+        std::filesystem::remove(database_path, ignored);
+        std::filesystem::remove(database_path.string() + "-wal", ignored);
+        std::filesystem::remove(database_path.string() + "-shm", ignored);
+    };
+    cleanup();
+
+    const std::string source{"/music/source.flac"};
+    const std::string target{"/music/organized/source.flac"};
+    const core::LocalSourceRevision source_revision{.device = 10,
+                                                    .inode = 11,
+                                                    .size = 12,
+                                                    .modification_time_seconds = 13,
+                                                    .modification_time_nanoseconds = 14};
+    const core::LocalSourceRevision published_revision{.device = 10,
+                                                       .inode = 11,
+                                                       .size = 20,
+                                                       .modification_time_seconds = 21,
+                                                       .modification_time_nanoseconds = 22};
+    const auto document_id = core::StableId::random();
+    const auto list_document = [&](const std::string& reference, const std::string& title) {
+        return persistence::ListDocument{
+            .id = document_id,
+            .kind = persistence::ListKind::scratch,
+            .name = "Freshly reopened source",
+            .pinned = false,
+            .dirty = true,
+            .items = {persistence::ListItem{
+                .source = persistence::ListSource::local,
+                .profile_id = std::nullopt,
+                .source_reference = reference,
+                .logical_reference = std::nullopt,
+                .segment = std::nullopt,
+                .source_selection = std::nullopt,
+                .duration_ms = std::nullopt,
+                .source_revision = source_revision,
+                .fields = {{.name = "title",
+                            .value = title,
+                            .native_name = "TITLE",
+                            .provenance = metadata::FieldProvenance::embedded}},
+            }},
+        };
+    };
+    const auto published_document = metadata::MetadataDocument{
+        .fields = {metadata::MetadataField{
+            .canonical_name = "title",
+            .native_name = "TITLE",
+            .values = {"Published again"},
+            .qualifier = {},
+            .provenance = metadata::FieldProvenance::embedded,
+        }},
+        .unsupported_native_objects = {},
+    };
+
+    auto opened = persistence::ListRepository::open(database_path);
+    require(opened.has_value(), "pre-resolved relocation repository must open");
+    auto repository = std::move(*opened);
+    const std::vector original{list_document(source, "Original")};
+    require(repository.replace_all(original).has_value(), "original source must persist");
+    require(repository
+                .relocate_local_source(persistence::LocalSourceRelocation{
+                    .operation_id = core::StableId::random(),
+                    .source_reference = source,
+                    .target_reference = target,
+                    .previous_revision = source_revision,
+                    .published_revision = source_revision,
+                    .published_document = std::nullopt,
+                })
+                .has_value(),
+            "the first relocation must establish revision-qualified history");
+
+    const std::vector reopened{list_document(source, "Freshly reopened")};
+    require(repository.replace_all(reopened).has_value(),
+            "workspace persistence may pre-resolve a reopened source to its old target");
+    auto loaded = repository.load_all();
+    require(loaded && loaded->front().items.front().source_reference == target &&
+                loaded->front().items.front().source_revision == source_revision,
+            "the regression fixture must begin with the occurrence already at the target");
+
+    const auto operation_id = core::StableId::random();
+    const persistence::LocalSourceRelocation relocation{
+        .operation_id = operation_id,
+        .source_reference = source,
+        .target_reference = target,
+        .previous_revision = source_revision,
+        .published_revision = published_revision,
+        .published_document = published_document,
+    };
+    require(repository.relocate_local_source(relocation) ==
+                persistence::LocalSourceRelocationResult{.affected_occurrences = 1U,
+                                                         .cache_rekeyed = false,
+                                                         .metadata_refreshed = true,
+                                                         .already_applied = false},
+            "an exact pre-resolved target occurrence must join the fresh publication");
+    loaded = repository.load_all();
+    require(loaded && loaded->front().items.front().source_reference == target &&
+                loaded->front().items.front().source_revision == published_revision &&
+                loaded->front().items.front().fields.front().value == "Published again",
+            "pre-resolved occurrences must receive the published revision and metadata");
+    require(repository.relocate_local_source(relocation) ==
+                persistence::LocalSourceRelocationResult{.affected_occurrences = 1U,
+                                                         .cache_rekeyed = false,
+                                                         .metadata_refreshed = true,
+                                                         .already_applied = true},
+            "pre-resolved reconciliation must remain idempotent");
     cleanup();
 }
 
@@ -1125,6 +1407,8 @@ int main() {
     output_layout_and_destination_profiles_round_trip_transactionally();
     committed_metadata_refreshes_every_occurrence_idempotently();
     committed_source_relocation_rekeys_every_occurrence_and_stale_snapshot();
+    unowned_target_metadata_cache_is_superseded_by_relocation();
+    previously_resolved_target_reconciles_fresh_relocation();
     legacy_logical_snapshots_block_refresh();
     return EXIT_SUCCESS;
 }

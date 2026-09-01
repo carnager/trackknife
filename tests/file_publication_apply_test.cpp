@@ -222,6 +222,48 @@ void oneDependentFailureDoesNotRollbackUnrelatedSuccess() {
             "failed publication must roll back without reversing an unrelated commit");
 }
 
+void failedMemberRetainsOwnershipOfCreatedBatchDirectories() {
+    TemporaryDirectory directory;
+    const auto first = directory.path() / "first.flac";
+    const auto second = directory.path() / "second.flac";
+    const auto target_parent = directory.path() / "organized" / "Artist" / "Album";
+    const auto first_target = target_parent / "first.flac";
+    const auto second_target = target_parent / "second.flac";
+    write_file(first, "first rollback bytes");
+    write_file(second, "second publication bytes");
+    const auto checked =
+        preflight_batch({{first, first_target}, {second, second_target}}, directory.path());
+    require(checked.sources[0].missing_directory_raw_paths ==
+                checked.sources[1].missing_directory_raw_paths,
+            "rollback fixture must share its reviewed missing directories");
+
+    auto journal = open_journal(directory, "rollback-directories.sqlite3");
+    const auto applied = operations::apply_file_publications(
+        checked, journal,
+        [&first](const operations::FilePublicationCommitResult& result) -> core::Result<void> {
+            if (result.source_raw_path == first.native()) {
+                return std::unexpected(core::Error{
+                    .code = core::ErrorCode::database,
+                    .message = "injected dependent-state conflict after directory creation",
+                    .context = {},
+                });
+            }
+            return {};
+        },
+        {}, {}, operations::FilePublicationApplyOptions{.maximum_parallelism = 1U});
+    require(applied && applied->failed_source_count() == 1U &&
+                applied->committed_source_count() == 1U && applied->sources[0].issue &&
+                applied->sources[0].issue->message ==
+                    "injected dependent-state conflict after directory creation" &&
+                applied->sources[1].state == operations::FilePublicationApplySourceState::committed,
+            "a rolled-back member must not make its executor-created directories external to the "
+            "remaining batch");
+    require(std::filesystem::exists(first) && !std::filesystem::exists(first_target) &&
+                !std::filesystem::exists(second) &&
+                read_file(second_target) == "second publication bytes",
+            "the failed member must roll back while the next member uses the established parent");
+}
+
 void freshAdmissionRejectsChangedSourcesAndExternalDirectories() {
     TemporaryDirectory directory;
     const auto changed = directory.path() / "changed.flac";
@@ -379,6 +421,7 @@ int main() {
     rejectsInvalidBatchContracts();
     sharedDirectoriesCommitInOrderPreservingResults();
     oneDependentFailureDoesNotRollbackUnrelatedSuccess();
+    failedMemberRetainsOwnershipOfCreatedBatchDirectories();
     freshAdmissionRejectsChangedSourcesAndExternalDirectories();
     cancellationStopsAdmissionAndRollsBackInFlightSources();
     dispatchesCrossFilesystemPublicationWhenAvailable();

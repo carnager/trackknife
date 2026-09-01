@@ -6,6 +6,7 @@
 #include "trackknife/core/local_sources.hpp"
 #include "trackknife/core/result.hpp"
 #include "trackknife/core/stable_id.hpp"
+#include "trackknife/metadata/artwork_write_plan.hpp"
 #include "trackknife/metadata/document.hpp"
 #include "trackknife/metadata/write_plan.hpp"
 #include "trackknife/operations/metadata_journal.hpp"
@@ -41,6 +42,15 @@ commit_flac_metadata_source(const metadata::MetadataWritePlanSource& source_plan
                             MetadataOperationJournal& journal,
                             const MetadataDependentStateCommitter& dependent_state_committer,
                             const core::CancellationToken& cancellation = {});
+
+// Executes one ready native-FLAC embedded-artwork plan through the same
+// unchanged-path publication, undo, and restart-recovery lifecycle as text
+// metadata. Artwork bytes are never written to the operation database.
+[[nodiscard]] core::Result<MetadataCommitResult>
+commit_flac_artwork_source(const metadata::ArtworkWritePlanSource& source_plan,
+                           MetadataOperationJournal& journal,
+                           const MetadataDependentStateCommitter& dependent_state_committer,
+                           const core::CancellationToken& cancellation = {});
 
 enum class MetadataRecoveryOutcome : std::uint8_t {
     completed,

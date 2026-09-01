@@ -503,7 +503,9 @@ make_journal_record(const metadata::MetadataWritePlanSource& source_plan,
         .prepared_revision = std::nullopt,
         .published_revision = std::nullopt,
         .occurrence_indexes = source_plan.occurrence_indexes,
+        .content_kind = MetadataOperationContentKind::text_fields,
         .changes = {},
+        .artwork = std::nullopt,
         .failure = std::nullopt,
     };
     record.changes.reserve(source_plan.changes.size());
@@ -551,6 +553,200 @@ make_journal_record(const metadata::MetadataWritePlanSource& source_plan,
         });
     }
     return record;
+}
+
+[[nodiscard]] metadata::ArtworkInventoryPolicy embedded_artwork_policy() {
+    auto policy = metadata::default_artwork_inventory_policy();
+    policy.external_patterns.clear();
+    return policy;
+}
+
+[[nodiscard]] core::Result<metadata::LocalArtworkInventory>
+read_embedded_artwork_inventory(const std::string& raw_path,
+                                const core::CancellationToken& cancellation = {}) {
+    return metadata::read_local_artwork_inventory(raw_path, embedded_artwork_policy(),
+                                                  cancellation);
+}
+
+[[nodiscard]] std::string canonical_flac_picture_type(const metadata::ArtworkRole role) {
+    switch (role) {
+    case metadata::ArtworkRole::front:
+        return "Front Cover";
+    case metadata::ArtworkRole::back:
+        return "Back Cover";
+    case metadata::ArtworkRole::artist:
+        return "Artist";
+    case metadata::ArtworkRole::disc:
+        return "Media";
+    case metadata::ArtworkRole::icon:
+        return "File Icon";
+    case metadata::ArtworkRole::other:
+        return "Other";
+    }
+    return "Other";
+}
+
+[[nodiscard]] core::Result<std::vector<metadata::ArtworkInventoryItem>>
+project_artwork_inventory(const metadata::LocalArtworkInventory& inventory,
+                          const metadata::ArtworkWritePlanSource& source_plan) {
+    auto projected = inventory.items;
+    if (source_plan.change.kind == metadata::ArtworkWritePlanIntentKind::add) {
+        if (source_plan.change.original || !source_plan.change.replacement ||
+            source_plan.change.target_ordinal != projected.size()) {
+            return std::unexpected(
+                operation_error(core::ErrorCode::conflict,
+                                "fresh embedded artwork differs from the previewed insertion point",
+                                source_plan.raw_media_path));
+        }
+        const auto& replacement = *source_plan.change.replacement;
+        if (std::ranges::any_of(projected, [&](const auto& item) {
+                return item.content_fingerprint == replacement.content_fingerprint;
+            })) {
+            return std::unexpected(operation_error(core::ErrorCode::conflict,
+                                                   "added artwork already exists in the target",
+                                                   source_plan.raw_media_path));
+        }
+        projected.push_back(metadata::ArtworkInventoryItem{
+            .role = source_plan.change.added_role,
+            .native_type = canonical_flac_picture_type(source_plan.change.added_role),
+            .mime_type = replacement.mime_type,
+            .description = source_plan.change.added_description,
+            .width = replacement.width,
+            .height = replacement.height,
+            .byte_size = replacement.byte_size,
+            .content_fingerprint = replacement.content_fingerprint,
+            .provenance = metadata::ArtworkProvenance::embedded,
+            .raw_source_path = source_plan.raw_media_path,
+            .source_revision = inventory.media_revision,
+            .source_ordinal = projected.size(),
+            .duplicate_of = std::nullopt,
+        });
+        return projected;
+    }
+    const auto target = std::ranges::find_if(projected, [&](const auto& item) {
+        return item.provenance == metadata::ArtworkProvenance::embedded &&
+               item.source_ordinal == source_plan.change.target_ordinal;
+    });
+    if (target == projected.end() || !source_plan.change.original ||
+        *target != *source_plan.change.original ||
+        target->content_fingerprint != source_plan.change.expected_target_fingerprint) {
+        return std::unexpected(operation_error(
+            core::ErrorCode::conflict, "fresh embedded artwork differs from the previewed target",
+            source_plan.raw_media_path));
+    }
+    if (source_plan.change.kind == metadata::ArtworkWritePlanIntentKind::replace) {
+        if (!source_plan.change.replacement) {
+            return std::unexpected(
+                operation_error(core::ErrorCode::invalid_argument,
+                                "artwork replacement plan has no verified replacement",
+                                source_plan.raw_media_path));
+        }
+        const auto& replacement = *source_plan.change.replacement;
+        target->mime_type = replacement.mime_type;
+        target->width = replacement.width;
+        target->height = replacement.height;
+        target->byte_size = replacement.byte_size;
+        target->content_fingerprint = replacement.content_fingerprint;
+        target->duplicate_of.reset();
+    } else {
+        projected.erase(target);
+        for (std::size_t index = 0U; index < projected.size(); ++index) {
+            projected[index].source_ordinal = index;
+            projected[index].duplicate_of.reset();
+        }
+    }
+    return projected;
+}
+
+[[nodiscard]] core::Result<MetadataOperationJournalRecord>
+make_artwork_journal_record(const metadata::ArtworkWritePlanSource& source_plan,
+                            const metadata::LocalArtworkInventory& inventory,
+                            const core::StableId& journal_id) {
+    auto projected = project_artwork_inventory(inventory, source_plan);
+    if (!projected) {
+        return std::unexpected(std::move(projected.error()));
+    }
+    auto original_fingerprint = metadata::fingerprint_embedded_artwork_inventory(inventory.items);
+    auto planned_fingerprint = metadata::fingerprint_embedded_artwork_inventory(*projected);
+    if (!original_fingerprint || !planned_fingerprint) {
+        return std::unexpected(!original_fingerprint ? std::move(original_fingerprint.error())
+                                                     : std::move(planned_fingerprint.error()));
+    }
+    const auto [prepared_path, backup_path] = sibling_paths(source_plan.raw_media_path, journal_id);
+    return MetadataOperationJournalRecord{
+        .id = journal_id,
+        .state = State::planned,
+        .source_raw_path = source_plan.raw_media_path,
+        .prepared_raw_path = prepared_path,
+        .backup_raw_path = backup_path,
+        .expected_revision = *source_plan.observed_media_revision,
+        .prepared_revision = std::nullopt,
+        .published_revision = std::nullopt,
+        .occurrence_indexes = source_plan.occurrence_indexes,
+        .content_kind = MetadataOperationContentKind::embedded_artwork,
+        .changes = {},
+        .artwork =
+            MetadataOperationJournalArtwork{
+                .kind = source_plan.change.kind,
+                .target_ordinal = source_plan.change.target_ordinal,
+                .original_item_count = inventory.items.size(),
+                .planned_item_count = projected->size(),
+                .original_target_fingerprint =
+                    source_plan.change.kind == metadata::ArtworkWritePlanIntentKind::add
+                        ? std::nullopt
+                        : std::optional{source_plan.change.expected_target_fingerprint},
+                .replacement_fingerprint =
+                    source_plan.change.replacement
+                        ? std::optional{source_plan.change.replacement->content_fingerprint}
+                        : std::nullopt,
+                .original_inventory_fingerprint = *original_fingerprint,
+                .planned_inventory_fingerprint = *planned_fingerprint,
+            },
+        .failure = std::nullopt,
+    };
+}
+
+[[nodiscard]] core::Result<metadata::MetadataDocument>
+verify_published_content(const MetadataOperationJournalRecord& record,
+                         const core::LocalSourceRevision& revision,
+                         const core::CancellationToken& cancellation = {}) {
+    auto reread = metadata::read_local_metadata(record.source_raw_path, cancellation);
+    if (!reread || reread->source_revision != revision) {
+        return std::unexpected(
+            !reread ? std::move(reread.error())
+                    : operation_error(core::ErrorCode::conflict,
+                                      "published metadata has an unexpected revision",
+                                      record.source_raw_path, record.id));
+    }
+    if (record.content_kind == MetadataOperationContentKind::text_fields) {
+        if (!planned_fields_match(reread->document, record)) {
+            return std::unexpected(operation_error(core::ErrorCode::conflict,
+                                                   "published metadata fields failed verification",
+                                                   record.source_raw_path, record.id));
+        }
+        return std::move(reread->document);
+    }
+    if (!record.artwork) {
+        return std::unexpected(operation_error(core::ErrorCode::invariant,
+                                               "artwork journal evidence is missing",
+                                               record.source_raw_path, record.id));
+    }
+    auto inventory = read_embedded_artwork_inventory(record.source_raw_path, cancellation);
+    if (!inventory) {
+        return std::unexpected(std::move(inventory.error()));
+    }
+    auto fingerprint = metadata::fingerprint_embedded_artwork_inventory(inventory->items);
+    if (!fingerprint) {
+        return std::unexpected(std::move(fingerprint.error()));
+    }
+    if (inventory->media_revision != revision ||
+        inventory->items.size() != record.artwork->planned_item_count ||
+        *fingerprint != record.artwork->planned_inventory_fingerprint) {
+        return std::unexpected(operation_error(core::ErrorCode::conflict,
+                                               "published embedded artwork failed verification",
+                                               record.source_raw_path, record.id));
+    }
+    return std::move(reread->document);
 }
 
 [[nodiscard]] core::Result<void>
@@ -721,6 +917,48 @@ verified_commit_result(const MetadataOperationJournalRecord& record,
         }
     }
     return true;
+}
+
+[[nodiscard]] core::Result<metadata::MetadataDocument>
+verify_original_content(const MetadataOperationJournalRecord& record,
+                        const core::CancellationToken& cancellation = {}) {
+    auto reread = metadata::read_local_metadata(record.source_raw_path, cancellation);
+    if (!reread || reread->source_revision != record.expected_revision) {
+        return std::unexpected(!reread
+                                   ? std::move(reread.error())
+                                   : operation_error(core::ErrorCode::conflict,
+                                                     "restored metadata has an unexpected revision",
+                                                     record.source_raw_path, record.id));
+    }
+    if (record.content_kind == MetadataOperationContentKind::text_fields) {
+        if (!original_fields_match(reread->document, record)) {
+            return std::unexpected(operation_error(
+                core::ErrorCode::conflict, "restored metadata fields failed undo verification",
+                record.source_raw_path, record.id));
+        }
+        return std::move(reread->document);
+    }
+    if (!record.artwork) {
+        return std::unexpected(operation_error(core::ErrorCode::invariant,
+                                               "artwork journal evidence is missing",
+                                               record.source_raw_path, record.id));
+    }
+    auto inventory = read_embedded_artwork_inventory(record.source_raw_path, cancellation);
+    if (!inventory) {
+        return std::unexpected(std::move(inventory.error()));
+    }
+    auto fingerprint = metadata::fingerprint_embedded_artwork_inventory(inventory->items);
+    if (!fingerprint) {
+        return std::unexpected(std::move(fingerprint.error()));
+    }
+    if (inventory->media_revision != record.expected_revision ||
+        inventory->items.size() != record.artwork->original_item_count ||
+        *fingerprint != record.artwork->original_inventory_fingerprint) {
+        return std::unexpected(operation_error(core::ErrorCode::conflict,
+                                               "restored embedded artwork failed undo verification",
+                                               record.source_raw_path, record.id));
+    }
+    return std::move(reread->document);
 }
 
 [[nodiscard]] core::Result<void>
@@ -932,14 +1170,9 @@ finish_metadata_undo(MetadataOperationBackupRecord backup, MetadataOperationJour
         return std::unexpected(issue);
     };
 
-    auto reread = metadata::read_local_metadata(record.source_raw_path);
-    if (!reread || reread->source_revision != record.expected_revision ||
-        !original_fields_match(reread->document, record)) {
-        const auto issue = !reread ? reread.error()
-                                   : operation_error(core::ErrorCode::conflict,
-                                                     "restored metadata failed undo verification",
-                                                     record.source_raw_path, record.id);
-        return restore_publication(issue);
+    auto reread = verify_original_content(record, cancellation);
+    if (!reread) {
+        return restore_publication(reread.error());
     }
     MetadataCommitResult result{
         .journal_id = *backup.undo_id,
@@ -947,7 +1180,7 @@ finish_metadata_undo(MetadataOperationBackupRecord backup, MetadataOperationJour
         .backup_raw_path = record.backup_raw_path,
         .previous_revision = *record.published_revision,
         .published_revision = record.expected_revision,
-        .document = reread->document,
+        .document = *reread,
         .occurrence_indexes = record.occurrence_indexes,
     };
     if (auto dependent = dependent_state_committer(result); !dependent) {
@@ -980,6 +1213,266 @@ finish_metadata_undo(MetadataOperationBackupRecord backup, MetadataOperationJour
     }
     auto completed = transition_backup(journal, record.id, BackupState::undoing,
                                        BackupState::undone, backup.undo_id);
+    if (!completed) {
+        return std::unexpected(std::move(completed.error()));
+    }
+    return result;
+}
+
+[[nodiscard]] core::Result<MetadataCommitResult> publish_prepared_metadata_copy(
+    const MetadataOperationJournalRecord& record, const Descriptor& source_descriptor,
+    const struct stat& source_status, const std::vector<ExtendedAttribute>& source_attributes,
+    const core::LocalSourceRevision& initial_prepared_revision,
+    const metadata::MetadataDocument& prepared_document, MetadataOperationJournal& journal,
+    const MetadataDependentStateCommitter& dependent_state_committer,
+    const core::CancellationToken& cancellation) {
+    auto prepared_descriptor = open_and_lock_file(record.prepared_raw_path, cancellation,
+                                                  record.source_raw_path, record.id);
+    if (!prepared_descriptor) {
+        const auto& failure = prepared_descriptor.error();
+        const auto cleaned = unlink_if_matches(record.prepared_raw_path, initial_prepared_revision,
+                                               record.source_raw_path, record.id);
+        const bool restored = cleaned.has_value();
+        auto terminal =
+            record_terminal_failure(journal, record, State::planned, initial_prepared_revision,
+                                    std::nullopt, failure, restored);
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(restored ? failure : cleaned.error());
+    }
+    auto metadata_applied =
+        apply_filesystem_metadata(source_descriptor, source_status, source_attributes,
+                                  *prepared_descriptor, record.source_raw_path, record.id);
+    if (metadata_applied && ::fsync(prepared_descriptor->get()) != 0) {
+        metadata_applied = std::unexpected(system_error("syncing prepared metadata file failed",
+                                                        errno, record.source_raw_path, record.id));
+    }
+    if (!metadata_applied) {
+        const auto& failure = metadata_applied.error();
+        const auto cleaned = unlink_if_matches(record.prepared_raw_path, initial_prepared_revision,
+                                               record.source_raw_path, record.id);
+        const bool restored = cleaned.has_value();
+        auto terminal =
+            record_terminal_failure(journal, record, State::planned, initial_prepared_revision,
+                                    std::nullopt, failure, restored);
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(restored ? failure : cleaned.error());
+    }
+    auto prepared_status = locked_status(*prepared_descriptor, record.source_raw_path, record.id);
+    if (!prepared_status) {
+        const auto& failure = prepared_status.error();
+        const auto cleaned = unlink_if_matches(record.prepared_raw_path, initial_prepared_revision,
+                                               record.source_raw_path, record.id);
+        auto terminal =
+            record_terminal_failure(journal, record, State::planned, initial_prepared_revision,
+                                    std::nullopt, failure, cleaned.has_value());
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(cleaned ? failure : cleaned.error());
+    }
+    const auto prepared_revision = revision_from_stat(*prepared_status);
+    auto prepared_transition = transition(journal, record, State::planned, State::prepared,
+                                          prepared_revision, std::nullopt);
+    if (!prepared_transition) {
+        const auto& failure = prepared_transition.error();
+        const auto cleaned = unlink_if_matches(record.prepared_raw_path, prepared_revision,
+                                               record.source_raw_path, record.id);
+        if (cleaned) {
+            static_cast<void>(record_terminal_failure(
+                journal, record, State::planned, prepared_revision, std::nullopt, failure, true));
+        } else {
+            static_cast<void>(record_terminal_failure(journal, record, State::planned,
+                                                      prepared_revision, std::nullopt,
+                                                      cleaned.error(), false));
+        }
+        return std::unexpected(failure);
+    }
+
+    if (cancellation.is_cancellation_requested()) {
+        const auto failure = cancelled(record.source_raw_path);
+        const auto cleaned = unlink_if_matches(record.prepared_raw_path, prepared_revision,
+                                               record.source_raw_path, record.id);
+        auto terminal = record_terminal_failure(journal, record, State::prepared, prepared_revision,
+                                                std::nullopt, failure, cleaned.has_value());
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(cleaned ? failure : cleaned.error());
+    }
+
+    auto current_source = core::observe_local_source_revision(record.source_raw_path);
+    if (!current_source || *current_source != record.expected_revision ||
+        ::link(record.source_raw_path.c_str(), record.backup_raw_path.c_str()) != 0) {
+        auto failure = !current_source
+                           ? std::move(current_source.error())
+                           : (*current_source != record.expected_revision
+                                  ? operation_error(core::ErrorCode::conflict,
+                                                    "metadata source changed before publication",
+                                                    record.source_raw_path, record.id)
+                                  : system_error("creating metadata backup failed", errno,
+                                                 record.source_raw_path, record.id));
+        const auto cleaned = unlink_if_matches(record.prepared_raw_path, prepared_revision,
+                                               record.source_raw_path, record.id);
+        auto terminal = record_terminal_failure(journal, record, State::prepared, prepared_revision,
+                                                std::nullopt, failure, cleaned.has_value());
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(cleaned ? failure : cleaned.error());
+    }
+    auto backup_source = core::observe_local_source_revision(record.source_raw_path);
+    auto backup = core::observe_local_source_revision(record.backup_raw_path);
+    if (!backup_source || !backup || *backup_source != record.expected_revision ||
+        *backup != record.expected_revision) {
+        const auto failure =
+            !backup_source
+                ? backup_source.error()
+                : (!backup
+                       ? backup.error()
+                       : operation_error(core::ErrorCode::conflict,
+                                         "metadata backup does not preserve the expected source",
+                                         record.source_raw_path, record.id));
+        const auto backup_cleaned = unlink_if_matches(
+            record.backup_raw_path, record.expected_revision, record.source_raw_path, record.id);
+        const auto prepared_cleaned = unlink_if_matches(record.prepared_raw_path, prepared_revision,
+                                                        record.source_raw_path, record.id);
+        const bool restored = backup_cleaned.has_value() && prepared_cleaned.has_value();
+        auto terminal = record_terminal_failure(journal, record, State::prepared, prepared_revision,
+                                                std::nullopt, failure, restored);
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(
+            restored ? failure
+                     : (!backup_cleaned ? backup_cleaned.error() : prepared_cleaned.error()));
+    }
+    auto directory_synced = fsync_parent(record.source_raw_path, record.source_raw_path, record.id);
+    if (!directory_synced) {
+        const auto& failure = directory_synced.error();
+        const auto backup_cleaned = unlink_if_matches(
+            record.backup_raw_path, record.expected_revision, record.source_raw_path, record.id);
+        const auto prepared_cleaned = unlink_if_matches(record.prepared_raw_path, prepared_revision,
+                                                        record.source_raw_path, record.id);
+        const bool restored = backup_cleaned.has_value() && prepared_cleaned.has_value();
+        auto terminal = record_terminal_failure(journal, record, State::prepared, prepared_revision,
+                                                std::nullopt, failure, restored);
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(failure);
+    }
+    if (cancellation.is_cancellation_requested()) {
+        const auto failure = cancelled(record.source_raw_path);
+        const auto backup_cleaned = unlink_if_matches(
+            record.backup_raw_path, record.expected_revision, record.source_raw_path, record.id);
+        const auto prepared_cleaned = unlink_if_matches(record.prepared_raw_path, prepared_revision,
+                                                        record.source_raw_path, record.id);
+        const bool restored = backup_cleaned.has_value() && prepared_cleaned.has_value();
+        auto terminal = record_terminal_failure(journal, record, State::prepared, prepared_revision,
+                                                std::nullopt, failure, restored);
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(failure);
+    }
+
+    if (::rename(record.prepared_raw_path.c_str(), record.source_raw_path.c_str()) != 0) {
+        const auto failure = system_error("publishing prepared metadata failed", errno,
+                                          record.source_raw_path, record.id);
+        const auto backup_cleaned = unlink_if_matches(
+            record.backup_raw_path, record.expected_revision, record.source_raw_path, record.id);
+        const auto prepared_cleaned = unlink_if_matches(record.prepared_raw_path, prepared_revision,
+                                                        record.source_raw_path, record.id);
+        const bool restored = backup_cleaned.has_value() && prepared_cleaned.has_value();
+        auto terminal = record_terminal_failure(journal, record, State::prepared, prepared_revision,
+                                                std::nullopt, failure, restored);
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(failure);
+    }
+    auto published_sync = fsync_parent(record.source_raw_path, record.source_raw_path, record.id);
+    auto published = core::observe_local_source_revision(record.source_raw_path);
+    const bool published_identity = published && *published == prepared_revision;
+    if (!published_sync || !published_identity) {
+        const auto failure =
+            !published_sync
+                ? published_sync.error()
+                : (!published ? published.error()
+                              : operation_error(core::ErrorCode::conflict,
+                                                "published metadata has an unexpected revision",
+                                                record.source_raw_path, record.id));
+        const auto rolled_back = rollback_published(record, prepared_revision);
+        auto terminal =
+            record_terminal_failure(journal, record, State::prepared, prepared_revision,
+                                    prepared_revision, failure, rolled_back.has_value());
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(rolled_back ? failure : rolled_back.error());
+    }
+
+    auto published_transition = transition(journal, record, State::prepared, State::published,
+                                           prepared_revision, *published);
+    if (!published_transition) {
+        const auto& failure = published_transition.error();
+        const auto rolled_back = rollback_published(record, *published);
+        static_cast<void>(record_terminal_failure(journal, record, State::prepared,
+                                                  prepared_revision, *published, failure,
+                                                  rolled_back.has_value()));
+        return std::unexpected(rolled_back ? failure : rolled_back.error());
+    }
+
+    auto reread = verify_published_content(record, *published, cancellation);
+    if (!reread || *reread != prepared_document) {
+        const auto failure =
+            !reread ? reread.error()
+                    : operation_error(core::ErrorCode::conflict,
+                                      "published metadata document failed reread verification",
+                                      record.source_raw_path, record.id);
+        const auto rolled_back = rollback_published(record, *published);
+        auto terminal =
+            record_terminal_failure(journal, record, State::published, prepared_revision,
+                                    *published, failure, rolled_back.has_value());
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(rolled_back ? failure : rolled_back.error());
+    }
+    auto result = verified_commit_result(record, *published, std::move(*reread));
+    auto dependent = dependent_state_committer(*result);
+    if (!dependent) {
+        const auto& failure = dependent.error();
+        const auto rolled_back = rollback_published(record, *published);
+        auto terminal =
+            record_terminal_failure(journal, record, State::published, prepared_revision,
+                                    *published, failure, rolled_back.has_value());
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(rolled_back ? failure : rolled_back.error());
+    }
+    auto final_revision = core::observe_local_source_revision(record.source_raw_path);
+    if (!final_revision || *final_revision != *published) {
+        const auto failure =
+            !final_revision
+                ? final_revision.error()
+                : operation_error(core::ErrorCode::conflict,
+                                  "metadata source changed during dependent-state commit",
+                                  record.source_raw_path, record.id);
+        auto terminal = record_terminal_failure(journal, record, State::published,
+                                                prepared_revision, *published, failure, false);
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(failure);
+    }
+    auto completed = transition(journal, record, State::published, State::complete,
+                                prepared_revision, *published);
     if (!completed) {
         return std::unexpected(std::move(completed.error()));
     }
@@ -1063,264 +1556,120 @@ commit_flac_metadata_source(const metadata::MetadataWritePlanSource& source_plan
         }
         return std::unexpected(failure);
     }
-    auto prepared_descriptor = open_and_lock_file(record->prepared_raw_path, cancellation,
-                                                  source_plan.raw_path, record->id);
-    if (!prepared_descriptor) {
-        const auto& failure = prepared_descriptor.error();
-        const auto cleaned =
-            unlink_if_matches(record->prepared_raw_path, prepared->prepared_revision,
-                              source_plan.raw_path, record->id);
-        const bool restored = cleaned.has_value();
-        auto terminal =
-            record_terminal_failure(journal, *record, State::planned, prepared->prepared_revision,
-                                    std::nullopt, failure, restored);
-        if (!terminal) {
-            return std::unexpected(std::move(terminal.error()));
-        }
-        return std::unexpected(restored ? failure : cleaned.error());
-    }
-    auto metadata_applied =
-        apply_filesystem_metadata(*source_descriptor, *source_status, *source_attributes,
-                                  *prepared_descriptor, source_plan.raw_path, record->id);
-    if (metadata_applied && ::fsync(prepared_descriptor->get()) != 0) {
-        metadata_applied = std::unexpected(system_error("syncing prepared metadata file failed",
-                                                        errno, source_plan.raw_path, record->id));
-    }
-    if (!metadata_applied) {
-        const auto& failure = metadata_applied.error();
-        const auto cleaned =
-            unlink_if_matches(record->prepared_raw_path, prepared->prepared_revision,
-                              source_plan.raw_path, record->id);
-        const bool restored = cleaned.has_value();
-        auto terminal =
-            record_terminal_failure(journal, *record, State::planned, prepared->prepared_revision,
-                                    std::nullopt, failure, restored);
-        if (!terminal) {
-            return std::unexpected(std::move(terminal.error()));
-        }
-        return std::unexpected(restored ? failure : cleaned.error());
-    }
-    auto prepared_status = locked_status(*prepared_descriptor, source_plan.raw_path, record->id);
-    if (!prepared_status) {
-        const auto& failure = prepared_status.error();
-        const auto cleaned =
-            unlink_if_matches(record->prepared_raw_path, prepared->prepared_revision,
-                              source_plan.raw_path, record->id);
-        auto terminal =
-            record_terminal_failure(journal, *record, State::planned, prepared->prepared_revision,
-                                    std::nullopt, failure, cleaned.has_value());
-        if (!terminal) {
-            return std::unexpected(std::move(terminal.error()));
-        }
-        return std::unexpected(cleaned ? failure : cleaned.error());
-    }
-    const auto prepared_revision = revision_from_stat(*prepared_status);
-    auto prepared_transition = transition(journal, *record, State::planned, State::prepared,
-                                          prepared_revision, std::nullopt);
-    if (!prepared_transition) {
-        const auto& failure = prepared_transition.error();
-        const auto cleaned = unlink_if_matches(record->prepared_raw_path, prepared_revision,
-                                               source_plan.raw_path, record->id);
-        if (cleaned) {
-            static_cast<void>(record_terminal_failure(
-                journal, *record, State::planned, prepared_revision, std::nullopt, failure, true));
-        } else {
-            static_cast<void>(record_terminal_failure(journal, *record, State::planned,
-                                                      prepared_revision, std::nullopt,
-                                                      cleaned.error(), false));
-        }
-        return std::unexpected(failure);
-    }
+    return publish_prepared_metadata_copy(*record, *source_descriptor, *source_status,
+                                          *source_attributes, prepared->prepared_revision,
+                                          prepared->document, journal, dependent_state_committer,
+                                          cancellation);
+}
 
+core::Result<MetadataCommitResult>
+commit_flac_artwork_source(const metadata::ArtworkWritePlanSource& source_plan,
+                           MetadataOperationJournal& journal,
+                           const MetadataDependentStateCommitter& dependent_state_committer,
+                           const core::CancellationToken& cancellation) {
     if (cancellation.is_cancellation_requested()) {
-        const auto failure = cancelled(source_plan.raw_path);
-        const auto cleaned = unlink_if_matches(record->prepared_raw_path, prepared_revision,
-                                               source_plan.raw_path, record->id);
-        auto terminal =
-            record_terminal_failure(journal, *record, State::prepared, prepared_revision,
-                                    std::nullopt, failure, cleaned.has_value());
-        if (!terminal) {
-            return std::unexpected(std::move(terminal.error()));
-        }
-        return std::unexpected(cleaned ? failure : cleaned.error());
+        return std::unexpected(cancelled(source_plan.raw_media_path));
     }
-
-    auto current_source = core::observe_local_source_revision(source_plan.raw_path);
-    if (!current_source || *current_source != record->expected_revision ||
-        ::link(record->source_raw_path.c_str(), record->backup_raw_path.c_str()) != 0) {
-        auto failure = !current_source
-                           ? std::move(current_source.error())
-                           : (*current_source != record->expected_revision
-                                  ? operation_error(core::ErrorCode::conflict,
-                                                    "metadata source changed before publication",
-                                                    source_plan.raw_path, record->id)
-                                  : system_error("creating metadata backup failed", errno,
-                                                 source_plan.raw_path, record->id));
-        const auto cleaned = unlink_if_matches(record->prepared_raw_path, prepared_revision,
-                                               source_plan.raw_path, record->id);
-        auto terminal =
-            record_terminal_failure(journal, *record, State::prepared, prepared_revision,
-                                    std::nullopt, failure, cleaned.has_value());
-        if (!terminal) {
-            return std::unexpected(std::move(terminal.error()));
-        }
-        return std::unexpected(cleaned ? failure : cleaned.error());
-    }
-    auto backup_source = core::observe_local_source_revision(record->source_raw_path);
-    auto backup = core::observe_local_source_revision(record->backup_raw_path);
-    if (!backup_source || !backup || *backup_source != record->expected_revision ||
-        *backup != record->expected_revision) {
-        const auto failure =
-            !backup_source
-                ? backup_source.error()
-                : (!backup
-                       ? backup.error()
-                       : operation_error(core::ErrorCode::conflict,
-                                         "metadata backup does not preserve the expected source",
-                                         source_plan.raw_path, record->id));
-        const auto backup_cleaned = unlink_if_matches(
-            record->backup_raw_path, record->expected_revision, source_plan.raw_path, record->id);
-        const auto prepared_cleaned = unlink_if_matches(
-            record->prepared_raw_path, prepared_revision, source_plan.raw_path, record->id);
-        const bool restored = backup_cleaned.has_value() && prepared_cleaned.has_value();
-        auto terminal = record_terminal_failure(journal, *record, State::prepared,
-                                                prepared_revision, std::nullopt, failure, restored);
-        if (!terminal) {
-            return std::unexpected(std::move(terminal.error()));
-        }
+    if (!dependent_state_committer || source_plan.raw_media_path.empty() ||
+        source_plan.raw_media_path.find('\0') != std::string::npos || !source_plan.ready() ||
+        source_plan.adapter_name != "taglib-flac-picture-v1" ||
+        !source_plan.expected_media_revision || !source_plan.observed_media_revision ||
+        *source_plan.expected_media_revision != *source_plan.observed_media_revision ||
+        (source_plan.change.kind != metadata::ArtworkWritePlanIntentKind::add &&
+         !source_plan.change.original) ||
+        ((source_plan.change.kind == metadata::ArtworkWritePlanIntentKind::replace ||
+          source_plan.change.kind == metadata::ArtworkWritePlanIntentKind::add) &&
+         !source_plan.change.replacement)) {
         return std::unexpected(
-            restored ? failure
-                     : (!backup_cleaned ? backup_cleaned.error() : prepared_cleaned.error()));
-    }
-    auto directory_synced = fsync_parent(record->source_raw_path, source_plan.raw_path, record->id);
-    if (!directory_synced) {
-        const auto& failure = directory_synced.error();
-        const auto backup_cleaned = unlink_if_matches(
-            record->backup_raw_path, record->expected_revision, source_plan.raw_path, record->id);
-        const auto prepared_cleaned = unlink_if_matches(
-            record->prepared_raw_path, prepared_revision, source_plan.raw_path, record->id);
-        const bool restored = backup_cleaned.has_value() && prepared_cleaned.has_value();
-        auto terminal = record_terminal_failure(journal, *record, State::prepared,
-                                                prepared_revision, std::nullopt, failure, restored);
-        if (!terminal) {
-            return std::unexpected(std::move(terminal.error()));
-        }
-        return std::unexpected(failure);
-    }
-    if (cancellation.is_cancellation_requested()) {
-        const auto failure = cancelled(source_plan.raw_path);
-        const auto backup_cleaned = unlink_if_matches(
-            record->backup_raw_path, record->expected_revision, source_plan.raw_path, record->id);
-        const auto prepared_cleaned = unlink_if_matches(
-            record->prepared_raw_path, prepared_revision, source_plan.raw_path, record->id);
-        const bool restored = backup_cleaned.has_value() && prepared_cleaned.has_value();
-        auto terminal = record_terminal_failure(journal, *record, State::prepared,
-                                                prepared_revision, std::nullopt, failure, restored);
-        if (!terminal) {
-            return std::unexpected(std::move(terminal.error()));
-        }
-        return std::unexpected(failure);
+            operation_error(core::ErrorCode::invalid_argument,
+                            "artwork commit requires a ready native-FLAC plan and state committer",
+                            source_plan.raw_media_path));
     }
 
-    if (::rename(record->prepared_raw_path.c_str(), record->source_raw_path.c_str()) != 0) {
-        const auto failure = system_error("publishing prepared metadata failed", errno,
-                                          source_plan.raw_path, record->id);
-        const auto backup_cleaned = unlink_if_matches(
-            record->backup_raw_path, record->expected_revision, source_plan.raw_path, record->id);
-        const auto prepared_cleaned = unlink_if_matches(
-            record->prepared_raw_path, prepared_revision, source_plan.raw_path, record->id);
-        const bool restored = backup_cleaned.has_value() && prepared_cleaned.has_value();
-        auto terminal = record_terminal_failure(journal, *record, State::prepared,
-                                                prepared_revision, std::nullopt, failure, restored);
+    auto process_lock = acquire_process_lock(*source_plan.observed_media_revision, cancellation,
+                                             source_plan.raw_media_path);
+    if (!process_lock) {
+        return std::unexpected(std::move(process_lock.error()));
+    }
+    auto source_descriptor =
+        open_and_lock_file(source_plan.raw_media_path, cancellation, source_plan.raw_media_path);
+    if (!source_descriptor) {
+        return std::unexpected(std::move(source_descriptor.error()));
+    }
+    auto source_status = require_direct_single_link_source(
+        *source_descriptor, source_plan.raw_media_path, *source_plan.observed_media_revision);
+    if (!source_status) {
+        return std::unexpected(std::move(source_status.error()));
+    }
+    auto source_attributes =
+        read_extended_attributes(*source_descriptor, source_plan.raw_media_path);
+    if (!source_attributes) {
+        return std::unexpected(std::move(source_attributes.error()));
+    }
+    auto fresh_document = metadata::read_local_metadata(source_plan.raw_media_path, cancellation);
+    auto fresh_inventory =
+        read_embedded_artwork_inventory(source_plan.raw_media_path, cancellation);
+    if (!fresh_document || !fresh_inventory) {
+        return std::unexpected(!fresh_document ? std::move(fresh_document.error())
+                                               : std::move(fresh_inventory.error()));
+    }
+    if (fresh_document->source_revision != *source_plan.observed_media_revision ||
+        fresh_document->adapter_name != "taglib-flac-v1" ||
+        fresh_inventory->media_revision != *source_plan.observed_media_revision ||
+        fresh_inventory->embedded_adapter_name != "taglib-flac-picture-v1") {
+        return std::unexpected(
+            operation_error(core::ErrorCode::conflict,
+                            "artwork source changed before its commit journal was created",
+                            source_plan.raw_media_path));
+    }
+
+    const auto journal_id = core::StableId::random();
+    auto record = make_artwork_journal_record(source_plan, *fresh_inventory, journal_id);
+    if (!record) {
+        return std::unexpected(std::move(record.error()));
+    }
+    auto created = journal.create(*record);
+    if (!created) {
+        return std::unexpected(std::move(created.error()));
+    }
+
+    auto prepared = metadata::prepare_flac_artwork_write_copy(
+        source_plan, record->prepared_raw_path, cancellation);
+    if (!prepared) {
+        const auto& failure = prepared.error();
+        auto terminal = record_terminal_failure(journal, *record, State::planned, std::nullopt,
+                                                std::nullopt, failure, true);
         if (!terminal) {
             return std::unexpected(std::move(terminal.error()));
         }
         return std::unexpected(failure);
     }
-    auto published_sync = fsync_parent(record->source_raw_path, source_plan.raw_path, record->id);
-    auto published = core::observe_local_source_revision(record->source_raw_path);
-    const bool published_identity = published && *published == prepared_revision;
-    if (!published_sync || !published_identity) {
+    auto prepared_inventory_fingerprint =
+        metadata::fingerprint_embedded_artwork_inventory(prepared->inventory.items);
+    if (!prepared_inventory_fingerprint ||
+        prepared->inventory.items.size() != record->artwork->planned_item_count ||
+        *prepared_inventory_fingerprint != record->artwork->planned_inventory_fingerprint) {
         const auto failure =
-            !published_sync
-                ? published_sync.error()
-                : (!published ? published.error()
-                              : operation_error(core::ErrorCode::conflict,
-                                                "published metadata has an unexpected revision",
-                                                source_plan.raw_path, record->id));
-        const auto rolled_back = rollback_published(*record, prepared_revision);
-        auto terminal =
-            record_terminal_failure(journal, *record, State::prepared, prepared_revision,
-                                    prepared_revision, failure, rolled_back.has_value());
-        if (!terminal) {
-            return std::unexpected(std::move(terminal.error()));
-        }
-        return std::unexpected(rolled_back ? failure : rolled_back.error());
-    }
-
-    auto published_transition = transition(journal, *record, State::prepared, State::published,
-                                           prepared_revision, *published);
-    if (!published_transition) {
-        const auto& failure = published_transition.error();
-        const auto rolled_back = rollback_published(*record, *published);
-        static_cast<void>(record_terminal_failure(journal, *record, State::prepared,
-                                                  prepared_revision, *published, failure,
-                                                  rolled_back.has_value()));
-        return std::unexpected(rolled_back ? failure : rolled_back.error());
-    }
-
-    auto reread = metadata::read_local_metadata(record->source_raw_path);
-    if (!reread || reread->source_revision != *published ||
-        reread->document != prepared->document ||
-        !planned_fields_match(reread->document, *record)) {
-        const auto failure = !reread
-                                 ? reread.error()
-                                 : operation_error(core::ErrorCode::conflict,
-                                                   "published metadata failed reread verification",
-                                                   source_plan.raw_path, record->id);
-        const auto rolled_back = rollback_published(*record, *published);
-        auto terminal =
-            record_terminal_failure(journal, *record, State::published, prepared_revision,
-                                    *published, failure, rolled_back.has_value());
-        if (!terminal) {
-            return std::unexpected(std::move(terminal.error()));
-        }
-        return std::unexpected(rolled_back ? failure : rolled_back.error());
-    }
-    auto result = verified_commit_result(*record, *published, std::move(reread->document));
-    auto dependent = dependent_state_committer(*result);
-    if (!dependent) {
-        const auto& failure = dependent.error();
-        const auto rolled_back = rollback_published(*record, *published);
-        auto terminal =
-            record_terminal_failure(journal, *record, State::published, prepared_revision,
-                                    *published, failure, rolled_back.has_value());
-        if (!terminal) {
-            return std::unexpected(std::move(terminal.error()));
-        }
-        return std::unexpected(rolled_back ? failure : rolled_back.error());
-    }
-    auto final_revision = core::observe_local_source_revision(record->source_raw_path);
-    if (!final_revision || *final_revision != *published) {
-        const auto failure =
-            !final_revision
-                ? final_revision.error()
+            !prepared_inventory_fingerprint
+                ? prepared_inventory_fingerprint.error()
                 : operation_error(core::ErrorCode::conflict,
-                                  "metadata source changed during dependent-state commit",
-                                  source_plan.raw_path, record->id);
-        auto terminal = record_terminal_failure(journal, *record, State::published,
-                                                prepared_revision, *published, failure, false);
+                                  "prepared embedded artwork differs from journal evidence",
+                                  source_plan.raw_media_path, record->id);
+        const auto cleaned =
+            unlink_if_matches(record->prepared_raw_path, prepared->prepared_revision,
+                              record->source_raw_path, record->id);
+        auto terminal =
+            record_terminal_failure(journal, *record, State::planned, prepared->prepared_revision,
+                                    std::nullopt, failure, cleaned.has_value());
         if (!terminal) {
             return std::unexpected(std::move(terminal.error()));
         }
-        return std::unexpected(failure);
+        return std::unexpected(cleaned ? failure : cleaned.error());
     }
-    auto completed = transition(journal, *record, State::published, State::complete,
-                                prepared_revision, *published);
-    if (!completed) {
-        return std::unexpected(std::move(completed.error()));
-    }
-    return result;
+    return publish_prepared_metadata_copy(*record, *source_descriptor, *source_status,
+                                          *source_attributes, prepared->prepared_revision,
+                                          prepared->document, journal, dependent_state_committer,
+                                          cancellation);
 }
 
 core::Result<std::vector<MetadataRecoveryResult>>
@@ -1459,14 +1808,9 @@ recover_metadata_operations(MetadataOperationJournal& journal,
             continue;
         }
 
-        auto reread = metadata::read_local_metadata(record.source_raw_path, cancellation);
-        if (!reread || reread->source_revision != *candidate_revision ||
-            !planned_fields_match(reread->document, record)) {
-            const auto issue = !reread
-                                   ? reread.error()
-                                   : operation_error(core::ErrorCode::conflict,
-                                                     "interrupted publication failed verification",
-                                                     record.source_raw_path, record.id);
+        auto reread = verify_published_content(record, *candidate_revision, cancellation);
+        if (!reread) {
+            const auto& issue = reread.error();
             const auto rolled_back = rollback_published(record, *candidate_revision);
             auto terminal =
                 record_terminal_failure(journal, record, record.state, record.prepared_revision,
@@ -1485,7 +1829,7 @@ recover_metadata_operations(MetadataOperationJournal& journal,
         }
 
         auto commit_result =
-            verified_commit_result(record, *candidate_revision, std::move(reread->document));
+            verified_commit_result(record, *candidate_revision, std::move(*reread));
         auto dependent = dependent_state_committer(*commit_result);
         if (!dependent) {
             const auto& issue = dependent.error();

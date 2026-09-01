@@ -2,6 +2,8 @@
 
 add_library(
     trackknife_metadata STATIC
+    src/artwork.cpp
+    src/artwork_write_plan.cpp
     src/capture_pattern.cpp
     src/document.cpp
     src/draft_document.cpp
@@ -25,6 +27,6 @@ target_include_directories(
 target_link_libraries(
     trackknife_metadata
     PUBLIC Trackknife::Core Trackknife::TitleFormat trackknife_project_options
-    PRIVATE PkgConfig::TAGLIB trackknife_project_warnings
+    PRIVATE PkgConfig::AVUTIL PkgConfig::TAGLIB trackknife_project_warnings
 )
 target_compile_features(trackknife_metadata PUBLIC cxx_std_23)

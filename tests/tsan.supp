@@ -1,0 +1,7 @@
+# Qt 6.11's QThreadPool synchronization lives in the uninstrumented Qt shared
+# library. With ignore_noninstrumented_modules enabled, TSan cannot observe the
+# enqueue/dequeue happens-before edge and intermittently reports the inline
+# QtConcurrent task constructor racing its inline run method. Keep this narrow:
+# the PagedTrackModel page generator and every other application frame remain
+# instrumented.
+race:QtConcurrent::RunFunctionTaskBase<trackknife::qtmodels::PagedTrackModel::Page>::run

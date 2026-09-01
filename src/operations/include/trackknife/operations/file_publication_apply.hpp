@@ -5,9 +5,13 @@
 #include "trackknife/core/cancellation.hpp"
 #include "trackknife/core/error.hpp"
 #include "trackknife/core/result.hpp"
+#include "trackknife/metadata/document.hpp"
 #include "trackknife/operations/file_publication.hpp"
 #include "trackknife/operations/file_publication_journal.hpp"
+#include "trackknife/operations/metadata_commit.hpp"
+#include "trackknife/operations/metadata_journal.hpp"
 #include "trackknife/operations/output_path_preflight.hpp"
+#include "trackknife/operations/preparation_plan.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -34,6 +38,8 @@ struct FilePublicationApplySourceResult {
     OutputPathPublicationKind publication{OutputPathPublicationKind::no_change};
     FilePublicationApplySourceState state{FilePublicationApplySourceState::pending};
     std::optional<FilePublicationCommitResult> commit;
+    std::optional<MetadataCommitResult> metadata_commit;
+    std::optional<metadata::MetadataDocument> published_metadata;
     std::optional<core::Error> issue;
 
     friend bool operator==(const FilePublicationApplySourceResult&,
@@ -76,6 +82,8 @@ struct FilePublicationApplyOptions {
 
 using FilePublicationApplyProgressCallback =
     std::function<void(const FilePublicationApplyProgress&)>;
+using DestinationArtifactDependentStateCommitter = std::function<core::Result<void>(
+    const FilePublicationCommitResult&, const metadata::MetadataDocument&)>;
 
 // Applies one entirely ready immutable filesystem preflight on a bounded
 // mutation pool. Each admitted changed source receives a fresh single-source
@@ -90,5 +98,21 @@ apply_file_publications(const OutputPathPreflight& preflight, FilePublicationJou
                         const FilePublicationApplyProgressCallback& progress = {},
                         const core::CancellationToken& cancellation = {},
                         const FilePublicationApplyOptions& options = {});
+
+// Applies every physical source in one ready preparation plan that contains a
+// path review. A source may be path-only, metadata-only because its reviewed
+// path is unchanged, or one changed destination artifact. The latter is
+// prepared by the qualified native-FLAC writer and invokes one composed
+// dependent callback carrying the exact published document. All three paths
+// retain bounded admission, ordered partial results, and fresh revalidation.
+[[nodiscard]] core::Result<FilePublicationApplyResult> apply_preparation_publications(
+    const PreparationPlan& plan, FilePublicationJournal& file_journal,
+    MetadataOperationJournal& metadata_journal,
+    const MetadataDependentStateCommitter& metadata_dependent_state_committer,
+    const FilePublicationDependentStateCommitter& file_dependent_state_committer,
+    const DestinationArtifactDependentStateCommitter& artifact_dependent_state_committer,
+    const FilePublicationApplyProgressCallback& progress = {},
+    const core::CancellationToken& cancellation = {},
+    const FilePublicationApplyOptions& options = {});
 
 } // namespace trackknife::operations

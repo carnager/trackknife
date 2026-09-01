@@ -92,7 +92,10 @@ stale revision as future mutation authority.
 ## Embedded-artwork FLAC fixture
 
 `art-tone-flac.b64` is the tagged FLAC tone with a 64×64 orange PNG attached
-as its cover picture, generated with FFmpeg n9.0.1 / libavcodec 63.1.101:
+as its display picture, generated with FFmpeg n9.0.1 / libavcodec 63.1.101.
+FFmpeg stored the native FLAC picture type as `Other`; artwork inventory tests
+must retain that exact type rather than silently reclassifying the first image
+as a front cover:
 
 ```sh
 ffmpeg -f lavfi -i "color=c=orange:size=64x64:duration=0.04:rate=25" \
@@ -106,6 +109,13 @@ The binary SHA-256 is
 The artwork test requires the attached picture to surface as its exact PNG
 bytes and the tagless lookup on `tagged-tone-flac.b64` to report a typed
 not-found instead of inventing artwork.
+
+`external-blue-jpeg.b64` is an 8×6 blue JPEG generated with FFmpeg n9.0.1 /
+libavcodec 63.1.101. Its binary SHA-256 is
+`f8503798d7a69951fe462ab5843e8342932c64770b2f0cd15295fc5ab848e29c`.
+The artwork inventory test materializes it under an exact configured sibling
+name and independently requires JPEG MIME and dimensions before replacing it
+with malformed bytes for the typed-issue regression.
 
 ## Tagged WavPack fixture
 

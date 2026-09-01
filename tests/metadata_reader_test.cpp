@@ -144,7 +144,8 @@ void readsRichFlacAndMusicBrainz(const std::filesystem::path& fixture_directory)
         CHECK(read->adapter_name == "taglib-flac-v1");
         CHECK(read->capabilities.fields_readable);
         CHECK(read->capabilities.fields_writable);
-        CHECK(!read->capabilities.pictures_writable);
+        CHECK(read->capabilities.pictures_readable);
+        CHECK(read->capabilities.pictures_writable);
         CHECK(read->capabilities.unknown_data_preserved_on_write);
         CHECK(read->source_revision.size == 2'308U);
         CHECK(read->source_revision.inode != 0U);

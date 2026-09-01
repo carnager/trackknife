@@ -6,6 +6,7 @@
 #include "trackknife/core/local_sources.hpp"
 #include "trackknife/core/result.hpp"
 #include "trackknife/core/stable_id.hpp"
+#include "trackknife/metadata/artwork_write_plan.hpp"
 #include "trackknife/metadata/staged_patch.hpp"
 
 #include <cstddef>
@@ -23,6 +24,11 @@ enum class MetadataOperationJournalState : std::uint8_t {
     complete,
     rolled_back,
     needs_reconciliation,
+};
+
+enum class MetadataOperationContentKind : std::uint8_t {
+    text_fields,
+    embedded_artwork,
 };
 
 // The file-mutation journal reaches `complete` before its exact old inode can
@@ -51,6 +57,22 @@ struct MetadataOperationJournalChange {
                            const MetadataOperationJournalChange&) = default;
 };
 
+struct MetadataOperationJournalArtwork {
+    metadata::ArtworkWritePlanIntentKind kind{metadata::ArtworkWritePlanIntentKind::replace};
+    std::size_t target_ordinal{0U};
+    std::size_t original_item_count{0U};
+    std::size_t planned_item_count{0U};
+    // Add has no original target and leaves this empty. Its target ordinal is
+    // the resulting append position in the embedded-picture inventory.
+    std::optional<core::ContentFingerprint> original_target_fingerprint;
+    std::optional<core::ContentFingerprint> replacement_fingerprint;
+    core::ContentFingerprint original_inventory_fingerprint;
+    core::ContentFingerprint planned_inventory_fingerprint;
+
+    friend bool operator==(const MetadataOperationJournalArtwork&,
+                           const MetadataOperationJournalArtwork&) = default;
+};
+
 struct MetadataOperationJournalRecord {
     core::StableId id;
     MetadataOperationJournalState state{MetadataOperationJournalState::planned};
@@ -61,7 +83,9 @@ struct MetadataOperationJournalRecord {
     std::optional<core::LocalSourceRevision> prepared_revision;
     std::optional<core::LocalSourceRevision> published_revision;
     std::vector<std::size_t> occurrence_indexes;
+    MetadataOperationContentKind content_kind{MetadataOperationContentKind::text_fields};
     std::vector<MetadataOperationJournalChange> changes;
+    std::optional<MetadataOperationJournalArtwork> artwork;
     std::optional<core::Error> failure;
 
     friend bool operator==(const MetadataOperationJournalRecord&,

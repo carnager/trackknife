@@ -155,8 +155,8 @@ core::Result<LocalMetadataRead> read_local_metadata(const std::string& raw_path,
             MetadataCapabilities{
                 .fields_readable = true,
                 .fields_writable = native_flac,
-                .pictures_readable = false,
-                .pictures_writable = false,
+                .pictures_readable = native_flac,
+                .pictures_writable = native_flac,
                 .unknown_data_preserved_on_write = preservation_supported,
             },
     };

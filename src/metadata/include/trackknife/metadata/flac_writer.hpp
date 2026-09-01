@@ -5,6 +5,8 @@
 #include "trackknife/core/cancellation.hpp"
 #include "trackknife/core/local_sources.hpp"
 #include "trackknife/core/result.hpp"
+#include "trackknife/metadata/artwork.hpp"
+#include "trackknife/metadata/artwork_write_plan.hpp"
 #include "trackknife/metadata/document.hpp"
 #include "trackknife/metadata/write_plan.hpp"
 
@@ -33,5 +35,27 @@ struct PreparedFlacMetadataWrite {
 prepare_flac_metadata_write_copy(const MetadataWritePlanSource& source_plan,
                                  const std::string& prepared_raw_path,
                                  const core::CancellationToken& cancellation = {});
+
+struct PreparedFlacArtworkWrite {
+    std::string source_raw_path;
+    std::string prepared_raw_path;
+    core::LocalSourceRevision source_revision;
+    core::LocalSourceRevision prepared_revision;
+    MetadataDocument document;
+    LocalArtworkInventory inventory;
+    ArtworkWritePlanIntentKind kind{ArtworkWritePlanIntentKind::replace};
+    std::size_t target_ordinal{0U};
+
+    friend bool operator==(const PreparedFlacArtworkWrite&,
+                           const PreparedFlacArtworkWrite&) = default;
+};
+
+// Creates and verifies a distinct FLAC copy for one ready artwork-plan source.
+// Replacement bytes are reread from their reviewed raw path; neither the plan
+// nor this result retains them. This is not a publish/commit operation.
+[[nodiscard]] core::Result<PreparedFlacArtworkWrite>
+prepare_flac_artwork_write_copy(const ArtworkWritePlanSource& source_plan,
+                                const std::string& prepared_raw_path,
+                                const core::CancellationToken& cancellation = {});
 
 } // namespace trackknife::metadata
