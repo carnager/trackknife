@@ -48,6 +48,13 @@ target_link_libraries(
 )
 add_test(NAME metadata-selection COMMAND trackknife_metadata_selection_tests)
 
+add_executable(trackknife_metadata_proposal_tests metadata_proposal_test.cpp)
+target_link_libraries(
+    trackknife_metadata_proposal_tests
+    PRIVATE Trackknife::Metadata trackknife_project_options trackknife_project_warnings
+)
+add_test(NAME metadata-proposal COMMAND trackknife_metadata_proposal_tests)
+
 add_executable(trackknife_metadata_patch_tests metadata_patch_test.cpp)
 target_link_libraries(
     trackknife_metadata_patch_tests

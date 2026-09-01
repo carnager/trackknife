@@ -4,6 +4,7 @@
 
 #include "bench/metadata_artwork_section.hpp"
 #include "bench/preparation_feedback_dialog.hpp"
+#include "trackknife/metadata/transformation.hpp"
 #include "trackknife/metadata/write_plan.hpp"
 #include "trackknife/operations/file_publication_apply.hpp"
 #include "trackknife/operations/metadata_apply.hpp"
@@ -184,6 +185,8 @@ class MetadataPropertiesDialog final : public QDialog {
     void finishOutputLayoutExample();
     void updateWritePlanButton();
     void invalidateWritePlan();
+    void startProposals();
+    void finishProposals();
     void startWritePlan();
     void finishWritePlan();
     void showPreparationFeedback(const QString& window_title, const QString& summary,
@@ -215,6 +218,8 @@ class MetadataPropertiesDialog final : public QDialog {
     QFutureWatcher<std::shared_ptr<core::Result<operations::FilePublicationApplyResult>>>
         file_apply_watcher_;
     QFutureWatcher<std::shared_ptr<OutputLayoutExampleResult>> output_example_watcher_;
+    QFutureWatcher<std::shared_ptr<core::Result<metadata::MetadataTransformationPreview>>>
+        proposal_watcher_;
     MetadataPropertiesSourceReader source_reader_;
     MetadataWritePlanApplierFactory plan_applier_factory_;
     MetadataApplyObserver apply_observer_;
@@ -245,6 +250,7 @@ class MetadataPropertiesDialog final : public QDialog {
     QPushButton* add_field_button_{nullptr};
     QPushButton* remove_field_button_{nullptr};
     QPushButton* edit_values_button_{nullptr};
+    QPushButton* suggest_button_{nullptr};
     QPushButton* transform_button_{nullptr};
     QWidget* transformation_panel_{nullptr};
     QWidget* grid_tools_{nullptr};
@@ -314,6 +320,7 @@ class MetadataPropertiesDialog final : public QDialog {
     std::optional<core::StableId> editing_destination_id_;
     std::string destination_root_raw_path_;
     bool write_plan_running_{false};
+    bool proposal_running_{false};
     bool apply_running_{false};
     bool artwork_operation_running_{false};
     bool applying_file_paths_{false};

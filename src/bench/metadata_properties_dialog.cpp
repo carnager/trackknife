@@ -13,6 +13,7 @@
 #include "bench/preparation_feedback_dialog.hpp"
 #include "trackknife/metadata/draft_document.hpp"
 #include "trackknife/metadata/field_suggestions.hpp"
+#include "trackknife/metadata/proposal.hpp"
 #include "trackknife/metadata/rule_script_import.hpp"
 
 #include <QAbstractListModel>
@@ -426,6 +427,13 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
         QStringLiteral("Edit the exact ordered value list (Ctrl+Enter)"));
     edit_values_button_->setEnabled(false);
     grid_tools_layout->addWidget(edit_values_button_);
+    suggest_button_ = new QPushButton(QStringLiteral("Suggest"), grid_tools_);
+    suggest_button_->setObjectName(QStringLiteral("bench-metadata-suggest"));
+    suggest_button_->setToolTip(
+        QStringLiteral("Fill album artist and total tracks from agreement across the selected "
+                       "files; suggestions become ordinary colored draft edits"));
+    suggest_button_->setEnabled(false);
+    grid_tools_layout->addWidget(suggest_button_);
     grid_tools_layout->addStretch(1);
     undo_button_ = new QPushButton(QStringLiteral("Undo"), grid_tools_);
     undo_button_->setObjectName(QStringLiteral("bench-metadata-undo"));
@@ -475,6 +483,10 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
             &MetadataPropertiesDialog::removeSelectedFields);
     connect(edit_values_button_, &QPushButton::clicked, this,
             &MetadataPropertiesDialog::editCurrentValues);
+    connect(suggest_button_, &QPushButton::clicked, this,
+            &MetadataPropertiesDialog::startProposals);
+    connect(&proposal_watcher_, &QFutureWatcherBase::finished, this,
+            &MetadataPropertiesDialog::finishProposals);
     connect(transform_button_, &QPushButton::clicked, this, [this] {
         std::optional<core::StableId> selected;
         if (const auto* item = transformation_list_->currentItem()) {
@@ -645,6 +657,9 @@ MetadataPropertiesDialog::~MetadataPropertiesDialog() {
     }
     if (output_example_running_) {
         output_example_watcher_.waitForFinished();
+    }
+    if (proposal_running_) {
+        proposal_watcher_.waitForFinished();
     }
 }
 
@@ -1093,6 +1108,9 @@ void MetadataPropertiesDialog::updateTransformationButton() {
                          exact_values_dialog_ == nullptr && field_name_dialog_ == nullptr &&
                          !write_plan_running_ && !apply_running_ && !artwork_operation_running_;
     transform_button_->setEnabled(enabled);
+    if (suggest_button_ != nullptr) {
+        suggest_button_->setEnabled(enabled && !proposal_running_);
+    }
     if (transformation_list_ != nullptr) {
         transformation_list_->setEnabled(!transformation_catalog_loading_ &&
                                          !transformation_catalog_.empty() && enabled);
@@ -1773,6 +1791,74 @@ void MetadataPropertiesDialog::invalidateWritePlan() {
     write_plan_cancellation_.request_cancellation();
     write_plan_cancellation_ = core::CancellationSource{};
     updateWritePlanButton();
+}
+
+void MetadataPropertiesDialog::startProposals() {
+    if (grid_model_ == nullptr || proposal_running_ || write_plan_running_ || apply_running_) {
+        return;
+    }
+    auto items = selectedItemIndexes();
+    if (items.empty()) {
+        items.reserve(grid_model_->selection().item_count());
+        for (std::size_t item_index = 0U; item_index < grid_model_->selection().item_count();
+             ++item_index) {
+            items.push_back(item_index);
+        }
+    }
+    if (items.size() < 2U) {
+        read_only_->setText(
+            QStringLiteral("Suggestions need at least two files that share an album"));
+        return;
+    }
+    proposal_running_ = true;
+    updateTransformationButton();
+    read_only_->setText(
+        QStringLiteral("Looking for suggestions across %1 files…").arg(items.size()));
+    auto selection = grid_model_->sharedSelection();
+    auto draft = grid_model_->patches();
+    proposal_watcher_.setFuture(QtConcurrent::run(
+        [selection = std::move(selection), draft = std::move(draft), items = std::move(items)] {
+            using PreviewResult = core::Result<metadata::MetadataTransformationPreview>;
+            auto proposals = metadata::propose_selection_consistency(*selection, draft, items);
+            if (!proposals) {
+                return std::make_shared<PreviewResult>(
+                    std::unexpected(std::move(proposals.error())));
+            }
+            return std::make_shared<PreviewResult>(
+                metadata::metadata_proposal_preview(*selection, draft, *proposals, 0.75));
+        }));
+}
+
+void MetadataPropertiesDialog::finishProposals() {
+    proposal_running_ = false;
+    updateTransformationButton();
+    const auto result = proposal_watcher_.result();
+    if (!result || !*result) {
+        const auto message = result ? display_utf8(result->error().message)
+                                    : QStringLiteral("The suggestion task returned no result");
+        read_only_->setText(QStringLiteral("No suggestions · %1").arg(message));
+        return;
+    }
+    const auto& preview = **result;
+    if (preview.cells.empty()) {
+        read_only_->setText(QStringLiteral("No suggestions · the selected files already agree"));
+        return;
+    }
+    if (grid_model_ == nullptr || !grid_model_->stageTransformation(preview)) {
+        return;
+    }
+    loaded_field_count_ = grid_model_->selection().field_count();
+    updateSelectionProjection();
+    read_only_->setText(
+        QStringLiteral("Staged %1 %2 across %3 %4 from %5 · review the colored values, "
+                       "then Apply")
+            .arg(preview.cells.size())
+            .arg(pluralized(preview.cells.size(), QStringLiteral("suggestion"),
+                            QStringLiteral("suggestions")))
+            .arg(preview.changed_item_count)
+            .arg(pluralized(preview.changed_item_count, QStringLiteral("file"),
+                            QStringLiteral("files")))
+            .arg(display_utf8(preview.chain.name)));
 }
 
 void MetadataPropertiesDialog::startWritePlan() {

@@ -955,6 +955,15 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   in the problems pane. Add/Replace/Remove/Copy and Export now follow the
   ADR-0083 contract: direct apply with inline progress and Stop, compact
   problems-only feedback, and no review or modal progress dialogs.
+- Done: ADR-0086 lands the M5 provider boundary (work item 7). A Qt-free
+  typed contract carries proposed ordered field values (identifiers travel
+  as fields), artwork references, provider provenance, per-proposal
+  confidence, and rationale; observation-only providers convert through one
+  validated preview into an ordinary staged, colored, undoable draft
+  transaction. The internal selection-consistency provider proves it end to
+  end behind the Properties **Suggest** button: exact-agreement ALBUMARTIST
+  fill and contiguous-run TOTALTRACKS per album group, with Qt-free and
+  offscreen coverage. M6 MusicBrainz implements this same contract.
 - Fixed: Properties now resolves a requested freeform field against both
   logical and exact-native identities before extending its grid. Editing an
   existing native `TEST` field as `test` no longer emits a false Qt column

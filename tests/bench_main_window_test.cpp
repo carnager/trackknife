@@ -169,6 +169,7 @@ class BenchMainWindowTest final : public QObject {
     void preparationSidePanelEditsReusableOutputProfiles();
     void pathOnlyPreparationUsesActualTagsAndAppliesReviewedPlan();
     void combinedTagAndRenameReviewReachesPreparationApply();
+    void metadataSuggestionsStageSelectionConsistency();
     void metadataStartupPresentsReconciliation();
     void filePublicationStartupPresentsReconciliation();
     void combinedPublicationStartupRecoversMetadataAndPath();
@@ -2337,6 +2338,103 @@ void BenchMainWindowTest::metadataCapturePatternSavesReloadsAndStagesAllFields()
              QStringList{QStringLiteral("03")});
     QCOMPARE(grid_model->index(0, *title).data(metadata_cell_values_role).toStringList(),
              QStringList{QStringLiteral("Song")});
+    delete properties;
+}
+
+void BenchMainWindowTest::metadataSuggestionsStageSelectionConsistency() {
+    const auto field = [](std::string name, std::vector<std::string> values) {
+        return metadata::MetadataField{
+            .canonical_name = metadata::canonicalize_field_name(name),
+            .native_name = std::move(name),
+            .values = std::move(values),
+            .qualifier = {},
+            .provenance = metadata::FieldProvenance::embedded,
+        };
+    };
+    const auto make_source = [&field](const QString& label, const QString& track_number) {
+        return MetadataPropertiesSource{
+            .source =
+                metadata::StagedMetadataSource{
+                    .raw_path = "/music/" + label.toStdString() + ".flac",
+                    .source_revision = std::nullopt,
+                    .baseline =
+                        metadata::MetadataDocument{
+                            .fields = {field("ALBUM", {"Alpha"}), field("ARTIST", {"Band"}),
+                                       field("TRACKNUMBER", {track_number.toStdString()})},
+                            .unsupported_native_objects = {},
+                        },
+                },
+            .track_label = label,
+        };
+    };
+    const std::vector sources{make_source(QStringLiteral("one"), QStringLiteral("1")),
+                              make_source(QStringLiteral("two"), QStringLiteral("2")),
+                              make_source(QStringLiteral("three"), QStringLiteral("3"))};
+
+    auto* properties = new MetadataPropertiesDialog(
+        sources.size(),
+        [sources](const std::size_t index) -> std::optional<MetadataPropertiesSource> {
+            return index < sources.size() ? std::optional{sources[index]} : std::nullopt;
+        },
+        {}, {}, {});
+    properties->show();
+
+    QTableView* files = nullptr;
+    QTRY_VERIFY((files = properties->findChild<QTableView*>(
+                     QStringLiteral("bench-metadata-files"))) != nullptr);
+    QTableView* fields = nullptr;
+    QTRY_VERIFY((fields = properties->findChild<QTableView*>(
+                     QStringLiteral("bench-metadata-fields"))) != nullptr);
+    auto* grid_model = qobject_cast<MetadataGridModel*>(files->model());
+    auto* aggregate_model = qobject_cast<MetadataAggregateModel*>(fields->model());
+    auto* suggest = properties->findChild<QPushButton*>(QStringLiteral("bench-metadata-suggest"));
+    auto* undo = properties->findChild<QPushButton*>(QStringLiteral("bench-metadata-undo"));
+    auto* status = properties->findChild<QLabel*>(QStringLiteral("bench-metadata-read-only"));
+    QVERIFY(grid_model != nullptr);
+    QVERIFY(aggregate_model != nullptr);
+    QVERIFY(suggest != nullptr);
+    QVERIFY(undo != nullptr);
+    QVERIFY(status != nullptr);
+    files->selectAll();
+    QTRY_VERIFY(suggest->isEnabled());
+    QTest::mouseClick(suggest, Qt::LeftButton);
+
+    // The internal consistency provider stages album artist and total tracks
+    // for every file as one ordinary colored draft transaction.
+    QTRY_COMPARE_WITH_TIMEOUT(grid_model->patches().patch_count(), std::size_t{6U}, 5'000);
+    QVERIFY(status->text().contains(QStringLiteral("6 suggestions")));
+    QVERIFY(status->text().contains(QStringLiteral("Selection consistency")));
+    QVERIFY(aggregate_model->fieldRow(QStringLiteral("Album Artist")).has_value());
+    QVERIFY(aggregate_model->fieldRow(QStringLiteral("Total Tracks")).has_value());
+    const auto album_artist_column = grid_model->fieldColumn(QStringLiteral("Album Artist"));
+    const auto totals_column = grid_model->fieldColumn(QStringLiteral("Total Tracks"));
+    QVERIFY(album_artist_column.has_value());
+    QVERIFY(totals_column.has_value());
+    for (int row = 0; row < grid_model->rowCount(); ++row) {
+        QCOMPARE(grid_model->index(row, *album_artist_column)
+                     .data(metadata_cell_values_role)
+                     .toStringList(),
+                 QStringList{QStringLiteral("Band")});
+        QCOMPARE(
+            grid_model->index(row, *totals_column).data(metadata_cell_values_role).toStringList(),
+            QStringList{QStringLiteral("3")});
+    }
+
+    // One undo removes the whole suggestion transaction.
+    QTRY_VERIFY(undo->isEnabled());
+    QTest::mouseClick(undo, Qt::LeftButton);
+    QTRY_COMPARE(grid_model->patches().patch_count(), std::size_t{0U});
+
+    // A second run restages; files that already agree produce nothing new.
+    // Undoing the staged field extension resets the grid, so reselect first.
+    files->selectAll();
+    QTRY_VERIFY(suggest->isEnabled());
+    QTest::mouseClick(suggest, Qt::LeftButton);
+    QTRY_COMPARE_WITH_TIMEOUT(grid_model->patches().patch_count(), std::size_t{6U}, 5'000);
+    QTRY_VERIFY(suggest->isEnabled());
+    QTest::mouseClick(suggest, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(status->text().contains(QStringLiteral("already agree")), 5'000);
+    QCOMPARE(grid_model->patches().patch_count(), std::size_t{6U});
     delete properties;
 }
 

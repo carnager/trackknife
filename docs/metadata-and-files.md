@@ -797,6 +797,21 @@ its modal progress dialog for the same pattern, and blocked, stopped, or
 failed work opens the compact ADR-0083 feedback window. The inventory core,
 write plans, journaled commits, and recovery are unchanged.
 
+**Trackbench decision (ADR-0086, M5 provider boundary):** metadata providers
+are Qt-free observation-only functions over the draft-effective selection
+that return typed proposals: ordered replacement field values (identifiers
+travel as ordinary fields), artwork references, provider provenance, and
+per-proposal confidence with a human rationale. One validated conversion
+drops low-confidence and already-satisfied proposals and stages the rest as
+a single ordinary draft transaction — colored in the grid, one-step
+undoable, and revalidated by the same direct Apply as hand-typed edits.
+Providers never mutate or write. The internal selection-consistency
+provider (**Suggest**) proves the boundary before any network: it fills a
+missing ALBUMARTIST only on exact in-group agreement and proposes
+TOTALTRACKS only for an exactly contiguous 1..N run per album group. M6
+MusicBrainz implements the same contract; candidate ranking and comparison
+surfaces are its UI work.
+
 **Trackbench decision (ADR-0075):** a revision-qualified metadata source cache
 is durable correctness state, not an audio-file backup and not permanent path
 ownership. When no persisted local occurrence owns a relocation target, its

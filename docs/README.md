@@ -9,7 +9,7 @@ The ordered delivery plan is [`../MILESTONES.md`](../MILESTONES.md).
 
 ## Current continuation point
 
-M5 is active, implementation is accepted through ADR-0085, and the persistence
+M5 is active, implementation is accepted through ADR-0086, and the persistence
 schema is version 24. Path-only Rename/Move now derives strictly from captured
 revision-qualified source tags, never manual drafts or automatic chains, when
 Save tags is off. The transformation editor also exposes a canonical Raw script
@@ -60,8 +60,9 @@ Start metadata and file-operation work with
 [`adr/0082-pre-resolved-relocation-reconciliation.md`](adr/0082-pre-resolved-relocation-reconciliation.md),
 [`adr/0083-direct-apply-with-trusted-live-preview.md`](adr/0083-direct-apply-with-trusted-live-preview.md),
 [`adr/0084-silent-recovery-and-draft-color-semantics.md`](adr/0084-silent-recovery-and-draft-color-semantics.md),
+[`adr/0085-artwork-thumbnails-and-direct-apply.md`](adr/0085-artwork-thumbnails-and-direct-apply.md),
 and
-[`adr/0085-artwork-thumbnails-and-direct-apply.md`](adr/0085-artwork-thumbnails-and-direct-apply.md).
+[`adr/0086-typed-metadata-proposal-boundary.md`](adr/0086-typed-metadata-proposal-boundary.md).
 The development, ASan/UBSan, TSan, and clang-tidy builds and their complete
 46/46 test suites pass at this continuation point (validated 2026-09-01).
 The TSan-only bench test shim routes Qt 6.9+'s uninstrumented
