@@ -121,12 +121,59 @@ constexpr std::string_view web_service_root = "https://musicbrainz.org/ws/2";
     return credits;
 }
 
+[[nodiscard]] std::vector<std::string> bounded_string_list(const QJsonValue& value,
+                                                           const std::size_t bound,
+                                                           const WebServiceLimits& limits) {
+    std::vector<std::string> entries;
+    if (!value.isArray()) {
+        return entries;
+    }
+    for (const auto& entry : value.toArray()) {
+        if (entries.size() == bound) {
+            break;
+        }
+        if (entry.isString()) {
+            auto text = bounded_text(entry, limits);
+            if (!text.empty()) {
+                entries.push_back(std::move(text));
+            }
+        }
+    }
+    return entries;
+}
+
+// Recording-level relations carry the performed works; only valid work ids
+// survive.
+[[nodiscard]] std::vector<std::string> parse_work_ids(const QJsonValue& value,
+                                                      const WebServiceLimits& limits) {
+    std::vector<std::string> ids;
+    if (!value.isArray()) {
+        return ids;
+    }
+    for (const auto& entry : value.toArray()) {
+        if (ids.size() == limits.identifiers) {
+            break;
+        }
+        if (!entry.isObject()) {
+            continue;
+        }
+        auto id = bounded_text(
+            entry.toObject().value(QStringLiteral("work")).toObject().value(QStringLiteral("id")),
+            limits);
+        if (is_musicbrainz_id(id)) {
+            ids.push_back(std::move(id));
+        }
+    }
+    return ids;
+}
+
 [[nodiscard]] core::Result<ReleaseMedium> parse_medium(const QJsonObject& medium,
                                                        const WebServiceLimits& limits) {
     ReleaseMedium parsed{
         .position = static_cast<std::size_t>(
             std::max(medium.value(QStringLiteral("position")).toInt(0), 0)),
         .format = bounded_text(medium.value(QStringLiteral("format")), limits),
+        .title = bounded_text(medium.value(QStringLiteral("title")), limits),
         .track_count = static_cast<std::size_t>(
             std::max(medium.value(QStringLiteral("track-count")).toInt(0), 0)),
         .tracks = {},
@@ -158,6 +205,9 @@ constexpr std::string_view web_service_root = "https://musicbrainz.org/ws/2";
             .length_ms = optional_milliseconds(track.value(QStringLiteral("length"))),
             .artist_credits =
                 parse_artist_credits(track.value(QStringLiteral("artist-credit")), limits),
+            .isrcs = bounded_string_list(recording.value(QStringLiteral("isrcs")),
+                                         limits.identifiers, limits),
+            .work_ids = parse_work_ids(recording.value(QStringLiteral("relations")), limits),
         };
         if (parsed_track.title.empty()) {
             parsed_track.title = bounded_text(recording.value(QStringLiteral("title")), limits);
@@ -188,6 +238,28 @@ constexpr std::string_view web_service_root = "https://musicbrainz.org/ws/2";
         .release_group_id = bounded_text(
             release.value(QStringLiteral("release-group")).toObject().value(QStringLiteral("id")),
             limits),
+        .release_group_primary_type = bounded_text(release.value(QStringLiteral("release-group"))
+                                                       .toObject()
+                                                       .value(QStringLiteral("primary-type")),
+                                                   limits),
+        .release_group_secondary_types =
+            bounded_string_list(release.value(QStringLiteral("release-group"))
+                                    .toObject()
+                                    .value(QStringLiteral("secondary-types")),
+                                limits.identifiers, limits),
+        .release_group_first_release_date =
+            bounded_text(release.value(QStringLiteral("release-group"))
+                             .toObject()
+                             .value(QStringLiteral("first-release-date")),
+                         limits),
+        .script = bounded_text(release.value(QStringLiteral("text-representation"))
+                                   .toObject()
+                                   .value(QStringLiteral("script")),
+                               limits),
+        .language = bounded_text(release.value(QStringLiteral("text-representation"))
+                                     .toObject()
+                                     .value(QStringLiteral("language")),
+                                 limits),
         .label = {},
         .catalog_number = {},
         .search_score = release.value(QStringLiteral("score")).toInt(0),
@@ -286,7 +358,8 @@ core::Result<std::string> build_release_lookup_url(const std::string_view releas
                                              "a MusicBrainz release lookup needs a release id"));
     }
     return std::string{web_service_root} + "/release/" + std::string{release_id} +
-           "?inc=artist-credits+recordings+release-groups+labels&fmt=json";
+           "?inc=artist-credits+recordings+release-groups+labels"
+           "+isrcs+recording-level-rels+work-rels&fmt=json";
 }
 
 core::Result<ReleaseSearchResult> parse_release_search(const std::string_view body,

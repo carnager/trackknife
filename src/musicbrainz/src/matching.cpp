@@ -127,6 +127,8 @@ constexpr std::int64_t plausible_duration_ms = 10'000;
                 .medium_position = medium.position == 0U ? medium_index + 1U : medium.position,
                 .medium_track_count = track_count,
                 .track_index_in_medium = track_index,
+                .medium_format = medium.format,
+                .medium_title = medium.title,
                 .track = medium.tracks[track_index],
             });
         }

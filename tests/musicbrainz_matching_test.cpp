@@ -24,13 +24,13 @@ void check(const bool condition, const std::string_view expression, const int li
 
 using namespace trackknife::musicbrainz;
 
-[[nodiscard]] ArtistCredit credit(std::string name, std::string join_phrase = {},
-                                  std::string artist_id = {}) {
+[[nodiscard]] ArtistCredit credit(std::string name, std::string join_phrase, std::string artist_id,
+                                  std::string sort_name = {}) {
     return ArtistCredit{
         .name = std::move(name),
         .join_phrase = std::move(join_phrase),
         .artist_id = std::move(artist_id),
-        .sort_name = {},
+        .sort_name = std::move(sort_name),
     };
 }
 
@@ -45,6 +45,8 @@ using namespace trackknife::musicbrainz;
         .title = std::move(title),
         .length_ms = length_ms,
         .artist_credits = std::move(credits),
+        .isrcs = {},
+        .work_ids = {},
     };
 }
 
@@ -58,23 +60,31 @@ using namespace trackknife::musicbrainz;
         .country = "DE",
         .barcode = {},
         .release_group_id = "99999999-8888-7777-6666-555555555555",
+        .release_group_primary_type = "Album",
+        .release_group_secondary_types = {"Live"},
+        .release_group_first_release_date = "1990-01-01",
+        .script = "Latn",
+        .language = "eng",
         .label = "Label Records",
         .catalog_number = "CAT-123",
         .search_score = 100,
         .track_count = 3U,
-        .artist_credits = {credit("Band", " feat. ", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+        .artist_credits = {credit("Band", " feat. ", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                                  "Band, The"),
                            credit("Guest", {}, "ffffffff-0000-1111-2222-333333333333")},
         .media = {},
     };
     release.media.push_back(ReleaseMedium{
         .position = 1U,
         .format = "CD",
+        .title = "First Night",
         .track_count = 2U,
         .tracks = {track("One", 1U, 61'000), track("Two", 2U, 59'000)},
     });
     release.media.push_back(ReleaseMedium{
         .position = 2U,
         .format = "CD",
+        .title = {},
         .track_count = 1U,
         .tracks = {track("Three", 1U, 63'000)},
     });
@@ -196,7 +206,9 @@ void alignsByOrderAndThenGreedyTitles() {
 }
 
 void proposalsCarryTagsIdentifiersAndVersion() {
-    const auto release = two_disc_release();
+    auto release = two_disc_release();
+    release.media[0].tracks[0].isrcs = {"DEA119900001"};
+    release.media[0].tracks[0].work_ids = {"cccc1111-0000-0000-0000-000000000001"};
     const std::vector<LocalTrackDescriptor> locals{
         LocalTrackDescriptor{.title = "One",
                              .artist = "Band",
@@ -266,7 +278,38 @@ void proposalsCarryTagsIdentifiersAndVersion() {
     CHECK(field("title")->confidence > 0.9);
     CHECK(field("title")->rationale.find("Alpha") != std::string::npos);
 
-    // The disc-2 file gets its own numbering.
+    // Picard parity: sort names beside credited names, release-group
+    // origin dates, lowercased type/status, and the release description
+    // fields, plus per-track ISRCs and work ids.
+    CHECK(field("artistsort") != nullptr &&
+          field("artistsort")->values.front() == "Band, The feat. Guest");
+    CHECK(field("albumartistsort") != nullptr &&
+          field("albumartistsort")->values.front() == "Band, The feat. Guest");
+    CHECK(field("originaldate") != nullptr &&
+          field("originaldate")->values.front() == "1990-01-01");
+    CHECK(field("originalyear") != nullptr && field("originalyear")->values.front() == "1990");
+    CHECK(field("releasetype") != nullptr &&
+          field("releasetype")->values == (std::vector<std::string>{"album", "live"}));
+    CHECK(field("releasestatus") != nullptr &&
+          field("releasestatus")->values.front() == "official");
+    CHECK(field("releasecountry") != nullptr && field("releasecountry")->values.front() == "DE");
+    CHECK(field("script") != nullptr && field("script")->values.front() == "Latn");
+    CHECK(field("language") != nullptr && field("language")->values.front() == "eng");
+    CHECK(field("label") != nullptr && field("label")->values.front() == "Label Records");
+    CHECK(field("catalognumber") != nullptr && field("catalognumber")->values.front() == "CAT-123");
+    // The empty barcode is never proposed.
+    CHECK(field("barcode") == nullptr);
+    CHECK(field("media") != nullptr && field("media")->values.front() == "CD");
+    CHECK(field("discsubtitle") != nullptr &&
+          field("discsubtitle")->values.front() == "First Night");
+    CHECK(field("isrc") != nullptr &&
+          field("isrc")->values == (std::vector<std::string>{"DEA119900001"}));
+    CHECK(field("musicbrainzworkid") != nullptr &&
+          field("musicbrainzworkid")->values ==
+              (std::vector<std::string>{"cccc1111-0000-0000-0000-000000000001"}));
+
+    // The disc-2 file gets its own numbering, no disc subtitle, and no
+    // borrowed ISRC or work.
     const auto* third = &proposals->items.back();
     CHECK(third->item_index == 9U);
     for (const auto& value : third->fields) {
@@ -276,6 +319,9 @@ void proposalsCarryTagsIdentifiersAndVersion() {
         if (value.canonical_field == "discnumber") {
             CHECK(value.values.front() == "2");
         }
+        CHECK(value.canonical_field != "discsubtitle");
+        CHECK(value.canonical_field != "isrc");
+        CHECK(value.canonical_field != "musicbrainzworkid");
     }
 }
 

@@ -9,7 +9,7 @@ The ordered delivery plan is [`../MILESTONES.md`](../MILESTONES.md).
 
 ## Current continuation point
 
-M5 is closing into M6, implementation is accepted through ADR-0091, and the persistence
+M5 is closing into M6, implementation is accepted through ADR-0092, and the persistence
 schema is version 25. In-app MusicBrainz identification is end-to-end: Properties'
 Identify… opens a no-id text-search dialog whose ranked rows are individual
 release versions, and the chosen version stages as one undoable colored draft
@@ -17,8 +17,10 @@ through the ADR-0086 preview, fetched via a lazy cache-first paced service.
 Cover Art Archive front covers ride the same boundary: the artwork tab's
 Fetch cover resolves one unambiguous draft-or-baseline release id to the
 archive's front image and embeds it through the ordinary preservation-exact
-add path. The next M6 slice is the optional AcoustID evaluation or non-front
-cover choices. Path-only Rename/Move now derives strictly from captured
+add path. Identified releases now stage Picard's complete matched-release
+tag set — separate sort names, release-group origin dates, lowercased
+type/status, description fields, ISRCs, and work ids. The next M6 slice is
+the optional AcoustID evaluation or non-front cover choices. Path-only Rename/Move now derives strictly from captured
 revision-qualified source tags, never manual drafts or automatic chains, when
 Save tags is off. The transformation editor also exposes a canonical Raw script
 view for the bounded cleanup subset with live typed translation and explicit
@@ -74,7 +76,8 @@ Start metadata and file-operation work with
 [`adr/0088-musicbrainz-web-service-client.md`](adr/0088-musicbrainz-web-service-client.md),
 [`adr/0089-release-matching-and-alignment.md`](adr/0089-release-matching-and-alignment.md),
 [`adr/0090-in-app-musicbrainz-identify-dialog.md`](adr/0090-in-app-musicbrainz-identify-dialog.md),
-and [`adr/0091-cover-art-archive-front-cover-fetch.md`](adr/0091-cover-art-archive-front-cover-fetch.md).
+[`adr/0091-cover-art-archive-front-cover-fetch.md`](adr/0091-cover-art-archive-front-cover-fetch.md),
+and [`adr/0092-picard-parity-release-proposals.md`](adr/0092-picard-parity-release-proposals.md).
 The development, ASan/UBSan, TSan, and clang-tidy builds and their complete
 51/51 test suites pass at this continuation point (validated 2026-09-02).
 The TSan-only bench test shim routes Qt 6.9+'s uninstrumented

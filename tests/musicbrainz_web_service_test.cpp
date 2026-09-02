@@ -51,7 +51,8 @@ void lookupUrlRequiresAReleaseId() {
     const auto url = build_release_lookup_url("2f2ac1b7-1111-4f4f-8f8f-123456789abc");
     CHECK(url.has_value());
     CHECK(*url == "https://musicbrainz.org/ws/2/release/2f2ac1b7-1111-4f4f-8f8f-123456789abc"
-                  "?inc=artist-credits+recordings+release-groups+labels&fmt=json");
+                  "?inc=artist-credits+recordings+release-groups+labels"
+                  "+isrcs+recording-level-rels+work-rels&fmt=json");
     CHECK(!build_release_lookup_url("").has_value());
     CHECK(!build_release_lookup_url("not-a-uuid").has_value());
     CHECK(!build_release_lookup_url("2f2ac1b7-1111-4f4f-8f8f-123456789ab/../x").has_value());
@@ -136,7 +137,10 @@ constexpr std::string_view lookup_fixture = R"json({
   "status": "Official",
   "date": "1999-09-09",
   "country": "DE",
-  "release-group": {"id": "99999999-8888-7777-6666-555555555555"},
+  "release-group": {"id": "99999999-8888-7777-6666-555555555555",
+                    "primary-type": "Album", "secondary-types": ["Live"],
+                    "first-release-date": "1990-05-01"},
+  "text-representation": {"script": "Latn", "language": "eng"},
   "artist-credit": [{"name": "Band",
                      "artist": {"id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
                                 "name": "Band", "sort-name": "Band, The"}}],
@@ -144,11 +148,19 @@ constexpr std::string_view lookup_fixture = R"json({
     {
       "position": 1,
       "format": "CD",
+      "title": "First Night",
       "track-count": 2,
       "tracks": [
         {"id": "aaaa1111-0000-0000-0000-000000000001", "position": 1, "number": "1",
          "title": "One", "length": 61000,
-         "recording": {"id": "bbbb1111-0000-0000-0000-000000000001", "title": "One"}},
+         "recording": {"id": "bbbb1111-0000-0000-0000-000000000001", "title": "One",
+                       "isrcs": ["DEA119900001"],
+                       "relations": [
+                         {"type": "performance",
+                          "work": {"id": "cccc1111-0000-0000-0000-000000000001",
+                                   "title": "One (work)"}},
+                         {"type": "performance", "work": {"id": "not-a-uuid"}}
+                       ]}},
         {"id": "aaaa1111-0000-0000-0000-000000000002", "position": 2, "number": "2",
          "recording": {"id": "bbbb1111-0000-0000-0000-000000000002",
                        "title": "Two (recording)", "length": 59000}}
@@ -174,6 +186,20 @@ void lookupParsingAlignsTracksAndRecordings() {
     CHECK(medium.tracks[1].title == "Two (recording)");
     CHECK(medium.tracks[1].length_ms == std::optional<std::int64_t>{59'000});
     CHECK(release->track_count == 2U);
+
+    // Picard-parity detail: release-group dates and types, the text
+    // representation, medium titles, ISRCs, and valid work ids only.
+    CHECK(release->release_group_primary_type == "Album");
+    CHECK(release->release_group_secondary_types == std::vector<std::string>{"Live"});
+    CHECK(release->release_group_first_release_date == "1990-05-01");
+    CHECK(release->script == "Latn");
+    CHECK(release->language == "eng");
+    CHECK(medium.title == "First Night");
+    CHECK(medium.tracks[0].isrcs == std::vector<std::string>{"DEA119900001"});
+    CHECK(medium.tracks[0].work_ids ==
+          std::vector<std::string>{"cccc1111-0000-0000-0000-000000000001"});
+    CHECK(medium.tracks[1].isrcs.empty());
+    CHECK(medium.tracks[1].work_ids.empty());
 }
 
 void malformedAndOversizedPayloadsFailTyped() {

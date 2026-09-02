@@ -26,6 +26,7 @@ struct WebServiceLimits {
     std::size_t media{64U};
     std::size_t tracks_per_medium{256U};
     std::size_t artist_credits{32U};
+    std::size_t identifiers{16U};
     std::size_t cover_art_images{100U};
     std::size_t text_bytes{2'048U};
     std::size_t body_bytes{8U * 1024U * 1024U};
@@ -43,7 +44,8 @@ struct ReleaseSearchQuery {
 [[nodiscard]] core::Result<std::string> build_release_search_url(const ReleaseSearchQuery& query);
 
 // Builds the ws/2 release lookup URL including artist credits, recordings,
-// release groups, and labels. The id must be a MusicBrainz UUID.
+// release groups, labels, ISRCs, and recording-level work relations. The id
+// must be a MusicBrainz UUID.
 [[nodiscard]] core::Result<std::string> build_release_lookup_url(std::string_view release_id);
 
 struct ArtistCredit {
@@ -63,6 +65,8 @@ struct ReleaseTrack {
     std::string title;
     std::optional<std::int64_t> length_ms;
     std::vector<ArtistCredit> artist_credits;
+    std::vector<std::string> isrcs;
+    std::vector<std::string> work_ids;
 
     friend bool operator==(const ReleaseTrack&, const ReleaseTrack&) = default;
 };
@@ -70,6 +74,7 @@ struct ReleaseTrack {
 struct ReleaseMedium {
     std::size_t position{0U};
     std::string format;
+    std::string title;
     std::size_t track_count{0U};
     std::vector<ReleaseTrack> tracks;
 
@@ -85,6 +90,11 @@ struct Release {
     std::string country;
     std::string barcode;
     std::string release_group_id;
+    std::string release_group_primary_type;
+    std::vector<std::string> release_group_secondary_types;
+    std::string release_group_first_release_date;
+    std::string script;
+    std::string language;
     std::string label;
     std::string catalog_number;
     int search_score{0};

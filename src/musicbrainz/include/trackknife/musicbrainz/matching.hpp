@@ -46,6 +46,8 @@ struct FlattenedReleaseTrack {
     std::size_t medium_position{0U};
     std::size_t medium_track_count{0U};
     std::size_t track_index_in_medium{0U};
+    std::string medium_format;
+    std::string medium_title;
     ReleaseTrack track;
 
     friend bool operator==(const FlattenedReleaseTrack&, const FlattenedReleaseTrack&) = default;

@@ -1095,6 +1095,18 @@ network operations that never bypass staged preview/write safety.
   refusing scheme downgrades. An injected cover service keeps the flow
   offscreen-tested end-to-end against a real FLAC. Non-front image
   choices and the AcoustID evaluation remain.
+- Done: ADR-0092 completes Picard-parity proposals. The release lookup
+  now includes ISRCs and recording-level work relations, and parsing
+  carries release-group types and first-release dates, script/language,
+  medium titles, and UUID-validated work ids. The bridge proposes the
+  full matched-release tag set — sort names joined like credited names
+  but never merged with them, ORIGINALDATE/ORIGINALYEAR, lowercased
+  RELEASETYPE/RELEASESTATUS, RELEASECOUNTRY, SCRIPT, LANGUAGE, LABEL,
+  CATALOGNUMBER, BARCODE, MEDIA, DISCSUBTITLE, multi-value ISRC, and
+  MUSICBRAINZ_WORKID — with Picard's 1/1 numbering on single-disc
+  releases, and six new conventional FLAC identities keep those fields
+  one logical column each. Disc ids stay out of scope (they need
+  physical TOC data); AcoustID remains the open evaluation.
 
 ## M7 — Universal parallel ReplayGain
 
