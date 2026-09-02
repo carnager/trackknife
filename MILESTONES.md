@@ -1042,6 +1042,22 @@ network operations that never bypass staged preview/write safety.
 - MusicBrainz-aware grouping and sorting improve measurably on the fixture
   corpus without breaking deterministic fallbacks for untagged files.
 
+### Current progress (2026-09-02)
+
+- Done: ADR-0088 lands the ws/2 client core. Typed URL builders cover
+  Lucene-escaped text search — artist and album with no MusicBrainz id
+  anywhere — and release lookups with recordings, artist credits, release
+  groups, and labels; pure bounded parsers keep everything an in-app
+  version picker needs per candidate (score, date, country, status,
+  disambiguation, barcode, label/catalog number, media formats, and the
+  release-group id that groups versions), and per-medium track listings
+  with track/recording ids and lengths. One serialized cache-first fetcher
+  paces dispatches at 1.1 s with an identifying User-Agent and maps
+  offline/throttled/missing/unexpected outcomes to typed errors. Migration
+  25 adds the bounded 14-day, 10,000-entry SQLite response cache. Fixture,
+  scripted-transport, and cache tests cover the whole boundary; no UI or
+  matching yet.
+
 ## M7 — Universal parallel ReplayGain
 
 ### Objective

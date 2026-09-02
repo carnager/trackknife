@@ -21,7 +21,7 @@
 namespace trackknife::persistence {
 namespace {
 
-constexpr unsigned current_schema_version = 24U;
+constexpr unsigned current_schema_version = 25U;
 constexpr std::size_t maximum_documents = 1'024U;
 constexpr std::size_t maximum_items_per_document = 1'000'000U;
 constexpr std::size_t maximum_fields_per_item = 4'096U;
@@ -793,6 +793,20 @@ read_optional_revision(sqlite3_stmt* statement, const int first,
             "INSERT INTO operation_journal_artwork SELECT * FROM operation_journal_artwork_v23;"
             "DROP TABLE operation_journal_artwork_v23;"
             "UPDATE schema_version SET version = 24;";
+        if (auto result = execute(database, migration); !result) {
+            rollback();
+            return result;
+        }
+    }
+    if (version <= 24) {
+        constexpr auto migration =
+            "CREATE TABLE musicbrainz_response_cache ("
+            "url BLOB PRIMARY KEY NOT NULL, "
+            "body BLOB NOT NULL, "
+            "fetched_at_unix_seconds INTEGER NOT NULL CHECK(fetched_at_unix_seconds >= 0));"
+            "CREATE INDEX musicbrainz_response_cache_age "
+            "ON musicbrainz_response_cache(fetched_at_unix_seconds);"
+            "UPDATE schema_version SET version = 25;";
         if (auto result = execute(database, migration); !result) {
             rollback();
             return result;

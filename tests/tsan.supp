@@ -5,3 +5,8 @@
 # the PagedTrackModel page generator and every other application frame remain
 # instrumented.
 race:QtConcurrent::RunFunctionTaskBase<trackknife::qtmodels::PagedTrackModel::Page>::run
+# Same uninstrumented-Qt happens-before gap, second inline template instance:
+# the future result store for the Trackbench probe queue's ProbeOutcome batch
+# is cleared on the UI thread after the worker's emplaceResult, with the real
+# synchronization inside the Qt shared library.
+race:QtPrivate::ResultStoreBase::clear<std::vector<trackknife::bench::BenchMainWindow::ProbeOutcome*

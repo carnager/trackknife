@@ -94,6 +94,13 @@ target_link_libraries(
 )
 add_test(NAME list-repository COMMAND trackknife_list_repository_tests)
 
+add_executable(trackknife_musicbrainz_cache_tests musicbrainz_cache_test.cpp)
+target_link_libraries(
+    trackknife_musicbrainz_cache_tests
+    PRIVATE Trackknife::Persistence trackknife_project_options trackknife_project_warnings
+)
+add_test(NAME musicbrainz-cache COMMAND trackknife_musicbrainz_cache_tests)
+
 add_executable(trackknife_operation_journal_tests operation_journal_test.cpp)
 target_link_libraries(
     trackknife_operation_journal_tests
@@ -285,6 +292,21 @@ add_test(
 )
 
 if(TRACKKNIFE_BUILD_UI)
+    qt_add_executable(trackknife_musicbrainz_web_service_tests musicbrainz_web_service_test.cpp)
+    target_link_libraries(
+        trackknife_musicbrainz_web_service_tests
+        PRIVATE Trackknife::MusicBrainz trackknife_project_options trackknife_project_warnings
+    )
+    add_test(NAME musicbrainz-web-service COMMAND trackknife_musicbrainz_web_service_tests)
+
+    qt_add_executable(trackknife_musicbrainz_client_tests musicbrainz_client_test.cpp)
+    target_link_libraries(
+        trackknife_musicbrainz_client_tests
+        PRIVATE Trackknife::MusicBrainz Qt6::Test trackknife_project_options
+                trackknife_project_warnings
+    )
+    add_test(NAME musicbrainz-client COMMAND trackknife_musicbrainz_client_tests)
+
     qt_add_executable(
         trackknife_metadata_transformation_interchange_tests
         metadata_transformation_interchange_test.cpp

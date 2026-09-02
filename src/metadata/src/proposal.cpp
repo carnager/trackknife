@@ -304,13 +304,15 @@ core::Result<MetadataProposalSet> propose_selection_consistency(
             // Receiving a proposal is decided by the writable state, so a
             // value that only exists as a cached or stream projection still
             // gets the real tag.
+            std::string artist_rationale{"Every track of \""};
+            artist_rationale += album;
+            artist_rationale += "\" in this selection shares this artist";
             for (const auto position : positions) {
                 if (writable_values(selection, draft, item_indexes[position], "albumartist") ==
                     *agreed_album_artist) {
                     continue;
                 }
-                propose(position, "Album Artist", *agreed_album_artist,
-                        "Every track of \"" + album + "\" in this selection shares this artist");
+                propose(position, "Album Artist", *agreed_album_artist, artist_rationale);
             }
         }
 
@@ -330,8 +332,11 @@ core::Result<MetadataProposalSet> propose_selection_consistency(
             *numbers.rbegin() == positions.size()) {
             const auto total = std::to_string(positions.size());
             const std::vector<std::string> total_values{total};
-            const auto rationale = "\"" + album + "\" has the complete run of tracks 1–" + total +
-                                   " in this selection";
+            std::string rationale{"\""};
+            rationale += album;
+            rationale += "\" has the complete run of tracks 1–";
+            rationale += total;
+            rationale += " in this selection";
             // One logical totals field: TRACKTOTAL resolves to the same
             // canonical identity on read, and the FLAC writer emits both
             // paired spellings on its own.

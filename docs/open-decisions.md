@@ -164,8 +164,10 @@ Export. Other container writers and configurable export naming remain open.
 4. Initial exact read/write/preservation claims per local format.
 5. Converter's shipped codec/device presets, resampler quality settings, and
    source-root inference UX.
-6. MusicBrainz web-service rate-limit/cache policy and whether AcoustID
-   fingerprinting earns its dependency (M6).
+6. Resolved by ADR-0088: the MusicBrainz client paces one serialized request
+   at 1.1 s with an identifying User-Agent and caches responses in the shared
+   SQLite store for 14 days within a 10,000-entry bound. Whether AcoustID
+   fingerprinting earns its dependency remains open (M6).
 7. Shipped destination-profile defaults, including whether an accessible MPD
    music root earns a convenience preset.
 

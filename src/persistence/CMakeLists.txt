@@ -4,6 +4,7 @@ add_library(
     trackknife_persistence STATIC
     src/file_publication_journal.cpp
     src/list_repository.cpp
+    src/musicbrainz_cache.cpp
     src/operation_journal.cpp
 )
 add_library(Trackknife::Persistence ALIAS trackknife_persistence)

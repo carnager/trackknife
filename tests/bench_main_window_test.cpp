@@ -1606,6 +1606,9 @@ void BenchMainWindowTest::pathOnlyPreparationUsesActualTagsAndAppliesReviewedPla
         },
         [&observed](const operations::FilePublicationApplyResult& result) { observed = result; });
     properties->show();
+    // Success auto-closes the WA_DeleteOnClose dialog; only a pointer
+    // guarded from the start may observe that.
+    const QPointer<MetadataPropertiesDialog> closed_guard{properties};
 
     QTableView* fields = nullptr;
     QTRY_VERIFY((fields = properties->findChild<QTableView*>(
@@ -1646,7 +1649,7 @@ void BenchMainWindowTest::pathOnlyPreparationUsesActualTagsAndAppliesReviewedPla
     QVERIFY(!expected_target.endsWith(QStringLiteral("/Draft path title.flac")));
     QVERIFY(!expected_target.endsWith(QStringLiteral("/Synthetic path title.flac")));
     QCOMPARE(QString::fromStdString(reviewed_target), expected_target);
-    QTRY_VERIFY(properties->parent() == nullptr || !properties->isVisible());
+    QTRY_VERIFY(closed_guard.isNull() || !closed_guard->isVisible());
 }
 
 void BenchMainWindowTest::combinedTagAndRenameReviewReachesPreparationApply() {
@@ -1759,6 +1762,9 @@ void BenchMainWindowTest::combinedTagAndRenameReviewReachesPreparationApply() {
         },
         {});
     properties->show();
+    // Success auto-closes the WA_DeleteOnClose dialog; only a pointer
+    // guarded from the start may observe that.
+    const QPointer<MetadataPropertiesDialog> closed_guard{properties};
 
     QTableView* fields = nullptr;
     QTRY_VERIFY((fields = properties->findChild<QTableView*>(
@@ -1789,7 +1795,7 @@ void BenchMainWindowTest::combinedTagAndRenameReviewReachesPreparationApply() {
     QTRY_VERIFY_WITH_TIMEOUT(combined_applied, 5'000);
     QVERIFY(QString::fromStdString(reviewed_target)
                 .endsWith(QStringLiteral("/Combined UI title.flac")));
-    QTRY_VERIFY(properties->parent() == nullptr || !properties->isVisible());
+    QTRY_VERIFY(closed_guard.isNull() || !closed_guard->isVisible());
 }
 
 void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() {
