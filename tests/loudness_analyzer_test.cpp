@@ -3,10 +3,12 @@
 #include "trackknife/core/stable_id.hpp"
 #include "trackknife/formats/decoder.hpp"
 #include "trackknife/loudness/analyzer.hpp"
+#include "trackknife/loudness/scan.hpp"
 
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -226,6 +228,171 @@ void decodedFixtureAnalyzesAndShortMaterialIsUnmeasurable(
     std::filesystem::remove(path, remove_error);
 }
 
+// Minimal PCM16 WAV writer so the scan tests exercise the real decoder.
+void write_sine_wav(const std::filesystem::path& path, const double amplitude,
+                    const double seconds) {
+    const auto frames = static_cast<std::uint32_t>(seconds * sample_rate);
+    const std::uint32_t data_bytes = frames * 2U * 2U;
+    std::ofstream output{path, std::ios::binary};
+    const auto write_u32 = [&output](const std::uint32_t value) {
+        const std::array<char, 4> bytes{
+            static_cast<char>(value & 0xFFU), static_cast<char>((value >> 8U) & 0xFFU),
+            static_cast<char>((value >> 16U) & 0xFFU), static_cast<char>((value >> 24U) & 0xFFU)};
+        output.write(bytes.data(), 4);
+    };
+    const auto write_u16 = [&output](const std::uint16_t value) {
+        const std::array<char, 2> bytes{static_cast<char>(value & 0xFFU),
+                                        static_cast<char>((value >> 8U) & 0xFFU)};
+        output.write(bytes.data(), 2);
+    };
+    output.write("RIFF", 4);
+    write_u32(36U + data_bytes);
+    output.write("WAVE", 4);
+    output.write("fmt ", 4);
+    write_u32(16U);
+    write_u16(1U);
+    write_u16(2U);
+    write_u32(static_cast<std::uint32_t>(sample_rate));
+    write_u32(static_cast<std::uint32_t>(sample_rate) * 4U);
+    write_u16(4U);
+    write_u16(16U);
+    output.write("data", 4);
+    write_u32(data_bytes);
+    for (std::uint32_t frame = 0U; frame < frames; ++frame) {
+        const auto value = amplitude * std::sin(2.0 * std::numbers::pi * tone_hertz *
+                                                static_cast<double>(frame) / sample_rate);
+        const auto sample = static_cast<std::int16_t>(std::clamp(value, -1.0, 1.0) * 32'767.0);
+        write_u16(static_cast<std::uint16_t>(sample));
+        write_u16(static_cast<std::uint16_t>(sample));
+    }
+}
+
+class ScanFixture final {
+  public:
+    ScanFixture() {
+        directory_ =
+            std::filesystem::temp_directory_path() /
+            ("trackknife-loudness-scan-" + trackknife::core::StableId::random().to_string());
+        std::filesystem::create_directory(directory_);
+    }
+    ~ScanFixture() {
+        std::error_code error;
+        std::filesystem::remove_all(directory_, error);
+    }
+    [[nodiscard]] std::string tone(const std::string_view name, const double amplitude) {
+        const auto path = directory_ / name;
+        write_sine_wav(path, amplitude, 2.0);
+        return path.native();
+    }
+    [[nodiscard]] std::string missing(const std::string_view name) const {
+        return (directory_ / name).native();
+    }
+
+  private:
+    std::filesystem::path directory_;
+};
+
+void parallelScanMatchesDirectAnalysisAndReducesAlbums() {
+    ScanFixture fixture;
+    const std::vector<trackknife::loudness::LoudnessScanItem> items{
+        {.item_index = 10U,
+         .raw_path = fixture.tone("a1.wav", 0.8),
+         .selection = {},
+         .range = {},
+         .album_key = std::optional<std::string>{"album-a"}},
+        {.item_index = 11U,
+         .raw_path = fixture.tone("a2.wav", 0.2),
+         .selection = {},
+         .range = {},
+         .album_key = std::optional<std::string>{"album-a"}},
+        {.item_index = 12U,
+         .raw_path = fixture.tone("solo.wav", 0.4),
+         .selection = {},
+         .range = {},
+         .album_key = std::nullopt},
+        {.item_index = 13U,
+         .raw_path = fixture.missing("gone.wav"),
+         .selection = {},
+         .range = {},
+         .album_key = std::optional<std::string>{"album-b"}},
+    };
+    std::size_t final_completed = 0U;
+    const auto result = trackknife::loudness::scan_loudness(
+        items, {.measure_true_peak = true, .maximum_parallelism = 4U},
+        [&final_completed](const trackknife::loudness::LoudnessScanProgress& update) {
+            final_completed = std::max(final_completed, update.completed_items);
+        });
+    CHECK(result.has_value());
+    if (!result) {
+        std::cerr << result.error().message << '\n';
+        return;
+    }
+    CHECK(result->tracks.size() == 4U);
+    CHECK(result->analyzed_track_count() == 3U);
+    CHECK(result->failed_track_count() == 1U);
+    CHECK(final_completed == 4U);
+    CHECK(!result->cancellation_requested);
+
+    // Parallel results equal a direct single-threaded analysis.
+    const auto expected = analyze_sine(0.8, 2, true);
+    CHECK(expected.has_value());
+    const auto& first = result->tracks[0];
+    CHECK(first.item_index == 10U);
+    CHECK(first.state == trackknife::loudness::LoudnessScanState::analyzed);
+    CHECK(first.source_revision.has_value());
+    CHECK(first.loudness.has_value());
+    if (expected && first.loudness) {
+        // PCM16 quantization keeps this within a small tolerance.
+        CHECK(std::abs(first.loudness->integrated_lufs - expected->integrated_lufs) < 0.05);
+        CHECK(std::abs(first.loudness->sample_peak - 0.8) < 0.01);
+        CHECK(first.loudness->true_peak.has_value());
+    }
+    const auto& failed = result->tracks[3];
+    CHECK(failed.state == trackknife::loudness::LoudnessScanState::failed);
+    CHECK(failed.issue.has_value());
+
+    // Album A reduces as one gated programme dominated by the loud member;
+    // album B is honestly incomplete.
+    CHECK(result->albums.size() == 2U);
+    const auto& album_a = result->albums[0];
+    CHECK(album_a.album_key == "album-a");
+    CHECK(album_a.item_indexes == (std::vector<std::size_t>{10U, 11U}));
+    CHECK(album_a.integrated_lufs.has_value());
+    CHECK(album_a.album_gain_db().has_value());
+    if (album_a.integrated_lufs && first.loudness) {
+        CHECK(*album_a.integrated_lufs <= first.loudness->integrated_lufs + 0.01);
+        CHECK(*album_a.integrated_lufs > first.loudness->integrated_lufs - 3.5);
+    }
+    CHECK(std::abs(album_a.sample_peak - 0.8) < 0.01);
+    const auto& album_b = result->albums[1];
+    CHECK(album_b.album_key == "album-b");
+    CHECK(!album_b.integrated_lufs.has_value());
+    CHECK(album_b.issue.has_value());
+    CHECK(!album_b.album_gain_db().has_value());
+}
+
+void cancelledScanStopsCleanly() {
+    ScanFixture fixture;
+    const std::vector<trackknife::loudness::LoudnessScanItem> items{
+        {.item_index = 0U,
+         .raw_path = fixture.tone("c1.wav", 0.5),
+         .selection = {},
+         .range = {},
+         .album_key = std::nullopt},
+    };
+    trackknife::core::CancellationSource cancellation;
+    cancellation.request_cancellation();
+    const auto result = trackknife::loudness::scan_loudness(items, {}, {}, cancellation.token());
+    CHECK(result.has_value());
+    if (result) {
+        CHECK(result->cancellation_requested);
+        CHECK(result->tracks[0].state == trackknife::loudness::LoudnessScanState::cancelled);
+    }
+    CHECK(!trackknife::loudness::scan_loudness(
+               items, {.measure_true_peak = true, .maximum_parallelism = 0U})
+               .has_value());
+}
+
 } // namespace
 
 int main(const int argc, char** argv) {
@@ -234,6 +401,8 @@ int main(const int argc, char** argv) {
     truePeakIsAtLeastTheSamplePeak();
     albumReductionIsProgrammeLoudnessNotAnAverage();
     rejectsInvalidInput();
+    parallelScanMatchesDirectAnalysisAndReducesAlbums();
+    cancelledScanStopsCleanly();
     if (argc == 2) {
         decodedFixtureAnalyzesAndShortMaterialIsUnmeasurable(std::filesystem::path{argv[1]});
     }

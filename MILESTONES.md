@@ -1194,6 +1194,15 @@ quickly and correctly.
   exact -6.02 dB per halving), programme-over-average album behaviour,
   true peak >= sample peak, and honest unmeasurability for sub-400 ms
   material through the real decoded fixture.
+- Done: ADR-0098 adds the bounded parallel scan graph: 1-16 pull-based
+  workers (one decoder each, so codec threading never multiplies), cue
+  segments and subsong selections through the decoder's segment opens,
+  per-item revision capture with post-decode re-verification (a source
+  changed mid-measurement fails typed), mutex-serialized progress, clean
+  cancellation, and album reduction from retained analyzer states with
+  incomplete-programme warnings instead of partial-album numbers. Tests
+  pin parallel-equals-direct on generated WAV albums plus failure
+  isolation and cancellation.
 
 ## M8 — Parallel converter, resampler, and organized output
 
