@@ -30,10 +30,15 @@ class MusicBrainzFetchService final : public QObject {
 
   private:
     void fetch(const QString& url, std::function<void(core::Result<QByteArray>)> completion);
+    void fingerprintFile(const QString& file_path,
+                         std::function<void(core::Result<AcoustIdFingerprint>)> completion);
+    void acoustidLookup(const AcoustIdFingerprint& fingerprint,
+                        std::function<void(core::Result<QByteArray>)> completion);
 
     std::filesystem::path database_path_;
     QNetworkAccessManager* network_{nullptr};
     musicbrainz::MusicBrainzClient* client_{nullptr};
+    qint64 last_acoustid_dispatch_ms_{0};
 };
 
 } // namespace trackknife::bench

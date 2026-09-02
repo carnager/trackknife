@@ -200,8 +200,8 @@ class MetadataPropertiesDialog final : public QDialog {
     [[nodiscard]] std::optional<AutomaticChainPlan> combinedAutomaticChain() const;
     void startIdentify();
     void openIdentifyDialog(std::vector<musicbrainz::LocalTrackDescriptor> descriptors,
-                            std::vector<std::size_t> items, QString initial_artist,
-                            QString initial_release);
+                            std::vector<QString> local_paths, std::vector<std::size_t> items,
+                            QString initial_artist, QString initial_release);
     void applyMusicBrainzProposals(metadata::MetadataProposalSet proposals);
     void startWritePlan();
     void finishWritePlan();

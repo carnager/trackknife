@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+#include "trackknife/musicbrainz/acoustid.hpp"
 #include "trackknife/musicbrainz/web_service.hpp"
 
 #include <iostream>
@@ -277,6 +278,56 @@ void coverArtParsingUpgradesAndSelectsTheFront() {
           oversized.error().code == trackknife::core::ErrorCode::limit_exceeded);
 }
 
+constexpr std::string_view acoustid_fixture = R"json({
+  "status": "ok",
+  "results": [
+    {"id": "aaa", "score": 0.65,
+     "recordings": [{"id": "bbbb1111-0000-0000-0000-000000000002",
+                     "releases": [{"id": "11111111-2222-3333-4444-555555555555"}]}]},
+    {"id": "bbb", "score": 0.98,
+     "recordings": [
+       {"id": "bbbb1111-0000-0000-0000-000000000001",
+        "releases": [{"id": "11111111-2222-3333-4444-555555555555"},
+                     {"id": "99999999-8888-7777-6666-555555555555"},
+                     {"id": "not-a-uuid"}]},
+       {"id": "not-a-uuid", "releases": [{"id": "11111111-2222-3333-4444-555555555555"}]}
+     ]}
+  ]
+})json";
+
+void acoustidBodyAndParsingAreBounded() {
+    const auto body = build_acoustid_lookup_body("key", 331U, "AQADtKISJUzUR/Ph+3lM+A==");
+    CHECK(body.has_value());
+    CHECK(body->find("client=key") != std::string::npos);
+    CHECK(body->find("meta=recordings+releases") != std::string::npos);
+    CHECK(body->find("duration=331") != std::string::npos);
+    // The fingerprint is percent-encoded into the form body.
+    CHECK(body->find("AQADtKISJUzUR%2FPh%2B3lM%2BA%3D%3D") != std::string::npos);
+    CHECK(!build_acoustid_lookup_body("", 331U, "fp").has_value());
+    CHECK(!build_acoustid_lookup_body("key", 0U, "fp").has_value());
+    CHECK(!build_acoustid_lookup_body("key", 331U, "").has_value());
+
+    const auto lookup = parse_acoustid_lookup(acoustid_fixture);
+    CHECK(lookup.has_value());
+    if (!lookup) {
+        return;
+    }
+    // Results arrive sorted by score, invalid recording ids are dropped,
+    // and release lists keep only valid UUIDs.
+    CHECK(lookup->results.size() == 2U);
+    CHECK(lookup->results[0].score > lookup->results[1].score);
+    CHECK(lookup->results[0].recordings.size() == 1U);
+    CHECK(lookup->results[0].recordings[0].id == "bbbb1111-0000-0000-0000-000000000001");
+    CHECK(lookup->results[0].recordings[0].release_ids ==
+          (std::vector<std::string>{"11111111-2222-3333-4444-555555555555",
+                                    "99999999-8888-7777-6666-555555555555"}));
+
+    const auto rejected = parse_acoustid_lookup(
+        R"json({"status": "error", "error": {"message": "invalid API key"}})json");
+    CHECK(!rejected.has_value());
+    CHECK(!rejected && rejected.error().message.find("invalid API key") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -287,6 +338,7 @@ int main() {
     malformedAndOversizedPayloadsFailTyped();
     coverArtUrlRequiresAReleaseId();
     coverArtParsingUpgradesAndSelectsTheFront();
+    acoustidBodyAndParsingAreBounded();
     if (failures != 0) {
         std::cerr << failures << " check(s) failed\n";
         return 1;

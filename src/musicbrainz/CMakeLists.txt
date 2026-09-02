@@ -5,10 +5,12 @@ qt_add_library(
     src/client.cpp
     src/matching.cpp
     src/proposal_bridge.cpp
+    src/acoustid.cpp
     src/web_service.cpp
     include/trackknife/musicbrainz/client.hpp
     include/trackknife/musicbrainz/matching.hpp
     include/trackknife/musicbrainz/proposal_bridge.hpp
+    include/trackknife/musicbrainz/acoustid.hpp
     include/trackknife/musicbrainz/web_service.hpp
 )
 add_library(Trackknife::MusicBrainz ALIAS trackknife_musicbrainz)

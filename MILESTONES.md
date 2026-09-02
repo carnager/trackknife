@@ -1142,6 +1142,17 @@ network operations that never bypass staged preview/write safety.
   recomposed into listing/bytes/store functions so the section owns the
   orchestration and the scripted seam still tests everything offscreen.
   M6's remaining open item is the optional AcoustID evaluation.
+- Done: ADR-0096 evaluates and ships AcoustID. Ground-truth evaluation
+  against the real Picard-tagged corpus (embedded recording ids): 11/11
+  studio top hits, 8/9 live, 8/8 plausible matches on a fully untagged
+  album — quality justifies the dependency, and fpcalc runs as an
+  external tool exactly like Picard's, no build dependency. The
+  Identify dialog's Fingerprint files button fingerprints the selection,
+  votes releases by matched-recording coverage at a paced 400 ms
+  interval, and feeds the top candidates ("7/9 files") into the same
+  version picker and staging path. The user-registered client key lives
+  in QSettings and is never compiled in. With this, every planned M6
+  work item is complete.
 
 ## M7 — Universal parallel ReplayGain
 

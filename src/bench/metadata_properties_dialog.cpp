@@ -2161,11 +2161,16 @@ void MetadataPropertiesDialog::startIdentify() {
     }
     const auto& selection = grid_model_->selection();
     std::vector<musicbrainz::LocalTrackDescriptor> descriptors;
+    std::vector<QString> local_paths;
     descriptors.reserve(items.size());
+    local_paths.reserve(items.size());
     QString initial_artist;
     QString initial_release;
     for (const auto item_index : items) {
-        const auto& baseline = selection.source(item_index).baseline;
+        const auto& source = selection.source(item_index);
+        const auto& baseline = source.baseline;
+        local_paths.push_back(QFile::decodeName(
+            QByteArray{source.raw_path.data(), static_cast<qsizetype>(source.raw_path.size())}));
         musicbrainz::LocalTrackDescriptor descriptor{
             .title = baseline.first_effective_value("title").value_or(std::string{}),
             .artist = baseline.first_effective_value("artist").value_or(std::string{}),
@@ -2190,14 +2195,16 @@ void MetadataPropertiesDialog::startIdentify() {
         }
         descriptors.push_back(std::move(descriptor));
     }
-    openIdentifyDialog(std::move(descriptors), std::move(items), initial_artist, initial_release);
+    openIdentifyDialog(std::move(descriptors), std::move(local_paths), std::move(items),
+                       initial_artist, initial_release);
 }
 
 void MetadataPropertiesDialog::openIdentifyDialog(
-    std::vector<musicbrainz::LocalTrackDescriptor> descriptors, std::vector<std::size_t> items,
-    QString initial_artist, QString initial_release) {
+    std::vector<musicbrainz::LocalTrackDescriptor> descriptors, std::vector<QString> local_paths,
+    std::vector<std::size_t> items, QString initial_artist, QString initial_release) {
     auto* dialog = createMusicBrainzIdentifyDialog(
-        musicbrainz_, std::move(descriptors), std::move(items), initial_artist, initial_release,
+        musicbrainz_, std::move(descriptors), std::move(local_paths), std::move(items),
+        initial_artist, initial_release,
         [this](metadata::MetadataProposalSet proposals) {
             applyMusicBrainzProposals(std::move(proposals));
         },
