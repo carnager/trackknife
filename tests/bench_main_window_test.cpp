@@ -174,6 +174,7 @@ class BenchMainWindowTest final : public QObject {
     void metadataSuggestionsStageSelectionConsistency();
     void musicBrainzIdentifyStagesChosenVersion();
     void artworkFetchesCoverArtFromArchiveAndAddsFront();
+    void automaticScriptsStageOnOpen();
     void metadataStartupPresentsReconciliation();
     void filePublicationStartupPresentsReconciliation();
     void combinedPublicationStartupRecoversMetadataAndPath();
@@ -2102,9 +2103,6 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     QTRY_COMPARE(script_list->count(), 1);
     QCOMPARE(script_list->currentRow(), 0);
     QCOMPARE(script_list->item(0)->checkState(), Qt::Unchecked);
-    script_list->item(0)->setCheckState(Qt::Checked);
-    QTRY_VERIFY(saved_chains.front().automatic);
-    QTRY_VERIFY(script_status->text().contains(QStringLiteral("1 of 1 checked")));
 
     QTRY_VERIFY(transform->isEnabled());
     QCOMPARE(transform->text(), QStringLiteral("Edit selected script…"));
@@ -2210,6 +2208,20 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     QTRY_VERIFY_WITH_TIMEOUT(status->text().contains(QStringLiteral("Apply is unavailable")),
                              5'000);
     QTRY_VERIFY(write_plan->isEnabled());
+    QCOMPARE(grid_model->patches().patch_count(), std::size_t{1U});
+
+    // Checking a script stages its edits immediately as one more colored
+    // draft transaction — Apply stays WYSIWYG, nothing runs hidden at write
+    // time.
+    script_list->item(0)->setCheckState(Qt::Checked);
+    QTRY_VERIFY(saved_chains.front().automatic);
+    QTRY_VERIFY(script_status->text().contains(QStringLiteral("1 of 1 checked")));
+    QTRY_COMPARE_WITH_TIMEOUT(grid_model->patches().patch_count(), std::size_t{5U}, 5'000);
+    QTRY_VERIFY(status->text().contains(QStringLiteral("Automatic scripts staged")));
+    QCOMPARE(grid_model->index(0, *date_column).data(metadata_cell_values_role).toStringList(),
+             (QStringList{QStringLiteral("2024")}));
+    QTRY_VERIFY(undo->isEnabled());
+    QTest::mouseClick(undo, Qt::LeftButton);
     QCOMPARE(grid_model->patches().patch_count(), std::size_t{1U});
     delete properties;
 }
@@ -2738,6 +2750,92 @@ void BenchMainWindowTest::artworkFetchesCoverArtFromArchiveAndAddsFront() {
     QVERIFY(added != inventory->items.end());
     QCOMPARE(added->mime_type, std::string{"image/png"});
     QCOMPARE(added->provenance, metadata::ArtworkProvenance::embedded);
+
+    QPointer guard{properties};
+    properties->close();
+    QTRY_VERIFY(guard.isNull());
+}
+
+void BenchMainWindowTest::automaticScriptsStageOnOpen() {
+    const auto field = [](std::string name, std::vector<std::string> values) {
+        return metadata::MetadataField{
+            .canonical_name = metadata::canonicalize_field_name(name),
+            .native_name = std::move(name),
+            .values = std::move(values),
+            .qualifier = {},
+            .provenance = metadata::FieldProvenance::embedded,
+        };
+    };
+    const MetadataPropertiesSource source{
+        .source =
+            metadata::StagedMetadataSource{
+                .raw_path = "/music/open-stage.flac",
+                .source_revision = std::nullopt,
+                .baseline =
+                    metadata::MetadataDocument{
+                        .fields = {field("TITLE", {"Song"}), field("ARTIST", {"Band"}),
+                                   field("TOTALTRACKS", {"9"})},
+                        .unsupported_native_objects = {},
+                    },
+            },
+        .track_label = QStringLiteral("Open staging fixture"),
+    };
+    std::vector<persistence::SavedMetadataTransformationChain> saved_chains{
+        persistence::SavedMetadataTransformationChain{
+            .id = core::StableId::random(),
+            .chain =
+                metadata::MetadataTransformationChain{
+                    .schema_version = 1U,
+                    .name = "Library cleanup",
+                    .actions = {metadata::MetadataRemoveFieldAction{
+                        .target_field = "totaltracks",
+                        .match_mode = metadata::MetadataFieldMatchMode::logical,
+                    }},
+                },
+            .automatic = true,
+        }};
+    MetadataTransformationStore transformation_store{
+        .load =
+            [&saved_chains](MetadataTransformationStore::LoadCompletion completion) {
+                completion(saved_chains, {});
+            },
+        .save = [](persistence::SavedMetadataTransformationChain,
+                   MetadataTransformationStore::Completion completion) { completion({}); },
+        .remove = [](core::StableId,
+                     MetadataTransformationStore::Completion completion) { completion({}); },
+    };
+    auto* properties = new MetadataPropertiesDialog(
+        1U,
+        [source](const std::size_t index) -> std::optional<MetadataPropertiesSource> {
+            return index == 0U ? std::optional{source} : std::nullopt;
+        },
+        {}, {}, {}, transformation_store);
+    properties->show();
+
+    // Picard-style: the automatic script's edits appear as ordinary colored
+    // drafts the moment the files load — the grid is the write, no hidden
+    // apply-time pass remains.
+    QTableView* files = nullptr;
+    QTRY_VERIFY((files = properties->findChild<QTableView*>(
+                     QStringLiteral("bench-metadata-files"))) != nullptr);
+    auto* grid_model = qobject_cast<MetadataGridModel*>(files->model());
+    auto* status = properties->findChild<QLabel*>(QStringLiteral("bench-metadata-read-only"));
+    auto* undo = properties->findChild<QPushButton*>(QStringLiteral("bench-metadata-undo"));
+    QVERIFY(grid_model != nullptr);
+    QVERIFY(status != nullptr);
+    QVERIFY(undo != nullptr);
+    QTRY_COMPARE_WITH_TIMEOUT(grid_model->patches().patch_count(), std::size_t{1U}, 5'000);
+    const auto totals_column = grid_model->fieldColumn(QStringLiteral("Total Tracks"));
+    QVERIFY(totals_column.has_value());
+    const auto* patch =
+        grid_model->patches().patch(0U, static_cast<std::size_t>(*totals_column) - 1U);
+    QVERIFY(patch != nullptr);
+    QCOMPARE(patch->kind, metadata::StagedMetadataPatchKind::remove_field);
+
+    // The staging is one ordinary undoable transaction the user can reject.
+    QTRY_VERIFY(undo->isEnabled());
+    QTest::mouseClick(undo, Qt::LeftButton);
+    QCOMPARE(grid_model->patches().patch_count(), std::size_t{0U});
 
     QPointer guard{properties};
     properties->close();

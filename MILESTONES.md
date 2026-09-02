@@ -1112,6 +1112,14 @@ network operations that never bypass staged preview/write safety.
   totaltracks in exact-native mode against Picard-tagged files no longer
   fails every apply with a reread mismatch, and the partner spelling can
   no longer resurrect a removed value.
+- Done: ADR-0093 makes Apply pure WYSIWYG. Automatic scripts no longer
+  run hidden inside the write plan; they stage their edits as ordinary
+  colored, undoable draft transactions when the grid loads over the
+  local baseline (beyond Picard, which only scripts MusicBrainz
+  results), after Suggest/Identify staging, and when a script is checked
+  — idempotently, off the UI thread. The write plan is built from the
+  staged draft alone, so the grid is the write and Suggest stops
+  refilling fields the user's own scripts delete.
 
 ## M7 — Universal parallel ReplayGain
 

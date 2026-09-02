@@ -242,8 +242,9 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
 
     side_layout->addWidget(section_heading(
         QStringLiteral("Scripts"), QStringLiteral("bench-metadata-scripts-heading"),
-        QStringLiteral("Checked scripts run automatically whenever this draft is applied; "
-                       "the checked state is saved")));
+        QStringLiteral("Checked scripts stage their edits as colored drafts when files "
+                       "load and when suggestions arrive; Apply writes exactly what the "
+                       "grid shows")));
     transformation_list_ =
         new EmptyStateListWidget(QStringLiteral("No saved scripts yet"), side_panel);
     transformation_list_->setObjectName(QStringLiteral("bench-metadata-transformation-list"));
@@ -497,6 +498,8 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
             &MetadataPropertiesDialog::startProposals);
     connect(identify_button_, &QPushButton::clicked, this,
             &MetadataPropertiesDialog::startIdentify);
+    connect(&automatic_watcher_, &QFutureWatcherBase::finished, this,
+            &MetadataPropertiesDialog::finishAutomaticStage);
     connect(&proposal_watcher_, &QFutureWatcherBase::finished, this,
             &MetadataPropertiesDialog::finishProposals);
     connect(transform_button_, &QPushButton::clicked, this, [this] {
@@ -672,6 +675,9 @@ MetadataPropertiesDialog::~MetadataPropertiesDialog() {
     }
     if (proposal_running_) {
         proposal_watcher_.waitForFinished();
+    }
+    if (automatic_stage_running_) {
+        automatic_watcher_.waitForFinished();
     }
 }
 
@@ -999,6 +1005,7 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
     updateEditValuesButton();
     updateFieldButtons();
     updateTransformationButton();
+    stageAutomaticTransformations();
 
     root_layout_->removeWidget(loading_);
     loading_->deleteLater();
@@ -1285,6 +1292,7 @@ void MetadataPropertiesDialog::loadTransformationCatalog(
             }
             self->transformation_catalog_ = std::move(chains);
             self->rebuildTransformationCatalogControls(selected);
+            self->stageAutomaticTransformations();
         });
 }
 
@@ -1307,8 +1315,9 @@ void MetadataPropertiesDialog::rebuildTransformationCatalogControls(
         item->setData(Qt::UserRole, id);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setCheckState(entry.automatic ? Qt::Checked : Qt::Unchecked);
-        item->setToolTip(entry.automatic ? QStringLiteral("Included in every tagging write plan")
-                                         : QStringLiteral("Not included automatically"));
+        item->setToolTip(entry.automatic
+                             ? QStringLiteral("Staged automatically as colored draft edits")
+                             : QStringLiteral("Not staged automatically"));
         if (selected && entry.id == *selected) {
             selected_item = item;
         }
@@ -1365,9 +1374,13 @@ void MetadataPropertiesDialog::toggleAutomaticTransformation(const core::StableI
             *retained = updated;
         }
         self->rebuildTransformationCatalogControls(updated.id);
-        self->read_only_->setText(QStringLiteral("%1 will %2run whenever you apply.")
-                                      .arg(display_utf8(updated.chain.name),
-                                           updated.automatic ? QString{} : QStringLiteral("not ")));
+        self->read_only_->setText(
+            QStringLiteral("%1 will %2stage its edits automatically.")
+                .arg(display_utf8(updated.chain.name),
+                     updated.automatic ? QString{} : QStringLiteral("no longer ")));
+        if (updated.automatic) {
+            self->stageAutomaticTransformations();
+        }
     });
 }
 
@@ -1911,11 +1924,7 @@ void MetadataPropertiesDialog::updateWritePlanButton() {
     if (apply_plan_button_ == nullptr) {
         return;
     }
-    const auto has_automatic = std::ranges::any_of(transformation_catalog_, [](const auto& entry) {
-        return entry.automatic && !entry.chain.actions.empty();
-    });
-    const auto has_metadata_effect =
-        save_tags_check_->isChecked() && (draft_count_ > 0 || has_automatic);
+    const auto has_metadata_effect = save_tags_check_->isChecked() && draft_count_ > 0;
     const auto has_path_effect = rename_files_check_->isChecked() || move_files_check_->isChecked();
     apply_plan_button_->setEnabled(grid_model_ != nullptr &&
                                    (has_metadata_effect || has_path_effect) &&
@@ -1997,6 +2006,94 @@ void MetadataPropertiesDialog::finishProposals() {
             .arg(pluralized(preview.changed_item_count, QStringLiteral("file"),
                             QStringLiteral("files")))
             .arg(display_utf8(preview.chain.name)));
+    stageAutomaticTransformations();
+}
+
+// Picard runs tagging scripts the moment new metadata arrives and saves
+// exactly what it displays. Trackbench goes one step further per the
+// user's model: automatic scripts also stage over plain local baselines,
+// so every write is what the grid shows — never a hidden apply-time pass.
+void MetadataPropertiesDialog::stageAutomaticTransformations() {
+    if (grid_model_ == nullptr || automatic_stage_running_ || proposal_running_ ||
+        write_plan_running_ || apply_running_) {
+        return;
+    }
+    auto combined = combinedAutomaticChain();
+    if (!combined || combined->actions.empty()) {
+        return;
+    }
+    std::vector<std::size_t> items;
+    items.reserve(grid_model_->selection().item_count());
+    for (std::size_t item_index = 0U; item_index < grid_model_->selection().item_count();
+         ++item_index) {
+        items.push_back(item_index);
+    }
+    if (items.empty()) {
+        return;
+    }
+    automatic_stage_running_ = true;
+    auto selection = grid_model_->sharedSelection();
+    auto draft = grid_model_->patches();
+    automatic_watcher_.setFuture(
+        QtConcurrent::run([selection = std::move(selection), draft = std::move(draft),
+                           items = std::move(items), combined = std::move(*combined)]() mutable {
+            using PreviewResult = core::Result<metadata::MetadataTransformationPreview>;
+            return std::make_shared<PreviewResult>(metadata::plan_metadata_transformation(
+                *selection, draft, items, std::move(combined)));
+        }));
+}
+
+void MetadataPropertiesDialog::finishAutomaticStage() {
+    automatic_stage_running_ = false;
+    const auto result = automatic_watcher_.result();
+    if (!result || !*result) {
+        const auto message = result ? display_utf8(result->error().message)
+                                    : QStringLiteral("The script task returned no result");
+        read_only_->setText(QStringLiteral("Automatic scripts staged nothing · %1").arg(message));
+        return;
+    }
+    const auto& preview = **result;
+    if (preview.cells.empty()) {
+        return;
+    }
+    if (grid_model_ == nullptr || !grid_model_->stageTransformation(preview)) {
+        return;
+    }
+    loaded_field_count_ = grid_model_->selection().field_count();
+    updateSelectionProjection();
+    read_only_->setText(
+        QStringLiteral("Automatic scripts staged %1 %2 across %3 %4 · review the colored "
+                       "values, then Apply")
+            .arg(preview.cells.size())
+            .arg(pluralized(preview.cells.size(), QStringLiteral("edit"), QStringLiteral("edits")))
+            .arg(preview.changed_item_count)
+            .arg(pluralized(preview.changed_item_count, QStringLiteral("file"),
+                            QStringLiteral("files"))));
+}
+
+std::optional<metadata::MetadataTransformationChain>
+MetadataPropertiesDialog::combinedAutomaticChain() const {
+    metadata::MetadataTransformationChain combined{
+        .schema_version = 1U,
+        .name = "Automatic saved scripts",
+        .actions = {},
+    };
+    const metadata::MetadataTransformationLimits limits;
+    for (const auto& saved : transformation_catalog_) {
+        if (!saved.automatic) {
+            continue;
+        }
+        if (saved.chain.actions.size() > limits.actions - combined.actions.size()) {
+            read_only_->setText(
+                QStringLiteral("Automatic scripts exceed the %1-step combined limit; disable or "
+                               "shorten a script.")
+                    .arg(limits.actions));
+            return std::nullopt;
+        }
+        combined.actions.insert(combined.actions.end(), saved.chain.actions.begin(),
+                                saved.chain.actions.end());
+    }
+    return combined;
 }
 
 namespace {
@@ -2152,30 +2249,6 @@ void MetadataPropertiesDialog::startWritePlan() {
             destination = selected_destination->profile;
         }
     }
-    metadata::MetadataTransformationChain combined{
-        .schema_version = 1U,
-        .name = "Automatic saved transformations",
-        .actions = {},
-    };
-    const metadata::MetadataTransformationLimits limits;
-    if (operation_selection.save_tags) {
-        for (const auto& saved : transformation_catalog_) {
-            if (!saved.automatic) {
-                continue;
-            }
-            if (saved.chain.actions.size() > limits.actions - combined.actions.size()) {
-                read_only_->setText(
-                    QStringLiteral(
-                        "Automatic transformations exceed the %1-step combined limit; disable or "
-                        "shorten a chain before applying.")
-                        .arg(limits.actions));
-                return;
-            }
-            combined.actions.insert(combined.actions.end(), saved.chain.actions.begin(),
-                                    saved.chain.actions.end());
-        }
-    }
-
     auto draft = grid_model_->patches();
     std::vector<std::size_t> items;
     items.reserve(grid_model_->selection().item_count());
@@ -2183,7 +2256,7 @@ void MetadataPropertiesDialog::startWritePlan() {
          ++item_index) {
         items.push_back(item_index);
     }
-    if (items.empty() || (draft.empty() && combined.actions.empty() && !has_path_operation)) {
+    if (items.empty() || (draft.empty() && !has_path_operation)) {
         return;
     }
 
@@ -2193,64 +2266,21 @@ void MetadataPropertiesDialog::startWritePlan() {
     write_plan_cancellation_ = core::CancellationSource{};
     const auto selection = grid_model_->sharedSelection();
     const auto cancellation = write_plan_cancellation_.token();
-    const auto automatic_action_count = combined.actions.size();
     write_plan_running_ = true;
     updateWritePlanButton();
-    read_only_->setText(automatic_action_count == 0U
-                            ? QStringLiteral("Checking files…")
-                            : QStringLiteral("Running %1 script %2, then checking files…")
-                                  .arg(automatic_action_count)
-                                  .arg(automatic_action_count == 1U ? QStringLiteral("step")
-                                                                    : QStringLiteral("steps")));
+    read_only_->setText(QStringLiteral("Checking files…"));
     write_plan_watcher_.setFuture(
         QtConcurrent::run([selection, draft = std::move(draft), items = std::move(items),
-                           combined = std::move(combined), operation_selection,
-                           output_layout = std::move(output_layout),
+                           operation_selection, output_layout = std::move(output_layout),
                            destination = std::move(destination), cancellation]() mutable {
-            auto effective_selection = *selection;
-            if (!combined.actions.empty()) {
-                auto preview = metadata::plan_metadata_transformation(
-                    *selection, draft, items, std::move(combined), cancellation);
-                if (!preview) {
-                    return std::make_shared<WritePlanResult>(
-                        std::unexpected(std::move(preview.error())));
-                }
-                for (const auto& cell : preview->cells) {
-                    auto field_index =
-                        cell.match_mode == metadata::MetadataFieldMatchMode::exact_native
-                            ? effective_selection.exact_native_field_index(cell.display_field)
-                            : effective_selection.field_index(cell.canonical_field);
-                    if (!field_index) {
-                        auto inserted =
-                            cell.match_mode == metadata::MetadataFieldMatchMode::exact_native
-                                ? effective_selection.ensure_exact_native_field(
-                                      cell.display_field, "Exact native: " + cell.display_field)
-                                : effective_selection.ensure_missing_field(cell.canonical_field,
-                                                                           cell.display_field);
-                        if (!inserted) {
-                            return std::make_shared<WritePlanResult>(
-                                std::unexpected(std::move(inserted.error())));
-                        }
-                        field_index = *inserted;
-                    }
-                    auto staged = cell.after
-                                      ? draft.replace_values(effective_selection, cell.item_index,
-                                                             *field_index, *cell.after)
-                                      : draft.remove_field(effective_selection, cell.item_index,
-                                                           *field_index);
-                    if (!staged) {
-                        return std::make_shared<WritePlanResult>(
-                            std::unexpected(std::move(staged.error())));
-                    }
-                }
-            }
-
+            // WYSIWYG apply: the plan writes exactly the staged draft.
+            // Automatic scripts already staged their edits into the grid.
             const auto metadata_context_change_count =
                 operation_selection.save_tags ? draft.patch_count() : 0U;
             std::optional<metadata::MetadataWritePlan> metadata_plan;
             if (operation_selection.save_tags && !draft.empty()) {
-                auto revalidated = metadata::revalidate_metadata_write_plan(effective_selection,
-                                                                            draft, cancellation);
+                auto revalidated =
+                    metadata::revalidate_metadata_write_plan(*selection, draft, cancellation);
                 if (!revalidated) {
                     return std::make_shared<WritePlanResult>(
                         std::unexpected(std::move(revalidated.error())));
@@ -2262,8 +2292,7 @@ void MetadataPropertiesDialog::startWritePlan() {
             std::optional<operations::OutputPathPreflight> path_preflight;
             if (operation_selection.rename_files || operation_selection.move_files) {
                 const metadata::StagedMetadataPatchSet actual_source_tags;
-                const auto& naming_selection =
-                    operation_selection.save_tags ? effective_selection : *selection;
+                const auto& naming_selection = *selection;
                 const auto& naming_context =
                     operation_selection.save_tags ? draft : actual_source_tags;
                 auto documents = metadata::materialize_metadata_draft(

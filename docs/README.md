@@ -9,11 +9,15 @@ The ordered delivery plan is [`../MILESTONES.md`](../MILESTONES.md).
 
 ## Current continuation point
 
-M5 is closing into M6, implementation is accepted through ADR-0092, and the persistence
+M5 is closing into M6, implementation is accepted through ADR-0093, and the persistence
 schema is version 25. In-app MusicBrainz identification is end-to-end: Properties'
 Identify… opens a no-id text-search dialog whose ranked rows are individual
 release versions, and the chosen version stages as one undoable colored draft
 through the ADR-0086 preview, fetched via a lazy cache-first paced service.
+Apply is now pure WYSIWYG (ADR-0093): automatic scripts stage their edits
+as colored undoable drafts when the grid loads, after Suggest/Identify
+staging, and on check — never hidden at write time — and the write plan is
+built from the staged draft alone.
 Cover Art Archive front covers ride the same boundary: the artwork tab's
 Fetch cover resolves one unambiguous draft-or-baseline release id to the
 archive's front image and embeds it through the ordinary preservation-exact
@@ -77,7 +81,8 @@ Start metadata and file-operation work with
 [`adr/0089-release-matching-and-alignment.md`](adr/0089-release-matching-and-alignment.md),
 [`adr/0090-in-app-musicbrainz-identify-dialog.md`](adr/0090-in-app-musicbrainz-identify-dialog.md),
 [`adr/0091-cover-art-archive-front-cover-fetch.md`](adr/0091-cover-art-archive-front-cover-fetch.md),
-and [`adr/0092-picard-parity-release-proposals.md`](adr/0092-picard-parity-release-proposals.md).
+[`adr/0092-picard-parity-release-proposals.md`](adr/0092-picard-parity-release-proposals.md),
+and [`adr/0093-wysiwyg-apply-and-staged-automatic-scripts.md`](adr/0093-wysiwyg-apply-and-staged-automatic-scripts.md).
 The development, ASan/UBSan, TSan, and clang-tidy builds and their complete
 51/51 test suites pass at this continuation point (validated 2026-09-02).
 The TSan-only bench test shim routes Qt 6.9+'s uninstrumented

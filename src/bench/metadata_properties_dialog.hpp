@@ -193,6 +193,10 @@ class MetadataPropertiesDialog final : public QDialog {
     void invalidateWritePlan();
     void startProposals();
     void finishProposals();
+    void stageAutomaticTransformations();
+    void finishAutomaticStage();
+    [[nodiscard]] std::optional<metadata::MetadataTransformationChain>
+    combinedAutomaticChain() const;
     void startIdentify();
     void openIdentifyDialog(std::vector<musicbrainz::LocalTrackDescriptor> descriptors,
                             std::vector<std::size_t> items, QString initial_artist,
@@ -231,6 +235,8 @@ class MetadataPropertiesDialog final : public QDialog {
     QFutureWatcher<std::shared_ptr<OutputLayoutExampleResult>> output_example_watcher_;
     QFutureWatcher<std::shared_ptr<core::Result<metadata::MetadataTransformationPreview>>>
         proposal_watcher_;
+    QFutureWatcher<std::shared_ptr<core::Result<metadata::MetadataTransformationPreview>>>
+        automatic_watcher_;
     MetadataPropertiesSourceReader source_reader_;
     MetadataWritePlanApplierFactory plan_applier_factory_;
     MetadataApplyObserver apply_observer_;
@@ -336,6 +342,7 @@ class MetadataPropertiesDialog final : public QDialog {
     std::string destination_root_raw_path_;
     bool write_plan_running_{false};
     bool proposal_running_{false};
+    bool automatic_stage_running_{false};
     bool apply_running_{false};
     bool artwork_operation_running_{false};
     bool applying_file_paths_{false};
