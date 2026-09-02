@@ -78,3 +78,17 @@ wrote a single spelling, and the grid still showed two fields.
 - other formats gain writers (ID3 `TRCK` "n/total" packing is a different
   shape of the same problem);
 - more paired vocabularies surface (e.g. `MOVEMENTTOTAL`).
+
+## Addendum (2026-09-02): exact-native mutations address the pair
+
+A real-library apply failure showed the gap: an automatic chain removing
+`totaltracks` in exact-native mode erased only the TOTALTRACKS comment of
+a Picard-tagged file, the untouched TRACKTOTAL resurfaced on reread as the
+pair's surviving spelling, and the write verification correctly rejected
+the prepared copy — every source failed with "prepared FLAC metadata
+reread differs from the plan". Exact-native targeting of one paired
+spelling therefore now addresses the whole pair: removal clears both
+spellings, replacement refreshes both (verification expects the pair
+primary after the load rule), and non-paired exact targets keep their
+strict single-name semantics. The two spellings are one identity in every
+mutation mode, so a removed total can never silently resurrect.

@@ -1107,6 +1107,11 @@ network operations that never bypass staged preview/write safety.
   releases, and six new conventional FLAC identities keep those fields
   one logical column each. Disc ids stay out of scope (they need
   physical TOC data); AcoustID remains the open evaluation.
+- Fixed: exact-native mutations of a paired totals spelling now address
+  the whole pair (ADR-0087 addendum). An automatic chain removing
+  totaltracks in exact-native mode against Picard-tagged files no longer
+  fails every apply with a reread mismatch, and the partner spelling can
+  no longer resurrect a removed value.
 
 ## M7 — Universal parallel ReplayGain
 

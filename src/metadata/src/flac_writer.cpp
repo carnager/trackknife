@@ -428,6 +428,28 @@ using EffectiveNativeText = std::map<std::string, EffectiveNativeTextField>;
     return result;
 }
 
+// The case-folded native names one change addresses. An exact-native target
+// that is itself a paired totals spelling addresses the whole pair — the
+// two spellings are one identity (writes refresh both, removal clears
+// both), so the partner never survives to resurrect the value.
+[[nodiscard]] std::vector<std::string> exact_native_targets(const MetadataWritePlanChange& change) {
+    std::vector<std::string> targets{*change.exact_native_name};
+    const auto paired = paired_flac_property_names(change.canonical_name);
+    const auto pair_member =
+        std::ranges::any_of(paired, [&change](const std::string& property_name) {
+            return canonicalize_native_field_name(property_name) == *change.exact_native_name;
+        });
+    if (pair_member) {
+        for (const auto& property_name : paired) {
+            auto folded = canonicalize_native_field_name(property_name);
+            if (!std::ranges::contains(targets, folded)) {
+                targets.push_back(std::move(folded));
+            }
+        }
+    }
+    return targets;
+}
+
 [[nodiscard]] core::Result<void> verify_text_result(const MetadataDocument& before,
                                                     const MetadataDocument& after,
                                                     const MetadataWritePlanSource& source_plan,
@@ -436,7 +458,10 @@ using EffectiveNativeText = std::map<std::string, EffectiveNativeTextField>;
     for (const auto& change : source_plan.changes) {
         const auto& intent = change.intents.front();
         if (change.exact_native_name) {
-            expected.erase(*change.exact_native_name);
+            const auto targets = exact_native_targets(change);
+            for (const auto& target : targets) {
+                expected.erase(target);
+            }
             if (intent.kind == StagedMetadataPatchKind::replace_values) {
                 auto mapping =
                     map_flac_text_field(change.canonical_name, change.display_name,
@@ -444,10 +469,14 @@ using EffectiveNativeText = std::map<std::string, EffectiveNativeTextField>;
                 if (!mapping) {
                     return std::unexpected(std::move(mapping.error()));
                 }
-                const auto identity = resolve_text_property_identity(mapping->property_name);
-                expected[canonicalize_native_field_name(mapping->property_name)] =
-                    EffectiveNativeTextField{.canonical_name = identity.canonical_name,
-                                             .values = intent.values};
+                // A pair-member target writes both spellings and the reread
+                // load rule surfaces only the pair primary.
+                const auto paired = paired_flac_property_names(change.canonical_name);
+                const auto& property_name =
+                    targets.size() > 1U ? paired.front() : mapping->property_name;
+                const auto identity = resolve_text_property_identity(property_name);
+                expected[canonicalize_native_field_name(property_name)] = EffectiveNativeTextField{
+                    .canonical_name = identity.canonical_name, .values = intent.values};
             }
             continue;
         }
@@ -541,12 +570,15 @@ using EffectiveNativeText = std::map<std::string, EffectiveNativeTextField>;
             return std::unexpected(std::move(mapping_error));
         }
 
+        const auto exact_targets =
+            change.exact_native_name ? exact_native_targets(change) : std::vector<std::string>{};
         std::vector<TagLib::String> aliases;
         for (auto property = properties.cbegin(); property != properties.cend(); ++property) {
             const auto native_name = property->first.to8Bit(true);
             const auto matches =
                 change.exact_native_name
-                    ? canonicalize_native_field_name(native_name) == *change.exact_native_name
+                    ? std::ranges::contains(exact_targets,
+                                            canonicalize_native_field_name(native_name))
                     : [&] {
                           const auto identity = resolve_text_property_identity(native_name);
                           return identity.conventional &&
@@ -567,7 +599,9 @@ using EffectiveNativeText = std::map<std::string, EffectiveNativeTextField>;
             // Picard-paired identities are written under every paired native
             // spelling so any consumer finds the one it reads; everything
             // else keeps its single mapped property name.
-            auto property_names = change.exact_native_name
+            // A pair-member exact target refreshes both spellings exactly
+            // like the logical write; other exact targets stay single-name.
+            auto property_names = change.exact_native_name && exact_targets.size() <= 1U
                                       ? std::vector<std::string>{}
                                       : paired_flac_property_names(change.canonical_name);
             if (property_names.empty()) {

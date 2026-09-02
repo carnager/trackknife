@@ -1000,6 +1000,118 @@ void writesPairedTotalsSpellingsLikePicard(const std::filesystem::path& fixture_
     CHECK(bytes_contain(removed_bytes, "DISCTOTAL=2"));
 }
 
+// The user-reported apply failure (Picard-tagged files carrying both totals
+// spellings, an automatic chain removing "totaltracks" in exact-native
+// mode): the partner spelling must never survive to resurrect the value,
+// and verification must accept the pair-wide result.
+void exactNativeTotalsMutationsAddressThePair(const std::filesystem::path& fixture_directory) {
+    TemporaryDirectory directory;
+    const auto source = materialize(fixture_directory, "rich-metadata-flac.b64",
+                                    directory.path() / "exact-pair.flac");
+    const auto read = trackknife::metadata::read_local_metadata(source.native());
+    CHECK(read.has_value());
+    if (!read) {
+        return;
+    }
+    auto selection = selection_for(*read);
+    if (!selection) {
+        return;
+    }
+    const auto totals = selection->ensure_missing_field("Total Tracks", "Total Tracks");
+    CHECK(totals.has_value());
+    if (!totals) {
+        return;
+    }
+    trackknife::metadata::StagedMetadataPatchSet patches;
+    CHECK(patches.replace_values(*selection, 0U, *totals, {"9"}).has_value());
+    auto plan = make_plan(*selection, patches);
+    CHECK(plan && plan->ready());
+    if (!plan || !plan->ready()) {
+        return;
+    }
+    const auto paired_path = directory.path() / "exact-pair-written.flac";
+    const auto prepared = trackknife::metadata::prepare_flac_metadata_write_copy(
+        plan->sources.front(), paired_path.native());
+    CHECK(prepared.has_value());
+    if (!prepared) {
+        std::cerr << prepared.error().message << '\n';
+        return;
+    }
+
+    // Exact-native replace addressed at the secondary spelling refreshes
+    // both spellings, exactly like the logical write.
+    const auto reread = trackknife::metadata::read_local_metadata(paired_path.native());
+    CHECK(reread.has_value());
+    if (!reread) {
+        return;
+    }
+    auto replace_selection = selection_for(*reread);
+    if (!replace_selection) {
+        return;
+    }
+    const auto secondary = replace_selection->ensure_exact_native_field("TRACKTOTAL", "TRACKTOTAL");
+    CHECK(secondary.has_value());
+    if (!secondary) {
+        return;
+    }
+    trackknife::metadata::StagedMetadataPatchSet replace_patches;
+    CHECK(replace_patches.replace_values(*replace_selection, 0U, *secondary, {"12"}).has_value());
+    auto replace_plan = make_plan(*replace_selection, replace_patches);
+    CHECK(replace_plan && replace_plan->ready());
+    if (!replace_plan || !replace_plan->ready()) {
+        return;
+    }
+    const auto replaced_path = directory.path() / "exact-pair-replaced.flac";
+    const auto replaced = trackknife::metadata::prepare_flac_metadata_write_copy(
+        replace_plan->sources.front(), replaced_path.native());
+    CHECK(replaced.has_value());
+    if (!replaced) {
+        std::cerr << replaced.error().message << '\n';
+        return;
+    }
+    const auto replaced_bytes = read_bytes(replaced_path);
+    CHECK(bytes_contain(replaced_bytes, "TOTALTRACKS=12"));
+    CHECK(bytes_contain(replaced_bytes, "TRACKTOTAL=12"));
+    CHECK(!bytes_contain(replaced_bytes, "TOTALTRACKS=9"));
+    CHECK(!bytes_contain(replaced_bytes, "TRACKTOTAL=9"));
+
+    // Exact-native removal addressed at the primary clears the whole pair;
+    // the reread verification accepts the file it produced.
+    const auto remove_read = trackknife::metadata::read_local_metadata(replaced_path.native());
+    CHECK(remove_read.has_value());
+    if (!remove_read) {
+        return;
+    }
+    auto remove_selection = selection_for(*remove_read);
+    if (!remove_selection) {
+        return;
+    }
+    const auto exact_totals =
+        remove_selection->ensure_exact_native_field("TOTALTRACKS", "TOTALTRACKS");
+    CHECK(exact_totals.has_value());
+    if (!exact_totals) {
+        return;
+    }
+    trackknife::metadata::StagedMetadataPatchSet remove_patches;
+    CHECK(remove_patches.remove_field(*remove_selection, 0U, *exact_totals).has_value());
+    auto remove_plan = make_plan(*remove_selection, remove_patches);
+    CHECK(remove_plan && remove_plan->ready());
+    if (!remove_plan || !remove_plan->ready()) {
+        return;
+    }
+    const auto removed_path = directory.path() / "exact-pair-removed.flac";
+    const auto removed = trackknife::metadata::prepare_flac_metadata_write_copy(
+        remove_plan->sources.front(), removed_path.native());
+    CHECK(removed.has_value());
+    if (!removed) {
+        std::cerr << removed.error().message << '\n';
+        return;
+    }
+    const auto removed_bytes = read_bytes(removed_path);
+    CHECK(!bytes_contain(removed_bytes, "TOTALTRACKS="));
+    CHECK(!bytes_contain(removed_bytes, "TRACKTOTAL="));
+}
+
 int main(const int argc, char** argv) {
     CHECK(argc == 2);
     if (argc == 2) {
@@ -1009,6 +1121,7 @@ int main(const int argc, char** argv) {
         preservesEmbeddedArtworkAndDecodedAudio(fixture_directory);
         preparesVerifiedArtworkReplaceAndRemove(fixture_directory);
         writesPairedTotalsSpellingsLikePicard(fixture_directory);
+        exactNativeTotalsMutationsAddressThePair(fixture_directory);
         blocksUnrepresentablePlansAndStaleOrCancelledWrites(fixture_directory);
     }
     return failures == 0 ? 0 : 1;
