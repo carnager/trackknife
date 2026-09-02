@@ -117,7 +117,7 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
     MetadataTransformationStore transformation_store, OutputProfileStore output_profile_store,
     FilePublicationPlanApplierFactory file_plan_applier_factory,
     FilePublicationApplyObserver file_apply_observer, QWidget* parent,
-    MetadataDialogLayoutStore layout_store)
+    MetadataDialogLayoutStore layout_store, MusicBrainzLookupService musicbrainz)
     : QDialog(parent), selection_watcher_(this), write_plan_watcher_(this),
       metadata_apply_watcher_(this), file_apply_watcher_(this), output_example_watcher_(this),
       source_reader_(std::move(source_reader)),
@@ -127,7 +127,7 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
       output_profile_store_(std::move(output_profile_store)),
       file_plan_applier_factory_(std::move(file_plan_applier_factory)),
       file_apply_observer_(std::move(file_apply_observer)), layout_store_(std::move(layout_store)),
-      requested_item_count_(requested_item_count) {
+      musicbrainz_(std::move(musicbrainz)), requested_item_count_(requested_item_count) {
     setObjectName(QStringLiteral("bench-metadata-properties"));
     setWindowTitle(QStringLiteral("Track properties"));
     setModal(false);
@@ -434,6 +434,14 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
                        "files; suggestions become ordinary colored draft edits"));
     suggest_button_->setEnabled(false);
     grid_tools_layout->addWidget(suggest_button_);
+    identify_button_ = new QPushButton(QStringLiteral("Identify…"), grid_tools_);
+    identify_button_->setObjectName(QStringLiteral("bench-metadata-identify"));
+    identify_button_->setToolTip(
+        QStringLiteral("Search MusicBrainz by artist and album — no MusicBrainz tags needed — "
+                       "pick the exact release version, and stage the match as ordinary colored "
+                       "draft edits"));
+    identify_button_->setEnabled(false);
+    grid_tools_layout->addWidget(identify_button_);
     grid_tools_layout->addStretch(1);
     undo_button_ = new QPushButton(QStringLiteral("Undo"), grid_tools_);
     undo_button_->setObjectName(QStringLiteral("bench-metadata-undo"));
@@ -485,6 +493,8 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
             &MetadataPropertiesDialog::editCurrentValues);
     connect(suggest_button_, &QPushButton::clicked, this,
             &MetadataPropertiesDialog::startProposals);
+    connect(identify_button_, &QPushButton::clicked, this,
+            &MetadataPropertiesDialog::startIdentify);
     connect(&proposal_watcher_, &QFutureWatcherBase::finished, this,
             &MetadataPropertiesDialog::finishProposals);
     connect(transform_button_, &QPushButton::clicked, this, [this] {
@@ -1110,6 +1120,11 @@ void MetadataPropertiesDialog::updateTransformationButton() {
     transform_button_->setEnabled(enabled);
     if (suggest_button_ != nullptr) {
         suggest_button_->setEnabled(enabled && !proposal_running_);
+    }
+    if (identify_button_ != nullptr) {
+        identify_button_->setEnabled(enabled && !proposal_running_ &&
+                                     static_cast<bool>(musicbrainz_.fetch) &&
+                                     identify_dialog_ == nullptr);
     }
     if (transformation_list_ != nullptr) {
         transformation_list_->setEnabled(!transformation_catalog_loading_ &&
@@ -1859,6 +1874,115 @@ void MetadataPropertiesDialog::finishProposals() {
             .arg(pluralized(preview.changed_item_count, QStringLiteral("file"),
                             QStringLiteral("files")))
             .arg(display_utf8(preview.chain.name)));
+}
+
+namespace {
+
+[[nodiscard]] std::optional<std::size_t> parse_position_number(const std::string& text) {
+    const auto slash = text.find('/');
+    const auto digits = slash == std::string::npos ? text : text.substr(0U, slash);
+    if (digits.empty() || digits.size() > 6U) {
+        return std::nullopt;
+    }
+    std::size_t value = 0U;
+    for (const auto character : digits) {
+        if (character < '0' || character > '9') {
+            return std::nullopt;
+        }
+        value = value * 10U + static_cast<std::size_t>(character - '0');
+    }
+    return value == 0U ? std::nullopt : std::optional{value};
+}
+
+} // namespace
+
+void MetadataPropertiesDialog::startIdentify() {
+    if (grid_model_ == nullptr || proposal_running_ || identify_dialog_ != nullptr ||
+        !musicbrainz_.fetch) {
+        return;
+    }
+    auto items = selectedItemIndexes();
+    if (items.empty()) {
+        items.reserve(grid_model_->selection().item_count());
+        for (std::size_t item_index = 0U; item_index < grid_model_->selection().item_count();
+             ++item_index) {
+            items.push_back(item_index);
+        }
+    }
+    if (items.empty()) {
+        return;
+    }
+    const auto& selection = grid_model_->selection();
+    std::vector<musicbrainz::LocalTrackDescriptor> descriptors;
+    descriptors.reserve(items.size());
+    QString initial_artist;
+    QString initial_release;
+    for (const auto item_index : items) {
+        const auto& baseline = selection.source(item_index).baseline;
+        musicbrainz::LocalTrackDescriptor descriptor{
+            .title = baseline.first_effective_value("title").value_or(std::string{}),
+            .artist = baseline.first_effective_value("artist").value_or(std::string{}),
+            .album = baseline.first_effective_value("album").value_or(std::string{}),
+            .track_number = {},
+            .disc_number = {},
+            .duration_ms = {},
+        };
+        if (const auto number = baseline.first_effective_value("tracknumber")) {
+            descriptor.track_number = parse_position_number(*number);
+        }
+        if (const auto disc = baseline.first_effective_value("discnumber")) {
+            descriptor.disc_number = parse_position_number(*disc);
+        }
+        if (initial_release.isEmpty() && !descriptor.album.empty()) {
+            initial_release = display_utf8(descriptor.album);
+        }
+        if (initial_artist.isEmpty()) {
+            const auto album_artist = baseline.first_effective_value("albumartist");
+            initial_artist = display_utf8(
+                album_artist && !album_artist->empty() ? *album_artist : descriptor.artist);
+        }
+        descriptors.push_back(std::move(descriptor));
+    }
+    openIdentifyDialog(std::move(descriptors), std::move(items), initial_artist, initial_release);
+}
+
+void MetadataPropertiesDialog::openIdentifyDialog(
+    std::vector<musicbrainz::LocalTrackDescriptor> descriptors, std::vector<std::size_t> items,
+    QString initial_artist, QString initial_release) {
+    auto* dialog = createMusicBrainzIdentifyDialog(
+        musicbrainz_, std::move(descriptors), std::move(items), initial_artist, initial_release,
+        [this](metadata::MetadataProposalSet proposals) {
+            applyMusicBrainzProposals(std::move(proposals));
+        },
+        this);
+    identify_dialog_ = dialog;
+    connect(dialog, &QDialog::finished, this, [this, dialog] {
+        if (identify_dialog_ == dialog) {
+            identify_dialog_ = nullptr;
+        }
+        updateTransformationButton();
+    });
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+    updateTransformationButton();
+}
+
+void MetadataPropertiesDialog::applyMusicBrainzProposals(metadata::MetadataProposalSet proposals) {
+    if (grid_model_ == nullptr || proposal_running_) {
+        return;
+    }
+    proposal_running_ = true;
+    updateTransformationButton();
+    read_only_->setText(QStringLiteral("Matching the MusicBrainz release to the draft…"));
+    auto selection = grid_model_->sharedSelection();
+    auto draft = grid_model_->patches();
+    proposal_watcher_.setFuture(QtConcurrent::run(
+        [selection = std::move(selection), draft = std::move(draft), set = std::move(proposals)] {
+            using PreviewResult = core::Result<metadata::MetadataTransformationPreview>;
+            return std::make_shared<PreviewResult>(
+                metadata::metadata_proposal_preview(*selection, draft, set, 0.5));
+        }));
 }
 
 void MetadataPropertiesDialog::startWritePlan() {

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "bench/local_list_model.hpp"
+#include "bench/musicbrainz_identify_dialog.hpp"
 #include "trackknife/core/cancellation.hpp"
 #include "trackknife/core/local_sources.hpp"
 #include "trackknife/operations/file_publication.hpp"
@@ -65,6 +66,7 @@ class MpdSearchResultModel;
 namespace trackknife::bench {
 
 struct MetadataOperationJobOutcome;
+class MusicBrainzFetchService;
 
 // Trackbench main window: composed Folders/Track Lists panels, configurable
 // local working-list views, and one transport over the serialized playback worker
@@ -160,6 +162,7 @@ class BenchMainWindow final : public QMainWindow {
     void playCurrentRow();
     void showMetadataProperties();
     void startMetadataOperationRecovery();
+    [[nodiscard]] MusicBrainzLookupService musicBrainzLookupService();
     void finishMetadataOperationJob();
     void presentInterruptedOperations();
     void applyCommittedMetadata(const operations::MetadataCommitResult& result);
@@ -345,6 +348,7 @@ class BenchMainWindow final : public QMainWindow {
 
     ui::ListPersistenceService* persistence_{nullptr};
     std::filesystem::path database_path_;
+    MusicBrainzFetchService* musicbrainz_service_{nullptr};
     QTimer* persistence_timer_{nullptr};
     QTimer* transport_timer_{nullptr};
 

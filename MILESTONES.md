@@ -1070,6 +1070,19 @@ network operations that never bypass staged preview/write safety.
   naming the exact release version, suppressed entirely below the
   confidence floor. Only the in-app search/version-picker UI remains before
   end-to-end identification.
+- Done: ADR-0090 lands that UI. Properties gains Identify…, which builds
+  local descriptors from the selection's baseline tags and opens an in-app
+  window-modal search dialog needing no MusicBrainz id anywhere — the
+  lookup Picard delegates to a browser. Every release version is a distinct
+  ranked row (score, album, credits, tracks, media, and a
+  date · country · disambiguation · label · catalog version column);
+  choosing one runs alignment plus the proposal bridge and stages the
+  result through the ordinary ADR-0086 preview as one undoable colored
+  draft transaction — nothing written until Apply. A lazily created bench
+  fetch service composes the paced ADR-0088 client with worker-thread
+  reads and writes of the migration-25 cache, and an injected scripted
+  service keeps the whole flow offscreen-tested end-to-end. Cover Art
+  Archive proposals and the AcoustID evaluation remain.
 
 ## M7 — Universal parallel ReplayGain
 

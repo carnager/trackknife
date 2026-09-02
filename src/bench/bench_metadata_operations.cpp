@@ -4,6 +4,7 @@
 
 #include "bench/bench_main_window_helpers.hpp"
 #include "bench/metadata_properties_dialog.hpp"
+#include "bench/musicbrainz_fetch_service.hpp"
 #include "bench/preparation_feedback_dialog.hpp"
 #include "trackknife/audio/local_audition.hpp"
 #include "trackknife/metadata/local_reader.hpp"
@@ -632,7 +633,8 @@ void BenchMainWindow::showMetadataProperties() {
                     persistence_service->saveUiState(std::move(key), std::move(value),
                                                      std::move(completion));
                 },
-        });
+        },
+        musicBrainzLookupService());
     properties->setArtworkMutationServices(
         [this, database_path, persistence_service] {
             auto documents = collectDocuments();
@@ -735,6 +737,16 @@ void BenchMainWindow::showMetadataProperties() {
     });
     tabs_->setCurrentIndex(properties_index);
     properties->show();
+}
+
+MusicBrainzLookupService BenchMainWindow::musicBrainzLookupService() {
+    if (database_path_.empty()) {
+        return {};
+    }
+    if (musicbrainz_service_ == nullptr) {
+        musicbrainz_service_ = new MusicBrainzFetchService(database_path_, this);
+    }
+    return musicbrainz_service_->lookupService();
 }
 
 void BenchMainWindow::startMetadataOperationRecovery() {

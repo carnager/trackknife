@@ -32,6 +32,10 @@ qt_add_library(
     metadata_transformation_dialog.cpp
     metadata_transformation_dialog.hpp
     metadata_transformation_preview_model.cpp
+    musicbrainz_fetch_service.cpp
+    musicbrainz_fetch_service.hpp
+    musicbrainz_identify_dialog.cpp
+    musicbrainz_identify_dialog.hpp
     metadata_transformation_preview_model.hpp
     preparation_feedback_dialog.cpp
     preparation_feedback_dialog.hpp
@@ -41,9 +45,10 @@ add_library(Trackknife::BenchUi ALIAS trackknife_bench_ui)
 target_link_libraries(
     trackknife_bench_ui
     PUBLIC Qt6::Widgets Trackknife::Core Trackknife::UiCommon Trackknife::Persistence
-           Trackknife::Formats Trackknife::Metadata Trackknife::Operations
+           Trackknife::Formats Trackknife::Metadata Trackknife::MusicBrainz
+           Trackknife::Operations
            trackknife_project_options
-    PRIVATE Trackknife::Audio Trackknife::MpdUi Trackknife::Ui Qt6::Concurrent
+    PRIVATE Trackknife::Audio Trackknife::MpdUi Trackknife::Ui Qt6::Concurrent Qt6::Network
             trackknife_project_warnings
 )
 target_include_directories(trackknife_bench_ui PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")

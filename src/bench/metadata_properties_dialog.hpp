@@ -3,6 +3,7 @@
 #pragma once
 
 #include "bench/metadata_artwork_section.hpp"
+#include "bench/musicbrainz_identify_dialog.hpp"
 #include "bench/preparation_feedback_dialog.hpp"
 #include "trackknife/metadata/transformation.hpp"
 #include "trackknife/metadata/write_plan.hpp"
@@ -131,8 +132,8 @@ class MetadataPropertiesDialog final : public QDialog {
                              OutputProfileStore output_profile_store = {},
                              FilePublicationPlanApplierFactory file_plan_applier_factory = {},
                              FilePublicationApplyObserver file_apply_observer = {},
-                             QWidget* parent = nullptr,
-                             MetadataDialogLayoutStore layout_store = {});
+                             QWidget* parent = nullptr, MetadataDialogLayoutStore layout_store = {},
+                             MusicBrainzLookupService musicbrainz = {});
     ~MetadataPropertiesDialog() override;
 
     void setArtworkMutationServices(ArtworkWritePlanApplierFactory applier_factory,
@@ -187,6 +188,11 @@ class MetadataPropertiesDialog final : public QDialog {
     void invalidateWritePlan();
     void startProposals();
     void finishProposals();
+    void startIdentify();
+    void openIdentifyDialog(std::vector<musicbrainz::LocalTrackDescriptor> descriptors,
+                            std::vector<std::size_t> items, QString initial_artist,
+                            QString initial_release);
+    void applyMusicBrainzProposals(metadata::MetadataProposalSet proposals);
     void startWritePlan();
     void finishWritePlan();
     void showPreparationFeedback(const QString& window_title, const QString& summary,
@@ -230,6 +236,7 @@ class MetadataPropertiesDialog final : public QDialog {
     FilePublicationPlanApplierFactory file_plan_applier_factory_;
     FilePublicationApplyObserver file_apply_observer_;
     MetadataDialogLayoutStore layout_store_;
+    MusicBrainzLookupService musicbrainz_;
     std::vector<persistence::SavedMetadataTransformationChain> transformation_catalog_;
     std::vector<persistence::SavedOutputLayoutProfile> output_layout_catalog_;
     std::vector<persistence::SavedDestinationProfile> destination_catalog_;
@@ -251,6 +258,7 @@ class MetadataPropertiesDialog final : public QDialog {
     QPushButton* remove_field_button_{nullptr};
     QPushButton* edit_values_button_{nullptr};
     QPushButton* suggest_button_{nullptr};
+    QPushButton* identify_button_{nullptr};
     QPushButton* transform_button_{nullptr};
     QWidget* transformation_panel_{nullptr};
     QWidget* grid_tools_{nullptr};
@@ -294,6 +302,7 @@ class MetadataPropertiesDialog final : public QDialog {
     QPointer<QDialog> exact_values_dialog_;
     QPointer<QInputDialog> field_name_dialog_;
     QPointer<QDialog> transformation_dialog_;
+    QPointer<QDialog> identify_dialog_;
     QPointer<QDialog> feedback_dialog_;
     std::shared_ptr<MetadataApplyProgressState> apply_progress_state_;
     std::shared_ptr<FilePublicationApplyProgressState> file_apply_progress_state_;

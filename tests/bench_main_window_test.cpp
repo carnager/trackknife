@@ -170,6 +170,7 @@ class BenchMainWindowTest final : public QObject {
     void pathOnlyPreparationUsesActualTagsAndAppliesReviewedPlan();
     void combinedTagAndRenameReviewReachesPreparationApply();
     void metadataSuggestionsStageSelectionConsistency();
+    void musicBrainzIdentifyStagesChosenVersion();
     void metadataStartupPresentsReconciliation();
     void filePublicationStartupPresentsReconciliation();
     void combinedPublicationStartupRecoversMetadataAndPath();
@@ -2442,6 +2443,157 @@ void BenchMainWindowTest::metadataSuggestionsStageSelectionConsistency() {
     QTest::mouseClick(suggest, Qt::LeftButton);
     QTRY_VERIFY_WITH_TIMEOUT(status->text().contains(QStringLiteral("already agree")), 5'000);
     QCOMPARE(grid_model->patches().patch_count(), std::size_t{6U});
+    delete properties;
+}
+
+void BenchMainWindowTest::musicBrainzIdentifyStagesChosenVersion() {
+    const auto field = [](std::string name, std::vector<std::string> values) {
+        return metadata::MetadataField{
+            .canonical_name = metadata::canonicalize_field_name(name),
+            .native_name = std::move(name),
+            .values = std::move(values),
+            .qualifier = {},
+            .provenance = metadata::FieldProvenance::embedded,
+        };
+    };
+    const auto make_source = [&field](const QString& label, const QString& title,
+                                      const QString& track_number) {
+        return MetadataPropertiesSource{
+            .source =
+                metadata::StagedMetadataSource{
+                    .raw_path = "/music/" + label.toStdString() + ".flac",
+                    .source_revision = std::nullopt,
+                    .baseline =
+                        metadata::MetadataDocument{
+                            .fields = {field("ALBUM", {"Alpha"}), field("ARTIST", {"Band"}),
+                                       field("TITLE", {title.toStdString()}),
+                                       field("TRACKNUMBER", {track_number.toStdString()})},
+                            .unsupported_native_objects = {},
+                        },
+                },
+            .track_label = label,
+        };
+    };
+    const std::vector sources{
+        make_source(QStringLiteral("one"), QStringLiteral("One"), QStringLiteral("1")),
+        make_source(QStringLiteral("two"), QStringLiteral("Two"), QStringLiteral("2"))};
+
+    static constexpr auto search_body = R"json({
+      "count": 1,
+      "releases": [{
+        "id": "11111111-2222-3333-4444-555555555555",
+        "score": 100, "title": "Alpha", "status": "Official",
+        "date": "1999-09-09", "country": "DE", "track-count": 2,
+        "artist-credit": [{"name": "Band",
+          "artist": {"id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "name": "Band"}}],
+        "release-group": {"id": "99999999-8888-7777-6666-555555555555"},
+        "media": [{"format": "CD", "track-count": 2}]
+      }]
+    })json";
+    static constexpr auto lookup_body = R"json({
+      "id": "11111111-2222-3333-4444-555555555555",
+      "title": "Alpha", "status": "Official", "date": "1999-09-09", "country": "DE",
+      "release-group": {"id": "99999999-8888-7777-6666-555555555555"},
+      "artist-credit": [{"name": "Band",
+        "artist": {"id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "name": "Band"}}],
+      "media": [{"position": 1, "format": "CD", "track-count": 2, "tracks": [
+        {"id": "aaaa1111-0000-0000-0000-000000000001", "position": 1, "number": "1",
+         "title": "One", "length": 61000,
+         "recording": {"id": "bbbb1111-0000-0000-0000-000000000001", "title": "One"}},
+        {"id": "aaaa1111-0000-0000-0000-000000000002", "position": 2, "number": "2",
+         "title": "Two", "length": 59000,
+         "recording": {"id": "bbbb1111-0000-0000-0000-000000000002", "title": "Two"}}
+      ]}]
+    })json";
+    int fetches = 0;
+    const MusicBrainzLookupService service{
+        .fetch =
+            [&fetches](const QString& url,
+                       std::function<void(core::Result<QByteArray>)> completion) {
+                ++fetches;
+                if (url.contains(QStringLiteral("?query="))) {
+                    completion(QByteArray{search_body});
+                    return;
+                }
+                if (url.contains(QStringLiteral("11111111-2222-3333-4444-555555555555?inc="))) {
+                    completion(QByteArray{lookup_body});
+                    return;
+                }
+                completion(std::unexpected(core::Error{
+                    .code = core::ErrorCode::invalid_argument,
+                    .message = "unexpected url",
+                    .context = {},
+                }));
+            },
+    };
+
+    auto* properties = new MetadataPropertiesDialog(
+        sources.size(),
+        [sources](const std::size_t index) -> std::optional<MetadataPropertiesSource> {
+            return index < sources.size() ? std::optional{sources[index]} : std::nullopt;
+        },
+        {}, {}, {}, {}, {}, {}, {}, nullptr, {}, service);
+    properties->show();
+
+    QTableView* files = nullptr;
+    QTRY_VERIFY((files = properties->findChild<QTableView*>(
+                     QStringLiteral("bench-metadata-files"))) != nullptr);
+    auto* grid_model = qobject_cast<MetadataGridModel*>(files->model());
+    auto* identify = properties->findChild<QPushButton*>(QStringLiteral("bench-metadata-identify"));
+    auto* status = properties->findChild<QLabel*>(QStringLiteral("bench-metadata-read-only"));
+    QVERIFY(grid_model != nullptr);
+    QVERIFY(identify != nullptr);
+    QVERIFY(status != nullptr);
+    files->selectAll();
+    QTRY_VERIFY(identify->isEnabled());
+    QTest::mouseClick(identify, Qt::LeftButton);
+
+    // The in-app search surface opens pre-filled from the selection — no
+    // MusicBrainz tags exist anywhere on these files.
+    QDialog* dialog = nullptr;
+    QTRY_VERIFY((dialog = properties->findChild<QDialog*>(
+                     QStringLiteral("bench-musicbrainz-identify"))) != nullptr);
+    auto* artist =
+        dialog->findChild<QLineEdit*>(QStringLiteral("bench-musicbrainz-identify-artist"));
+    auto* album =
+        dialog->findChild<QLineEdit*>(QStringLiteral("bench-musicbrainz-identify-release"));
+    auto* search =
+        dialog->findChild<QPushButton*>(QStringLiteral("bench-musicbrainz-identify-search"));
+    auto* results =
+        dialog->findChild<QTreeWidget*>(QStringLiteral("bench-musicbrainz-identify-results"));
+    auto* use = dialog->findChild<QPushButton*>(QStringLiteral("bench-musicbrainz-identify-use"));
+    QVERIFY(artist != nullptr && artist->text() == QStringLiteral("Band"));
+    QVERIFY(album != nullptr && album->text() == QStringLiteral("Alpha"));
+    QVERIFY(search != nullptr);
+    QVERIFY(results != nullptr);
+    QVERIFY(use != nullptr);
+
+    QTest::mouseClick(search, Qt::LeftButton);
+    QTRY_COMPARE(results->topLevelItemCount(), 1);
+    QCOMPARE(results->topLevelItem(0)->text(1), QStringLiteral("Alpha"));
+    QCOMPARE(results->topLevelItem(0)->text(2), QStringLiteral("Band"));
+    QVERIFY(results->topLevelItem(0)->text(5).contains(QStringLiteral("1999-09-09")));
+    QTRY_VERIFY(use->isEnabled());
+    QTest::mouseClick(use, Qt::LeftButton);
+
+    // The chosen version stages as one ordinary colored draft transaction.
+    QTRY_VERIFY(properties->findChild<QDialog*>(QStringLiteral("bench-musicbrainz-identify")) ==
+                nullptr);
+    QTRY_VERIFY_WITH_TIMEOUT(grid_model->patches().patch_count() > 0U, 5'000);
+    QTRY_VERIFY(status->text().contains(QStringLiteral("MusicBrainz")));
+    QCOMPARE(fetches, 2);
+    const auto album_id_column = grid_model->fieldColumn(QStringLiteral("MUSICBRAINZ_ALBUMID"));
+    const auto date_column = grid_model->fieldColumn(QStringLiteral("Date"));
+    QVERIFY(album_id_column.has_value());
+    QVERIFY(date_column.has_value());
+    for (int row = 0; row < grid_model->rowCount(); ++row) {
+        QCOMPARE(
+            grid_model->index(row, *album_id_column).data(metadata_cell_values_role).toStringList(),
+            QStringList{QStringLiteral("11111111-2222-3333-4444-555555555555")});
+        QCOMPARE(
+            grid_model->index(row, *date_column).data(metadata_cell_values_role).toStringList(),
+            QStringList{QStringLiteral("1999-09-09")});
+    }
     delete properties;
 }
 
