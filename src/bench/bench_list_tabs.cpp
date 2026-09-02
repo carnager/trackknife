@@ -23,6 +23,7 @@
 #include <QInputDialog>
 #include <QItemSelectionModel>
 #include <QLabel>
+#include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
 #include <QSettings>
@@ -495,6 +496,9 @@ void BenchMainWindow::refreshActiveContext() {
     if (source_heading_ != nullptr) {
         source_heading_->setText(mpd ? QStringLiteral("MPD Library") : QStringLiteral("Folders"));
     }
+    if (folder_bookmarks_ != nullptr) {
+        folder_bookmarks_->setVisible(!mpd && folder_bookmarks_->count() > 0);
+    }
     if (connect_mpd_action_ != nullptr) {
         connect_mpd_action_->setEnabled(!mpd_controller_->busy());
     }
@@ -866,6 +870,7 @@ void BenchMainWindow::showFolderContextMenu(const QPoint& position) {
     folder_context_menu_->addAction(folder_add_to_list_action_);
     if (directory) {
         folder_context_menu_->addAction(folder_toggle_expanded_action_);
+        folder_context_menu_->addAction(folder_bookmark_add_action_);
     }
     folder_context_menu_->popup(folder_view_->viewport()->mapToGlobal(position));
 }

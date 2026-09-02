@@ -33,6 +33,7 @@
 class QActionGroup;
 class QDialog;
 class QLabel;
+class QListWidget;
 class QLineEdit;
 class QMenu;
 class QPoint;
@@ -159,6 +160,12 @@ class BenchMainWindow final : public QMainWindow {
     void showTabContextMenu(const QPoint& position);
     void showTrackContextMenu(QTableView* view, const QPoint& position);
     void showFolderContextMenu(const QPoint& position);
+    void showFolderBookmarkMenu(const QPoint& position);
+    void loadFolderBookmarks();
+    void persistFolderBookmarks() const;
+    void addFolderBookmark(const std::string& raw_path);
+    void revealFolderPath(const std::string& raw_path);
+    void revealFolderStep(const QPersistentModelIndex& parent_index, const std::string& raw_path);
     void playCurrentRow();
     void showMetadataProperties();
     void startMetadataOperationRecovery();
@@ -339,6 +346,10 @@ class BenchMainWindow final : public QMainWindow {
     QWidget* layout_root_{nullptr};
     QWidget* folders_panel_{nullptr};
     QLabel* source_heading_{nullptr};
+    QListWidget* folder_bookmarks_{nullptr};
+    QMenu* folder_bookmark_menu_{nullptr};
+    QAction* folder_bookmark_add_action_{nullptr};
+    QAction* folder_bookmark_remove_action_{nullptr};
     QStackedWidget* source_stack_{nullptr};
     QHash<QString, QWidget*> panel_widgets_;
     bool applying_panel_layout_{false};

@@ -1203,6 +1203,9 @@ quickly and correctly.
   incomplete-programme warnings instead of partial-album numbers. Tests
   pin parallel-equals-direct on generated WAV albums plus failure
   isolation and cancellation.
+- Done: ADR-0101 adds folder bookmarks to the local Sources panel — a
+  persisted quick-access list above the lazy tree with reveal-in-tree
+  activation, add-from-tree-menu, and removal.
 - Done: ADR-0100 wires the user-facing scan. ReplayGain scan replaces the
   inert checkbox with a grouping combo (release default, selection,
   track, tkfmt-1); measurement runs off the UI thread over

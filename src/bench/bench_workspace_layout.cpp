@@ -18,9 +18,12 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QListWidget>
+#include <QListWidgetItem>
 #include <QMenu>
 #include <QMenuBar>
 #include <QSettings>
+
 #include <QShortcut>
 #include <QSplitter>
 #include <QStackedWidget>
@@ -32,6 +35,8 @@
 #include <QToolBar>
 #include <QTreeView>
 #include <QVBoxLayout>
+#include <filesystem>
+#include <memory>
 
 #include <algorithm>
 #include <ranges>
@@ -86,6 +91,29 @@ void BenchMainWindow::buildWorkspace() {
     source_heading_->setAlignment(Qt::AlignCenter);
     source_heading_->setContentsMargins(8, 4, 8, 4);
     folders_layout->addWidget(source_heading_);
+    folder_bookmarks_ = new QListWidget(folders_panel_);
+    folder_bookmarks_->setObjectName(QStringLiteral("bench-folder-bookmarks"));
+    folder_bookmarks_->setAccessibleName(QStringLiteral("Folder bookmarks"));
+    folder_bookmarks_->setFrameShape(QFrame::NoFrame);
+    folder_bookmarks_->setUniformItemSizes(true);
+    folder_bookmarks_->setMaximumHeight(150);
+    folder_bookmarks_->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
+    folder_bookmarks_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    folder_bookmarks_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(folder_bookmarks_, &QWidget::customContextMenuRequested, this,
+            &BenchMainWindow::showFolderBookmarkMenu);
+    connect(folder_bookmarks_, &QListWidget::activated, this, [this](const QModelIndex& index) {
+        const auto* item = folder_bookmarks_->item(index.row());
+        if (item == nullptr) {
+            return;
+        }
+        const auto bytes = item->data(Qt::UserRole).toByteArray();
+        if (!bytes.isEmpty()) {
+            revealFolderPath(
+                std::string{bytes.constData(), static_cast<std::size_t>(bytes.size())});
+        }
+    });
+    folders_layout->addWidget(folder_bookmarks_);
     source_stack_ = new QStackedWidget(folders_panel_);
     source_stack_->setObjectName(QStringLiteral("bench-source-stack"));
     folder_view_ = new QTreeView(source_stack_);
@@ -125,6 +153,26 @@ void BenchMainWindow::buildWorkspace() {
     statusBar()->addWidget(selection_status_, 1);
     buildMpdStatusControls();
     refreshSelectionStatus();
+
+    folder_bookmark_add_action_ = new QAction(QStringLiteral("Bookmark folder"), this);
+    folder_bookmark_add_action_->setObjectName(QStringLiteral("action-folder-bookmark-add"));
+    connect(folder_bookmark_add_action_, &QAction::triggered, this, [this] {
+        const auto index = folder_view_->currentIndex();
+        if (index.isValid() && folder_model_->isDirectory(index)) {
+            addFolderBookmark(folder_model_->rawPath(index));
+        }
+    });
+    folder_bookmark_remove_action_ = new QAction(QStringLiteral("Remove bookmark"), this);
+    folder_bookmark_remove_action_->setObjectName(QStringLiteral("action-folder-bookmark-remove"));
+    connect(folder_bookmark_remove_action_, &QAction::triggered, this, [this] {
+        delete folder_bookmarks_->takeItem(folder_bookmarks_->currentRow());
+        persistFolderBookmarks();
+        folder_bookmarks_->setVisible(folder_bookmarks_->count() > 0 && !isMpdContext());
+    });
+    folder_bookmark_menu_ = new QMenu(this);
+    folder_bookmark_menu_->setObjectName(QStringLiteral("bench-folder-bookmark-menu"));
+    folder_bookmark_menu_->addAction(folder_bookmark_remove_action_);
+    loadFolderBookmarks();
 
     QSettings settings;
     const auto roots = settings.value(QStringLiteral("library/roots")).toList();
@@ -612,6 +660,131 @@ void BenchMainWindow::refreshPanelLayoutActions() {
     layout_top_bottom_action_->setChecked(root.kind == ui::PanelLayoutNodeKind::split &&
                                           root.orientation == Qt::Vertical);
     layout_tabbed_action_->setChecked(root.kind == ui::PanelLayoutNodeKind::tabs);
+}
+
+void BenchMainWindow::loadFolderBookmarks() {
+    const QSettings settings;
+    const auto stored = settings.value(QStringLiteral("library/bookmarks")).toList();
+    folder_bookmarks_->clear();
+    for (const auto& entry : stored) {
+        const auto bytes = entry.toByteArray();
+        if (bytes.isEmpty()) {
+            continue;
+        }
+        const std::string raw_path{bytes.constData(), static_cast<std::size_t>(bytes.size())};
+        const auto display = QString::fromUtf8(
+            core::escape_raw_path(std::filesystem::path{raw_path}.filename().native().empty()
+                                      ? raw_path
+                                      : std::filesystem::path{raw_path}.filename().native()));
+        auto* item = new QListWidgetItem(display, folder_bookmarks_);
+        item->setToolTip(QString::fromUtf8(core::escape_raw_path(raw_path)));
+        item->setData(Qt::UserRole, bytes);
+    }
+    folder_bookmarks_->setVisible(folder_bookmarks_->count() > 0);
+}
+
+void BenchMainWindow::persistFolderBookmarks() const {
+    QSettings settings;
+    QVariantList stored;
+    for (int row = 0; row < folder_bookmarks_->count(); ++row) {
+        stored.push_back(folder_bookmarks_->item(row)->data(Qt::UserRole));
+    }
+    settings.setValue(QStringLiteral("library/bookmarks"), stored);
+}
+
+void BenchMainWindow::addFolderBookmark(const std::string& raw_path) {
+    const QByteArray bytes{raw_path.data(), static_cast<qsizetype>(raw_path.size())};
+    for (int row = 0; row < folder_bookmarks_->count(); ++row) {
+        if (folder_bookmarks_->item(row)->data(Qt::UserRole).toByteArray() == bytes) {
+            return;
+        }
+    }
+    const auto name = std::filesystem::path{raw_path}.filename().native();
+    auto* item = new QListWidgetItem(
+        QString::fromUtf8(core::escape_raw_path(name.empty() ? raw_path : name)),
+        folder_bookmarks_);
+    item->setToolTip(QString::fromUtf8(core::escape_raw_path(raw_path)));
+    item->setData(Qt::UserRole, bytes);
+    persistFolderBookmarks();
+    folder_bookmarks_->setVisible(!isMpdContext());
+}
+
+void BenchMainWindow::showFolderBookmarkMenu(const QPoint& position) {
+    const auto index = folder_bookmarks_->indexAt(position);
+    if (!index.isValid()) {
+        return;
+    }
+    folder_bookmarks_->setCurrentRow(index.row());
+    folder_bookmark_menu_->popup(folder_bookmarks_->viewport()->mapToGlobal(position));
+}
+
+// Reveals a bookmarked directory in the lazy tree: walk the path from its
+// root, fetching one level at a time and continuing when the rows arrive.
+void BenchMainWindow::revealFolderPath(const std::string& raw_path) {
+    for (int row = 0; row < folder_model_->rowCount(); ++row) {
+        const auto root_index = folder_model_->index(row, 0);
+        const auto root_path = folder_model_->rawPath(root_index);
+        if (raw_path == root_path) {
+            folder_view_->setCurrentIndex(root_index);
+            folder_view_->scrollTo(root_index);
+            folder_view_->expand(root_index);
+            return;
+        }
+        if (raw_path.starts_with(root_path + '/')) {
+            revealFolderStep(QPersistentModelIndex{root_index}, raw_path);
+            return;
+        }
+    }
+    // Not under any library root yet: the bookmark becomes a root.
+    folder_model_->addRoot(raw_path);
+    QSettings settings;
+    auto roots = settings.value(QStringLiteral("library/roots")).toList();
+    roots.push_back(QByteArray{raw_path.data(), static_cast<qsizetype>(raw_path.size())});
+    settings.setValue(QStringLiteral("library/roots"), roots);
+    for (int row = 0; row < folder_model_->rowCount(); ++row) {
+        const auto root_index = folder_model_->index(row, 0);
+        if (folder_model_->rawPath(root_index) == raw_path) {
+            folder_view_->setCurrentIndex(root_index);
+            folder_view_->scrollTo(root_index);
+            return;
+        }
+    }
+}
+
+void BenchMainWindow::revealFolderStep(const QPersistentModelIndex& parent_index,
+                                       const std::string& raw_path) {
+    if (!parent_index.isValid()) {
+        return;
+    }
+    const QModelIndex parent{parent_index};
+    if (folder_model_->canFetchMore(parent)) {
+        auto connection = std::make_shared<QMetaObject::Connection>();
+        *connection = connect(
+            folder_model_, &QAbstractItemModel::rowsInserted, this,
+            [this, connection, parent_index, raw_path](const QModelIndex& inserted_parent) {
+                if (inserted_parent != QModelIndex{parent_index}) {
+                    return;
+                }
+                disconnect(*connection);
+                revealFolderStep(parent_index, raw_path);
+            });
+        folder_model_->fetchMore(parent);
+        return;
+    }
+    folder_view_->expand(parent);
+    for (int row = 0; row < folder_model_->rowCount(parent); ++row) {
+        const auto child = folder_model_->index(row, 0, parent);
+        const auto child_path = folder_model_->rawPath(child);
+        if (child_path == raw_path) {
+            folder_view_->setCurrentIndex(child);
+            folder_view_->scrollTo(child);
+            return;
+        }
+        if (raw_path.starts_with(child_path + '/')) {
+            revealFolderStep(QPersistentModelIndex{child}, raw_path);
+            return;
+        }
+    }
 }
 
 } // namespace trackknife::bench

@@ -176,6 +176,7 @@ class BenchMainWindowTest final : public QObject {
     void musicBrainzIdentifyStagesChosenVersion();
     void musicBrainzFingerprintScanRanksAndStages();
     void replayGainScanStagesMeasuredGainsAsDrafts();
+    void folderBookmarksRevealTreePaths();
     void artworkFetchesCoverArtFromArchiveAndAddsFront();
     void artworkArchivePickerAddsChosenImageWithItsRole();
     void automaticScriptsStageOnOpen();
@@ -2911,6 +2912,67 @@ void BenchMainWindowTest::replayGainScanStagesMeasuredGainsAsDrafts() {
     QCOMPARE(files->selectionModel()->selectedRows().size(), 2);
     // Closing would rightly demand draft confirmation; tear down directly.
     delete properties;
+}
+
+void BenchMainWindowTest::folderBookmarksRevealTreePaths() {
+    QTemporaryDir media;
+    QVERIFY(media.isValid());
+    QDir{media.path()}.mkpath(QStringLiteral("artist/album"));
+    const auto root_bytes = QFile::encodeName(media.path());
+    const auto nested = media.filePath(QStringLiteral("artist/album"));
+    const auto nested_bytes = QFile::encodeName(nested);
+    {
+        QSettings settings;
+        settings.setValue(QStringLiteral("library/roots"), QVariantList{root_bytes});
+        settings.setValue(QStringLiteral("library/bookmarks"), QVariantList{nested_bytes});
+    }
+
+    BenchMainWindow window;
+    window.show();
+    auto* bookmarks = window.findChild<QListWidget*>(QStringLiteral("bench-folder-bookmarks"));
+    auto* folder_view = window.findChild<QTreeView*>(QStringLiteral("bench-folder-tree"));
+    auto* folder_model = window.findChild<ui::LocalFolderTreeModel*>();
+    QVERIFY(bookmarks != nullptr);
+    QVERIFY(folder_view != nullptr);
+    QVERIFY(folder_model != nullptr);
+    QTRY_COMPARE(bookmarks->count(), 1);
+    QCOMPARE(bookmarks->item(0)->text(), QStringLiteral("album"));
+    QTRY_VERIFY(bookmarks->isVisibleTo(&window));
+
+    // Activating the bookmark walks the lazy tree to the nested directory.
+    const std::string nested_raw{nested_bytes.constData(),
+                                 static_cast<std::size_t>(nested_bytes.size())};
+    emit bookmarks->activated(bookmarks->model()->index(0, 0));
+    QTRY_VERIFY_WITH_TIMEOUT(folder_view->currentIndex().isValid() &&
+                                 folder_model->rawPath(folder_view->currentIndex()) == nested_raw,
+                             5'000);
+
+    // Bookmarking from the tree persists, deduplicates, and removal both
+    // updates the list and the stored value.
+    auto* add_action = window.findChild<QAction*>(QStringLiteral("action-folder-bookmark-add"));
+    auto* remove_action =
+        window.findChild<QAction*>(QStringLiteral("action-folder-bookmark-remove"));
+    QVERIFY(add_action != nullptr);
+    QVERIFY(remove_action != nullptr);
+    add_action->trigger();
+    QCOMPARE(bookmarks->count(), 1);
+    folder_view->setCurrentIndex(folder_model->index(0, 0));
+    add_action->trigger();
+    QCOMPARE(bookmarks->count(), 2);
+    bookmarks->setCurrentRow(0);
+    remove_action->trigger();
+    QCOMPARE(bookmarks->count(), 1);
+    {
+        const QSettings settings;
+        const auto stored = settings.value(QStringLiteral("library/bookmarks")).toList();
+        QCOMPARE(stored.size(), 1);
+        QCOMPARE(stored.front().toByteArray(), root_bytes);
+    }
+    {
+        QSettings settings;
+        settings.remove(QStringLiteral("library/roots"));
+        settings.remove(QStringLiteral("library/bookmarks"));
+    }
 }
 
 void BenchMainWindowTest::artworkFetchesCoverArtFromArchiveAndAddsFront() {
