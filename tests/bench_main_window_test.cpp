@@ -32,6 +32,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCompleter>
+#include <QDataStream>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -174,6 +175,7 @@ class BenchMainWindowTest final : public QObject {
     void metadataSuggestionsStageSelectionConsistency();
     void musicBrainzIdentifyStagesChosenVersion();
     void musicBrainzFingerprintScanRanksAndStages();
+    void replayGainScanStagesMeasuredGainsAsDrafts();
     void artworkFetchesCoverArtFromArchiveAndAddsFront();
     void artworkArchivePickerAddsChosenImageWithItsRole();
     void automaticScriptsStageOnOpen();
@@ -1352,8 +1354,7 @@ void BenchMainWindowTest::preparationSidePanelEditsReusableOutputProfiles() {
         properties->findChild<QCheckBox*>(QStringLiteral("bench-preparation-rename-files"));
     auto* move_files =
         properties->findChild<QCheckBox*>(QStringLiteral("bench-preparation-move-files"));
-    auto* replaygain =
-        properties->findChild<QCheckBox*>(QStringLiteral("bench-preparation-replaygain"));
+    auto* replaygain = properties->findChild<QPushButton*>(QStringLiteral("bench-replaygain-scan"));
     QVERIFY(save_tags != nullptr);
     QVERIFY(rename_files != nullptr);
     QVERIFY(move_files != nullptr);
@@ -1362,7 +1363,7 @@ void BenchMainWindowTest::preparationSidePanelEditsReusableOutputProfiles() {
     QVERIFY(save_tags->isEnabled());
     QVERIFY(!rename_files->isEnabled());
     QVERIFY(!move_files->isEnabled());
-    QVERIFY(!replaygain->isEnabled());
+    QTRY_VERIFY(replaygain->isEnabled());
     QTableView* fields = nullptr;
     auto* preview =
         properties->findChild<QPushButton*>(QStringLiteral("bench-metadata-apply-changes"));
@@ -2777,6 +2778,135 @@ void BenchMainWindowTest::musicBrainzFingerprintScanRanksAndStages() {
     QVERIFY(album_column.has_value());
     QCOMPARE(grid_model->index(0, *album_column).data(metadata_cell_values_role).toStringList(),
              QStringList{QStringLiteral("Alpha")});
+    delete properties;
+}
+
+namespace {
+
+void write_sine_wav_fixture(const QString& path, const double amplitude) {
+    constexpr int wav_rate = 44'100;
+    constexpr int frames = wav_rate;
+    QFile file{path};
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QDataStream stream{&file};
+    stream.setByteOrder(QDataStream::LittleEndian);
+    const quint32 data_bytes = static_cast<quint32>(frames) * 4U;
+    file.write("RIFF", 4);
+    stream << quint32{36U + data_bytes};
+    file.write("WAVE", 4);
+    file.write("fmt ", 4);
+    stream << quint32{16U} << quint16{1U} << quint16{2U} << quint32{wav_rate}
+           << quint32{wav_rate * 4U} << quint16{4U} << quint16{16U};
+    file.write("data", 4);
+    stream << data_bytes;
+    for (int frame = 0; frame < frames; ++frame) {
+        const auto value = amplitude * std::sin(2.0 * 3.14159265358979 * 997.0 * frame / wav_rate);
+        const auto sample = static_cast<qint16>(std::clamp(value, -1.0, 1.0) * 32'767.0);
+        stream << sample << sample;
+    }
+}
+
+} // namespace
+
+void BenchMainWindowTest::replayGainScanStagesMeasuredGainsAsDrafts() {
+    QTemporaryDir media;
+    QVERIFY(media.isValid());
+    const auto loud_path = media.filePath(QStringLiteral("loud.wav"));
+    const auto quiet_path = media.filePath(QStringLiteral("quiet.wav"));
+    write_sine_wav_fixture(loud_path, 0.8);
+    write_sine_wav_fixture(quiet_path, 0.2);
+
+    const auto field = [](std::string name, std::vector<std::string> values) {
+        return metadata::MetadataField{
+            .canonical_name = metadata::canonicalize_field_name(name),
+            .native_name = std::move(name),
+            .values = std::move(values),
+            .qualifier = {},
+            .provenance = metadata::FieldProvenance::embedded,
+        };
+    };
+    const auto make_source = [&field](const QString& path, const QString& title) {
+        const auto encoded = QFile::encodeName(path);
+        return MetadataPropertiesSource{
+            .source =
+                metadata::StagedMetadataSource{
+                    .raw_path =
+                        std::string{encoded.constData(), static_cast<std::size_t>(encoded.size())},
+                    .source_revision = std::nullopt,
+                    .baseline =
+                        metadata::MetadataDocument{
+                            .fields = {field("TITLE", {title.toStdString()}),
+                                       field("ALBUM", {"Gain Album"}),
+                                       field("ALBUMARTIST", {"Band"}),
+                                       field("MUSICBRAINZ_ALBUMID",
+                                             {"11111111-2222-3333-4444-555555555555"})},
+                            .unsupported_native_objects = {},
+                        },
+                },
+            .track_label = title,
+        };
+    };
+    const std::vector sources{make_source(loud_path, QStringLiteral("Loud")),
+                              make_source(quiet_path, QStringLiteral("Quiet"))};
+
+    auto* properties = new MetadataPropertiesDialog(
+        sources.size(),
+        [sources](const std::size_t index) -> std::optional<MetadataPropertiesSource> {
+            return index < sources.size() ? std::optional{sources[index]} : std::nullopt;
+        },
+        {}, {}, {});
+    properties->show();
+
+    QTableView* files = nullptr;
+    QTRY_VERIFY((files = properties->findChild<QTableView*>(
+                     QStringLiteral("bench-metadata-files"))) != nullptr);
+    auto* grid_model = qobject_cast<MetadataGridModel*>(files->model());
+    auto* scan = properties->findChild<QPushButton*>(QStringLiteral("bench-replaygain-scan"));
+    auto* grouping = properties->findChild<QComboBox*>(QStringLiteral("bench-replaygain-grouping"));
+    QVERIFY(grid_model != nullptr);
+    QVERIFY(scan != nullptr);
+    QVERIFY(grouping != nullptr);
+    QCOMPARE(grouping->currentIndex(), 0);
+    files->selectAll();
+    QTRY_VERIFY(scan->isEnabled());
+    QTest::mouseClick(scan, Qt::LeftButton);
+
+    // The measured gains stage as ordinary colored drafts with ReplayGain
+    // provenance; the shared release id makes both files one programme.
+    QTRY_VERIFY_WITH_TIMEOUT(grid_model->patches().patch_count() >= 8U, 15'000);
+    const auto track_gain_column = grid_model->fieldColumn(QStringLiteral("REPLAYGAIN_TRACK_GAIN"));
+    const auto track_peak_column = grid_model->fieldColumn(QStringLiteral("REPLAYGAIN_TRACK_PEAK"));
+    const auto album_gain_column = grid_model->fieldColumn(QStringLiteral("REPLAYGAIN_ALBUM_GAIN"));
+    const auto album_peak_column = grid_model->fieldColumn(QStringLiteral("REPLAYGAIN_ALBUM_PEAK"));
+    QVERIFY(track_gain_column.has_value());
+    QVERIFY(track_peak_column.has_value());
+    QVERIFY(album_gain_column.has_value());
+    QVERIFY(album_peak_column.has_value());
+    const auto loud_gain =
+        grid_model->index(0, *track_gain_column).data(metadata_cell_values_role).toStringList();
+    const auto quiet_gain =
+        grid_model->index(1, *track_gain_column).data(metadata_cell_values_role).toStringList();
+    QCOMPARE(loud_gain.size(), 1);
+    QCOMPARE(quiet_gain.size(), 1);
+    QVERIFY(loud_gain.front().endsWith(QStringLiteral(" dB")));
+    // The quiet tone needs roughly 12 dB more gain than the loud one.
+    const auto loud_value = loud_gain.front().chopped(3).toDouble();
+    const auto quiet_value = quiet_gain.front().chopped(3).toDouble();
+    QVERIFY(std::abs((quiet_value - loud_value) - 12.04) < 0.3);
+    // One programme: identical album gain and peak on both rows.
+    QCOMPARE(
+        grid_model->index(0, *album_gain_column).data(metadata_cell_values_role).toStringList(),
+        grid_model->index(1, *album_gain_column).data(metadata_cell_values_role).toStringList());
+    const auto album_peak =
+        grid_model->index(0, *album_peak_column).data(metadata_cell_values_role).toStringList();
+    QCOMPARE(album_peak.size(), 1);
+    QVERIFY(album_peak.front().startsWith(QStringLiteral("0.79")) ||
+            album_peak.front().startsWith(QStringLiteral("0.80")));
+    QCOMPARE(
+        grid_model->index(0, *track_gain_column).data(metadata_cell_staged_source_role).toString(),
+        QStringLiteral("ReplayGain"));
+
+    // Closing would rightly demand draft confirmation; tear down directly.
     delete properties;
 }
 

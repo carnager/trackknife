@@ -9,7 +9,7 @@ The ordered delivery plan is [`../MILESTONES.md`](../MILESTONES.md).
 
 ## Current continuation point
 
-M5 is closing into M6, implementation is accepted through ADR-0099, and the persistence
+M5 is closing into M6, implementation is accepted through ADR-0100, and the persistence
 schema is version 25. In-app MusicBrainz identification is end-to-end: Properties'
 Identify… opens a no-id text-search dialog whose ranked rows are individual
 release versions, and the chosen version stages as one undoable colored draft
@@ -34,7 +34,10 @@ libebur128 loudness core: ITU-conformance-pinned measurement, native-rate
 high-rate policy, programme album reduction, and honest unmeasurability
 for sub-gate material; ADR-0098 adds the bounded parallel scan graph with
 per-item revision capture and incomplete-album warnings, and ADR-0099 the
-four grouping modes (track, selection, release-aware, tkfmt-1). Native WavPack is now the second
+four grouping modes (track, selection, release-aware, tkfmt-1), and
+ADR-0100 the user-facing scan: measured values stage as colored ReplayGain-
+provenance drafts through the ordinary pipeline and WYSIWYG apply, with
+C-locale value formatting and conventional REPLAYGAIN_* identities. Native WavPack is now the second
 qualified text writer (ADR-0095): the shared prepared-copy core carries the
 paired-totals rules once for every format, and the WavPack prepare proves
 audio blocks and binary APEv2 items byte-exact while rejecting ID3v1
@@ -102,7 +105,8 @@ Start metadata and file-operation work with
 [`adr/0096-acoustid-fingerprint-identification.md`](adr/0096-acoustid-fingerprint-identification.md),
 [`adr/0097-validated-loudness-analysis-core.md`](adr/0097-validated-loudness-analysis-core.md),
 [`adr/0098-parallel-loudness-scan-graph.md`](adr/0098-parallel-loudness-scan-graph.md),
-and [`adr/0099-loudness-grouping-modes.md`](adr/0099-loudness-grouping-modes.md).
+[`adr/0099-loudness-grouping-modes.md`](adr/0099-loudness-grouping-modes.md),
+and [`adr/0100-replaygain-scan-action.md`](adr/0100-replaygain-scan-action.md).
 The development, ASan/UBSan, TSan, and clang-tidy builds and their complete
 53/53 test suites pass at this continuation point (validated 2026-09-02).
 The TSan-only bench test shim routes Qt 6.9+'s uninstrumented

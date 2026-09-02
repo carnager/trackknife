@@ -1203,6 +1203,16 @@ quickly and correctly.
   incomplete-programme warnings instead of partial-album numbers. Tests
   pin parallel-equals-direct on generated WAV albums plus failure
   isolation and cancellation.
+- Done: ADR-0100 wires the user-facing scan. ReplayGain scan replaces the
+  inert checkbox with a grouping combo (release default, selection,
+  track, tkfmt-1); measurement runs off the UI thread over
+  draft-materialized documents and stages RG2-formatted values — C-locale
+  decimal points via to_chars, never the user locale's comma — as
+  colored drafts with italic ReplayGain provenance through the ordinary
+  proposal pipeline and WYSIWYG apply. Footer progress with a Stop link;
+  unmeasurable files and incomplete programmes go to the problems-only
+  feedback dialog. REPLAYGAIN_* joined the conventional registry so
+  rescans update existing tags instead of growing duplicate columns.
 - Done: ADR-0099 adds the four grouping modes as one pure function from
   metadata documents to per-item album keys: track, selection-as-album,
   release-aware (MUSICBRAINZ_ALBUMID first, deterministic album+artist

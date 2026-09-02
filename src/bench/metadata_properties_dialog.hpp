@@ -199,6 +199,8 @@ class MetadataPropertiesDialog final : public QDialog {
     };
     [[nodiscard]] std::optional<AutomaticChainPlan> combinedAutomaticChain() const;
     void startIdentify();
+    void startReplayGainScan();
+    void finishReplayGainScan();
     void openIdentifyDialog(std::vector<musicbrainz::LocalTrackDescriptor> descriptors,
                             std::vector<QString> local_paths, std::vector<std::size_t> items,
                             QString initial_artist, QString initial_release);
@@ -238,6 +240,11 @@ class MetadataPropertiesDialog final : public QDialog {
         proposal_watcher_;
     QFutureWatcher<std::shared_ptr<core::Result<metadata::MetadataTransformationPreview>>>
         automatic_watcher_;
+    struct ReplayGainScanOutcome {
+        core::Result<metadata::MetadataProposalSet> proposals{metadata::MetadataProposalSet{}};
+        std::vector<PreparationFeedbackRow> problems;
+    };
+    QFutureWatcher<std::shared_ptr<ReplayGainScanOutcome>> replaygain_watcher_;
     MetadataPropertiesSourceReader source_reader_;
     MetadataWritePlanApplierFactory plan_applier_factory_;
     MetadataApplyObserver apply_observer_;
@@ -280,7 +287,9 @@ class MetadataPropertiesDialog final : public QDialog {
     QCheckBox* save_tags_check_{nullptr};
     QCheckBox* rename_files_check_{nullptr};
     QCheckBox* move_files_check_{nullptr};
-    QCheckBox* replaygain_check_{nullptr};
+    QPushButton* replaygain_scan_button_{nullptr};
+    QComboBox* replaygain_grouping_{nullptr};
+    QLineEdit* replaygain_expression_{nullptr};
     QComboBox* output_layout_combo_{nullptr};
     QLineEdit* output_layout_name_{nullptr};
     QLineEdit* output_directory_expression_{nullptr};
@@ -332,6 +341,7 @@ class MetadataPropertiesDialog final : public QDialog {
     std::size_t output_example_generation_{0U};
     std::size_t output_example_job_generation_{0U};
     core::CancellationSource write_plan_cancellation_;
+    core::CancellationSource replaygain_cancellation_;
     core::CancellationSource apply_cancellation_;
     core::CancellationSource output_example_cancellation_;
     int draft_count_{0};
@@ -344,6 +354,7 @@ class MetadataPropertiesDialog final : public QDialog {
     bool write_plan_running_{false};
     bool proposal_running_{false};
     bool automatic_stage_running_{false};
+    bool replaygain_running_{false};
     QStringList automatic_step_sources_;
     QString automatic_summary_;
     bool apply_running_{false};

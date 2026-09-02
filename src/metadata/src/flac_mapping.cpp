@@ -73,6 +73,12 @@ constexpr std::array conventional_mappings{
     ConventionalMapping{"musicbrainzreleasegroupid", "MUSICBRAINZ_RELEASEGROUPID"},
     ConventionalMapping{"musicbrainzworkid", "MUSICBRAINZ_WORKID"},
     ConventionalMapping{"musicbrainzdiscid", "MUSICBRAINZ_DISCID"},
+    // ReplayGain 2.0 result fields (ADR-0100): one logical identity each so
+    // a rescan updates the existing tag instead of growing a second column.
+    ConventionalMapping{"replaygaintrackgain", "REPLAYGAIN_TRACK_GAIN"},
+    ConventionalMapping{"replaygaintrackpeak", "REPLAYGAIN_TRACK_PEAK"},
+    ConventionalMapping{"replaygainalbumgain", "REPLAYGAIN_ALBUM_GAIN"},
+    ConventionalMapping{"replaygainalbumpeak", "REPLAYGAIN_ALBUM_PEAK"},
 };
 
 [[nodiscard]] core::Error mapping_error(std::string message, const std::string_view name) {

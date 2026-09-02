@@ -11,6 +11,8 @@
 #include "bench/metadata_transformation_dialog.hpp"
 #include "bench/metadata_transformation_preview_model.hpp"
 #include "bench/preparation_feedback_dialog.hpp"
+#include "trackknife/loudness/grouping.hpp"
+#include "trackknife/loudness/scan.hpp"
 #include "trackknife/metadata/draft_document.hpp"
 #include "trackknife/metadata/field_suggestions.hpp"
 #include "trackknife/metadata/proposal.hpp"
@@ -64,6 +66,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -225,11 +228,31 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
         QStringLiteral("Create, change, or remove move destinations"));
     move_row->addWidget(manage_destinations_button);
     side_layout->addLayout(move_row);
-    replaygain_check_ = new QCheckBox(QStringLiteral("ReplayGain"), side_panel);
-    replaygain_check_->setObjectName(QStringLiteral("bench-preparation-replaygain"));
-    replaygain_check_->setEnabled(false);
-    replaygain_check_->setToolTip(QStringLiteral("ReplayGain analysis is planned for M7"));
-    side_layout->addWidget(replaygain_check_);
+    auto* replaygain_row = new QHBoxLayout;
+    replaygain_row->setContentsMargins(0, 0, 0, 0);
+    replaygain_row->setSpacing(4);
+    replaygain_scan_button_ = new QPushButton(QStringLiteral("ReplayGain scan"), side_panel);
+    replaygain_scan_button_->setObjectName(QStringLiteral("bench-replaygain-scan"));
+    replaygain_scan_button_->setToolTip(
+        QStringLiteral("Measure EBU R128 loudness for the selected files and stage the "
+                       "ReplayGain tags as colored draft edits — nothing is written until "
+                       "you apply"));
+    replaygain_scan_button_->setEnabled(false);
+    replaygain_row->addWidget(replaygain_scan_button_);
+    replaygain_grouping_ = new QComboBox(side_panel);
+    replaygain_grouping_->setObjectName(QStringLiteral("bench-replaygain-grouping"));
+    replaygain_grouping_->setAccessibleName(QStringLiteral("ReplayGain album grouping"));
+    replaygain_grouping_->addItem(QStringLiteral("Album by release"));
+    replaygain_grouping_->addItem(QStringLiteral("Selection as one album"));
+    replaygain_grouping_->addItem(QStringLiteral("Track gains only"));
+    replaygain_grouping_->addItem(QStringLiteral("Group by expression"));
+    replaygain_row->addWidget(replaygain_grouping_, 1);
+    side_layout->addLayout(replaygain_row);
+    replaygain_expression_ = new QLineEdit(side_panel);
+    replaygain_expression_->setObjectName(QStringLiteral("bench-replaygain-expression"));
+    replaygain_expression_->setPlaceholderText(QStringLiteral("tkfmt-1, e.g. %album%"));
+    replaygain_expression_->hide();
+    side_layout->addWidget(replaygain_expression_);
     output_profile_status_ = new QLabel(QStringLiteral("Loading output profiles…"), side_panel);
     output_profile_status_->setObjectName(QStringLiteral("bench-output-profile-status"));
     output_profile_status_->setWordWrap(true);
@@ -482,6 +505,9 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
         if (link == QStringLiteral("undo-automatic") && grid_model_ != nullptr) {
             static_cast<void>(grid_model_->undo());
         }
+        if (link == QStringLiteral("cancel-replaygain")) {
+            replaygain_cancellation_.request_cancellation();
+        }
     });
     connect(redo_button_, &QPushButton::clicked, this, [this] {
         if (grid_model_ != nullptr) {
@@ -505,6 +531,12 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
             &MetadataPropertiesDialog::startIdentify);
     connect(&automatic_watcher_, &QFutureWatcherBase::finished, this,
             &MetadataPropertiesDialog::finishAutomaticStage);
+    connect(&replaygain_watcher_, &QFutureWatcherBase::finished, this,
+            &MetadataPropertiesDialog::finishReplayGainScan);
+    connect(replaygain_scan_button_, &QPushButton::clicked, this,
+            &MetadataPropertiesDialog::startReplayGainScan);
+    connect(replaygain_grouping_, &QComboBox::currentIndexChanged, this,
+            [this](const int index) { replaygain_expression_->setVisible(index == 3); });
     connect(&proposal_watcher_, &QFutureWatcherBase::finished, this,
             &MetadataPropertiesDialog::finishProposals);
     connect(transform_button_, &QPushButton::clicked, this, [this] {
@@ -683,6 +715,10 @@ MetadataPropertiesDialog::~MetadataPropertiesDialog() {
     }
     if (automatic_stage_running_) {
         automatic_watcher_.waitForFinished();
+    }
+    replaygain_cancellation_.request_cancellation();
+    if (replaygain_running_) {
+        replaygain_watcher_.waitForFinished();
     }
 }
 
@@ -1256,6 +1292,9 @@ void MetadataPropertiesDialog::updateTransformationButton() {
         identify_button_->setEnabled(enabled && !proposal_running_ &&
                                      static_cast<bool>(musicbrainz_.fetch) &&
                                      identify_dialog_ == nullptr);
+    }
+    if (replaygain_scan_button_ != nullptr) {
+        replaygain_scan_button_->setEnabled(enabled && !proposal_running_ && !replaygain_running_);
     }
     if (transformation_list_ != nullptr) {
         transformation_list_->setEnabled(!transformation_catalog_loading_ &&
@@ -2222,6 +2261,238 @@ void MetadataPropertiesDialog::openIdentifyDialog(
     updateTransformationButton();
 }
 
+// The M7 scan (ADR-0100): measure the selection on the bounded parallel
+// graph and stage REPLAYGAIN_* values as ordinary colored draft edits — the
+// grid is the write, exactly like every provider.
+void MetadataPropertiesDialog::startReplayGainScan() {
+    if (grid_model_ == nullptr || replaygain_running_ || proposal_running_ || apply_running_ ||
+        write_plan_running_) {
+        return;
+    }
+    auto items = selectedItemIndexes();
+    if (items.empty()) {
+        items.reserve(grid_model_->selection().item_count());
+        for (std::size_t item_index = 0U; item_index < grid_model_->selection().item_count();
+             ++item_index) {
+            items.push_back(item_index);
+        }
+    }
+    if (items.empty()) {
+        return;
+    }
+    loudness::LoudnessGrouping grouping;
+    switch (replaygain_grouping_->currentIndex()) {
+    case 0:
+        grouping.mode = loudness::LoudnessGroupingMode::release;
+        break;
+    case 1:
+        grouping.mode = loudness::LoudnessGroupingMode::selection_album;
+        break;
+    case 2:
+        grouping.mode = loudness::LoudnessGroupingMode::track;
+        break;
+    default:
+        grouping.mode = loudness::LoudnessGroupingMode::format_expression;
+        grouping.expression = replaygain_expression_->text().trimmed().toStdString();
+        if (grouping.expression.empty()) {
+            read_only_->setText(
+                QStringLiteral("Enter a tkfmt-1 grouping expression, e.g. %album%"));
+            return;
+        }
+        break;
+    }
+
+    replaygain_running_ = true;
+    replaygain_cancellation_ = core::CancellationSource{};
+    const auto cancellation = replaygain_cancellation_.token();
+    updateTransformationButton();
+    auto completed = std::make_shared<std::atomic_size_t>(0U);
+    const auto total = items.size();
+    auto* progress_timer = new QTimer(this);
+    progress_timer->setInterval(100);
+    connect(progress_timer, &QTimer::timeout, this, [this, completed, total] {
+        read_only_->setTextFormat(Qt::RichText);
+        read_only_->setText(QStringLiteral("Measuring loudness · %1 of %2 files · "
+                                           "<a href=\"cancel-replaygain\">Stop</a>")
+                                .arg(completed->load())
+                                .arg(total));
+    });
+    connect(&replaygain_watcher_, &QFutureWatcherBase::finished, progress_timer,
+            &QObject::deleteLater);
+    progress_timer->start();
+    read_only_->setTextFormat(Qt::RichText);
+    read_only_->setText(QStringLiteral("Measuring loudness · 0 of %1 files · "
+                                       "<a href=\"cancel-replaygain\">Stop</a>")
+                            .arg(total));
+
+    auto selection = grid_model_->sharedSelection();
+    auto draft = grid_model_->patches();
+    replaygain_watcher_.setFuture(QtConcurrent::run([selection = std::move(selection),
+                                                     draft = std::move(draft),
+                                                     items = std::move(items), grouping, completed,
+                                                     cancellation] {
+        auto outcome = std::make_shared<ReplayGainScanOutcome>();
+        auto documents =
+            metadata::materialize_metadata_draft(*selection, draft, items, cancellation);
+        if (!documents) {
+            outcome->proposals = std::unexpected(std::move(documents.error()));
+            return outcome;
+        }
+        std::vector<const metadata::MetadataDocument*> document_views;
+        document_views.reserve(documents->size());
+        for (const auto& document : *documents) {
+            document_views.push_back(&document);
+        }
+        auto keys = loudness::assign_loudness_groups(grouping, document_views, cancellation);
+        if (!keys) {
+            outcome->proposals = std::unexpected(std::move(keys.error()));
+            return outcome;
+        }
+        std::vector<loudness::LoudnessScanItem> scan_items;
+        scan_items.reserve(items.size());
+        for (std::size_t position = 0U; position < items.size(); ++position) {
+            scan_items.push_back(loudness::LoudnessScanItem{
+                .item_index = items[position],
+                .raw_path = selection->source(items[position]).raw_path,
+                .selection = {},
+                .range = {},
+                .album_key = (*keys)[position],
+            });
+        }
+        const auto hardware = std::thread::hardware_concurrency();
+        const auto parallelism =
+            std::min<std::size_t>(loudness::maximum_scan_parallelism,
+                                  std::max<std::size_t>(1U, hardware == 0U ? 2U : hardware / 2U));
+        auto scan = loudness::scan_loudness(
+            scan_items, {.measure_true_peak = true, .maximum_parallelism = parallelism},
+            [completed](const loudness::LoudnessScanProgress& update) {
+                completed->store(update.completed_items);
+            },
+            cancellation);
+        if (!scan) {
+            outcome->proposals = std::unexpected(std::move(scan.error()));
+            return outcome;
+        }
+
+        // ReplayGain values are machine-readable: always the C locale's
+        // decimal point, never the user locale's comma.
+        const auto fixed_text = [](const double value, const int precision) {
+            std::array<char, 32> buffer{};
+            const auto ends = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value,
+                                            std::chars_format::fixed, precision);
+            return std::string{buffer.data(), ends.ptr};
+        };
+        const auto decibel_text = [fixed_text](const double value) {
+            return fixed_text(value, 2) + " dB";
+        };
+        const auto peak_text = [fixed_text](const double value) { return fixed_text(value, 6); };
+        const auto lufs_text = [fixed_text](const double value) { return fixed_text(value, 2); };
+        std::map<std::string, const loudness::LoudnessAlbumScan*> albums;
+        for (const auto& album : scan->albums) {
+            albums.emplace(album.album_key, &album);
+            if (album.issue) {
+                outcome->problems.push_back(PreparationFeedbackRow{
+                    .file = QStringLiteral("Album group"),
+                    .detail = QStringLiteral("Incomplete programme · %1")
+                                  .arg(display_utf8(album.issue->message)),
+                });
+            }
+        }
+        metadata::MetadataProposalSet proposals{
+            .provider_name = "ReplayGain",
+            .provider_detail = "EBU R128 scan",
+            .items = {},
+        };
+        const auto propose = [](metadata::MetadataProposalItem& item, std::string field,
+                                std::string value, std::string rationale) {
+            item.fields.push_back(metadata::ProposedFieldValues{
+                .canonical_field = metadata::canonicalize_field_name(field),
+                .display_field = std::move(field),
+                .match_mode = metadata::MetadataFieldMatchMode::logical,
+                .values = {std::move(value)},
+                .confidence = 1.0,
+                .rationale = std::move(rationale),
+            });
+        };
+        for (std::size_t position = 0U; position < scan->tracks.size(); ++position) {
+            const auto& track = scan->tracks[position];
+            if (track.state != loudness::LoudnessScanState::analyzed || !track.loudness) {
+                if (track.issue) {
+                    outcome->problems.push_back(PreparationFeedbackRow{
+                        .file = QString::fromStdString(core::escape_raw_path(track.raw_path)),
+                        .detail = display_utf8(track.issue->message),
+                    });
+                }
+                continue;
+            }
+            if (!track.loudness->measurable()) {
+                outcome->problems.push_back(PreparationFeedbackRow{
+                    .file = QString::fromStdString(core::escape_raw_path(track.raw_path)),
+                    .detail = QStringLiteral(
+                        "Too short for gated loudness (under 400 ms); no gain staged"),
+                });
+                continue;
+            }
+            metadata::MetadataProposalItem item{
+                .item_index = track.item_index,
+                .fields = {},
+                .artwork = {},
+            };
+            std::string rationale = "Measured ";
+            rationale += lufs_text(track.loudness->integrated_lufs);
+            rationale += " LUFS integrated (EBU R128)";
+            propose(item, "REPLAYGAIN_TRACK_GAIN", decibel_text(track.loudness->track_gain_db()),
+                    rationale);
+            propose(item, "REPLAYGAIN_TRACK_PEAK", peak_text(track.loudness->sample_peak),
+                    rationale);
+            const auto& key = scan_items[position].album_key;
+            if (key) {
+                const auto album = albums.find(*key);
+                if (album != albums.end() && album->second->integrated_lufs) {
+                    std::string album_rationale = "Album programme measured ";
+                    album_rationale += lufs_text(*album->second->integrated_lufs);
+                    album_rationale += " LUFS integrated (EBU R128)";
+                    propose(item, "REPLAYGAIN_ALBUM_GAIN",
+                            decibel_text(*album->second->album_gain_db()), album_rationale);
+                    propose(item, "REPLAYGAIN_ALBUM_PEAK", peak_text(album->second->sample_peak),
+                            album_rationale);
+                }
+            }
+            proposals.items.push_back(std::move(item));
+        }
+        outcome->proposals = std::move(proposals);
+        return outcome;
+    }));
+}
+
+void MetadataPropertiesDialog::finishReplayGainScan() {
+    replaygain_running_ = false;
+    updateTransformationButton();
+    const auto outcome = replaygain_watcher_.result();
+    read_only_->setTextFormat(Qt::PlainText);
+    if (!outcome || !outcome->proposals) {
+        const auto message = outcome ? display_utf8(outcome->proposals.error().message)
+                                     : QStringLiteral("The loudness scan returned no result");
+        read_only_->setText(QStringLiteral("No ReplayGain values staged · %1").arg(message));
+        return;
+    }
+    if (!outcome->problems.empty()) {
+        showPreparationFeedback(
+            QStringLiteral("ReplayGain scan problems"),
+            QStringLiteral("%1 %2 measured no usable loudness; every other file is staged.")
+                .arg(outcome->problems.size())
+                .arg(pluralized(outcome->problems.size(), QStringLiteral("file"),
+                                QStringLiteral("files"))),
+            std::vector<PreparationFeedbackRow>{outcome->problems});
+    }
+    if (outcome->proposals->items.empty()) {
+        read_only_->setText(
+            QStringLiteral("No ReplayGain values staged · nothing measurable in the selection"));
+        return;
+    }
+    applyMusicBrainzProposals(std::move(*outcome->proposals));
+}
+
 void MetadataPropertiesDialog::applyMusicBrainzProposals(metadata::MetadataProposalSet proposals) {
     if (grid_model_ == nullptr || proposal_running_) {
         return;
@@ -2244,7 +2515,7 @@ void MetadataPropertiesDialog::startWritePlan() {
         .save_tags = save_tags_check_->isChecked(),
         .rename_files = rename_files_check_->isChecked(),
         .move_files = move_files_check_->isChecked(),
-        .replaygain = replaygain_check_->isChecked(),
+        .replaygain = false,
     };
     const auto has_path_operation =
         operation_selection.rename_files || operation_selection.move_files;

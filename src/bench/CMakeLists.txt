@@ -45,7 +45,7 @@ add_library(Trackknife::BenchUi ALIAS trackknife_bench_ui)
 target_link_libraries(
     trackknife_bench_ui
     PUBLIC Qt6::Widgets Trackknife::Core Trackknife::UiCommon Trackknife::Persistence
-           Trackknife::Formats Trackknife::Metadata Trackknife::MusicBrainz
+           Trackknife::Formats Trackknife::Loudness Trackknife::Metadata Trackknife::MusicBrainz
            Trackknife::Operations
            trackknife_project_options
     PRIVATE Trackknife::Audio Trackknife::MpdUi Trackknife::Ui Qt6::Concurrent Qt6::Network
