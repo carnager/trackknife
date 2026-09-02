@@ -200,6 +200,10 @@ class MetadataPropertiesDialog final : public QDialog {
     [[nodiscard]] std::optional<AutomaticChainPlan> combinedAutomaticChain() const;
     void startIdentify();
     void startReplayGainScan();
+    [[nodiscard]] bool
+    stageTransformationPreservingSelection(const metadata::MetadataTransformationPreview& preview,
+                                           const QStringList& step_sources = {});
+    void showStickyStatus(const QString& text);
     void finishReplayGainScan();
     void openIdentifyDialog(std::vector<musicbrainz::LocalTrackDescriptor> descriptors,
                             std::vector<QString> local_paths, std::vector<std::size_t> items,
@@ -356,7 +360,7 @@ class MetadataPropertiesDialog final : public QDialog {
     bool automatic_stage_running_{false};
     bool replaygain_running_{false};
     QStringList automatic_step_sources_;
-    QString automatic_summary_;
+    QString sticky_status_;
     bool apply_running_{false};
     bool artwork_operation_running_{false};
     bool applying_file_paths_{false};

@@ -2906,6 +2906,9 @@ void BenchMainWindowTest::replayGainScanStagesMeasuredGainsAsDrafts() {
         grid_model->index(0, *track_gain_column).data(metadata_cell_staged_source_role).toString(),
         QStringLiteral("ReplayGain"));
 
+    // Staging inserted new columns; the file selection must survive so the
+    // fields pane keeps projecting the selection instead of going blank.
+    QCOMPARE(files->selectionModel()->selectedRows().size(), 2);
     // Closing would rightly demand draft confirmation; tear down directly.
     delete properties;
 }

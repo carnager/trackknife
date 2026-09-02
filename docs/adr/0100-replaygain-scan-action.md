@@ -52,3 +52,15 @@ visible colored drafts, never as a hidden write.
   ordinary write-plan revalidation at apply time.
 - Sidecar fallback for read-only formats and result interop tests
   remain the open M7 work.
+
+## Addendum (2026-09-02): staging keeps the selection
+
+Field-extending staging inserts grid columns, and Qt then treats the
+previously selected rows as no longer fully selected — the fields pane
+projected an empty selection and the dialog looked blank until reopened.
+Every staging path (providers, automatic scripts, the script editor) now
+routes through one wrapper that re-selects the same rows whenever staging
+grew the column set. The footer's sticky-status mechanism generalized
+alongside: staged-result and unavailable-Apply messages survive the
+asynchronous selection-projection refreshes instead of being clobbered,
+clearing on the next real draft change like the script summary.

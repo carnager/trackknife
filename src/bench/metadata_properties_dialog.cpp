@@ -1042,7 +1042,7 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
             [this] { updateFieldButtons(); });
     connect(grid_model_, &MetadataGridModel::draftStateChanged, this,
             [this](const int patch_count, const bool can_undo, const bool can_redo) {
-                automatic_summary_.clear();
+                sticky_status_.clear();
                 invalidateWritePlan();
                 updateDraftState(patch_count, can_undo, can_redo);
                 scheduleOutputLayoutExample();
@@ -1230,9 +1230,10 @@ void MetadataPropertiesDialog::updateDraftState(const int patch_count, const boo
                                              .arg(patch_count)
                                              .arg(patch_count == 1 ? QStringLiteral("change")
                                                                    : QStringLiteral("changes")));
-    if (!automatic_summary_.isEmpty()) {
-        read_only_->setTextFormat(Qt::RichText);
-        read_only_->setText(automatic_summary_);
+    if (!sticky_status_.isEmpty()) {
+        read_only_->setTextFormat(
+            sticky_status_.contains(QStringLiteral("<a href")) ? Qt::RichText : Qt::PlainText);
+        read_only_->setText(sticky_status_);
     } else {
         read_only_->setTextFormat(Qt::PlainText);
         read_only_->setText(
@@ -2031,13 +2032,13 @@ void MetadataPropertiesDialog::finishProposals() {
         read_only_->setText(QStringLiteral("No suggestions · the selected files already agree"));
         return;
     }
-    if (grid_model_ == nullptr ||
-        !grid_model_->stageTransformation(preview, QStringList{display_utf8(preview.chain.name)})) {
+    if (grid_model_ == nullptr || !stageTransformationPreservingSelection(
+                                      preview, QStringList{display_utf8(preview.chain.name)})) {
         return;
     }
     loaded_field_count_ = grid_model_->selection().field_count();
     updateSelectionProjection();
-    read_only_->setText(
+    showStickyStatus(
         QStringLiteral("Staged %1 %2 across %3 %4 from %5 · review the colored values, "
                        "then Apply")
             .arg(preview.cells.size())
@@ -2099,7 +2100,7 @@ void MetadataPropertiesDialog::finishAutomaticStage() {
         return;
     }
     if (grid_model_ == nullptr ||
-        !grid_model_->stageTransformation(preview, automatic_step_sources_)) {
+        !stageTransformationPreservingSelection(preview, automatic_step_sources_)) {
         return;
     }
     loaded_field_count_ = grid_model_->selection().field_count();
@@ -2117,16 +2118,14 @@ void MetadataPropertiesDialog::finishAutomaticStage() {
     }
     const auto source_name =
         contributing.size() == 1 ? contributing.constFirst() : QStringLiteral("Automatic scripts");
-    automatic_summary_ =
+    showStickyStatus(
         QStringLiteral("%1 staged %2 %3 across %4 %5 · <a href=\"undo-automatic\">Undo</a>")
             .arg(source_name.toHtmlEscaped())
             .arg(preview.cells.size())
             .arg(pluralized(preview.cells.size(), QStringLiteral("edit"), QStringLiteral("edits")))
             .arg(preview.changed_item_count)
             .arg(pluralized(preview.changed_item_count, QStringLiteral("file"),
-                            QStringLiteral("files")));
-    read_only_->setTextFormat(Qt::RichText);
-    read_only_->setText(automatic_summary_);
+                            QStringLiteral("files"))));
 }
 
 std::optional<MetadataPropertiesDialog::AutomaticChainPlan>
@@ -2264,6 +2263,49 @@ void MetadataPropertiesDialog::openIdentifyDialog(
 // The M7 scan (ADR-0100): measure the selection on the bounded parallel
 // graph and stage REPLAYGAIN_* values as ordinary colored draft edits — the
 // grid is the write, exactly like every provider.
+// Staging that introduces new fields inserts grid columns, and inserted
+// columns are not part of the existing row selection — Qt then reports the
+// rows as no longer fully selected and the fields pane projects an empty
+// selection. Re-selecting the same rows keeps the view truthful.
+// Event outcomes (staged results, unavailable Apply) must survive the
+// asynchronous selection-projection refreshes that rewrite the footer;
+// they stay until the next real draft change clears them.
+void MetadataPropertiesDialog::showStickyStatus(const QString& text) {
+    sticky_status_ = text;
+    read_only_->setTextFormat(text.contains(QStringLiteral("<a href")) ? Qt::RichText
+                                                                       : Qt::PlainText);
+    read_only_->setText(text);
+}
+
+bool MetadataPropertiesDialog::stageTransformationPreservingSelection(
+    const metadata::MetadataTransformationPreview& preview, const QStringList& step_sources) {
+    if (grid_model_ == nullptr) {
+        return false;
+    }
+    QList<int> selected_rows;
+    if (file_list_ != nullptr && file_list_->selectionModel() != nullptr) {
+        const auto rows = file_list_->selectionModel()->selectedRows();
+        selected_rows.reserve(rows.size());
+        for (const auto& row : rows) {
+            selected_rows.push_back(row.row());
+        }
+    }
+    const auto columns_before = grid_model_->columnCount();
+    if (!grid_model_->stageTransformation(preview, step_sources)) {
+        return false;
+    }
+    if (grid_model_->columnCount() != columns_before && file_list_ != nullptr &&
+        file_list_->selectionModel() != nullptr && !selected_rows.isEmpty()) {
+        QItemSelection restored;
+        const auto last_column = grid_model_->columnCount() - 1;
+        for (const auto row : selected_rows) {
+            restored.select(grid_model_->index(row, 0), grid_model_->index(row, last_column));
+        }
+        file_list_->selectionModel()->select(restored, QItemSelectionModel::ClearAndSelect);
+    }
+    return true;
+}
+
 void MetadataPropertiesDialog::startReplayGainScan() {
     if (grid_model_ == nullptr || replaygain_running_ || proposal_running_ || apply_running_ ||
         write_plan_running_) {
@@ -2786,12 +2828,12 @@ void MetadataPropertiesDialog::startApply(std::shared_ptr<const operations::Prep
 void MetadataPropertiesDialog::startMetadataApply(
     std::shared_ptr<const operations::PreparationPlan> plan) {
     if (!plan->metadata || !plan_applier_factory_) {
-        read_only_->setText(QStringLiteral("Metadata Apply is unavailable"));
+        showStickyStatus(QStringLiteral("Metadata Apply is unavailable"));
         return;
     }
     auto applier = plan_applier_factory_();
     if (!applier) {
-        read_only_->setText(QStringLiteral("Metadata Apply is unavailable"));
+        showStickyStatus(QStringLiteral("Metadata Apply is unavailable"));
         return;
     }
     apply_cancellation_.request_cancellation();
@@ -2836,12 +2878,12 @@ void MetadataPropertiesDialog::startMetadataApply(
 void MetadataPropertiesDialog::startFileApply(
     std::shared_ptr<const operations::PreparationPlan> plan) {
     if (!plan->path_preflight || !file_plan_applier_factory_) {
-        read_only_->setText(QStringLiteral("File publication Apply is unavailable"));
+        showStickyStatus(QStringLiteral("File publication Apply is unavailable"));
         return;
     }
     auto applier = file_plan_applier_factory_();
     if (!applier) {
-        read_only_->setText(QStringLiteral("File publication Apply is unavailable"));
+        showStickyStatus(QStringLiteral("File publication Apply is unavailable"));
         return;
     }
     apply_cancellation_.request_cancellation();
@@ -3286,7 +3328,7 @@ void MetadataPropertiesDialog::promptTransformation(
     auto* dialog = createMetadataTransformationDialog(
         grid_model_->sharedSelection(), grid_model_->patches(), std::move(items), std::move(labels),
         [this](const metadata::MetadataTransformationPreview& preview) {
-            if (grid_model_ == nullptr || !grid_model_->stageTransformation(preview)) {
+            if (grid_model_ == nullptr || !stageTransformationPreservingSelection(preview)) {
                 return false;
             }
             loaded_field_count_ = grid_model_->selection().field_count();
