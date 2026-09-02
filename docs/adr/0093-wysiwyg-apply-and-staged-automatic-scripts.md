@@ -55,3 +55,20 @@ without that limitation.
 - Scripts-panel copy now describes staging ("stage their edits as
   colored drafts when files load and when suggestions arrive") instead
   of apply-time execution.
+
+## Addendum (2026-09-02): provenance marks and the undo summary
+
+Staging everything into one draft made script edits and hand edits
+indistinguishable. Two additions restore the three-layer reading without
+any workflow gate:
+
+- Script- and provider-staged cells render in italics and their tooltip
+  names the source ("Staged by MPD Library · step 11"; MusicBrainz and
+  Suggest edits carry the provider name). The label lives beside the
+  exact patch that staging stored and retires silently the moment a
+  hand edit or undo changes the cell — redo revives it. Hand edits stay
+  upright and unattributed.
+- After automatic staging the footer shows a sticky compact summary —
+  "MPD Library staged 12 edits across 9 files · Undo" — whose Undo link
+  rejects the transaction with one click. The summary survives
+  projection refreshes and disappears on the next real draft change.

@@ -27,6 +27,7 @@ inline constexpr int metadata_cell_provenance_role = Qt::UserRole + 203;
 inline constexpr int metadata_cell_staged_role = Qt::UserRole + 204;
 inline constexpr int metadata_cell_baseline_values_role = Qt::UserRole + 205;
 inline constexpr int metadata_cell_patch_kind_role = Qt::UserRole + 206;
+inline constexpr int metadata_cell_staged_source_role = Qt::UserRole + 207;
 
 struct MetadataFieldInsertion {
     std::size_t field_index{0U};
@@ -71,7 +72,8 @@ class MetadataGridModel final : public QAbstractTableModel {
                                     const std::vector<std::size_t>& field_indexes);
     [[nodiscard]] bool revertFields(std::span<const std::size_t> item_indexes,
                                     const std::vector<std::size_t>& field_indexes);
-    [[nodiscard]] bool stageTransformation(const metadata::MetadataTransformationPreview& preview);
+    [[nodiscard]] bool stageTransformation(const metadata::MetadataTransformationPreview& preview,
+                                           const QStringList& step_sources = {});
 
   signals:
     void draftStateChanged(int patch_count, bool can_undo, bool can_redo);
@@ -110,8 +112,15 @@ class MetadataGridModel final : public QAbstractTableModel {
     void notifyMutations(const std::vector<DraftMutation>& mutations);
     void pushHistory(DraftTransaction transaction);
 
+    [[nodiscard]] QString stagedSourceLabel(std::size_t item_index, std::size_t field_index) const;
+
     std::shared_ptr<const metadata::StagedMetadataSelection> selection_;
     metadata::StagedMetadataPatchSet patches_;
+    // The script or provider that staged each cell, valid only while the
+    // current patch still equals the one that staging stored — a hand edit
+    // or undo silently retires the label, redo revives it.
+    std::map<std::pair<std::size_t, std::size_t>, std::pair<metadata::StagedMetadataPatch, QString>>
+        staged_sources_;
     QStringList track_labels_;
     std::vector<DraftTransaction> history_;
     std::size_t history_cursor_{0U};

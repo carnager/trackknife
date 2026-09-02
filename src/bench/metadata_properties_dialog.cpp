@@ -478,6 +478,11 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
             static_cast<void>(grid_model_->undo());
         }
     });
+    connect(read_only_, &QLabel::linkActivated, this, [this](const QString& link) {
+        if (link == QStringLiteral("undo-automatic") && grid_model_ != nullptr) {
+            static_cast<void>(grid_model_->undo());
+        }
+    });
     connect(redo_button_, &QPushButton::clicked, this, [this] {
         if (grid_model_ != nullptr) {
             static_cast<void>(grid_model_->redo());
@@ -966,6 +971,7 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
             [this] { updateFieldButtons(); });
     connect(grid_model_, &MetadataGridModel::draftStateChanged, this,
             [this](const int patch_count, const bool can_undo, const bool can_redo) {
+                automatic_summary_.clear();
                 invalidateWritePlan();
                 updateDraftState(patch_count, can_undo, can_redo);
                 scheduleOutputLayoutExample();
@@ -1199,14 +1205,20 @@ void MetadataPropertiesDialog::updateDraftState(const int patch_count, const boo
                                              .arg(patch_count)
                                              .arg(patch_count == 1 ? QStringLiteral("change")
                                                                    : QStringLiteral("changes")));
-    read_only_->setText(
-        save_tags_check_ != nullptr && !save_tags_check_->isChecked()
-            ? QStringLiteral(
-                  "Save tags is off · tag edits stay in the draft and Rename/Move uses the "
-                  "file's current tags")
-            : (patch_count == 0
-                   ? QStringLiteral("No pending edits")
-                   : QStringLiteral("Draft only · nothing is written until you apply")));
+    if (!automatic_summary_.isEmpty()) {
+        read_only_->setTextFormat(Qt::RichText);
+        read_only_->setText(automatic_summary_);
+    } else {
+        read_only_->setTextFormat(Qt::PlainText);
+        read_only_->setText(
+            save_tags_check_ != nullptr && !save_tags_check_->isChecked()
+                ? QStringLiteral(
+                      "Save tags is off · tag edits stay in the draft and Rename/Move uses the "
+                      "file's current tags")
+                : (patch_count == 0
+                       ? QStringLiteral("No pending edits")
+                       : QStringLiteral("Draft only · nothing is written until you apply")));
+    }
     undo_button_->setEnabled(can_undo);
     redo_button_->setEnabled(can_redo);
     discard_button_->setEnabled(patch_count > 0);
@@ -1991,7 +2003,8 @@ void MetadataPropertiesDialog::finishProposals() {
         read_only_->setText(QStringLiteral("No suggestions · the selected files already agree"));
         return;
     }
-    if (grid_model_ == nullptr || !grid_model_->stageTransformation(preview)) {
+    if (grid_model_ == nullptr ||
+        !grid_model_->stageTransformation(preview, QStringList{display_utf8(preview.chain.name)})) {
         return;
     }
     loaded_field_count_ = grid_model_->selection().field_count();
@@ -2019,9 +2032,10 @@ void MetadataPropertiesDialog::stageAutomaticTransformations() {
         return;
     }
     auto combined = combinedAutomaticChain();
-    if (!combined || combined->actions.empty()) {
+    if (!combined || combined->chain.actions.empty()) {
         return;
     }
+    automatic_step_sources_ = combined->step_sources;
     std::vector<std::size_t> items;
     items.reserve(grid_model_->selection().item_count());
     for (std::size_t item_index = 0U; item_index < grid_model_->selection().item_count();
@@ -2034,9 +2048,9 @@ void MetadataPropertiesDialog::stageAutomaticTransformations() {
     automatic_stage_running_ = true;
     auto selection = grid_model_->sharedSelection();
     auto draft = grid_model_->patches();
-    automatic_watcher_.setFuture(
-        QtConcurrent::run([selection = std::move(selection), draft = std::move(draft),
-                           items = std::move(items), combined = std::move(*combined)]() mutable {
+    automatic_watcher_.setFuture(QtConcurrent::run(
+        [selection = std::move(selection), draft = std::move(draft), items = std::move(items),
+         combined = std::move(combined->chain)]() mutable {
             using PreviewResult = core::Result<metadata::MetadataTransformationPreview>;
             return std::make_shared<PreviewResult>(metadata::plan_metadata_transformation(
                 *selection, draft, items, std::move(combined)));
@@ -2056,44 +2070,68 @@ void MetadataPropertiesDialog::finishAutomaticStage() {
     if (preview.cells.empty()) {
         return;
     }
-    if (grid_model_ == nullptr || !grid_model_->stageTransformation(preview)) {
+    if (grid_model_ == nullptr ||
+        !grid_model_->stageTransformation(preview, automatic_step_sources_)) {
         return;
     }
     loaded_field_count_ = grid_model_->selection().field_count();
     updateSelectionProjection();
-    read_only_->setText(
-        QStringLiteral("Automatic scripts staged %1 %2 across %3 %4 · review the colored "
-                       "values, then Apply")
+    QStringList contributing;
+    for (const auto& cell : preview.cells) {
+        const auto step = static_cast<qsizetype>(cell.last_action_index);
+        if (step < automatic_step_sources_.size()) {
+            const auto name =
+                automatic_step_sources_.at(step).section(QStringLiteral(" · step "), 0, 0);
+            if (!contributing.contains(name)) {
+                contributing.push_back(name);
+            }
+        }
+    }
+    const auto source_name =
+        contributing.size() == 1 ? contributing.constFirst() : QStringLiteral("Automatic scripts");
+    automatic_summary_ =
+        QStringLiteral("%1 staged %2 %3 across %4 %5 · <a href=\"undo-automatic\">Undo</a>")
+            .arg(source_name.toHtmlEscaped())
             .arg(preview.cells.size())
             .arg(pluralized(preview.cells.size(), QStringLiteral("edit"), QStringLiteral("edits")))
             .arg(preview.changed_item_count)
             .arg(pluralized(preview.changed_item_count, QStringLiteral("file"),
-                            QStringLiteral("files"))));
+                            QStringLiteral("files")));
+    read_only_->setTextFormat(Qt::RichText);
+    read_only_->setText(automatic_summary_);
 }
 
-std::optional<metadata::MetadataTransformationChain>
+std::optional<MetadataPropertiesDialog::AutomaticChainPlan>
 MetadataPropertiesDialog::combinedAutomaticChain() const {
-    metadata::MetadataTransformationChain combined{
-        .schema_version = 1U,
-        .name = "Automatic saved scripts",
-        .actions = {},
+    AutomaticChainPlan plan{
+        .chain =
+            metadata::MetadataTransformationChain{
+                .schema_version = 1U,
+                .name = "Automatic saved scripts",
+                .actions = {},
+            },
+        .step_sources = {},
     };
     const metadata::MetadataTransformationLimits limits;
     for (const auto& saved : transformation_catalog_) {
         if (!saved.automatic) {
             continue;
         }
-        if (saved.chain.actions.size() > limits.actions - combined.actions.size()) {
+        if (saved.chain.actions.size() > limits.actions - plan.chain.actions.size()) {
             read_only_->setText(
                 QStringLiteral("Automatic scripts exceed the %1-step combined limit; disable or "
                                "shorten a script.")
                     .arg(limits.actions));
             return std::nullopt;
         }
-        combined.actions.insert(combined.actions.end(), saved.chain.actions.begin(),
-                                saved.chain.actions.end());
+        const auto name = display_utf8(saved.chain.name);
+        for (std::size_t step = 0U; step < saved.chain.actions.size(); ++step) {
+            plan.step_sources.push_back(QStringLiteral("%1 · step %2").arg(name).arg(step + 1U));
+        }
+        plan.chain.actions.insert(plan.chain.actions.end(), saved.chain.actions.begin(),
+                                  saved.chain.actions.end());
     }
-    return combined;
+    return plan;
 }
 
 namespace {

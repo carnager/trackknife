@@ -195,8 +195,11 @@ class MetadataPropertiesDialog final : public QDialog {
     void finishProposals();
     void stageAutomaticTransformations();
     void finishAutomaticStage();
-    [[nodiscard]] std::optional<metadata::MetadataTransformationChain>
-    combinedAutomaticChain() const;
+    struct AutomaticChainPlan {
+        metadata::MetadataTransformationChain chain;
+        QStringList step_sources;
+    };
+    [[nodiscard]] std::optional<AutomaticChainPlan> combinedAutomaticChain() const;
     void startIdentify();
     void openIdentifyDialog(std::vector<musicbrainz::LocalTrackDescriptor> descriptors,
                             std::vector<std::size_t> items, QString initial_artist,
@@ -343,6 +346,8 @@ class MetadataPropertiesDialog final : public QDialog {
     bool write_plan_running_{false};
     bool proposal_running_{false};
     bool automatic_stage_running_{false};
+    QStringList automatic_step_sources_;
+    QString automatic_summary_;
     bool apply_running_{false};
     bool artwork_operation_running_{false};
     bool applying_file_paths_{false};

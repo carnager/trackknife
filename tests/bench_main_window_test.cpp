@@ -2217,9 +2217,22 @@ void BenchMainWindowTest::metadataTransformationChainPreviewsAndStagesOneUndo() 
     QTRY_VERIFY(saved_chains.front().automatic);
     QTRY_VERIFY(script_status->text().contains(QStringLiteral("1 of 1 checked")));
     QTRY_COMPARE_WITH_TIMEOUT(grid_model->patches().patch_count(), std::size_t{5U}, 5'000);
-    QTRY_VERIFY(status->text().contains(QStringLiteral("Automatic scripts staged")));
+    // The sticky footer summary names the script and offers one-click undo.
+    QTRY_VERIFY(status->text().contains(QStringLiteral("staged 4 edits")));
+    QVERIFY(status->text().contains(QStringLiteral("undo-automatic")));
     QCOMPARE(grid_model->index(0, *date_column).data(metadata_cell_values_role).toStringList(),
              (QStringList{QStringLiteral("2024")}));
+    // Script edits speak in italics and name their source; the hand edit
+    // stays upright and unattributed.
+    const auto date_index = grid_model->index(0, *date_column);
+    QVERIFY(date_index.data(metadata_cell_staged_source_role)
+                .toString()
+                .contains(QStringLiteral("step")));
+    QVERIFY(date_index.data(Qt::FontRole).value<QFont>().italic());
+    QVERIFY(date_index.data(Qt::ToolTipRole).toString().contains(QStringLiteral("Staged by")));
+    const auto album_index = grid_model->index(0, *album_column);
+    QVERIFY(album_index.data(metadata_cell_staged_source_role).toString().isEmpty());
+    QVERIFY(!album_index.data(Qt::FontRole).value<QFont>().italic());
     QTRY_VERIFY(undo->isEnabled());
     QTest::mouseClick(undo, Qt::LeftButton);
     QCOMPARE(grid_model->patches().patch_count(), std::size_t{1U});
@@ -2598,6 +2611,10 @@ void BenchMainWindowTest::musicBrainzIdentifyStagesChosenVersion() {
     QTRY_VERIFY(status->text().contains(QStringLiteral("MusicBrainz")));
     QCOMPARE(fetches, 2);
     const auto album_id_column = grid_model->fieldColumn(QStringLiteral("MUSICBRAINZ_ALBUMID"));
+    QVERIFY(album_id_column.has_value());
+    QCOMPARE(
+        grid_model->index(0, *album_id_column).data(metadata_cell_staged_source_role).toString(),
+        QStringLiteral("MusicBrainz"));
     const auto date_column = grid_model->fieldColumn(QStringLiteral("Date"));
     QVERIFY(album_id_column.has_value());
     QVERIFY(date_column.has_value());
@@ -2831,6 +2848,10 @@ void BenchMainWindowTest::automaticScriptsStageOnOpen() {
         grid_model->patches().patch(0U, static_cast<std::size_t>(*totals_column) - 1U);
     QVERIFY(patch != nullptr);
     QCOMPARE(patch->kind, metadata::StagedMetadataPatchKind::remove_field);
+    const auto totals_index = grid_model->index(0, *totals_column);
+    QCOMPARE(totals_index.data(metadata_cell_staged_source_role).toString(),
+             QStringLiteral("Library cleanup · step 1"));
+    QVERIFY(totals_index.data(Qt::FontRole).value<QFont>().italic());
 
     // The staging is one ordinary undoable transaction the user can reject.
     QTRY_VERIFY(undo->isEnabled());

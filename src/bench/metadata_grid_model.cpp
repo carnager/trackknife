@@ -206,13 +206,22 @@ QVariant MetadataGridModel::data(const QModelIndex& index, const int role) const
         return values.empty() ? QStringLiteral("(empty field)")
                               : values.join(QStringLiteral("  ·  "));
     }
+    if (role == metadata_cell_staged_source_role) {
+        return projected.patch == nullptr ? QString{} : stagedSourceLabel(item_index, field_index);
+    }
     if ((role == Qt::ForegroundRole || role == Qt::FontRole) && projected.patch != nullptr) {
         const auto kind =
             projected.patch->kind == metadata::StagedMetadataPatchKind::remove_field
                 ? DraftChangeKind::removed
                 : (cell == nullptr ? DraftChangeKind::added : DraftChangeKind::changed);
-        return role == Qt::ForegroundRole ? QVariant{draft_change_brush(kind)}
-                                          : QVariant{draft_change_font(kind)};
+        if (role == Qt::ForegroundRole) {
+            return draft_change_brush(kind);
+        }
+        auto font = draft_change_font(kind);
+        // Scripted and provider edits speak in italics; hand edits stay
+        // upright.
+        font.setItalic(!stagedSourceLabel(item_index, field_index).isEmpty());
+        return font;
     }
     if (role == Qt::ForegroundRole && !projected.present) {
         return QApplication::palette().brush(QPalette::PlaceholderText);
@@ -225,8 +234,11 @@ QVariant MetadataGridModel::data(const QModelIndex& index, const int role) const
             const auto draft = projected.present
                                    ? visible_values(*projected.values).join(QLatin1Char('\n'))
                                    : QStringLiteral("remove field");
-            return QStringLiteral("Draft:\n%1\n\nOriginal:\n%2\n\nNot written to file")
-                .arg(draft, original);
+            const auto source = stagedSourceLabel(item_index, field_index);
+            const auto provenance_line =
+                source.isEmpty() ? QString{} : QStringLiteral("\nStaged by %1").arg(source);
+            return QStringLiteral("Draft:\n%1\n\nOriginal:\n%2\n%3\nNot written to file")
+                .arg(draft, original, provenance_line);
         }
         if (!projected.present) {
             return QStringLiteral("Missing on this track");
@@ -442,8 +454,8 @@ bool MetadataGridModel::revertFields(const std::span<const std::size_t> item_ind
     return applyFieldRequests(item_indexes, std::move(requests));
 }
 
-bool MetadataGridModel::stageTransformation(
-    const metadata::MetadataTransformationPreview& preview) {
+bool MetadataGridModel::stageTransformation(const metadata::MetadataTransformationPreview& preview,
+                                            const QStringList& step_sources) {
     if (preview.cells.empty() || preview.cells.size() > maximum_field_transaction_cells) {
         emit editRejected(QStringLiteral("A transformation must change between 1 and %1 cells")
                               .arg(maximum_field_transaction_cells));
@@ -564,7 +576,39 @@ bool MetadataGridModel::stageTransformation(
         };
         requests.push_back(std::move(request));
     }
-    return applyRequests(std::move(requests));
+    if (!applyRequests(std::move(requests))) {
+        return false;
+    }
+    if (!step_sources.isEmpty()) {
+        for (const auto& cell : preview.cells) {
+            const auto found = field_indexes.find(address_for(cell));
+            if (found == field_indexes.end()) {
+                continue;
+            }
+            const auto* patch = patches_.patch(cell.item_index, found->second);
+            if (patch == nullptr) {
+                continue;
+            }
+            const auto step = static_cast<qsizetype>(cell.last_action_index);
+            const auto& source =
+                step < step_sources.size() ? step_sources.at(step) : step_sources.constLast();
+            staged_sources_[{cell.item_index, found->second}] = {*patch, source};
+        }
+    }
+    return true;
+}
+
+QString MetadataGridModel::stagedSourceLabel(const std::size_t item_index,
+                                             const std::size_t field_index) const {
+    const auto found = staged_sources_.find({item_index, field_index});
+    if (found == staged_sources_.end()) {
+        return {};
+    }
+    const auto* patch = patches_.patch(item_index, field_index);
+    if (patch == nullptr || *patch != found->second.first) {
+        return {};
+    }
+    return found->second.second;
 }
 
 bool MetadataGridModel::applyFieldRequests(const std::span<const std::size_t> item_indexes,

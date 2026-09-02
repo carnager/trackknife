@@ -1119,7 +1119,10 @@ network operations that never bypass staged preview/write safety.
   results), after Suggest/Identify staging, and when a script is checked
   — idempotently, off the UI thread. The write plan is built from the
   staged draft alone, so the grid is the write and Suggest stops
-  refilling fields the user's own scripts delete.
+  refilling fields the user's own scripts delete. Script and provider
+  edits render in italics with source-naming tooltips, and a sticky
+  footer summary ("MPD Library staged 12 edits · Undo") offers
+  one-click rejection — information instead of a confirmation gate.
 
 ## M7 — Universal parallel ReplayGain
 
