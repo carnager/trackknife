@@ -9,7 +9,7 @@ The ordered delivery plan is [`../MILESTONES.md`](../MILESTONES.md).
 
 ## Current continuation point
 
-M5 is closing into M6, implementation is accepted through ADR-0096, and the persistence
+M5 is closing into M6, implementation is accepted through ADR-0097, and the persistence
 schema is version 25. In-app MusicBrainz identification is end-to-end: Properties'
 Identify… opens a no-id text-search dialog whose ranked rows are individual
 release versions, and the chosen version stages as one undoable colored draft
@@ -29,7 +29,10 @@ type/status, description fields, ISRCs, and work ids. The remaining M6
 item — AcoustID — shipped after a ground-truth evaluation (ADR-0096):
 Fingerprint files in the Identify dialog rescues selections with no usable
 tags through fpcalc and coverage-ranked release candidates. Every planned
-M6 work item is now complete. Native WavPack is now the second
+M6 work item is now complete, and M7 has opened with ADR-0097's validated
+libebur128 loudness core: ITU-conformance-pinned measurement, native-rate
+high-rate policy, programme album reduction, and honest unmeasurability
+for sub-gate material. Native WavPack is now the second
 qualified text writer (ADR-0095): the shared prepared-copy core carries the
 paired-totals rules once for every format, and the WavPack prepare proves
 audio blocks and binary APEv2 items byte-exact while rejecting ID3v1
@@ -94,9 +97,10 @@ Start metadata and file-operation work with
 [`adr/0093-wysiwyg-apply-and-staged-automatic-scripts.md`](adr/0093-wysiwyg-apply-and-staged-automatic-scripts.md),
 [`adr/0094-cover-art-archive-image-picker.md`](adr/0094-cover-art-archive-image-picker.md),
 [`adr/0095-prepared-copy-wavpack-text-writer.md`](adr/0095-prepared-copy-wavpack-text-writer.md),
-and [`adr/0096-acoustid-fingerprint-identification.md`](adr/0096-acoustid-fingerprint-identification.md).
+[`adr/0096-acoustid-fingerprint-identification.md`](adr/0096-acoustid-fingerprint-identification.md),
+and [`adr/0097-validated-loudness-analysis-core.md`](adr/0097-validated-loudness-analysis-core.md).
 The development, ASan/UBSan, TSan, and clang-tidy builds and their complete
-52/52 test suites pass at this continuation point (validated 2026-09-02).
+53/53 test suites pass at this continuation point (validated 2026-09-02).
 The TSan-only bench test shim routes Qt 6.9+'s uninstrumented
 `pthread_clockjoin_np` wait through TSan's intercepted blocking
 `pthread_join`; normal Trackbench builds are unchanged, and CTest retains the

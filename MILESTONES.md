@@ -1182,6 +1182,19 @@ quickly and correctly.
   independent players where a standard mapping exists.
 - Multicore scanning scales without starving playback, interaction, or storage.
 
+### Current progress (2026-09-02)
+
+- Done: ADR-0097 lands the validated measurement core. Trackknife::Loudness
+  wraps libebur128 over the qualified decoder's interleaved float PCM:
+  gated integrated loudness, sample peak, optional true peak, native-rate
+  analysis for high-rate material, and ReplayGain 2.0 gains at the -18 LUFS
+  target. Album loudness combines retained analyzer states as one gated
+  programme, never an average. Validation pins the ITU-R BS.1770
+  conformance points (997 Hz full-scale: -3.01 LKFS mono, ~0.00 stereo,
+  exact -6.02 dB per halving), programme-over-average album behaviour,
+  true peak >= sample peak, and honest unmeasurability for sub-400 ms
+  material through the real decoded fixture.
+
 ## M8 — Parallel converter, resampler, and organized output
 
 ### Objective

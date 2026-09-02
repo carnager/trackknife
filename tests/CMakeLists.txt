@@ -87,6 +87,17 @@ add_test(
     COMMAND trackknife_metadata_flac_writer_tests "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
 )
 
+add_executable(trackknife_loudness_analyzer_tests loudness_analyzer_test.cpp)
+target_link_libraries(
+    trackknife_loudness_analyzer_tests
+    PRIVATE Trackknife::Loudness Trackknife::Formats trackknife_project_options
+            trackknife_project_warnings
+)
+add_test(
+    NAME loudness-analyzer
+    COMMAND trackknife_loudness_analyzer_tests "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
+)
+
 add_executable(trackknife_metadata_wavpack_writer_tests metadata_wavpack_writer_test.cpp)
 target_link_libraries(
     trackknife_metadata_wavpack_writer_tests
