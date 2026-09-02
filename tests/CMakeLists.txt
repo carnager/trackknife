@@ -299,6 +299,13 @@ if(TRACKKNIFE_BUILD_UI)
     )
     add_test(NAME musicbrainz-web-service COMMAND trackknife_musicbrainz_web_service_tests)
 
+    qt_add_executable(trackknife_musicbrainz_matching_tests musicbrainz_matching_test.cpp)
+    target_link_libraries(
+        trackknife_musicbrainz_matching_tests
+        PRIVATE Trackknife::MusicBrainz trackknife_project_options trackknife_project_warnings
+    )
+    add_test(NAME musicbrainz-matching COMMAND trackknife_musicbrainz_matching_tests)
+
     qt_add_executable(trackknife_musicbrainz_client_tests musicbrainz_client_test.cpp)
     target_link_libraries(
         trackknife_musicbrainz_client_tests

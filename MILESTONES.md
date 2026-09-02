@@ -1057,6 +1057,19 @@ network operations that never bypass staged preview/write safety.
   25 adds the bounded 14-day, 10,000-entry SQLite response cache. Fixture,
   scripted-transport, and cache tests cover the whole boundary; no UI or
   matching yet.
+- Done: ADR-0089 adds deterministic, network-free release matching. Ranking
+  orders candidates by MusicBrainz score plus track-count corroboration
+  without ever filtering versions away; alignment prefers an exact
+  (disc, track-number) permutation, then plain order, then a conservative
+  greedy fallback over normalized-title similarity, duration proximity, and
+  position agreement that leaves unfittable files unmatched at zero
+  confidence. The proposal bridge converts one aligned release into
+  ADR-0086 proposals — per-track titles/artists with join-phrase credits,
+  album-level fields, per-medium totals, multi-disc numbering, and the full
+  MusicBrainz identifier set — each carrying confidence and a rationale
+  naming the exact release version, suppressed entirely below the
+  confidence floor. Only the in-app search/version-picker UI remains before
+  end-to-end identification.
 
 ## M7 — Universal parallel ReplayGain
 

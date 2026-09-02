@@ -9,7 +9,7 @@ The ordered delivery plan is [`../MILESTONES.md`](../MILESTONES.md).
 
 ## Current continuation point
 
-M5 is closing into M6, implementation is accepted through ADR-0088, and the persistence
+M5 is closing into M6, implementation is accepted through ADR-0089, and the persistence
 schema is version 25. Path-only Rename/Move now derives strictly from captured
 revision-qualified source tags, never manual drafts or automatic chains, when
 Save tags is off. The transformation editor also exposes a canonical Raw script
@@ -63,10 +63,10 @@ Start metadata and file-operation work with
 [`adr/0085-artwork-thumbnails-and-direct-apply.md`](adr/0085-artwork-thumbnails-and-direct-apply.md),
 [`adr/0086-typed-metadata-proposal-boundary.md`](adr/0086-typed-metadata-proposal-boundary.md),
 [`adr/0087-picard-paired-totals-identities.md`](adr/0087-picard-paired-totals-identities.md),
-and
-[`adr/0088-musicbrainz-web-service-client.md`](adr/0088-musicbrainz-web-service-client.md).
+[`adr/0088-musicbrainz-web-service-client.md`](adr/0088-musicbrainz-web-service-client.md),
+and [`adr/0089-release-matching-and-alignment.md`](adr/0089-release-matching-and-alignment.md).
 The development, ASan/UBSan, TSan, and clang-tidy builds and their complete
-50/50 test suites pass at this continuation point (validated 2026-09-02).
+51/51 test suites pass at this continuation point (validated 2026-09-02).
 The TSan-only bench test shim routes Qt 6.9+'s uninstrumented
 `pthread_clockjoin_np` wait through TSan's intercepted blocking
 `pthread_join`; normal Trackbench builds are unchanged, and CTest retains the
@@ -77,9 +77,10 @@ their real happens-before edges live inside the intentionally uninstrumented
 Qt shared library; the workers and all application payloads remain
 instrumented.
 
-The next implementation slice builds M6 release matching over the ADR-0088
-client: candidate ranking, track alignment, and the in-app version picker
-feeding the ADR-0086 proposal boundary. The WavPack writer qualification
+The next implementation slice builds the M6 in-app identification UI: a
+search surface over the ADR-0088 client presenting ADR-0089's ranked release
+versions, staging the chosen candidate through the ADR-0086 proposal
+boundary. The WavPack writer qualification
 remains the next M5 preservation-matrix slice. The exact current completion
 list and next marker live in [`../MILESTONES.md`](../MILESTONES.md).
 
