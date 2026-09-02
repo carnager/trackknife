@@ -815,6 +815,21 @@ void BenchMainWindow::showTrackContextMenu(QTableView* view, const QPoint& posit
         track_context_menu_->addAction(mpd_add_next_selection_action_);
         track_context_menu_->addAction(mpd_append_selection_action_);
         track_context_menu_->addSeparator();
+        const auto current = view->currentIndex();
+        const auto go_to_artist = current.isValid()
+                                      ? current.siblingAtColumn(0)
+                                            .data(static_cast<int>(ui::track_album_artist_role))
+                                            .toString()
+                                      : QString{};
+        const auto go_to_album =
+            current.isValid()
+                ? current.siblingAtColumn(ui::track_album_column).data(Qt::DisplayRole).toString()
+                : QString{};
+        mpd_go_to_artist_action_->setEnabled(!go_to_artist.isEmpty());
+        mpd_go_to_album_action_->setEnabled(!go_to_artist.isEmpty() && !go_to_album.isEmpty());
+        track_context_menu_->addAction(mpd_go_to_artist_action_);
+        track_context_menu_->addAction(mpd_go_to_album_action_);
+        track_context_menu_->addSeparator();
         track_context_menu_->addAction(remove_selected_action_);
         track_context_menu_->addAction(mpd_crop_selection_action_);
         refreshMpdPriorityMenu();

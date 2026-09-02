@@ -10,3 +10,7 @@ race:QtConcurrent::RunFunctionTaskBase<trackknife::qtmodels::PagedTrackModel::Pa
 # is cleared on the UI thread after the worker's emplaceResult, with the real
 # synchronization inside the Qt shared library.
 race:QtPrivate::ResultStoreBase::clear<std::vector<trackknife::bench::BenchMainWindow::ProbeOutcome*
+# Third inline template instance of the same gap: the MPD album-art fetch
+# clears its QImage future result store on the UI thread after the worker's
+# emplaceResult, synchronized inside the uninstrumented Qt library.
+race:QtPrivate::ResultStoreBase::clear<QImage

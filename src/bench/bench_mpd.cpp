@@ -441,6 +441,29 @@ void BenchMainWindow::buildMpdStatusControls() {
     mpd_add_next_selection_action_->setObjectName(QStringLiteral("action-mpd-add-next-selection"));
     connect(mpd_add_next_selection_action_, &QAction::triggered, this,
             [this] { mpd_controller_->addUris(selectedMpdQueueUris(), true); });
+    mpd_go_to_artist_action_ = new QAction(QStringLiteral("Go to artist"), this);
+    mpd_go_to_artist_action_->setObjectName(QStringLiteral("action-mpd-go-to-artist"));
+    connect(mpd_go_to_artist_action_, &QAction::triggered, this, [this] {
+        const auto index = mpd_queue_view_->currentIndex();
+        if (index.isValid()) {
+            goToMpdLibraryEntry(index.siblingAtColumn(0)
+                                    .data(static_cast<int>(ui::track_album_artist_role))
+                                    .toString(),
+                                {});
+        }
+    });
+    mpd_go_to_album_action_ = new QAction(QStringLiteral("Go to album"), this);
+    mpd_go_to_album_action_->setObjectName(QStringLiteral("action-mpd-go-to-album"));
+    connect(mpd_go_to_album_action_, &QAction::triggered, this, [this] {
+        const auto index = mpd_queue_view_->currentIndex();
+        if (index.isValid()) {
+            goToMpdLibraryEntry(
+                index.siblingAtColumn(0)
+                    .data(static_cast<int>(ui::track_album_artist_role))
+                    .toString(),
+                index.siblingAtColumn(ui::track_album_column).data(Qt::DisplayRole).toString());
+        }
+    });
     mpd_crop_selection_action_ = new QAction(QStringLiteral("Crop queue to selection"), this);
     mpd_crop_selection_action_->setObjectName(QStringLiteral("action-mpd-crop-selection"));
     connect(mpd_crop_selection_action_, &QAction::triggered, this,
@@ -1433,6 +1456,96 @@ void BenchMainWindow::refreshMpdTransport() {
     device_button_->setToolTip(
         QStringLiteral("MPD output: %1").arg(mpd_controller_->activeOutputName()));
     device_button_->setAccessibleDescription(mpd_controller_->activeOutputName());
+}
+
+// "Go to Artist/Album": reveal the queue row's artist (and optionally its
+// album) in the MPD library tree, fetching lazy levels as needed — the
+// in-app navigation Cantata offered.
+void BenchMainWindow::goToMpdLibraryEntry(const QString& artist, const QString& album) {
+    if (artist.isEmpty() || server_library_model_ == nullptr || server_library_view_ == nullptr) {
+        statusBar()->showMessage(QStringLiteral("This queue entry names no library artist"), 4'000);
+        return;
+    }
+    if (server_library_model_->rowCount() == 0) {
+        auto connections =
+            std::make_shared<std::pair<QMetaObject::Connection, QMetaObject::Connection>>();
+        const auto resume = [this, connections, artist, album] {
+            if (server_library_model_->rowCount() == 0) {
+                return;
+            }
+            disconnect(connections->first);
+            disconnect(connections->second);
+            completeMpdLibraryGoTo(artist, album);
+        };
+        connections->first =
+            connect(server_library_model_, &QAbstractItemModel::rowsInserted, this, resume);
+        connections->second =
+            connect(server_library_model_, &QAbstractItemModel::modelReset, this, resume);
+        server_library_model_->reload();
+        return;
+    }
+    completeMpdLibraryGoTo(artist, album);
+}
+
+void BenchMainWindow::completeMpdLibraryGoTo(const QString& artist, const QString& album) {
+    QModelIndex artist_index;
+    for (int row = 0; row < server_library_model_->rowCount(); ++row) {
+        const auto candidate = server_library_model_->index(row, 0);
+        if (candidate.data(ui::ServerLibraryTreeModel::QueryValueRole).toString() == artist) {
+            artist_index = candidate;
+            break;
+        }
+    }
+    if (!artist_index.isValid()) {
+        statusBar()->showMessage(
+            QStringLiteral("\u201C%1\u201D is not in the library tree").arg(artist), 4'000);
+        return;
+    }
+    if (album.isEmpty()) {
+        server_library_view_->expand(artist_index);
+        server_library_view_->setCurrentIndex(artist_index);
+        server_library_view_->scrollTo(artist_index, QAbstractItemView::PositionAtCenter);
+        return;
+    }
+    if (server_library_model_->canFetchMore(artist_index)) {
+        const QPersistentModelIndex persistent{artist_index};
+        auto connection = std::make_shared<QMetaObject::Connection>();
+        *connection =
+            connect(server_library_model_, &QAbstractItemModel::rowsInserted, this,
+                    [this, connection, persistent, artist, album](const QModelIndex& parent) {
+                        if (parent != QModelIndex{persistent}) {
+                            return;
+                        }
+                        disconnect(*connection);
+                        completeMpdLibraryGoTo(artist, album);
+                    });
+        server_library_model_->fetchMore(artist_index);
+        return;
+    }
+    server_library_view_->expand(artist_index);
+    // Album-level grouping values are definition-specific composites
+    // (release id, or album|date); match the plain album against the
+    // grouping value, its album prefix, or the displayed label.
+    for (int row = 0; row < server_library_model_->rowCount(artist_index); ++row) {
+        const auto candidate = server_library_model_->index(row, 0, artist_index);
+        const auto query_value =
+            candidate.data(ui::ServerLibraryTreeModel::QueryValueRole).toString();
+        const auto label = candidate.data(Qt::DisplayRole).toString();
+        const auto matches = query_value == album ||
+                             query_value.startsWith(album + QLatin1Char('|')) || label == album ||
+                             label.startsWith(album + QStringLiteral(" ("));
+        if (matches) {
+            server_library_view_->setCurrentIndex(candidate);
+            server_library_view_->scrollTo(candidate, QAbstractItemView::PositionAtCenter);
+            return;
+        }
+    }
+    server_library_view_->setCurrentIndex(artist_index);
+    server_library_view_->scrollTo(artist_index, QAbstractItemView::PositionAtCenter);
+    statusBar()->showMessage(
+        QStringLiteral("\u201C%1\u201D has no album \u201C%2\u201D in the library tree")
+            .arg(artist, album),
+        4'000);
 }
 
 } // namespace trackknife::bench

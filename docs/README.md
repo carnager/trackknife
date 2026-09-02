@@ -9,7 +9,7 @@ The ordered delivery plan is [`../MILESTONES.md`](../MILESTONES.md).
 
 ## Current continuation point
 
-M5 is closing into M6, implementation is accepted through ADR-0101, and the persistence
+M5 is closing into M6, implementation is accepted through ADR-0102, and the persistence
 schema is version 25. In-app MusicBrainz identification is end-to-end: Properties'
 Identify… opens a no-id text-search dialog whose ranked rows are individual
 release versions, and the chosen version stages as one undoable colored draft
@@ -107,7 +107,8 @@ Start metadata and file-operation work with
 [`adr/0098-parallel-loudness-scan-graph.md`](adr/0098-parallel-loudness-scan-graph.md),
 [`adr/0099-loudness-grouping-modes.md`](adr/0099-loudness-grouping-modes.md),
 [`adr/0100-replaygain-scan-action.md`](adr/0100-replaygain-scan-action.md),
-and [`adr/0101-folder-bookmarks-panel.md`](adr/0101-folder-bookmarks-panel.md).
+[`adr/0101-folder-bookmarks-panel.md`](adr/0101-folder-bookmarks-panel.md),
+and [`adr/0102-mpd-go-to-artist-album.md`](adr/0102-mpd-go-to-artist-album.md).
 The development, ASan/UBSan, TSan, and clang-tidy builds and their complete
 53/53 test suites pass at this continuation point (validated 2026-09-02).
 The TSan-only bench test shim routes Qt 6.9+'s uninstrumented

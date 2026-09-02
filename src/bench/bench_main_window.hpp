@@ -166,6 +166,8 @@ class BenchMainWindow final : public QMainWindow {
     void addFolderBookmark(const std::string& raw_path);
     void revealFolderPath(const std::string& raw_path);
     void revealFolderStep(const QPersistentModelIndex& parent_index, const std::string& raw_path);
+    void goToMpdLibraryEntry(const QString& artist, const QString& album);
+    void completeMpdLibraryGoTo(const QString& artist, const QString& album);
     void playCurrentRow();
     void showMetadataProperties();
     void startMetadataOperationRecovery();
@@ -350,6 +352,8 @@ class BenchMainWindow final : public QMainWindow {
     QMenu* folder_bookmark_menu_{nullptr};
     QAction* folder_bookmark_add_action_{nullptr};
     QAction* folder_bookmark_remove_action_{nullptr};
+    QAction* mpd_go_to_artist_action_{nullptr};
+    QAction* mpd_go_to_album_action_{nullptr};
     QStackedWidget* source_stack_{nullptr};
     QHash<QString, QWidget*> panel_widgets_;
     bool applying_panel_layout_{false};

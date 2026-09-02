@@ -1203,6 +1203,10 @@ quickly and correctly.
   incomplete-programme warnings instead of partial-album numbers. Tests
   pin parallel-equals-direct on generated WAV albums plus failure
   isolation and cancellation.
+- Done: ADR-0102 bridges the MPD queue to the library tree: Go to
+  artist / Go to album context actions asynchronously load roots, fetch
+  the artist branch, and select the album with definition-aware
+  matching; misses report in the status bar instead of failing silently.
 - Done: ADR-0101 adds folder bookmarks to the local Sources panel — a
   persisted quick-access list above the lazy tree with reveal-in-tree
   activation, add-from-tree-menu, and removal.

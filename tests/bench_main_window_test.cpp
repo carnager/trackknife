@@ -160,6 +160,7 @@ class BenchMainWindowTest final : public QObject {
     void unifiesMpdAndLocalAuthoritiesInOneWorkspace();
     void mpdSearchProjectsControllerResults();
     void mpdQueueAndLibraryMenusExposeServerActions();
+    void mpdGoToArtistAlbumNavigatesLibrary();
     void playbackBufferProfilesPersistAndExposeDiagnostics();
     void statusBarSummarizesTrackSelection();
     void committedMetadataRefreshesDuplicatesAndPreservesCueOverlay();
@@ -724,6 +725,118 @@ void BenchMainWindowTest::mpdQueueAndLibraryMenusExposeServerActions() {
     QCOMPARE(library_menu->actions().at(1)->text(), QStringLiteral("Insert next in live queue"));
     QCOMPARE(library_menu->actions().at(2)->text(), QStringLiteral("Replace queue and play"));
     library_menu->close();
+}
+
+void BenchMainWindowTest::mpdGoToArtistAlbumNavigatesLibrary() {
+    BenchMainWindow window;
+    window.show();
+    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("bench-tabs"));
+    auto* queue = window.findChild<QTableView*>(QStringLiteral("bench-mpd-queue"));
+    auto* controller = window.findChild<quick::MpdProbeController*>();
+    auto* library = window.findChild<QTreeView*>(QStringLiteral("bench-mpd-library"));
+    auto* library_model = window.findChild<ui::ServerLibraryTreeModel*>();
+    auto* go_to_artist = window.findChild<QAction*>(QStringLiteral("action-mpd-go-to-artist"));
+    auto* go_to_album = window.findChild<QAction*>(QStringLiteral("action-mpd-go-to-album"));
+    QVERIFY(tabs != nullptr);
+    QVERIFY(queue != nullptr);
+    QVERIFY(controller != nullptr);
+    QVERIFY(library != nullptr);
+    QVERIFY(library_model != nullptr);
+    QVERIFY(go_to_artist != nullptr);
+    QVERIFY(go_to_album != nullptr);
+    QTRY_COMPARE(tabs->count(), 2);
+    tabs->setCurrentWidget(queue);
+
+    auto* queue_model = qobject_cast<quick::MpdQueueModel*>(controller->queueModel());
+    QVERIFY(queue_model != nullptr);
+    queue_model->replaceTracks({mpd::Track{
+        .uri = "queue/target.flac",
+        .metadata = mpd::Metadata{{
+            {"Title", "Queued"},
+            {"Artist", "Library Artist"},
+            {"AlbumArtist", "Library Artist"},
+            {"Album", "Library Album"},
+        }},
+        .musicbrainz = {},
+        .queue_id = 7U,
+        .queue_position = 0U,
+        .duration = std::chrono::milliseconds{180'000},
+        .last_modified = std::nullopt,
+        .audio_format = std::nullopt,
+        .priority = std::nullopt,
+        .unknown_structural_pairs = {},
+    }});
+    queue->setCurrentIndex(queue_model->index(0, 0));
+
+    QSignalSpy root_requests{library_model, &ui::ServerLibraryTreeModel::rootRequested};
+    QSignalSpy branch_requests{library_model, &ui::ServerLibraryTreeModel::branchRequested};
+
+    // Go to album on an unloaded library: the tree loads its roots, then
+    // the artist's branch, then lands on the album row.
+    go_to_album->trigger();
+    QTRY_COMPARE(root_requests.size(), 1);
+    library_model->acceptRoot(
+        root_requests.front().at(0).toULongLong(), root_requests.front().at(1).toString(),
+        {QStringLiteral("Another Artist"), QStringLiteral("Library Artist")}, {});
+    QTRY_COMPARE(branch_requests.size(), 1);
+    library_model->acceptBranch(branch_requests.front().front().toULongLong(),
+                                {mpd::Track{
+                                    .uri = "library/artist/album/01.flac",
+                                    .metadata = mpd::Metadata{{
+                                        {"Artist", "Library Artist"},
+                                        {"AlbumArtist", "Library Artist"},
+                                        {"Album", "Library Album"},
+                                        {"Track", "1"},
+                                        {"Title", "Library Track"},
+                                    }},
+                                    .musicbrainz = {},
+                                    .queue_id = std::nullopt,
+                                    .queue_position = std::nullopt,
+                                    .duration = std::chrono::milliseconds{180'000},
+                                    .last_modified = std::nullopt,
+                                    .audio_format = std::nullopt,
+                                    .priority = std::nullopt,
+                                    .unknown_structural_pairs = {},
+                                }},
+                                {});
+    QTRY_VERIFY(library->currentIndex().isValid());
+    QTRY_VERIFY(library->currentIndex()
+                    .data(Qt::DisplayRole)
+                    .toString()
+                    .startsWith(QStringLiteral("Library Album")));
+    QVERIFY(library->isExpanded(library->currentIndex().parent()));
+    QCOMPARE(library->currentIndex()
+                 .parent()
+                 .data(ui::ServerLibraryTreeModel::QueryValueRole)
+                 .toString(),
+             QStringLiteral("Library Artist"));
+
+    // Go to artist selects the loaded artist row directly, and an artist
+    // the tree does not know reports instead of navigating.
+    go_to_artist->trigger();
+    QTRY_COMPARE(
+        library->currentIndex().data(ui::ServerLibraryTreeModel::QueryValueRole).toString(),
+        QStringLiteral("Library Artist"));
+    queue_model->replaceTracks({mpd::Track{
+        .uri = "queue/unknown.flac",
+        .metadata = mpd::Metadata{{
+            {"Title", "Unknown"},
+            {"AlbumArtist", "Nobody Known"},
+            {"Album", "Nowhere"},
+        }},
+        .musicbrainz = {},
+        .queue_id = 8U,
+        .queue_position = 0U,
+        .duration = std::chrono::milliseconds{180'000},
+        .last_modified = std::nullopt,
+        .audio_format = std::nullopt,
+        .priority = std::nullopt,
+        .unknown_structural_pairs = {},
+    }});
+    queue->setCurrentIndex(queue_model->index(0, 0));
+    go_to_artist->trigger();
+    QTRY_VERIFY(
+        window.statusBar()->currentMessage().contains(QStringLiteral("not in the library tree")));
 }
 
 void BenchMainWindowTest::playbackBufferProfilesPersistAndExposeDiagnostics() {
