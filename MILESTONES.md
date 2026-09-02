@@ -1203,6 +1203,12 @@ quickly and correctly.
   incomplete-programme warnings instead of partial-album numbers. Tests
   pin parallel-equals-direct on generated WAV albums plus failure
   isolation and cancellation.
+- Done: ADR-0099 adds the four grouping modes as one pure function from
+  metadata documents to per-item album keys: track, selection-as-album,
+  release-aware (MUSICBRAINZ_ALBUMID first, deterministic album+artist
+  fallback, unidentifiable files stay track-only), and compiled tkfmt-1
+  expressions over effective canonical values with empty results staying
+  track-only. Namespaced keys never collide across modes.
 
 ## M8 — Parallel converter, resampler, and organized output
 

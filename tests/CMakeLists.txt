@@ -90,7 +90,7 @@ add_test(
 add_executable(trackknife_loudness_analyzer_tests loudness_analyzer_test.cpp)
 target_link_libraries(
     trackknife_loudness_analyzer_tests
-    PRIVATE Trackknife::Loudness Trackknife::Formats trackknife_project_options
+    PRIVATE Trackknife::Loudness Trackknife::Formats Trackknife::Metadata trackknife_project_options
             trackknife_project_warnings
 )
 add_test(

@@ -3,8 +3,11 @@
 #include "trackknife/core/stable_id.hpp"
 #include "trackknife/formats/decoder.hpp"
 #include "trackknife/loudness/analyzer.hpp"
+#include "trackknife/loudness/grouping.hpp"
 #include "trackknife/loudness/scan.hpp"
+#include "trackknife/metadata/document.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -393,6 +396,89 @@ void cancelledScanStopsCleanly() {
                .has_value());
 }
 
+[[nodiscard]] trackknife::metadata::MetadataDocument
+document_with(const std::vector<std::pair<std::string, std::string>>& fields) {
+    trackknife::metadata::MetadataDocument document;
+    for (const auto& [name, value] : fields) {
+        document.fields.push_back(trackknife::metadata::MetadataField{
+            .canonical_name = trackknife::metadata::canonicalize_field_name(name),
+            .native_name = name,
+            .values = {value},
+            .qualifier = {},
+            .provenance = trackknife::metadata::FieldProvenance::embedded,
+        });
+    }
+    return document;
+}
+
+void groupingModesAssignDeterministicKeys() {
+    const auto tagged =
+        document_with({{"ALBUM", "Alpha"},
+                       {"ALBUMARTIST", "Band"},
+                       {"MUSICBRAINZ_ALBUMID", "11111111-2222-3333-4444-555555555555"}});
+    const auto fallback = document_with({{"ALBUM", "Alpha"}, {"ARTIST", "Band"}});
+    const auto bare = document_with({{"TITLE", "Loose"}});
+    const std::array<const trackknife::metadata::MetadataDocument*, 3> documents{&tagged, &fallback,
+                                                                                 &bare};
+
+    const auto track_keys = trackknife::loudness::assign_loudness_groups(
+        {.mode = trackknife::loudness::LoudnessGroupingMode::track, .expression = {}}, documents);
+    CHECK(track_keys.has_value());
+    CHECK(track_keys &&
+          std::ranges::none_of(*track_keys, [](const auto& key) { return key.has_value(); }));
+
+    const auto selection_keys = trackknife::loudness::assign_loudness_groups(
+        {.mode = trackknife::loudness::LoudnessGroupingMode::selection_album, .expression = {}},
+        documents);
+    CHECK(selection_keys.has_value());
+    CHECK(selection_keys && (*selection_keys)[0] == (*selection_keys)[2]);
+    CHECK(selection_keys && (*selection_keys)[0].has_value());
+
+    // Release-aware: the MusicBrainz id wins, the tag fallback is
+    // deterministic, and unidentifiable files stay track-only.
+    const auto release_keys = trackknife::loudness::assign_loudness_groups(
+        {.mode = trackknife::loudness::LoudnessGroupingMode::release, .expression = {}}, documents);
+    CHECK(release_keys.has_value());
+    if (release_keys) {
+        CHECK((*release_keys)[0] ==
+              std::optional<std::string>{"mbid:11111111-2222-3333-4444-555555555555"});
+        CHECK((*release_keys)[1].has_value());
+        CHECK((*release_keys)[1] != (*release_keys)[0]);
+        CHECK(!(*release_keys)[2].has_value());
+    }
+    // Two files with the same id share one programme.
+    const std::array<const trackknife::metadata::MetadataDocument*, 2> same_release{&tagged,
+                                                                                    &tagged};
+    const auto same_keys = trackknife::loudness::assign_loudness_groups(
+        {.mode = trackknife::loudness::LoudnessGroupingMode::release, .expression = {}},
+        same_release);
+    CHECK(same_keys.has_value());
+    CHECK(same_keys && (*same_keys)[0] == (*same_keys)[1]);
+
+    // tkfmt-1 grouping: equal non-empty results group, empty stays
+    // track-only, and a broken expression fails typed.
+    const auto format_keys = trackknife::loudness::assign_loudness_groups(
+        {.mode = trackknife::loudness::LoudnessGroupingMode::format_expression,
+         .expression = "%album%"},
+        documents);
+    CHECK(format_keys.has_value());
+    if (format_keys) {
+        CHECK((*format_keys)[0] == std::optional<std::string>{"fmt:Alpha"});
+        CHECK((*format_keys)[0] == (*format_keys)[1]);
+        CHECK(!(*format_keys)[2].has_value());
+    }
+    CHECK(!trackknife::loudness::assign_loudness_groups(
+               {.mode = trackknife::loudness::LoudnessGroupingMode::format_expression,
+                .expression = "$unknown(%album%)"},
+               documents)
+               .has_value());
+    CHECK(!trackknife::loudness::assign_loudness_groups(
+               {.mode = trackknife::loudness::LoudnessGroupingMode::format_expression,
+                .expression = ""},
+               documents)
+               .has_value());
+}
+
 } // namespace
 
 int main(const int argc, char** argv) {
@@ -403,6 +489,7 @@ int main(const int argc, char** argv) {
     rejectsInvalidInput();
     parallelScanMatchesDirectAnalysisAndReducesAlbums();
     cancelledScanStopsCleanly();
+    groupingModesAssignDeterministicKeys();
     if (argc == 2) {
         decodedFixtureAnalyzesAndShortMaterialIsUnmeasurable(std::filesystem::path{argv[1]});
     }
