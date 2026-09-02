@@ -56,7 +56,15 @@ second write mechanism.
 - Identify → Fetch cover embeds the release's front cover with two
   paced, cached requests and zero new write paths; every preservation
   guarantee of ADR-0078–0081 applies unchanged.
-- Non-front archive images (back covers, booklets) and cover replacement
-  (today the fetch adds a second front if one exists) remain explicit
-  follow-ups; removal of the old picture is one click away in the same
-  tab.
+- Non-front archive images (back covers, booklets) remain an explicit
+  follow-up.
+
+## Addendum (2026-09-02): the fetch replaces an existing front
+
+Stacking a second front picture on already-covered files was the wrong
+default for the primary flow (identify a Picard-tagged album, refresh
+its cover). The fetched image now becomes each file's front cover: for
+every scoped file that carries an embedded front picture, the plan
+stages an ordinal- and fingerprint-targeted replace of exactly that
+picture; files without one still get an add. Both intents ride in one
+plan through the same preservation-exact prepared-copy apply.

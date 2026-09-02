@@ -276,8 +276,9 @@ MetadataArtworkSection::MetadataArtworkSection(QWidget* parent)
     fetch_cover_button_ = new QPushButton(QStringLiteral("Fetch cover"), this);
     fetch_cover_button_->setObjectName(QStringLiteral("bench-metadata-artwork-fetch-cover"));
     fetch_cover_button_->setToolTip(
-        QStringLiteral("Fetch the release's front cover from the Cover Art Archive and add it "
-                       "to every selected native FLAC file"));
+        QStringLiteral("Fetch the release's front cover from the Cover Art Archive and make it "
+                       "every selected file's front picture — replacing an existing front, "
+                       "adding one otherwise"));
     add_button_ = new QPushButton(QStringLiteral("Add…"), this);
     add_button_->setObjectName(QStringLiteral("bench-metadata-artwork-add"));
     add_button_->setToolTip(
@@ -832,10 +833,8 @@ void MetadataArtworkSection::startCoverArtFetch() {
                 return;
             }
             const auto encoded = QFile::encodeName(*image_path);
-            self->startReview(
-                metadata::ArtworkWritePlanIntentKind::add,
-                std::string{encoded.constData(), static_cast<std::size_t>(encoded.size())},
-                metadata::ArtworkRole::front);
+            self->reviewFetchedCover(
+                std::string{encoded.constData(), static_cast<std::size_t>(encoded.size())});
         });
 }
 
@@ -1120,15 +1119,19 @@ void MetadataArtworkSection::startReview(
         updateActionButtons();
         return;
     }
+    const auto change_count = kind == metadata::ArtworkWritePlanIntentKind::add
+                                  ? static_cast<qsizetype>(scope_.size())
+                                  : selected.size();
+    dispatchReview(std::move(intents), change_count);
+}
 
+void MetadataArtworkSection::dispatchReview(std::vector<metadata::ArtworkWritePlanIntent> intents,
+                                            const qsizetype change_count) {
     mutation_cancellation_.request_cancellation();
     mutation_cancellation_ = core::CancellationSource{};
     const auto cancellation = mutation_cancellation_.token();
     plan_running_ = true;
     emit operationRunningChanged(true);
-    const auto change_count = kind == metadata::ArtworkWritePlanIntentKind::add
-                                  ? static_cast<qsizetype>(scope_.size())
-                                  : selected.size();
     status_->setText(
         QStringLiteral("Checking %1 artwork %2 against fresh files…")
             .arg(change_count)
@@ -1139,6 +1142,50 @@ void MetadataArtworkSection::startReview(
             return std::make_shared<core::Result<metadata::ArtworkWritePlan>>(
                 metadata::revalidate_artwork_write_plan(intents, cancellation));
         }));
+}
+
+// The fetched archive front becomes each file's front cover: replacing the
+// existing embedded front picture where one exists, adding one otherwise —
+// never stacking a second front.
+void MetadataArtworkSection::reviewFetchedCover(const std::string& replacement_raw_path) {
+    if (!applier_factory_ || plan_running_ || apply_running_) {
+        return;
+    }
+    std::vector<metadata::ArtworkWritePlanIntent> intents;
+    for (const auto& source : scope_) {
+        const metadata::ArtworkInventoryItem* front = nullptr;
+        for (const auto& target : action_targets_) {
+            if (target && target->scope.raw_path == source.raw_path &&
+                target->item.provenance == metadata::ArtworkProvenance::embedded &&
+                target->item.role == metadata::ArtworkRole::front) {
+                front = &target->item;
+                break;
+            }
+        }
+        for (const auto occurrence_index : source.occurrence_indexes) {
+            intents.push_back(metadata::ArtworkWritePlanIntent{
+                .occurrence_index = occurrence_index,
+                .raw_media_path = source.raw_path,
+                .expected_media_revision =
+                    source.captured_revision_consistent ? source.captured_revision : std::nullopt,
+                .target_ordinal = front != nullptr ? front->source_ordinal : 0U,
+                .expected_target_fingerprint =
+                    front != nullptr ? front->content_fingerprint : core::ContentFingerprint{},
+                .kind = front != nullptr ? metadata::ArtworkWritePlanIntentKind::replace
+                                         : metadata::ArtworkWritePlanIntentKind::add,
+                .replacement_raw_path = replacement_raw_path,
+                .added_role = metadata::ArtworkRole::front,
+                .added_description = {},
+                .replacement_embedded_source = std::nullopt,
+            });
+        }
+    }
+    if (intents.empty()) {
+        status_->setText(QStringLiteral("Select at least one writable native FLAC file"));
+        updateActionButtons();
+        return;
+    }
+    dispatchReview(std::move(intents), static_cast<qsizetype>(scope_.size()));
 }
 
 void MetadataArtworkSection::finishReview() {

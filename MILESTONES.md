@@ -1123,6 +1123,9 @@ network operations that never bypass staged preview/write safety.
   edits render in italics with source-naming tooltips, and a sticky
   footer summary ("MPD Library staged 12 edits · Undo") offers
   one-click rejection — information instead of a confirmation gate.
+- Fixed: Fetch cover now replaces a file's existing embedded front
+  picture (ordinal- and fingerprint-targeted) instead of stacking a
+  second front, adding one only where none exists (ADR-0091 addendum).
 
 ## M7 — Universal parallel ReplayGain
 

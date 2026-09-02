@@ -2663,6 +2663,15 @@ void BenchMainWindowTest::artworkFetchesCoverArtFromArchiveAndAddsFront() {
     QVERIFY(png_buffer.open(QIODevice::WriteOnly));
     QVERIFY(cover.save(&png_buffer, "PNG"));
     png_buffer.close();
+    QImage second_cover{24, 24, QImage::Format_ARGB32};
+    second_cover.fill(Qt::darkMagenta);
+    QByteArray second_png_bytes;
+    QBuffer second_png_buffer{&second_png_bytes};
+    QVERIFY(second_png_buffer.open(QIODevice::WriteOnly));
+    QVERIFY(second_cover.save(&second_png_buffer, "PNG"));
+    second_png_buffer.close();
+    QVERIFY(second_png_bytes.size() != png_bytes.size());
+    int image_serves = 0;
     static constexpr auto listing_text = R"json({
       "images": [{"id": 42, "front": true, "approved": true, "types": ["Front"],
         "image":
@@ -2672,7 +2681,7 @@ void BenchMainWindowTest::artworkFetchesCoverArtFromArchiveAndAddsFront() {
     int fetches = 0;
     const MusicBrainzLookupService service{
         .fetch =
-            [&fetches, listing_body, png_bytes, release_id](
+            [&fetches, &image_serves, listing_body, png_bytes, second_png_bytes, release_id](
                 const QString& url, std::function<void(core::Result<QByteArray>)> completion) {
                 ++fetches;
                 if (url == QStringLiteral("https://coverartarchive.org/release/") + release_id) {
@@ -2683,7 +2692,7 @@ void BenchMainWindowTest::artworkFetchesCoverArtFromArchiveAndAddsFront() {
                 // https upgrade.
                 if (url == QStringLiteral("https://coverartarchive.org/release/"
                                           "2f2ac1b7-1111-4f4f-8f8f-123456789abc/42.png")) {
-                    completion(png_bytes);
+                    completion(++image_serves == 1 ? png_bytes : second_png_bytes);
                     return;
                 }
                 completion(std::unexpected(core::Error{
@@ -2771,6 +2780,97 @@ void BenchMainWindowTest::artworkFetchesCoverArtFromArchiveAndAddsFront() {
     QPointer guard{properties};
     properties->close();
     QTRY_VERIFY(guard.isNull());
+
+    // A later session fetching again replaces the existing front cover
+    // instead of stacking a second front picture.
+    auto second_read = metadata::read_local_metadata(raw_path);
+    QVERIFY(second_read.has_value());
+    second_read->document.fields.push_back(metadata::MetadataField{
+        .canonical_name = metadata::canonicalize_field_name("MUSICBRAINZ_ALBUMID"),
+        .native_name = "MUSICBRAINZ_ALBUMID",
+        .values = {release_id.toStdString()},
+        .qualifier = {},
+        .provenance = metadata::FieldProvenance::embedded,
+    });
+    const MetadataPropertiesSource second_source{
+        .source =
+            metadata::StagedMetadataSource{
+                .raw_path = raw_path,
+                .source_revision = second_read->source_revision,
+                .baseline = second_read->document,
+            },
+        .track_label = QStringLiteral("Cover fetch fixture"),
+    };
+    observed.reset();
+    auto* second_properties = new MetadataPropertiesDialog(
+        1U,
+        [second_source](const std::size_t index) -> std::optional<MetadataPropertiesSource> {
+            return index == 0U ? std::optional{second_source} : std::nullopt;
+        },
+        {}, {}, {}, {}, {}, {}, {}, nullptr, {}, service);
+    second_properties->setArtworkMutationServices(
+        [database_path] {
+            return ArtworkWritePlanApplier{
+                [database_path](const metadata::ArtworkWritePlan& plan,
+                                const operations::ArtworkApplyProgressCallback& progress,
+                                const core::CancellationToken& cancellation)
+                    -> core::Result<operations::ArtworkApplyResult> {
+                    auto opened = persistence::SqliteMetadataOperationJournal::open(database_path);
+                    if (!opened) {
+                        return std::unexpected(std::move(opened.error()));
+                    }
+                    auto journal = std::move(*opened);
+                    return operations::apply_artwork_write_plan(
+                        plan,
+                        [&journal](const metadata::ArtworkWritePlanSource& source_plan,
+                                   const core::CancellationToken& source_cancellation) {
+                            return operations::commit_flac_artwork_source(
+                                source_plan, journal,
+                                [](const operations::MetadataCommitResult&) -> core::Result<void> {
+                                    return {};
+                                },
+                                source_cancellation);
+                        },
+                        progress, cancellation,
+                        operations::ArtworkApplyOptions{.maximum_parallelism = 2U});
+                }};
+        },
+        [&observed](const operations::ArtworkApplyResult& result) { observed = result; });
+    second_properties->show();
+    QTabWidget* second_sections = nullptr;
+    QTRY_VERIFY((second_sections = second_properties->findChild<QTabWidget*>(
+                     QStringLiteral("bench-metadata-sections"))) != nullptr);
+    second_sections->setCurrentIndex(1);
+    auto* second_items =
+        second_properties->findChild<QTableView*>(QStringLiteral("bench-metadata-artwork-items"));
+    auto* second_fetch = second_properties->findChild<QPushButton*>(
+        QStringLiteral("bench-metadata-artwork-fetch-cover"));
+    QVERIFY(second_items != nullptr);
+    QVERIFY(second_fetch != nullptr);
+    QTRY_COMPARE_WITH_TIMEOUT(second_items->model()->rowCount(), 2, 5'000);
+    QTRY_VERIFY(second_fetch->isEnabled());
+    QTest::mouseClick(second_fetch, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(observed.has_value(), 10'000);
+    const auto second_issue = observed->sources.front().issue
+                                  ? QString::fromStdString(observed->sources.front().issue->message)
+                                  : QStringLiteral("no per-source issue");
+    QVERIFY2(observed->committed_source_count() == 1U, qPrintable(second_issue));
+    QTRY_COMPARE_WITH_TIMEOUT(second_items->model()->rowCount(), 2, 5'000);
+    const auto replaced = metadata::read_local_artwork_inventory(raw_path);
+    QVERIFY(replaced.has_value());
+    QCOMPARE(replaced->items.size(), 2U);
+    const auto front_count = std::ranges::count_if(replaced->items, [](const auto& item) {
+        return item.role == metadata::ArtworkRole::front;
+    });
+    QCOMPARE(front_count, 1);
+    const auto new_front = std::ranges::find_if(replaced->items, [](const auto& item) {
+        return item.role == metadata::ArtworkRole::front;
+    });
+    QCOMPARE(new_front->byte_size, static_cast<std::uint64_t>(second_png_bytes.size()));
+
+    QPointer second_guard{second_properties};
+    second_properties->close();
+    QTRY_VERIFY(second_guard.isNull());
 }
 
 void BenchMainWindowTest::automaticScriptsStageOnOpen() {

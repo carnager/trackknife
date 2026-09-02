@@ -103,6 +103,9 @@ class MetadataArtworkSection final : public QWidget {
     void present(const BatchResult& result);
     void updateActionButtons();
     void startCoverArtFetch();
+    void reviewFetchedCover(const std::string& replacement_raw_path);
+    void dispatchReview(std::vector<metadata::ArtworkWritePlanIntent> intents,
+                        qsizetype change_count);
     void promptAddition();
     void promptReplacement();
     void reviewRemoval();
