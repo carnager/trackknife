@@ -26,6 +26,7 @@ struct WebServiceLimits {
     std::size_t media{64U};
     std::size_t tracks_per_medium{256U};
     std::size_t artist_credits{32U};
+    std::size_t cover_art_images{100U};
     std::size_t text_bytes{2'048U};
     std::size_t body_bytes{8U * 1024U * 1024U};
 };
@@ -110,5 +111,37 @@ parse_release_search(std::string_view body, const WebServiceLimits& limits = {})
 // Parses a ws/2 fmt=json release lookup including per-medium track listings.
 [[nodiscard]] core::Result<Release> parse_release_lookup(std::string_view body,
                                                          const WebServiceLimits& limits = {});
+
+struct CoverArtImage {
+    std::string id;
+    bool front{false};
+    bool back{false};
+    bool approved{false};
+    std::string comment;
+    std::vector<std::string> types;
+    std::string image_url;
+
+    friend bool operator==(const CoverArtImage&, const CoverArtImage&) = default;
+};
+
+struct CoverArtListing {
+    std::vector<CoverArtImage> images;
+
+    friend bool operator==(const CoverArtListing&, const CoverArtListing&) = default;
+};
+
+// Builds the Cover Art Archive listing URL for one release. The id must be
+// a MusicBrainz UUID.
+[[nodiscard]] core::Result<std::string> build_cover_art_listing_url(std::string_view release_id);
+
+// Parses a Cover Art Archive release listing. Image URLs are upgraded to
+// https so the transport never follows a less-safe redirect; entries with
+// no usable image URL are dropped, never invented.
+[[nodiscard]] core::Result<CoverArtListing>
+parse_cover_art_listing(std::string_view body, const WebServiceLimits& limits = {});
+
+// Deterministic front-cover choice: the first image flagged front, else the
+// first typed "Front", else the first approved image, else the first image.
+[[nodiscard]] std::optional<std::size_t> select_front_cover(const CoverArtListing& listing);
 
 } // namespace trackknife::musicbrainz

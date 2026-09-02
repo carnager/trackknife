@@ -62,6 +62,14 @@ using ArtworkWritePlanApplier = std::function<core::Result<operations::ArtworkAp
 using ArtworkWritePlanApplierFactory = std::function<ArtworkWritePlanApplier()>;
 using ArtworkApplyObserver = std::function<void(const operations::ArtworkApplyResult&)>;
 
+// Bench-injected Cover Art Archive download (ADR-0091): resolves one
+// release's front cover to a local image file ready for the ordinary add
+// review, or a typed error. Empty means cover fetching is unavailable.
+struct ArtworkCoverArtService {
+    std::function<void(const QString& release_id, std::function<void(core::Result<QString>)>)>
+        fetch_front;
+};
+
 // Lazy Properties presentation over ADR-0076's synchronous core inventory.
 // Inventory, review, and Apply own no image bytes and perform no filesystem
 // work on the UI thread.
@@ -77,6 +85,8 @@ class MetadataArtworkSection final : public QWidget {
     void setActive(bool active);
     void setMutationServices(ArtworkWritePlanApplierFactory applier_factory,
                              ArtworkApplyObserver observer);
+    void setCoverArtService(ArtworkCoverArtService service);
+    void setCoverArtRelease(std::optional<QString> release_id);
     void requestOperationCancellation();
 
   signals:
@@ -92,6 +102,7 @@ class MetadataArtworkSection final : public QWidget {
     void clearPresentation();
     void present(const BatchResult& result);
     void updateActionButtons();
+    void startCoverArtFetch();
     void promptAddition();
     void promptReplacement();
     void reviewRemoval();
@@ -127,6 +138,7 @@ class MetadataArtworkSection final : public QWidget {
     QPushButton* stop_button_{nullptr};
     QTableView* items_{nullptr};
     QTableView* issues_{nullptr};
+    QPushButton* fetch_cover_button_{nullptr};
     QPushButton* add_button_{nullptr};
     QPushButton* copy_button_{nullptr};
     QPushButton* export_button_{nullptr};
@@ -139,6 +151,8 @@ class MetadataArtworkSection final : public QWidget {
     std::vector<ActionTarget> copy_targets_;
     ArtworkWritePlanApplierFactory applier_factory_;
     ArtworkApplyObserver apply_observer_;
+    ArtworkCoverArtService cover_service_;
+    std::optional<QString> cover_release_id_;
     core::CancellationSource cancellation_;
     core::CancellationSource mutation_cancellation_;
     std::shared_ptr<ArtworkApplyProgressState> apply_progress_state_;
@@ -153,6 +167,7 @@ class MetadataArtworkSection final : public QWidget {
     bool plan_running_{false};
     bool apply_running_{false};
     bool export_running_{false};
+    bool cover_fetch_running_{false};
     bool stop_requested_{false};
     bool add_available_{false};
 };

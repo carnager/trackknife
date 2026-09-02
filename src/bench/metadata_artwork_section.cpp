@@ -273,6 +273,11 @@ MetadataArtworkSection::MetadataArtworkSection(QWidget* parent)
     inventory_row->setContentsMargins(0, 0, 0, 0);
     inventory_row->setSpacing(6);
     inventory_row->addStretch(1);
+    fetch_cover_button_ = new QPushButton(QStringLiteral("Fetch cover"), this);
+    fetch_cover_button_->setObjectName(QStringLiteral("bench-metadata-artwork-fetch-cover"));
+    fetch_cover_button_->setToolTip(
+        QStringLiteral("Fetch the release's front cover from the Cover Art Archive and add it "
+                       "to every selected native FLAC file"));
     add_button_ = new QPushButton(QStringLiteral("Add…"), this);
     add_button_->setObjectName(QStringLiteral("bench-metadata-artwork-add"));
     add_button_->setToolTip(
@@ -292,6 +297,7 @@ MetadataArtworkSection::MetadataArtworkSection(QWidget* parent)
     remove_button_ = new QPushButton(QStringLiteral("Remove"), this);
     remove_button_->setObjectName(QStringLiteral("bench-metadata-artwork-remove"));
     remove_button_->setToolTip(QStringLiteral("Remove each selected embedded FLAC picture"));
+    inventory_row->addWidget(fetch_cover_button_);
     inventory_row->addWidget(add_button_);
     inventory_row->addWidget(copy_button_);
     inventory_row->addWidget(export_button_);
@@ -365,6 +371,8 @@ MetadataArtworkSection::MetadataArtworkSection(QWidget* parent)
             &MetadataArtworkSection::finishExport);
     connect(items_->selectionModel(), &QItemSelectionModel::selectionChanged, this,
             [this] { updateActionButtons(); });
+    connect(fetch_cover_button_, &QPushButton::clicked, this,
+            &MetadataArtworkSection::startCoverArtFetch);
     connect(add_button_, &QPushButton::clicked, this, &MetadataArtworkSection::promptAddition);
     connect(copy_button_, &QPushButton::clicked, this, &MetadataArtworkSection::reviewCopy);
     connect(export_button_, &QPushButton::clicked, this, &MetadataArtworkSection::promptExport);
@@ -402,6 +410,19 @@ void MetadataArtworkSection::setMutationServices(ArtworkWritePlanApplierFactory 
                                                  ArtworkApplyObserver observer) {
     applier_factory_ = std::move(applier_factory);
     apply_observer_ = std::move(observer);
+    updateActionButtons();
+}
+
+void MetadataArtworkSection::setCoverArtService(ArtworkCoverArtService service) {
+    cover_service_ = std::move(service);
+    updateActionButtons();
+}
+
+void MetadataArtworkSection::setCoverArtRelease(std::optional<QString> release_id) {
+    if (cover_release_id_ == release_id) {
+        return;
+    }
+    cover_release_id_ = std::move(release_id);
     updateActionButtons();
 }
 
@@ -730,8 +751,8 @@ void MetadataArtworkSection::present(const BatchResult& result) {
 
 void MetadataArtworkSection::updateActionButtons() {
     if (add_button_ == nullptr || copy_button_ == nullptr || export_button_ == nullptr ||
-        replace_button_ == nullptr || remove_button_ == nullptr || items_ == nullptr ||
-        items_->selectionModel() == nullptr) {
+        replace_button_ == nullptr || remove_button_ == nullptr || fetch_cover_button_ == nullptr ||
+        items_ == nullptr || items_->selectionModel() == nullptr) {
         return;
     }
     const auto selected = items_->selectionModel()->selectedRows();
@@ -746,9 +767,13 @@ void MetadataArtworkSection::updateActionButtons() {
             break;
         }
     }
-    const auto operation_idle = !plan_running_ && !apply_running_ && !export_running_;
+    const auto operation_idle =
+        !plan_running_ && !apply_running_ && !export_running_ && !cover_fetch_running_;
     const auto mutation_idle = applier_factory_ && operation_idle;
     add_button_->setEnabled(add_available_ && mutation_idle);
+    fetch_cover_button_->setEnabled(add_available_ && mutation_idle &&
+                                    static_cast<bool>(cover_service_.fetch_front) &&
+                                    cover_release_id_.has_value());
     auto copy_available = add_available_ && selected.size() == 1;
     if (copy_available) {
         const auto row = selected.front().row();
@@ -776,6 +801,42 @@ void MetadataArtworkSection::updateActionButtons() {
         }
     }
     export_button_->setEnabled(export_available && operation_idle);
+}
+
+void MetadataArtworkSection::startCoverArtFetch() {
+    if (cover_fetch_running_ || plan_running_ || apply_running_ || !applier_factory_ ||
+        !cover_service_.fetch_front || !cover_release_id_) {
+        return;
+    }
+    cover_fetch_running_ = true;
+    status_->setText(QStringLiteral("Fetching the front cover from the Cover Art Archive…"));
+    updateActionButtons();
+    const auto generation = generation_;
+    QPointer<MetadataArtworkSection> self{this};
+    cover_service_.fetch_front(
+        *cover_release_id_, [self, generation](core::Result<QString> image_path) {
+            if (self.isNull()) {
+                return;
+            }
+            self->cover_fetch_running_ = false;
+            if (!image_path) {
+                self->status_->setText(QStringLiteral("No cover was added · %1")
+                                           .arg(display_utf8(image_path.error().message)));
+                self->updateActionButtons();
+                return;
+            }
+            if (self->generation_ != generation) {
+                self->status_->setText(
+                    QStringLiteral("The selection changed while fetching; no cover was added"));
+                self->updateActionButtons();
+                return;
+            }
+            const auto encoded = QFile::encodeName(*image_path);
+            self->startReview(
+                metadata::ArtworkWritePlanIntentKind::add,
+                std::string{encoded.constData(), static_cast<std::size_t>(encoded.size())},
+                metadata::ArtworkRole::front);
+        });
 }
 
 void MetadataArtworkSection::promptAddition() {

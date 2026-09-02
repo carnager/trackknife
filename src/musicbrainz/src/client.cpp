@@ -129,8 +129,10 @@ WebTransport MusicBrainzClient::qtNetworkTransport(QNetworkAccessManager* manage
         }
         QNetworkRequest request{url};
         request.setHeader(QNetworkRequest::UserAgentHeader, user_agent);
+        // Cover Art Archive image URLs redirect cross-origin to the
+        // Internet Archive; refuse only scheme downgrades.
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                             QNetworkRequest::SameOriginRedirectPolicy);
+                             QNetworkRequest::NoLessSafeRedirectPolicy);
         auto* reply = guarded->get(request);
         QObject::connect(
             reply, &QNetworkReply::finished, reply, [reply, completion = std::move(completion)] {

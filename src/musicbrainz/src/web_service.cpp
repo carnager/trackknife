@@ -334,4 +334,90 @@ core::Result<Release> parse_release_lookup(const std::string_view body,
     return parse_release_object(*root, limits);
 }
 
+core::Result<std::string> build_cover_art_listing_url(const std::string_view release_id) {
+    if (!is_musicbrainz_id(release_id)) {
+        return std::unexpected(service_error(core::ErrorCode::invalid_argument,
+                                             "a Cover Art Archive listing needs a release id"));
+    }
+    return "https://coverartarchive.org/release/" + std::string{release_id};
+}
+
+core::Result<CoverArtListing> parse_cover_art_listing(const std::string_view body,
+                                                      const WebServiceLimits& limits) {
+    auto root = parse_body(body, limits);
+    if (!root) {
+        return std::unexpected(std::move(root.error()));
+    }
+    const auto images = root->value(QStringLiteral("images"));
+    if (!images.isArray()) {
+        return std::unexpected(service_error(core::ErrorCode::backend,
+                                             "the Cover Art Archive listing lacks an image list"));
+    }
+    const auto entries = images.toArray();
+    if (static_cast<std::size_t>(entries.size()) > limits.cover_art_images) {
+        return std::unexpected(
+            service_error(core::ErrorCode::limit_exceeded,
+                          "the Cover Art Archive listing exceeds the image limit"));
+    }
+    CoverArtListing listing;
+    listing.images.reserve(static_cast<std::size_t>(entries.size()));
+    for (const auto& entry : entries) {
+        if (!entry.isObject()) {
+            continue;
+        }
+        const auto image = entry.toObject();
+        CoverArtImage parsed{
+            .id = {},
+            .front = image.value(QStringLiteral("front")).toBool(false),
+            .back = image.value(QStringLiteral("back")).toBool(false),
+            .approved = image.value(QStringLiteral("approved")).toBool(false),
+            .comment = bounded_text(image.value(QStringLiteral("comment")), limits),
+            .types = {},
+            .image_url = bounded_text(image.value(QStringLiteral("image")), limits),
+        };
+        // The archive serves image ids as JSON numbers; keep them as text.
+        const auto identity = image.value(QStringLiteral("id"));
+        parsed.id = identity.isDouble() ? std::to_string(identity.toInteger())
+                                        : bounded_text(identity, limits);
+        const auto types = image.value(QStringLiteral("types"));
+        if (types.isArray()) {
+            for (const auto& type : types.toArray()) {
+                if (type.isString()) {
+                    parsed.types.push_back(bounded_text(type, limits));
+                }
+            }
+        }
+        if (parsed.image_url.starts_with("http://")) {
+            parsed.image_url.replace(0U, 7U, "https://");
+        }
+        if (parsed.image_url.starts_with("https://")) {
+            listing.images.push_back(std::move(parsed));
+        }
+    }
+    return listing;
+}
+
+std::optional<std::size_t> select_front_cover(const CoverArtListing& listing) {
+    const auto by = [&listing](const auto& predicate) -> std::optional<std::size_t> {
+        for (std::size_t index = 0U; index < listing.images.size(); ++index) {
+            if (predicate(listing.images[index])) {
+                return index;
+            }
+        }
+        return std::nullopt;
+    };
+    if (const auto flagged = by([](const CoverArtImage& image) { return image.front; })) {
+        return flagged;
+    }
+    if (const auto typed = by([](const CoverArtImage& image) {
+            return std::ranges::find(image.types, "Front") != image.types.end();
+        })) {
+        return typed;
+    }
+    if (const auto approved = by([](const CoverArtImage& image) { return image.approved; })) {
+        return approved;
+    }
+    return listing.images.empty() ? std::optional<std::size_t>{} : std::optional{std::size_t{0U}};
+}
+
 } // namespace trackknife::musicbrainz

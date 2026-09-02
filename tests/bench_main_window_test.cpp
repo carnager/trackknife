@@ -28,6 +28,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QBuffer>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCompleter>
@@ -38,6 +39,7 @@
 #include <QFileInfo>
 #include <QHash>
 #include <QHeaderView>
+#include <QImage>
 #include <QInputDialog>
 #include <QLabel>
 #include <QLayout>
@@ -171,6 +173,7 @@ class BenchMainWindowTest final : public QObject {
     void combinedTagAndRenameReviewReachesPreparationApply();
     void metadataSuggestionsStageSelectionConsistency();
     void musicBrainzIdentifyStagesChosenVersion();
+    void artworkFetchesCoverArtFromArchiveAndAddsFront();
     void metadataStartupPresentsReconciliation();
     void filePublicationStartupPresentsReconciliation();
     void combinedPublicationStartupRecoversMetadataAndPath();
@@ -2597,6 +2600,150 @@ void BenchMainWindowTest::musicBrainzIdentifyStagesChosenVersion() {
     delete properties;
 }
 
+void BenchMainWindowTest::artworkFetchesCoverArtFromArchiveAndAddsFront() {
+    QTemporaryDir media;
+    QVERIFY(media.isValid());
+    const auto media_path = media.filePath(QStringLiteral("cover-fetch.flac"));
+    QVERIFY(materialize_audio_fixture(QStringLiteral("art-tone-flac.b64"), media_path));
+    const auto encoded = QFile::encodeName(media_path);
+    const std::string raw_path{encoded.constData(), static_cast<std::size_t>(encoded.size())};
+    auto read = metadata::read_local_metadata(raw_path);
+    QVERIFY(read.has_value());
+    const auto release_id = QStringLiteral("2f2ac1b7-1111-4f4f-8f8f-123456789abc");
+    read->document.fields.push_back(metadata::MetadataField{
+        .canonical_name = metadata::canonicalize_field_name("MUSICBRAINZ_ALBUMID"),
+        .native_name = "MUSICBRAINZ_ALBUMID",
+        .values = {release_id.toStdString()},
+        .qualifier = {},
+        .provenance = metadata::FieldProvenance::embedded,
+    });
+    const MetadataPropertiesSource source{
+        .source =
+            metadata::StagedMetadataSource{
+                .raw_path = raw_path,
+                .source_revision = read->source_revision,
+                .baseline = read->document,
+            },
+        .track_label = QStringLiteral("Cover fetch fixture"),
+    };
+
+    QImage cover{16, 16, QImage::Format_ARGB32};
+    cover.fill(Qt::darkCyan);
+    QByteArray png_bytes;
+    QBuffer png_buffer{&png_bytes};
+    QVERIFY(png_buffer.open(QIODevice::WriteOnly));
+    QVERIFY(cover.save(&png_buffer, "PNG"));
+    png_buffer.close();
+    static constexpr auto listing_text = R"json({
+      "images": [{"id": 42, "front": true, "approved": true, "types": ["Front"],
+        "image":
+          "http://coverartarchive.org/release/2f2ac1b7-1111-4f4f-8f8f-123456789abc/42.png"}]
+    })json";
+    const QByteArray listing_body{listing_text};
+    int fetches = 0;
+    const MusicBrainzLookupService service{
+        .fetch =
+            [&fetches, listing_body, png_bytes, release_id](
+                const QString& url, std::function<void(core::Result<QByteArray>)> completion) {
+                ++fetches;
+                if (url == QStringLiteral("https://coverartarchive.org/release/") + release_id) {
+                    completion(listing_body);
+                    return;
+                }
+                // The listing carried an http URL; the fetch must be the
+                // https upgrade.
+                if (url == QStringLiteral("https://coverartarchive.org/release/"
+                                          "2f2ac1b7-1111-4f4f-8f8f-123456789abc/42.png")) {
+                    completion(png_bytes);
+                    return;
+                }
+                completion(std::unexpected(core::Error{
+                    .code = core::ErrorCode::invalid_argument,
+                    .message = "unexpected url",
+                    .context = {},
+                }));
+            },
+    };
+
+    const auto database_path =
+        std::filesystem::path{media.filePath(QStringLiteral("cover.sqlite3")).toStdString()};
+    std::optional<operations::ArtworkApplyResult> observed;
+    auto* properties = new MetadataPropertiesDialog(
+        1U,
+        [source](const std::size_t index) -> std::optional<MetadataPropertiesSource> {
+            return index == 0U ? std::optional{source} : std::nullopt;
+        },
+        {}, {}, {}, {}, {}, {}, {}, nullptr, {}, service);
+    properties->setArtworkMutationServices(
+        [database_path] {
+            return ArtworkWritePlanApplier{
+                [database_path](const metadata::ArtworkWritePlan& plan,
+                                const operations::ArtworkApplyProgressCallback& progress,
+                                const core::CancellationToken& cancellation)
+                    -> core::Result<operations::ArtworkApplyResult> {
+                    auto opened = persistence::SqliteMetadataOperationJournal::open(database_path);
+                    if (!opened) {
+                        return std::unexpected(std::move(opened.error()));
+                    }
+                    auto journal = std::move(*opened);
+                    return operations::apply_artwork_write_plan(
+                        plan,
+                        [&journal](const metadata::ArtworkWritePlanSource& source_plan,
+                                   const core::CancellationToken& source_cancellation) {
+                            return operations::commit_flac_artwork_source(
+                                source_plan, journal,
+                                [](const operations::MetadataCommitResult&) -> core::Result<void> {
+                                    return {};
+                                },
+                                source_cancellation);
+                        },
+                        progress, cancellation,
+                        operations::ArtworkApplyOptions{.maximum_parallelism = 2U});
+                }};
+        },
+        [&observed](const operations::ArtworkApplyResult& result) { observed = result; });
+    properties->show();
+
+    QTabWidget* sections = nullptr;
+    QTRY_VERIFY((sections = properties->findChild<QTabWidget*>(
+                     QStringLiteral("bench-metadata-sections"))) != nullptr);
+    sections->setCurrentIndex(1);
+    auto* items =
+        properties->findChild<QTableView*>(QStringLiteral("bench-metadata-artwork-items"));
+    auto* fetch =
+        properties->findChild<QPushButton*>(QStringLiteral("bench-metadata-artwork-fetch-cover"));
+    QVERIFY(items != nullptr);
+    QVERIFY(fetch != nullptr);
+    QTRY_COMPARE_WITH_TIMEOUT(items->model()->rowCount(), 1, 5'000);
+
+    // One unambiguous release across the selection enables the fetch; the
+    // whole download-and-add runs as one direct apply with no dialogs.
+    QTRY_VERIFY(fetch->isEnabled());
+    QTest::mouseClick(fetch, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(observed.has_value(), 10'000);
+    const auto apply_issue = observed->sources.front().issue
+                                 ? QString::fromStdString(observed->sources.front().issue->message)
+                                 : QStringLiteral("no per-source issue");
+    QVERIFY2(observed->committed_source_count() == 1U, qPrintable(apply_issue));
+    QCOMPARE(fetches, 2);
+    QTRY_COMPARE_WITH_TIMEOUT(items->model()->rowCount(), 2, 5'000);
+    QVERIFY(properties->findChild<QDialog*>(QStringLiteral("bench-preparation-feedback")) ==
+            nullptr);
+    const auto inventory = metadata::read_local_artwork_inventory(raw_path);
+    QVERIFY(inventory.has_value());
+    QCOMPARE(inventory->items.size(), 2U);
+    const auto added = std::ranges::find_if(inventory->items, [](const auto& item) {
+        return item.role == metadata::ArtworkRole::front;
+    });
+    QVERIFY(added != inventory->items.end());
+    QCOMPARE(added->mime_type, std::string{"image/png"});
+    QCOMPARE(added->provenance, metadata::ArtworkProvenance::embedded);
+
+    QPointer guard{properties};
+    properties->close();
+    QTRY_VERIFY(guard.isNull());
+}
+
 void BenchMainWindowTest::metadataStartupPresentsReconciliation() {
     const auto base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QVERIFY(QDir().mkpath(base));
@@ -4065,7 +4212,7 @@ void BenchMainWindowTest::metadataPropertiesArtworkSectionShowsProvenanceAndCapa
     QVERIFY(progress != nullptr);
     QCOMPARE(items->model()->rowCount(), 0);
     QVERIFY(!progress->isVisible());
-    QCOMPARE(artwork->findChildren<QPushButton*>().size(), 6);
+    QCOMPARE(artwork->findChildren<QPushButton*>().size(), 7);
     for (auto* button : artwork->findChildren<QPushButton*>()) {
         QVERIFY(!button->isEnabled());
     }

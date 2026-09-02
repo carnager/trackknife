@@ -1083,6 +1083,18 @@ network operations that never bypass staged preview/write safety.
   reads and writes of the migration-25 cache, and an injected scripted
   service keeps the whole flow offscreen-tested end-to-end. Cover Art
   Archive proposals and the AcoustID evaluation remain.
+- Done: ADR-0091 lands Cover Art Archive front covers through the existing
+  artwork operations. The artwork tab gains Fetch cover, enabled exactly
+  when every selected file carries the same MUSICBRAINZ_ALBUMID — read
+  draft-or-baseline, so a just-identified selection qualifies before
+  Apply. Two paced, cached requests resolve the archive listing (bounded
+  typed parsing, https upgrade, deterministic front selection) and the
+  image; PNG/JPEG magic is verified and the bytes enter the ordinary
+  preservation-exact prepared-copy add path as a direct journaled apply.
+  The shared transport now follows cross-origin redirects while still
+  refusing scheme downgrades. An injected cover service keeps the flow
+  offscreen-tested end-to-end against a real FLAC. Non-front image
+  choices and the AcoustID evaluation remain.
 
 ## M7 — Universal parallel ReplayGain
 

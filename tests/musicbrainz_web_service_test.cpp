@@ -188,6 +188,61 @@ void malformedAndOversizedPayloadsFailTyped() {
           oversized.error().code == trackknife::core::ErrorCode::limit_exceeded);
 }
 
+constexpr std::string_view cover_art_fixture = R"json({
+  "images": [
+    {"id": 987654321, "front": false, "back": true, "approved": true,
+     "comment": "reverse", "types": ["Back"],
+     "image": "http://coverartarchive.org/release/2f2ac1b7-1111-4f4f-8f8f-123456789abc/987654321.jpg"},
+    {"id": "123456789", "front": true, "back": false, "approved": true,
+     "comment": "", "types": ["Front"],
+     "image": "http://coverartarchive.org/release/2f2ac1b7-1111-4f4f-8f8f-123456789abc/123456789.png"},
+    {"id": 42, "front": false, "back": false, "approved": false, "types": ["Booklet"],
+     "image": "ftp://nowhere.example/booklet.png"}
+  ],
+  "release": "https://musicbrainz.org/release/2f2ac1b7-1111-4f4f-8f8f-123456789abc"
+})json";
+
+void coverArtUrlRequiresAReleaseId() {
+    const auto url = build_cover_art_listing_url("2f2ac1b7-1111-4f4f-8f8f-123456789abc");
+    CHECK(url.has_value());
+    CHECK(*url == "https://coverartarchive.org/release/2f2ac1b7-1111-4f4f-8f8f-123456789abc");
+    CHECK(!build_cover_art_listing_url("").has_value());
+    CHECK(!build_cover_art_listing_url("not-a-uuid").has_value());
+}
+
+void coverArtParsingUpgradesAndSelectsTheFront() {
+    const auto listing = parse_cover_art_listing(cover_art_fixture);
+    CHECK(listing.has_value());
+    // The ftp entry has no usable https image and is dropped.
+    CHECK(listing->images.size() == 2U);
+    CHECK(listing->images[0].id == "987654321");
+    CHECK(listing->images[0].back);
+    CHECK(listing->images[0].comment == "reverse");
+    CHECK(listing->images[1].id == "123456789");
+    CHECK(listing->images[1].front);
+    CHECK(listing->images[1].types == std::vector<std::string>{"Front"});
+    CHECK(listing->images[1].image_url ==
+          "https://coverartarchive.org/release/2f2ac1b7-1111-4f4f-8f8f-123456789abc/"
+          "123456789.png");
+    CHECK(select_front_cover(*listing) == std::optional<std::size_t>{1U});
+
+    // Without a flagged front image, an approved image is preferred and an
+    // empty listing selects nothing.
+    auto no_front = *listing;
+    no_front.images[1].front = false;
+    no_front.images[1].types = {"Booklet"};
+    no_front.images[1].approved = false;
+    CHECK(select_front_cover(no_front) == std::optional<std::size_t>{0U});
+    CHECK(select_front_cover(CoverArtListing{}) == std::nullopt);
+
+    CHECK(!parse_cover_art_listing("{}").has_value());
+    WebServiceLimits tiny;
+    tiny.cover_art_images = 1U;
+    const auto oversized = parse_cover_art_listing(cover_art_fixture, tiny);
+    CHECK(!oversized.has_value() &&
+          oversized.error().code == trackknife::core::ErrorCode::limit_exceeded);
+}
+
 } // namespace
 
 int main() {
@@ -196,6 +251,8 @@ int main() {
     searchParsingCarriesVersionDetail();
     lookupParsingAlignsTracksAndRecordings();
     malformedAndOversizedPayloadsFailTyped();
+    coverArtUrlRequiresAReleaseId();
+    coverArtParsingUpgradesAndSelectsTheFront();
     if (failures != 0) {
         std::cerr << failures << " check(s) failed\n";
         return 1;

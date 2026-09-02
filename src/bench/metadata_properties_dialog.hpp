@@ -43,6 +43,7 @@ class QProgressBar;
 class QPushButton;
 class QSplitter;
 class QTabWidget;
+class QTemporaryDir;
 class QTableView;
 class QTimer;
 class QTreeWidget;
@@ -160,6 +161,10 @@ class MetadataPropertiesDialog final : public QDialog {
     void scheduleSelectionProjection();
     void updateSelectionProjection();
     void updateArtworkScope(std::span<const std::size_t> selected_items);
+    void fetchFrontCoverArt(const QString& release_id,
+                            std::function<void(core::Result<QString>)> completion);
+    [[nodiscard]] core::Result<QString> storeCoverArtImage(const QString& release_id,
+                                                           const QByteArray& bytes);
     void updateDraftState(int patch_count, bool can_undo, bool can_redo);
     void updateFieldButtons();
     void updateEditValuesButton();
@@ -237,6 +242,7 @@ class MetadataPropertiesDialog final : public QDialog {
     FilePublicationApplyObserver file_apply_observer_;
     MetadataDialogLayoutStore layout_store_;
     MusicBrainzLookupService musicbrainz_;
+    std::unique_ptr<QTemporaryDir> cover_art_directory_;
     std::vector<persistence::SavedMetadataTransformationChain> transformation_catalog_;
     std::vector<persistence::SavedOutputLayoutProfile> output_layout_catalog_;
     std::vector<persistence::SavedDestinationProfile> destination_catalog_;

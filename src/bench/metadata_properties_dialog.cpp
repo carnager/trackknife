@@ -15,6 +15,7 @@
 #include "trackknife/metadata/field_suggestions.hpp"
 #include "trackknife/metadata/proposal.hpp"
 #include "trackknife/metadata/rule_script_import.hpp"
+#include "trackknife/musicbrainz/web_service.hpp"
 
 #include <QAbstractListModel>
 #include <QApplication>
@@ -54,6 +55,7 @@
 #include <QStyledItemDelegate>
 #include <QTabWidget>
 #include <QTableView>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QTreeView>
 #include <QTreeWidget>
@@ -894,6 +896,19 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
     metadata_sections_->addTab(fields_pane, QStringLiteral("Fields"));
     artwork_section_ = new MetadataArtworkSection(metadata_sections_);
     artwork_section_->setMutationServices(artwork_plan_applier_factory_, artwork_apply_observer_);
+    if (musicbrainz_.fetch) {
+        const QPointer self{this};
+        artwork_section_->setCoverArtService(ArtworkCoverArtService{
+            .fetch_front =
+                [self](const QString& release_id,
+                       std::function<void(core::Result<QString>)> completion) {
+                    if (self.isNull()) {
+                        return;
+                    }
+                    self->fetchFrontCoverArt(release_id, std::move(completion));
+                },
+        });
+    }
     const auto artwork_page =
         metadata_sections_->addTab(artwork_section_, QStringLiteral("Artwork"));
     connect(artwork_section_, &MetadataArtworkSection::operationRunningChanged, this,
@@ -1058,6 +1073,114 @@ void MetadataPropertiesDialog::updateArtworkScope(
         }
     }
     artwork_section_->setScope(std::move(scope), source_limit_exceeded);
+
+    // Cover fetching needs one unambiguous release: every selected file must
+    // carry the same MUSICBRAINZ_ALBUMID, draft or embedded — so an Identify
+    // result enables it before Apply has run.
+    std::optional<QString> release_id;
+    auto release_consistent = !selected_items.empty();
+    const auto release_column = grid_model_->fieldColumn(QStringLiteral("MUSICBRAINZ_ALBUMID"));
+    if (release_consistent && release_column) {
+        for (const auto item_index : selected_items) {
+            const auto row = static_cast<int>(
+                std::min(item_index, static_cast<std::size_t>(std::numeric_limits<int>::max())));
+            const auto values = grid_model_->index(row, *release_column)
+                                    .data(metadata_cell_values_role)
+                                    .toStringList();
+            const auto value = values.isEmpty() ? QString{} : values.front().trimmed();
+            if (value.isEmpty() || (release_id && *release_id != value)) {
+                release_consistent = false;
+                break;
+            }
+            release_id = value;
+        }
+    }
+    artwork_section_->setCoverArtRelease(
+        release_consistent && release_column ? std::move(release_id) : std::nullopt);
+}
+
+void MetadataPropertiesDialog::fetchFrontCoverArt(
+    const QString& release_id, std::function<void(core::Result<QString>)> completion) {
+    const auto listing_url = musicbrainz::build_cover_art_listing_url(release_id.toStdString());
+    if (!listing_url) {
+        completion(std::unexpected(listing_url.error()));
+        return;
+    }
+    const QPointer self{this};
+    musicbrainz_.fetch(QString::fromStdString(*listing_url), [self, release_id, completion](
+                                                                 core::Result<QByteArray> body) {
+        if (self.isNull()) {
+            return;
+        }
+        if (!body) {
+            completion(std::unexpected(std::move(body.error())));
+            return;
+        }
+        const auto listing = musicbrainz::parse_cover_art_listing(
+            std::string_view{body->constData(), static_cast<std::size_t>(body->size())});
+        if (!listing) {
+            completion(std::unexpected(listing.error()));
+            return;
+        }
+        const auto front = musicbrainz::select_front_cover(*listing);
+        if (!front) {
+            completion(std::unexpected(core::Error{
+                .code = core::ErrorCode::not_found,
+                .message = "the Cover Art Archive has no front cover for this release",
+                .context = {},
+            }));
+            return;
+        }
+        self->musicbrainz_.fetch(QString::fromStdString(listing->images[*front].image_url),
+                                 [self, release_id, completion](core::Result<QByteArray> image) {
+                                     if (self.isNull()) {
+                                         return;
+                                     }
+                                     if (!image) {
+                                         completion(std::unexpected(std::move(image.error())));
+                                         return;
+                                     }
+                                     completion(self->storeCoverArtImage(release_id, *image));
+                                 });
+    });
+}
+
+core::Result<QString> MetadataPropertiesDialog::storeCoverArtImage(const QString& release_id,
+                                                                   const QByteArray& bytes) {
+    const auto png = bytes.size() > 8 && bytes.startsWith(QByteArray::fromHex("89504e470d0a1a0a"));
+    const auto jpeg = bytes.size() > 3 && static_cast<unsigned char>(bytes.at(0)) == 0xFFU &&
+                      static_cast<unsigned char>(bytes.at(1)) == 0xD8U;
+    if (!png && !jpeg) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::backend,
+            .message = "the Cover Art Archive image is neither PNG nor JPEG",
+            .context = {},
+        });
+    }
+    if (!cover_art_directory_) {
+        auto directory = std::make_unique<QTemporaryDir>();
+        if (!directory->isValid()) {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::io,
+                .message = "no temporary directory holds the downloaded cover",
+                .context = {},
+            });
+        }
+        cover_art_directory_ = std::move(directory);
+    }
+    const auto path = cover_art_directory_->filePath(
+        release_id + (png ? QStringLiteral("-front.png") : QStringLiteral("-front.jpg")));
+    QFile file{path};
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+        file.write(bytes) != bytes.size()) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::io,
+            .message = "the downloaded cover could not be stored",
+            .context = {},
+        });
+    }
+    file.close();
+    return path;
 }
 
 void MetadataPropertiesDialog::updateDraftState(const int patch_count, const bool can_undo,
