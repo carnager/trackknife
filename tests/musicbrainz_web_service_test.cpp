@@ -221,7 +221,9 @@ constexpr std::string_view cover_art_fixture = R"json({
      "image": "http://coverartarchive.org/release/2f2ac1b7-1111-4f4f-8f8f-123456789abc/987654321.jpg"},
     {"id": "123456789", "front": true, "back": false, "approved": true,
      "comment": "", "types": ["Front"],
-     "image": "http://coverartarchive.org/release/2f2ac1b7-1111-4f4f-8f8f-123456789abc/123456789.png"},
+     "image": "http://coverartarchive.org/release/2f2ac1b7-1111-4f4f-8f8f-123456789abc/123456789.png",
+     "thumbnails": {"250": "http://coverartarchive.org/release/2f2ac1b7-1111-4f4f-8f8f-123456789abc/123456789-250.jpg",
+                    "small": "https://coverartarchive.org/release/2f2ac1b7-1111-4f4f-8f8f-123456789abc/123456789-small.jpg"}},
     {"id": 42, "front": false, "back": false, "approved": false, "types": ["Booklet"],
      "image": "ftp://nowhere.example/booklet.png"}
   ],
@@ -250,6 +252,12 @@ void coverArtParsingUpgradesAndSelectsTheFront() {
     CHECK(listing->images[1].image_url ==
           "https://coverartarchive.org/release/2f2ac1b7-1111-4f4f-8f8f-123456789abc/"
           "123456789.png");
+    // The 250px thumbnail wins and is https-upgraded; the back image has
+    // none.
+    CHECK(listing->images[1].thumbnail_url ==
+          "https://coverartarchive.org/release/2f2ac1b7-1111-4f4f-8f8f-123456789abc/"
+          "123456789-250.jpg");
+    CHECK(listing->images[0].thumbnail_url.empty());
     CHECK(select_front_cover(*listing) == std::optional<std::size_t>{1U});
 
     // Without a flagged front image, an approved image is preferred and an

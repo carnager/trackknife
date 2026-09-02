@@ -130,6 +130,8 @@ struct CoverArtImage {
     std::string comment;
     std::vector<std::string> types;
     std::string image_url;
+    // Smallest useful preview the archive offers (250px, else "small").
+    std::string thumbnail_url;
 
     friend bool operator==(const CoverArtImage&, const CoverArtImage&) = default;
 };

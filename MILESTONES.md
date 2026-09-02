@@ -1126,6 +1126,15 @@ network operations that never bypass staged preview/write safety.
 - Fixed: Fetch cover now replaces a file's existing embedded front
   picture (ordinal- and fingerprint-targeted) instead of stacking a
   second front, adding one only where none exists (ADR-0091 addendum).
+- Done: ADR-0094 adds the archive image picker. Covers… lists every
+  Cover Art Archive image of the release — types, approval, comments,
+  and 250px thumbnails trickling through the paced fetcher — and one
+  choice places the image by mapped role: Front runs the replace-or-add
+  front placement, Back/Medium map to back/disc, the rest to other, all
+  through the ordinary preservation-exact review. The cover service is
+  recomposed into listing/bytes/store functions so the section owns the
+  orchestration and the scripted seam still tests everything offscreen.
+  M6's remaining open item is the optional AcoustID evaluation.
 
 ## M7 — Universal parallel ReplayGain
 

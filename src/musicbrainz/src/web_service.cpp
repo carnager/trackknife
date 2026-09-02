@@ -447,7 +447,13 @@ core::Result<CoverArtListing> parse_cover_art_listing(const std::string_view bod
             .comment = bounded_text(image.value(QStringLiteral("comment")), limits),
             .types = {},
             .image_url = bounded_text(image.value(QStringLiteral("image")), limits),
+            .thumbnail_url = {},
         };
+        const auto thumbnails = image.value(QStringLiteral("thumbnails")).toObject();
+        parsed.thumbnail_url = bounded_text(thumbnails.value(QStringLiteral("250")), limits);
+        if (parsed.thumbnail_url.empty()) {
+            parsed.thumbnail_url = bounded_text(thumbnails.value(QStringLiteral("small")), limits);
+        }
         // The archive serves image ids as JSON numbers; keep them as text.
         const auto identity = image.value(QStringLiteral("id"));
         parsed.id = identity.isDouble() ? std::to_string(identity.toInteger())
@@ -462,6 +468,12 @@ core::Result<CoverArtListing> parse_cover_art_listing(const std::string_view bod
         }
         if (parsed.image_url.starts_with("http://")) {
             parsed.image_url.replace(0U, 7U, "https://");
+        }
+        if (parsed.thumbnail_url.starts_with("http://")) {
+            parsed.thumbnail_url.replace(0U, 7U, "https://");
+        }
+        if (!parsed.thumbnail_url.starts_with("https://")) {
+            parsed.thumbnail_url.clear();
         }
         if (parsed.image_url.starts_with("https://")) {
             listing.images.push_back(std::move(parsed));

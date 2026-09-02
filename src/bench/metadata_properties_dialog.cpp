@@ -910,14 +910,49 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
     if (musicbrainz_.fetch) {
         const QPointer self{this};
         artwork_section_->setCoverArtService(ArtworkCoverArtService{
-            .fetch_front =
+            .fetch_listing =
                 [self](const QString& release_id,
-                       std::function<void(core::Result<QString>)> completion) {
+                       std::function<void(core::Result<musicbrainz::CoverArtListing>)> completion) {
+                    const auto listing_url =
+                        musicbrainz::build_cover_art_listing_url(release_id.toStdString());
+                    if (self.isNull() || !listing_url) {
+                        completion(std::unexpected(
+                            listing_url ? core::Error{.code = core::ErrorCode::cancelled,
+                                                      .message = "the tag editor closed",
+                                                      .context = {}}
+                                        : listing_url.error()));
+                        return;
+                    }
+                    self->musicbrainz_.fetch(
+                        QString::fromStdString(*listing_url),
+                        [completion](core::Result<QByteArray> body) {
+                            if (!body) {
+                                completion(std::unexpected(std::move(body.error())));
+                                return;
+                            }
+                            completion(musicbrainz::parse_cover_art_listing(std::string_view{
+                                body->constData(), static_cast<std::size_t>(body->size())}));
+                        });
+                },
+            .fetch_bytes =
+                [self](const QString& url,
+                       std::function<void(core::Result<QByteArray>)> completion) {
                     if (self.isNull()) {
                         return;
                     }
-                    self->fetchFrontCoverArt(release_id, std::move(completion));
+                    self->musicbrainz_.fetch(url, std::move(completion));
                 },
+            .store_image = [self](const QString& identity,
+                                  const QByteArray& bytes) -> core::Result<QString> {
+                if (self.isNull()) {
+                    return std::unexpected(core::Error{
+                        .code = core::ErrorCode::cancelled,
+                        .message = "the tag editor closed",
+                        .context = {},
+                    });
+                }
+                return self->storeCoverArtImage(identity, bytes);
+            },
         });
     }
     const auto artwork_page =
@@ -1110,52 +1145,6 @@ void MetadataPropertiesDialog::updateArtworkScope(
     }
     artwork_section_->setCoverArtRelease(
         release_consistent && release_column ? std::move(release_id) : std::nullopt);
-}
-
-void MetadataPropertiesDialog::fetchFrontCoverArt(
-    const QString& release_id, std::function<void(core::Result<QString>)> completion) {
-    const auto listing_url = musicbrainz::build_cover_art_listing_url(release_id.toStdString());
-    if (!listing_url) {
-        completion(std::unexpected(listing_url.error()));
-        return;
-    }
-    const QPointer self{this};
-    musicbrainz_.fetch(QString::fromStdString(*listing_url), [self, release_id, completion](
-                                                                 core::Result<QByteArray> body) {
-        if (self.isNull()) {
-            return;
-        }
-        if (!body) {
-            completion(std::unexpected(std::move(body.error())));
-            return;
-        }
-        const auto listing = musicbrainz::parse_cover_art_listing(
-            std::string_view{body->constData(), static_cast<std::size_t>(body->size())});
-        if (!listing) {
-            completion(std::unexpected(listing.error()));
-            return;
-        }
-        const auto front = musicbrainz::select_front_cover(*listing);
-        if (!front) {
-            completion(std::unexpected(core::Error{
-                .code = core::ErrorCode::not_found,
-                .message = "the Cover Art Archive has no front cover for this release",
-                .context = {},
-            }));
-            return;
-        }
-        self->musicbrainz_.fetch(QString::fromStdString(listing->images[*front].image_url),
-                                 [self, release_id, completion](core::Result<QByteArray> image) {
-                                     if (self.isNull()) {
-                                         return;
-                                     }
-                                     if (!image) {
-                                         completion(std::unexpected(std::move(image.error())));
-                                         return;
-                                     }
-                                     completion(self->storeCoverArtImage(release_id, *image));
-                                 });
-    });
 }
 
 core::Result<QString> MetadataPropertiesDialog::storeCoverArtImage(const QString& release_id,

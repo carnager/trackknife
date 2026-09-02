@@ -6,6 +6,7 @@
 #include "trackknife/core/cancellation.hpp"
 #include "trackknife/core/local_sources.hpp"
 #include "trackknife/metadata/artwork_write_plan.hpp"
+#include "trackknife/musicbrainz/web_service.hpp"
 #include "trackknife/operations/artwork_apply.hpp"
 #include "trackknife/operations/artwork_export.hpp"
 
@@ -62,12 +63,18 @@ using ArtworkWritePlanApplier = std::function<core::Result<operations::ArtworkAp
 using ArtworkWritePlanApplierFactory = std::function<ArtworkWritePlanApplier()>;
 using ArtworkApplyObserver = std::function<void(const operations::ArtworkApplyResult&)>;
 
-// Bench-injected Cover Art Archive download (ADR-0091): resolves one
-// release's front cover to a local image file ready for the ordinary add
-// review, or a typed error. Empty means cover fetching is unavailable.
+// Bench-injected Cover Art Archive boundary (ADR-0091/0094): the listing
+// for one release, paced cached byte downloads, and local storage of
+// verified PNG/JPEG bytes ready for review. All-empty means cover fetching
+// is unavailable.
 struct ArtworkCoverArtService {
-    std::function<void(const QString& release_id, std::function<void(core::Result<QString>)>)>
-        fetch_front;
+    std::function<void(const QString& release_id,
+                       std::function<void(core::Result<musicbrainz::CoverArtListing>)>)>
+        fetch_listing;
+    std::function<void(const QString& url, std::function<void(core::Result<QByteArray>)>)>
+        fetch_bytes;
+    std::function<core::Result<QString>(const QString& identity, const QByteArray& bytes)>
+        store_image;
 };
 
 // Lazy Properties presentation over ADR-0076's synchronous core inventory.
@@ -102,7 +109,11 @@ class MetadataArtworkSection final : public QWidget {
     void clearPresentation();
     void present(const BatchResult& result);
     void updateActionButtons();
+    [[nodiscard]] bool coverServiceReady() const;
     void startCoverArtFetch();
+    void startArchivePicker();
+    void presentArchivePicker(musicbrainz::CoverArtListing listing);
+    void useArchiveImage(const musicbrainz::CoverArtImage& image);
     void reviewFetchedCover(const std::string& replacement_raw_path);
     void dispatchReview(std::vector<metadata::ArtworkWritePlanIntent> intents,
                         qsizetype change_count);
@@ -142,6 +153,7 @@ class MetadataArtworkSection final : public QWidget {
     QTableView* items_{nullptr};
     QTableView* issues_{nullptr};
     QPushButton* fetch_cover_button_{nullptr};
+    QPushButton* archive_button_{nullptr};
     QPushButton* add_button_{nullptr};
     QPushButton* copy_button_{nullptr};
     QPushButton* export_button_{nullptr};
@@ -161,6 +173,7 @@ class MetadataArtworkSection final : public QWidget {
     std::shared_ptr<ArtworkApplyProgressState> apply_progress_state_;
     std::shared_ptr<std::atomic_size_t> export_completed_items_;
     QPointer<QDialog> feedback_dialog_;
+    QPointer<QDialog> archive_dialog_;
     std::size_t generation_{0U};
     std::size_t job_generation_{0U};
     std::size_t displayed_generation_{0U};

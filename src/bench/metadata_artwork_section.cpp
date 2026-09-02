@@ -8,21 +8,25 @@
 
 #include <QAbstractItemView>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QIcon>
 #include <QImage>
 #include <QInputDialog>
 #include <QItemSelectionModel>
 #include <QLabel>
+#include <QPixmap>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QStandardItem>
 #include <QStandardItemModel>
 #include <QTableView>
 #include <QTimer>
+#include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
 
@@ -279,6 +283,12 @@ MetadataArtworkSection::MetadataArtworkSection(QWidget* parent)
         QStringLiteral("Fetch the release's front cover from the Cover Art Archive and make it "
                        "every selected file's front picture — replacing an existing front, "
                        "adding one otherwise"));
+    archive_button_ = new QPushButton(QStringLiteral("Covers…"), this);
+    archive_button_->setObjectName(QStringLiteral("bench-metadata-artwork-covers"));
+    archive_button_->setToolTip(
+        QStringLiteral("Browse every Cover Art Archive image of the release — a Front choice "
+                       "replaces the existing front cover, other types are added with their "
+                       "role"));
     add_button_ = new QPushButton(QStringLiteral("Add…"), this);
     add_button_->setObjectName(QStringLiteral("bench-metadata-artwork-add"));
     add_button_->setToolTip(
@@ -299,6 +309,7 @@ MetadataArtworkSection::MetadataArtworkSection(QWidget* parent)
     remove_button_->setObjectName(QStringLiteral("bench-metadata-artwork-remove"));
     remove_button_->setToolTip(QStringLiteral("Remove each selected embedded FLAC picture"));
     inventory_row->addWidget(fetch_cover_button_);
+    inventory_row->addWidget(archive_button_);
     inventory_row->addWidget(add_button_);
     inventory_row->addWidget(copy_button_);
     inventory_row->addWidget(export_button_);
@@ -374,6 +385,8 @@ MetadataArtworkSection::MetadataArtworkSection(QWidget* parent)
             [this] { updateActionButtons(); });
     connect(fetch_cover_button_, &QPushButton::clicked, this,
             &MetadataArtworkSection::startCoverArtFetch);
+    connect(archive_button_, &QPushButton::clicked, this,
+            &MetadataArtworkSection::startArchivePicker);
     connect(add_button_, &QPushButton::clicked, this, &MetadataArtworkSection::promptAddition);
     connect(copy_button_, &QPushButton::clicked, this, &MetadataArtworkSection::reviewCopy);
     connect(export_button_, &QPushButton::clicked, this, &MetadataArtworkSection::promptExport);
@@ -772,9 +785,10 @@ void MetadataArtworkSection::updateActionButtons() {
         !plan_running_ && !apply_running_ && !export_running_ && !cover_fetch_running_;
     const auto mutation_idle = applier_factory_ && operation_idle;
     add_button_->setEnabled(add_available_ && mutation_idle);
-    fetch_cover_button_->setEnabled(add_available_ && mutation_idle &&
-                                    static_cast<bool>(cover_service_.fetch_front) &&
-                                    cover_release_id_.has_value());
+    const auto cover_ready =
+        add_available_ && mutation_idle && coverServiceReady() && cover_release_id_.has_value();
+    fetch_cover_button_->setEnabled(cover_ready);
+    archive_button_->setEnabled(cover_ready && archive_dialog_.isNull());
     auto copy_available = add_available_ && selected.size() == 1;
     if (copy_available) {
         const auto row = selected.front().row();
@@ -804,37 +818,247 @@ void MetadataArtworkSection::updateActionButtons() {
     export_button_->setEnabled(export_available && operation_idle);
 }
 
+bool MetadataArtworkSection::coverServiceReady() const {
+    return static_cast<bool>(cover_service_.fetch_listing) &&
+           static_cast<bool>(cover_service_.fetch_bytes) &&
+           static_cast<bool>(cover_service_.store_image);
+}
+
 void MetadataArtworkSection::startCoverArtFetch() {
     if (cover_fetch_running_ || plan_running_ || apply_running_ || !applier_factory_ ||
-        !cover_service_.fetch_front || !cover_release_id_) {
+        !coverServiceReady() || !cover_release_id_) {
         return;
     }
     cover_fetch_running_ = true;
     status_->setText(QStringLiteral("Fetching the front cover from the Cover Art Archive…"));
     updateActionButtons();
-    const auto generation = generation_;
     QPointer<MetadataArtworkSection> self{this};
-    cover_service_.fetch_front(
-        *cover_release_id_, [self, generation](core::Result<QString> image_path) {
+    cover_service_.fetch_listing(
+        *cover_release_id_, [self](core::Result<musicbrainz::CoverArtListing> listing) {
             if (self.isNull()) {
                 return;
             }
             self->cover_fetch_running_ = false;
-            if (!image_path) {
+            if (!listing) {
                 self->status_->setText(QStringLiteral("No cover was added · %1")
-                                           .arg(display_utf8(image_path.error().message)));
+                                           .arg(display_utf8(listing.error().message)));
+                self->updateActionButtons();
+                return;
+            }
+            const auto front = musicbrainz::select_front_cover(*listing);
+            if (!front) {
+                self->status_->setText(
+                    QStringLiteral("The Cover Art Archive has no front cover for this release"));
+                self->updateActionButtons();
+                return;
+            }
+            self->useArchiveImage(listing->images[*front]);
+        });
+}
+
+void MetadataArtworkSection::startArchivePicker() {
+    if (cover_fetch_running_ || plan_running_ || apply_running_ || !applier_factory_ ||
+        !coverServiceReady() || !cover_release_id_ || !archive_dialog_.isNull()) {
+        return;
+    }
+    cover_fetch_running_ = true;
+    status_->setText(QStringLiteral("Loading the release's Cover Art Archive listing…"));
+    updateActionButtons();
+    QPointer<MetadataArtworkSection> self{this};
+    cover_service_.fetch_listing(
+        *cover_release_id_, [self](core::Result<musicbrainz::CoverArtListing> listing) {
+            if (self.isNull()) {
+                return;
+            }
+            self->cover_fetch_running_ = false;
+            self->updateActionButtons();
+            if (!listing) {
+                self->status_->setText(QStringLiteral("No archive listing · %1")
+                                           .arg(display_utf8(listing.error().message)));
+                return;
+            }
+            if (listing->images.empty()) {
+                self->status_->setText(
+                    QStringLiteral("The Cover Art Archive has no images for this release"));
+                return;
+            }
+            self->presentArchivePicker(std::move(*listing));
+        });
+}
+
+namespace {
+
+[[nodiscard]] metadata::ArtworkRole archive_image_role(const musicbrainz::CoverArtImage& image) {
+    const auto typed = [&image](const std::string_view type) {
+        return std::ranges::find(image.types, type) != image.types.end();
+    };
+    if (image.front || typed("Front")) {
+        return metadata::ArtworkRole::front;
+    }
+    if (image.back || typed("Back")) {
+        return metadata::ArtworkRole::back;
+    }
+    if (typed("Medium")) {
+        return metadata::ArtworkRole::disc;
+    }
+    return metadata::ArtworkRole::other;
+}
+
+[[nodiscard]] QString archive_type_text(const musicbrainz::CoverArtImage& image) {
+    QStringList types;
+    for (const auto& type : image.types) {
+        types.push_back(display_utf8(type));
+    }
+    if (types.isEmpty()) {
+        types.push_back(image.front ? QStringLiteral("Front") : QStringLiteral("Untyped"));
+    }
+    return types.join(QStringLiteral(" + "));
+}
+
+} // namespace
+
+void MetadataArtworkSection::presentArchivePicker(musicbrainz::CoverArtListing listing) {
+    auto* dialog = new QDialog(this);
+    dialog->setObjectName(QStringLiteral("bench-metadata-artwork-archive"));
+    dialog->setWindowTitle(QStringLiteral("Cover Art Archive images"));
+    dialog->setWindowModality(Qt::WindowModal);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->resize(560, 420);
+    archive_dialog_ = dialog;
+    auto* layout = new QVBoxLayout(dialog);
+    auto* hint = new QLabel(
+        QStringLiteral("Every archive image of this release · a Front choice replaces the "
+                       "existing front cover, other types are added"),
+        dialog);
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+    auto* list = new QTreeWidget(dialog);
+    list->setObjectName(QStringLiteral("bench-metadata-artwork-archive-list"));
+    list->setHeaderLabels(
+        {QString{}, QStringLiteral("Type"), QStringLiteral("Approved"), QStringLiteral("Comment")});
+    list->setRootIsDecorated(false);
+    list->setAlternatingRowColors(true);
+    list->setIconSize(QSize(72, 72));
+    list->setSelectionMode(QAbstractItemView::SingleSelection);
+    list->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    list->header()->setStretchLastSection(true);
+    layout->addWidget(list, 1);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+    auto* use = buttons->addButton(QStringLiteral("Use this image"), QDialogButtonBox::ActionRole);
+    use->setObjectName(QStringLiteral("bench-metadata-artwork-archive-use"));
+    use->setEnabled(false);
+    layout->addWidget(buttons);
+
+    auto images =
+        std::make_shared<std::vector<musicbrainz::CoverArtImage>>(std::move(listing.images));
+    for (std::size_t index = 0U; index < images->size(); ++index) {
+        const auto& image = (*images)[index];
+        auto* row = new QTreeWidgetItem(list);
+        row->setData(0, Qt::UserRole, static_cast<qulonglong>(index));
+        row->setText(1, archive_type_text(image));
+        row->setText(2, image.approved ? QStringLiteral("Yes") : QStringLiteral("No"));
+        row->setText(3, display_utf8(image.comment));
+    }
+    list->setCurrentItem(list->topLevelItem(0));
+    use->setEnabled(true);
+
+    // Thumbnails trickle in through the paced fetcher without blocking the
+    // picker.
+    QPointer<QTreeWidget> guarded_list{list};
+    for (std::size_t index = 0U; index < images->size(); ++index) {
+        const auto& thumbnail_url = (*images)[index].thumbnail_url;
+        if (thumbnail_url.empty()) {
+            continue;
+        }
+        cover_service_.fetch_bytes(
+            QString::fromStdString(thumbnail_url),
+            [guarded_list, index](core::Result<QByteArray> bytes) {
+                if (guarded_list.isNull() || !bytes) {
+                    return;
+                }
+                QImage thumbnail;
+                if (!thumbnail.loadFromData(*bytes)) {
+                    return;
+                }
+                if (auto* row = guarded_list->topLevelItem(static_cast<int>(index))) {
+                    row->setIcon(0, QIcon{QPixmap::fromImage(thumbnail)});
+                }
+            });
+    }
+
+    QPointer<MetadataArtworkSection> self{this};
+    const auto use_selected = [self, guarded_list, images,
+                               dialog_pointer = QPointer<QDialog>{dialog}] {
+        if (self.isNull() || guarded_list.isNull() || guarded_list->currentItem() == nullptr) {
+            return;
+        }
+        const auto index = static_cast<std::size_t>(
+            guarded_list->currentItem()->data(0, Qt::UserRole).toULongLong());
+        if (index >= images->size()) {
+            return;
+        }
+        const auto image = (*images)[index];
+        if (!dialog_pointer.isNull()) {
+            dialog_pointer->close();
+        }
+        self->useArchiveImage(image);
+    };
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+    connect(use, &QPushButton::clicked, dialog, use_selected);
+    connect(list, &QTreeWidget::itemDoubleClicked, dialog,
+            [use_selected](QTreeWidgetItem*, int) { use_selected(); });
+    dialog->show();
+}
+
+void MetadataArtworkSection::useArchiveImage(const musicbrainz::CoverArtImage& image) {
+    if (cover_fetch_running_ || plan_running_ || apply_running_ || !coverServiceReady() ||
+        !cover_release_id_) {
+        return;
+    }
+    cover_fetch_running_ = true;
+    const auto role = archive_image_role(image);
+    status_->setText(QStringLiteral("Fetching the %1 image from the Cover Art Archive…")
+                         .arg(archive_type_text(image)));
+    updateActionButtons();
+    const auto generation = generation_;
+    const auto identity = QStringLiteral("%1-%2-%3")
+                              .arg(*cover_release_id_, QString::fromStdString(image.id),
+                                   display_utf8(metadata::artwork_role_name(role)));
+    QPointer<MetadataArtworkSection> self{this};
+    cover_service_.fetch_bytes(
+        QString::fromStdString(image.image_url),
+        [self, generation, identity, role](core::Result<QByteArray> bytes) {
+            if (self.isNull()) {
+                return;
+            }
+            self->cover_fetch_running_ = false;
+            if (!bytes) {
+                self->status_->setText(QStringLiteral("No image was added · %1")
+                                           .arg(display_utf8(bytes.error().message)));
+                self->updateActionButtons();
+                return;
+            }
+            const auto stored = self->cover_service_.store_image(identity, *bytes);
+            if (!stored) {
+                self->status_->setText(QStringLiteral("No image was added · %1")
+                                           .arg(display_utf8(stored.error().message)));
                 self->updateActionButtons();
                 return;
             }
             if (self->generation_ != generation) {
                 self->status_->setText(
-                    QStringLiteral("The selection changed while fetching; no cover was added"));
+                    QStringLiteral("The selection changed while fetching; no image was added"));
                 self->updateActionButtons();
                 return;
             }
-            const auto encoded = QFile::encodeName(*image_path);
-            self->reviewFetchedCover(
-                std::string{encoded.constData(), static_cast<std::size_t>(encoded.size())});
+            const auto encoded = QFile::encodeName(*stored);
+            std::string raw_path{encoded.constData(), static_cast<std::size_t>(encoded.size())};
+            if (role == metadata::ArtworkRole::front) {
+                self->reviewFetchedCover(raw_path);
+            } else {
+                self->startReview(metadata::ArtworkWritePlanIntentKind::add, std::move(raw_path),
+                                  role);
+            }
         });
 }
 
