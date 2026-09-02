@@ -358,7 +358,7 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
                                     "unknown container data preservation is not proven",
                                     source.raw_path));
         }
-        if (read->adapter_name == "taglib-flac-v1") {
+        if (read->adapter_name == "taglib-flac-v1" || read->adapter_name == "taglib-wavpack-v1") {
             std::unordered_set<std::string> changed_logical_fields;
             std::unordered_set<std::string> changed_native_fields;
             changed_logical_fields.reserve(source.changes.size());

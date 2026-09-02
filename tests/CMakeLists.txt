@@ -87,6 +87,17 @@ add_test(
     COMMAND trackknife_metadata_flac_writer_tests "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
 )
 
+add_executable(trackknife_metadata_wavpack_writer_tests metadata_wavpack_writer_test.cpp)
+target_link_libraries(
+    trackknife_metadata_wavpack_writer_tests
+    PRIVATE Trackknife::Metadata Trackknife::Formats PkgConfig::TAGLIB trackknife_project_options
+            trackknife_project_warnings
+)
+add_test(
+    NAME metadata-wavpack-writer
+    COMMAND trackknife_metadata_wavpack_writer_tests "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
+)
+
 add_executable(trackknife_list_repository_tests list_repository_test.cpp)
 target_link_libraries(
     trackknife_list_repository_tests

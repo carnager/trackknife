@@ -991,9 +991,16 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   as the end of the image; socket-level coverage assembles both `albumart` and
   `readpicture` through the explicit empty response, preventing truncated JPEG
   bytes from reaching Qt.
-- Next: qualify the next real-file text writer and preservation matrix,
-  beginning with WavPack, without inferring artwork-write support from its
-  existing read capability.
+- Done: ADR-0095 qualifies the native WavPack text writer. The
+  format-agnostic writer core (exclusive prepared copies, plan/original
+  verification, PropertyMap application with the ADR-0087 paired-totals
+  rules) is shared with FLAC from one internal header, and the WavPack
+  prepare adds its own binary proof: WavPack blocks byte-identical up to
+  the APEv2 trailer, every binary/external APE item (cover art included)
+  byte-exact with none invented, ID3v1 trailers rejected as unqualified.
+  Commit and refreshed publication dispatch by adapter; artwork stays
+  FLAC-only. Real-fixture round-trip and blocked-trailer tests cover it.
+- Next: grouped numbering and the remaining open M5 capability decisions.
 
 ### Exit criteria
 

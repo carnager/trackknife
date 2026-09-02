@@ -199,9 +199,12 @@ void readsWavPackAndRawBytePath(const std::filesystem::path& fixture_directory) 
     CHECK(read_wavpack.has_value());
     CHECK(read_wavpack && read_wavpack->document.first_effective_value("title") ==
                               std::optional<std::string>{"Fixture Tone"});
-    CHECK(read_wavpack && read_wavpack->adapter_name == "taglib-properties-v1");
-    CHECK(read_wavpack && !read_wavpack->capabilities.fields_writable);
-    CHECK(read_wavpack && !read_wavpack->capabilities.unknown_data_preserved_on_write);
+    // ADR-0095: native WavPack is a qualified text-write adapter whose
+    // prepared-copy writer verifies audio and APEv2 binary preservation.
+    CHECK(read_wavpack && read_wavpack->adapter_name == "taglib-wavpack-v1");
+    CHECK(read_wavpack && read_wavpack->capabilities.fields_writable);
+    CHECK(read_wavpack && read_wavpack->capabilities.unknown_data_preserved_on_write);
+    CHECK(read_wavpack && !read_wavpack->capabilities.pictures_writable);
 
     const auto encoded = decode_base64_file(fixture_directory / "rich-metadata-flac.b64");
     CHECK(encoded.has_value());

@@ -4,6 +4,7 @@
 
 #include "trackknife/core/local_sources.hpp"
 #include "trackknife/metadata/flac_writer.hpp"
+#include "trackknife/metadata/wavpack_writer.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -587,8 +588,12 @@ core::Result<FilePublicationApplyResult> apply_preparation_publications(
                                           const std::string& prepared_raw_path,
                                           const core::CancellationToken& source_cancellation)
                     -> core::Result<core::LocalSourceRevision> {
-                    auto prepared = metadata::prepare_flac_metadata_write_copy(
-                        *metadata_source, prepared_raw_path, source_cancellation);
+                    auto prepared =
+                        metadata_source->adapter_name == "taglib-wavpack-v1"
+                            ? metadata::prepare_wavpack_metadata_write_copy(
+                                  *metadata_source, prepared_raw_path, source_cancellation)
+                            : metadata::prepare_flac_metadata_write_copy(
+                                  *metadata_source, prepared_raw_path, source_cancellation);
                     if (!prepared) {
                         return std::unexpected(std::move(prepared.error()));
                     }
