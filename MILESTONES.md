@@ -1364,7 +1364,10 @@ handoff to Local Queue playback.
 5. Configurable MPD music-root mapping (per connection profile): resolve MPD
    queue/playlist URIs to local files below the configured root so Properties,
    Convert, and ReplayGain work directly on MPD-mode selections; a database
-   update stays an explicit MPD action afterwards (ADR-0058).
+   update stays an explicit MPD action afterwards (ADR-0058). ADR-0112
+   delivered the first piece: a global music-root setting plus explicit
+   "Load as local files" from the MPD queue and server library into a
+   local tab.
 
 ### Exit criteria
 

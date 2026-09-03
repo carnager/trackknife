@@ -31,6 +31,8 @@ qt_add_library(
     metadata_rule_script_import_dialog.hpp
     metadata_scalar_delegate.cpp
     metadata_scalar_delegate.hpp
+    settings_dialog.cpp
+    settings_dialog.hpp
     metadata_transformation_dialog.cpp
     metadata_transformation_dialog.hpp
     metadata_transformation_preview_model.cpp

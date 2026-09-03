@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "bench/bench_main_window.hpp"
+#include "bench/settings_dialog.hpp"
 
 #include "bench/bench_main_window_helpers.hpp"
 #include "bench/metadata_properties_dialog.hpp"
@@ -116,6 +117,12 @@ void BenchMainWindow::restoreLists(std::vector<persistence::ListDocument> docume
             true);
     } else {
         tabs_->setCurrentWidget(list_tabs_.front()->view);
+    }
+    const QSettings settings;
+    if (settings.value(QLatin1String(SettingsDialog::startup_context_key)).toString() ==
+            QStringLiteral("mpd") &&
+        mpd_queue_view_ != nullptr) {
+        tabs_->setCurrentWidget(mpd_queue_view_);
     }
     if (!pending_open_paths_.empty()) {
         auto pending = std::exchange(pending_open_paths_, std::vector<std::string>{});
@@ -826,6 +833,8 @@ void BenchMainWindow::showTrackContextMenu(QTableView* view, const QPoint& posit
             current.isValid()
                 ? current.siblingAtColumn(ui::track_album_column).data(Qt::DisplayRole).toString()
                 : QString{};
+        mpd_load_local_action_->setEnabled(has_uris);
+        track_context_menu_->addAction(mpd_load_local_action_);
         mpd_go_to_artist_action_->setEnabled(!go_to_artist.isEmpty());
         mpd_go_to_album_action_->setEnabled(!go_to_artist.isEmpty() && !go_to_album.isEmpty());
         track_context_menu_->addAction(mpd_go_to_artist_action_);

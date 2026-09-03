@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "bench/bench_main_window.hpp"
+#include "bench/settings_dialog.hpp"
 
 #include "bench/bench_main_window_helpers.hpp"
 #include "quick/mpd_probe_controller.hpp"
@@ -232,6 +233,11 @@ void BenchMainWindow::buildWorkspace() {
     convert_action_->setObjectName(QStringLiteral("action-convert-files"));
     convert_action_->setEnabled(false);
     connect(convert_action_, &QAction::triggered, this, &BenchMainWindow::showConvertDialog);
+    edit_menu->addSeparator();
+    auto* settings_action = edit_menu->addAction(QStringLiteral("Settings…"));
+    settings_action->setObjectName(QStringLiteral("action-settings"));
+    settings_action->setShortcut(QKeySequence(QStringLiteral("Ctrl+,")));
+    connect(settings_action, &QAction::triggered, this, &BenchMainWindow::showSettingsDialog);
     edit_menu->addSeparator();
     remove_selected_action_ = edit_menu->addAction(QStringLiteral("Remove selected"));
     remove_selected_action_->setObjectName(QStringLiteral("action-remove-selected-tracks"));
@@ -815,3 +821,8 @@ void BenchMainWindow::revealFolderStep(const QPersistentModelIndex& parent_index
 }
 
 } // namespace trackknife::bench
+
+void trackknife::bench::BenchMainWindow::showSettingsDialog() {
+    auto* dialog = new SettingsDialog(this);
+    dialog->open();
+}

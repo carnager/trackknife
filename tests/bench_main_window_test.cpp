@@ -5,6 +5,7 @@
 #include "bench/local_list_model.hpp"
 #include "bench/metadata_grid_model.hpp"
 #include "bench/metadata_properties_dialog.hpp"
+#include "bench/settings_dialog.hpp"
 #include "quick/mpd_probe_controller.hpp"
 #include "quick/mpd_queue_model.hpp"
 #include "quick/mpd_search_result_model.hpp"
@@ -181,6 +182,7 @@ class BenchMainWindowTest final : public QObject {
     void musicBrainzFingerprintScanRanksAndStages();
     void replayGainScanStagesMeasuredGainsAsDrafts();
     void convertDialogPlansAndConvertsSelection();
+    void settingsControlStartupContextAndMusicRoot();
     void folderBookmarksRevealTreePaths();
     void folderBookmarksMigrateFromLibraryRoots();
     void artworkFetchesCoverArtFromArchiveAndAddsFront();
@@ -2923,6 +2925,85 @@ void write_sine_wav_fixture(const QString& path, const double amplitude) {
 }
 
 } // namespace
+
+void BenchMainWindowTest::settingsControlStartupContextAndMusicRoot() {
+    // Startup in the MPD queue when the setting says so.
+    {
+        QSettings settings;
+        settings.setValue(QLatin1String(SettingsDialog::startup_context_key),
+                          QStringLiteral("mpd"));
+        settings.sync();
+    }
+    {
+        BenchMainWindow window;
+        window.show();
+        auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("bench-tabs"));
+        QVERIFY(tabs != nullptr);
+        QTRY_VERIFY(tabs->currentWidget() != nullptr &&
+                    tabs->currentWidget()->objectName() == QStringLiteral("bench-mpd-queue"));
+
+        // The settings dialog exposes both values and persists on Save.
+        auto* settings_action = window.findChild<QAction*>(QStringLiteral("action-settings"));
+        QVERIFY(settings_action != nullptr);
+        settings_action->trigger();
+        QDialog* dialog = nullptr;
+        QTRY_VERIFY((dialog = window.findChild<QDialog*>(
+                         QStringLiteral("bench-settings-dialog"))) != nullptr);
+        auto* startup = dialog->findChild<QComboBox*>(QStringLiteral("bench-settings-startup"));
+        auto* root = dialog->findChild<QLineEdit*>(QStringLiteral("bench-settings-music-root"));
+        auto* buttons =
+            dialog->findChild<QDialogButtonBox*>(QStringLiteral("bench-settings-buttons"));
+        QVERIFY(startup != nullptr && root != nullptr && buttons != nullptr);
+        QCOMPARE(startup->currentData().toString(), QStringLiteral("mpd"));
+        startup->setCurrentIndex(startup->findData(QStringLiteral("local")));
+        root->setText(QStringLiteral("/music/root"));
+        QTest::mouseClick(buttons->button(QDialogButtonBox::Save), Qt::LeftButton);
+        QTRY_VERIFY(window.findChild<QDialog*>(QStringLiteral("bench-settings-dialog")) == nullptr);
+        const QSettings persisted;
+        QCOMPARE(persisted.value(QLatin1String(SettingsDialog::startup_context_key)).toString(),
+                 QStringLiteral("local"));
+        QCOMPARE(persisted.value(QLatin1String(SettingsDialog::music_root_key)).toString(),
+                 QStringLiteral("/music/root"));
+    }
+
+    // "Load as local files" resolves URIs below the music root into a new
+    // local tab and reports the misses without failing.
+    QTemporaryDir media;
+    QVERIFY(media.isValid());
+    QDir{media.path()}.mkpath(QStringLiteral("Artist/Album"));
+    const auto wav = media.filePath(QStringLiteral("Artist/Album/one.wav"));
+    write_sine_wav_fixture(wav, 0.5);
+    {
+        QSettings settings;
+        settings.setValue(QLatin1String(SettingsDialog::music_root_key), media.path());
+        settings.sync();
+    }
+    {
+        BenchMainWindow window;
+        window.show();
+        auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("bench-tabs"));
+        QVERIFY(tabs != nullptr);
+        QTRY_VERIFY(tabs->count() >= 2);
+        const auto tabs_before = tabs->count();
+        window.loadMpdUrisAsLocalFiles(
+            {QStringLiteral("Artist/Album/one.wav"), QStringLiteral("Artist/Album/gone.wav")});
+        QTRY_COMPARE(tabs->count(), tabs_before + 1);
+        auto* view = qobject_cast<QTableView*>(tabs->currentWidget());
+        QVERIFY(view != nullptr);
+        QTRY_COMPARE(view->model()->rowCount(), 1);
+        QVERIFY(window.findChild<QStatusBar*>()->currentMessage().contains(
+            QStringLiteral("1 track not found")));
+
+        // The queue and library context actions exist for discoverability.
+        QVERIFY(window.findChild<QAction*>(QStringLiteral("action-mpd-load-local")) != nullptr);
+    }
+
+    // Leave a clean slate for the other window tests.
+    QSettings settings;
+    settings.remove(QLatin1String(SettingsDialog::startup_context_key));
+    settings.remove(QLatin1String(SettingsDialog::music_root_key));
+    settings.sync();
+}
 
 void BenchMainWindowTest::convertDialogPlansAndConvertsSelection() {
     QTemporaryDir media;

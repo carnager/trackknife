@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "bench/bench_main_window.hpp"
+#include "bench/settings_dialog.hpp"
 
 #include "bench/bench_main_window_helpers.hpp"
 #include "quick/mpd_output_model.hpp"
@@ -20,7 +21,9 @@
 #include <QApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QFrame>
 #include <QHeaderView>
@@ -34,6 +37,7 @@
 #include <QPainter>
 #include <QPalette>
 #include <QPushButton>
+#include <QSettings>
 #include <QShortcut>
 #include <QSlider>
 #include <QStackedWidget>
@@ -441,6 +445,11 @@ void BenchMainWindow::buildMpdStatusControls() {
     mpd_add_next_selection_action_->setObjectName(QStringLiteral("action-mpd-add-next-selection"));
     connect(mpd_add_next_selection_action_, &QAction::triggered, this,
             [this] { mpd_controller_->addUris(selectedMpdQueueUris(), true); });
+    mpd_load_local_action_ = new QAction(QIcon::fromTheme(QStringLiteral("folder-open")),
+                                         QStringLiteral("Load as local files"), this);
+    mpd_load_local_action_->setObjectName(QStringLiteral("action-mpd-load-local"));
+    connect(mpd_load_local_action_, &QAction::triggered, this,
+            [this] { loadMpdUrisAsLocalFiles(selectedMpdQueueUris()); });
     mpd_go_to_artist_action_ = new QAction(QStringLiteral("Go to artist"), this);
     mpd_go_to_artist_action_->setObjectName(QStringLiteral("action-mpd-go-to-artist"));
     connect(mpd_go_to_artist_action_, &QAction::triggered, this, [this] {
@@ -855,8 +864,10 @@ void BenchMainWindow::buildMpdWorkspace() {
 }
 
 void BenchMainWindow::activateMpdLibraryAction(const QModelIndex& index, const int action) {
-    if (!index.isValid() || action < static_cast<int>(MpdLibraryAction::append) ||
-        action > static_cast<int>(MpdLibraryAction::replace)) {
+    const auto load_local = action == static_cast<int>(MpdLibraryAction::load_local);
+    if (!index.isValid() ||
+        (!load_local && (action < static_cast<int>(MpdLibraryAction::append) ||
+                         action > static_cast<int>(MpdLibraryAction::replace)))) {
         return;
     }
     server_library_view_->setCurrentIndex(index);
@@ -883,6 +894,10 @@ void BenchMainWindow::activateMpdLibraryAction(const QModelIndex& index, const i
         uris.push_back(displayText(track.uri));
     }
     const auto requested = static_cast<MpdLibraryAction>(action);
+    if (requested == MpdLibraryAction::load_local) {
+        loadMpdUrisAsLocalFiles(uris);
+        return;
+    }
     if (requested == MpdLibraryAction::replace) {
         mpd_controller_->replaceQueueWithUris(uris);
     } else {
@@ -948,6 +963,16 @@ void BenchMainWindow::showMpdLibraryContextMenu(const QPoint& position) {
             }
         });
     }
+    mpd_library_context_menu_->addSeparator();
+    auto* load_local = mpd_library_context_menu_->addAction(
+        QIcon::fromTheme(QStringLiteral("folder-open")), QStringLiteral("Load as local files"));
+    load_local->setObjectName(QStringLiteral("action-mpd-library-load-local"));
+    load_local->setEnabled(command_ready);
+    connect(load_local, &QAction::triggered, this, [this, target] {
+        if (target.isValid()) {
+            activateMpdLibraryAction(target, static_cast<int>(MpdLibraryAction::load_local));
+        }
+    });
     if (server_library_model_->hasChildren(index)) {
         mpd_library_context_menu_->addSeparator();
         auto* expand = mpd_library_context_menu_->addAction(server_library_view_->isExpanded(index)
@@ -1378,6 +1403,60 @@ QStringList BenchMainWindow::selectedMpdQueueUris() const {
         }
     }
     return uris;
+}
+
+// Resolves MPD URIs below the configured music folder and opens the hits
+// as ordinary local files in a fresh tab (ADR-0112) — from there tagging,
+// conversion, and ReplayGain behave exactly like any local selection.
+void BenchMainWindow::loadMpdUrisAsLocalFiles(const QStringList& uris) {
+    if (uris.isEmpty()) {
+        return;
+    }
+    const QSettings settings;
+    const auto root =
+        settings.value(QLatin1String(SettingsDialog::music_root_key)).toString().trimmed();
+    if (root.isEmpty()) {
+        statusBar()->showMessage(
+            QStringLiteral("Set the MPD music folder in Edit → Settings… first"), 5'000);
+        return;
+    }
+    const QDir root_directory{root};
+    std::vector<std::string> paths;
+    paths.reserve(static_cast<std::size_t>(uris.size()));
+    int missing = 0;
+    for (const auto& uri : uris) {
+        const auto local = root_directory.filePath(uri);
+        if (!QFileInfo::exists(local)) {
+            ++missing;
+            continue;
+        }
+        const auto encoded = QFile::encodeName(local);
+        paths.emplace_back(encoded.constData(), static_cast<std::size_t>(encoded.size()));
+    }
+    if (paths.empty()) {
+        statusBar()->showMessage(
+            QStringLiteral("None of the selected tracks exist under %1").arg(root), 5'000);
+        return;
+    }
+    addListTab(
+        persistence::ListDocument{
+            .id = core::StableId::random(),
+            .kind = persistence::ListKind::scratch,
+            .name = "Local files",
+            .pinned = false,
+            .dirty = false,
+            .items = {},
+        },
+        true);
+    openLocalPaths(std::move(paths));
+    if (missing > 0) {
+        statusBar()->showMessage(QStringLiteral("%1 track%2 not found under %3")
+                                     .arg(missing)
+                                     .arg(missing == 1 ? QString{} : QStringLiteral("s"))
+                                     .arg(root),
+                                 5'000);
+    }
+    schedulePersist();
 }
 
 void BenchMainWindow::refreshMpdPriorityMenu() {

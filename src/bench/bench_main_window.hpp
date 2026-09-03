@@ -83,6 +83,7 @@ class BenchMainWindow final : public QMainWindow {
     BenchMainWindow& operator=(const BenchMainWindow&) = delete;
 
     void openLocalPaths(std::vector<std::string> raw_paths);
+    void loadMpdUrisAsLocalFiles(const QStringList& uris);
 
   protected:
     void closeEvent(QCloseEvent* event) override;
@@ -171,6 +172,7 @@ class BenchMainWindow final : public QMainWindow {
     void playCurrentRow();
     void showMetadataProperties();
     void showConvertDialog();
+    void showSettingsDialog();
     void startMetadataOperationRecovery();
     [[nodiscard]] MusicBrainzLookupService musicBrainzLookupService();
     void finishMetadataOperationJob();
@@ -273,7 +275,7 @@ class BenchMainWindow final : public QMainWindow {
     bool mpd_view_layout_persistence_protected_{false};
     std::vector<persistence::ConnectionProfile> mpd_profiles_;
     bool mpd_was_connected_{false};
-    enum class MpdLibraryAction : std::uint8_t { append, next, replace, insert };
+    enum class MpdLibraryAction : std::uint8_t { append, next, replace, insert, load_local };
     std::optional<MpdLibraryAction> pending_mpd_library_action_;
     QPersistentModelIndex pending_mpd_library_index_;
     int pending_mpd_library_insertion_row_{-1};
@@ -294,6 +296,7 @@ class BenchMainWindow final : public QMainWindow {
     QAction* play_selected_action_{nullptr};
     QAction* properties_action_{nullptr};
     QAction* convert_action_{nullptr};
+    QAction* mpd_load_local_action_{nullptr};
     QAction* remove_selected_action_{nullptr};
     QAction* folder_add_to_list_action_{nullptr};
     QAction* folder_toggle_expanded_action_{nullptr};
