@@ -11,8 +11,30 @@
 #include <string>
 #include <vector>
 
+namespace {
+
+QtMessageHandler default_message_handler = nullptr;
+
+// Qt's Wayland backend logs a mouse-grab complaint on every ordinary
+// menu-bar interaction while a menu is open (upstream QTBUG-87303 family);
+// the navigation itself works, so the known-noise line is dropped and
+// everything else reaches the default handler untouched.
+void filtered_message_handler(const QtMsgType type, const QMessageLogContext& context,
+                              const QString& message) {
+    if (message ==
+        QLatin1String("This plugin supports grabbing the mouse only for popup windows")) {
+        return;
+    }
+    if (default_message_handler != nullptr) {
+        default_message_handler(type, context, message);
+    }
+}
+
+} // namespace
+
 int main(int argc, char** argv) {
     QApplication application(argc, argv);
+    default_message_handler = qInstallMessageHandler(filtered_message_handler);
     QApplication::setOrganizationName(QStringLiteral("trackknife"));
     QApplication::setApplicationName(QStringLiteral("trackbench"));
     QApplication::setApplicationDisplayName(QStringLiteral("Trackbench"));
