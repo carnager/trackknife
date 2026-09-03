@@ -1,0 +1,44 @@
+# Maintainer: Rasi <rasmus.steinke@gmail.com>
+pkgname=trackbench-git
+pkgver=r1
+pkgrel=1
+pkgdesc="Audio tagging, conversion, and library workstation (Trackknife project, built from HEAD)"
+arch=(x86_64)
+url="https://github.com/carnager/trackknife"
+license=(GPL-3.0-only)
+depends=(ffmpeg libebur128 libmpdclient libopenmpt libutf8proc pipewire qt6-base sqlite taglib)
+makedepends=(cmake git ninja)
+optdepends=('chromaprint: AcoustID fingerprinting in the MusicBrainz Identify dialog')
+provides=(trackbench)
+conflicts=(trackbench)
+source=("trackknife::git+ssh://git@github.com/carnager/trackknife.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd trackknife
+  printf "r%s.g%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd trackknife
+  # Packaging must not fail on warnings a future compiler invents.
+  cmake --preset release -DTRACKKNIFE_WARNINGS_AS_ERRORS=OFF
+  cmake --build build/release
+}
+
+check() {
+  cd trackknife/build/release
+  QT_QPA_PLATFORM=offscreen ctest --output-on-failure
+}
+
+package() {
+  cd trackknife
+  install -Dm755 build/release/src/bench/trackbench "$pkgdir/usr/bin/trackbench"
+  install -Dm755 build/release/src/tools/trackknife-titleformat \
+    "$pkgdir/usr/bin/trackknife-titleformat"
+  install -Dm755 build/release/src/tools/trackknife-mpd-probe \
+    "$pkgdir/usr/bin/trackknife-mpd-probe"
+  install -Dm644 packaging/arch/trackbench.desktop \
+    "$pkgdir/usr/share/applications/trackbench.desktop"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
