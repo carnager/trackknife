@@ -21,7 +21,7 @@
 namespace trackknife::persistence {
 namespace {
 
-constexpr unsigned current_schema_version = 26U;
+constexpr unsigned current_schema_version = 27U;
 constexpr std::size_t maximum_documents = 1'024U;
 constexpr std::size_t maximum_items_per_document = 1'000'000U;
 constexpr std::size_t maximum_fields_per_item = 4'096U;
@@ -30,6 +30,7 @@ constexpr std::size_t maximum_cached_sources = 1'000'000U;
 constexpr std::size_t maximum_source_relocations = 1'000'000U;
 constexpr std::size_t maximum_metadata_transformation_chains = 256U;
 constexpr std::size_t maximum_output_layout_profiles = 256U;
+constexpr std::size_t maximum_encoder_presets = 256U;
 constexpr std::size_t maximum_destination_profiles = 256U;
 
 [[nodiscard]] bool valid_provenance(const metadata::FieldProvenance provenance) {
@@ -843,6 +844,21 @@ read_optional_revision(sqlite3_stmt* statement, const int first,
             return result;
         }
     }
+    if (version <= 26) {
+        constexpr auto migration =
+            "CREATE TABLE encoder_presets ("
+            "id TEXT PRIMARY KEY NOT NULL, preset_id BLOB NOT NULL, "
+            "preset_version INTEGER NOT NULL CHECK(preset_version >= 1), "
+            "display_name BLOB NOT NULL UNIQUE, codec_name BLOB NOT NULL, "
+            "container_name BLOB NOT NULL, file_extension BLOB NOT NULL, "
+            "lossless INTEGER NOT NULL CHECK(lossless IN (0, 1)), "
+            "bit_rate INTEGER, vbr_quality INTEGER, sample_format_hint BLOB NOT NULL);"
+            "UPDATE schema_version SET version = 27;";
+        if (auto result = execute(database, migration); !result) {
+            rollback();
+            return result;
+        }
+    }
     if (auto result = execute(database, "COMMIT"); !result) {
         rollback();
         return result;
@@ -1256,6 +1272,50 @@ validate_saved_destination_profile(const SavedDestinationProfile& saved_profile)
         });
     }
     return operations::validate_destination_profile(saved_profile.profile);
+}
+
+[[nodiscard]] core::Result<void>
+validate_saved_encoder_preset(const SavedEncoderPreset& saved_preset) {
+    const auto invalid = [](std::string message) {
+        return std::unexpected(core::Error{.code = core::ErrorCode::invalid_argument,
+                                           .message = std::move(message),
+                                           .context = {}});
+    };
+    if (saved_preset.id.is_nil()) {
+        return invalid("Saved encoder presets require a non-nil ID");
+    }
+    const auto& preset = saved_preset.preset;
+    if (preset.id.empty() || preset.id.size() > 128U) {
+        return invalid("Encoder preset identifiers must be 1-128 bytes");
+    }
+    if (preset.display_name.empty() || preset.display_name.size() > 1'024U) {
+        return invalid("Encoder preset names must be 1-1024 bytes");
+    }
+    if (preset.codec_name.empty() || preset.codec_name.size() > 128U ||
+        preset.container_name.empty() || preset.container_name.size() > 128U) {
+        return invalid("Encoder preset codec and container names must be 1-128 bytes");
+    }
+    if (preset.file_extension.empty() || preset.file_extension.size() > 32U ||
+        preset.file_extension.find('/') != std::string::npos ||
+        preset.file_extension.find('.') != std::string::npos) {
+        return invalid("Encoder preset extensions must be 1-32 bytes without separators");
+    }
+    if (preset.version < 1) {
+        return invalid("Encoder preset versions start at 1");
+    }
+    if (preset.bit_rate && preset.vbr_quality) {
+        return invalid("Encoder presets choose bit rate or VBR quality, never both");
+    }
+    if (preset.bit_rate && (*preset.bit_rate < 8'000 || *preset.bit_rate > 2'000'000)) {
+        return invalid("Encoder preset bit rates must be 8-2000 kbps");
+    }
+    if (preset.vbr_quality && (*preset.vbr_quality < -2 || *preset.vbr_quality > 12)) {
+        return invalid("Encoder preset VBR qualities must be between -2 and 12");
+    }
+    if (preset.sample_format_hint.size() > 32U) {
+        return invalid("Encoder preset sample-format hints must be at most 32 bytes");
+    }
+    return {};
 }
 
 } // namespace
@@ -3898,6 +3958,209 @@ core::Result<void> ListRepository::remove_destination_profile(const core::Stable
             .code = core::ErrorCode::not_found,
             .message = "Saved destination was not found",
             .context = {{"profile_id", encoded}},
+        });
+    }
+    if (auto result = execute(database, "COMMIT"); !result) {
+        rollback();
+        return result;
+    }
+    return {};
+}
+
+core::Result<std::vector<SavedEncoderPreset>> ListRepository::load_encoder_presets() const {
+    auto* database = implementation_->database;
+    auto statement =
+        prepare(database, "SELECT id, preset_id, preset_version, display_name, codec_name, "
+                          "container_name, file_extension, lossless, bit_rate, vbr_quality, "
+                          "sample_format_hint FROM encoder_presets ORDER BY display_name, id");
+    if (!statement) {
+        return std::unexpected(std::move(statement.error()));
+    }
+    std::vector<SavedEncoderPreset> presets;
+    int result = SQLITE_ROW;
+    while ((result = sqlite3_step(statement->get())) == SQLITE_ROW) {
+        const auto id_text = column_text(statement->get(), 0);
+        auto id = core::StableId::parse(id_text);
+        const auto preset_version = sqlite3_column_int64(statement->get(), 2);
+        const auto lossless = sqlite3_column_int64(statement->get(), 7);
+        if (!id || id->is_nil() || preset_version < 1 ||
+            preset_version > std::numeric_limits<int>::max() || (lossless != 0 && lossless != 1) ||
+            presets.size() >= maximum_encoder_presets) {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::database,
+                .message = "Invalid persisted encoder preset",
+                .context = {{"preset_id", id_text}},
+            });
+        }
+        SavedEncoderPreset preset{
+            .id = *id,
+            .preset =
+                convert::EncoderPreset{
+                    .id = column_blob(statement->get(), 1),
+                    .version = static_cast<int>(preset_version),
+                    .display_name = column_blob(statement->get(), 3),
+                    .codec_name = column_blob(statement->get(), 4),
+                    .container_name = column_blob(statement->get(), 5),
+                    .file_extension = column_blob(statement->get(), 6),
+                    .lossless = lossless == 1,
+                    .bit_rate = sqlite3_column_type(statement->get(), 8) == SQLITE_NULL
+                                    ? std::nullopt
+                                    : std::optional{static_cast<std::int64_t>(
+                                          sqlite3_column_int64(statement->get(), 8))},
+                    .vbr_quality = sqlite3_column_type(statement->get(), 9) == SQLITE_NULL
+                                       ? std::nullopt
+                                       : std::optional{static_cast<int>(
+                                             sqlite3_column_int64(statement->get(), 9))},
+                    .sample_format_hint = column_blob(statement->get(), 10),
+                },
+        };
+        if (auto valid = validate_saved_encoder_preset(preset); !valid) {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::database,
+                .message = "Persisted encoder preset failed validation: " + valid.error().message,
+                .context = {{"preset_id", id_text}},
+            });
+        }
+        presets.push_back(std::move(preset));
+    }
+    if (result != SQLITE_DONE) {
+        return std::unexpected(database_error(database, "Could not load encoder presets"));
+    }
+    return presets;
+}
+
+core::Result<void> ListRepository::upsert_encoder_preset(const SavedEncoderPreset& saved_preset) {
+    if (auto valid = validate_saved_encoder_preset(saved_preset); !valid) {
+        return valid;
+    }
+    auto* database = implementation_->database;
+    if (auto result = execute(database, "BEGIN IMMEDIATE"); !result) {
+        return result;
+    }
+    const auto rollback = [database] { static_cast<void>(execute(database, "ROLLBACK")); };
+    const auto id = saved_preset.id.to_string();
+    auto count =
+        prepare(database, "SELECT COUNT(*), EXISTS(SELECT 1 FROM encoder_presets WHERE id = ?) "
+                          "FROM encoder_presets");
+    if (!count || !bind_text(count->get(), 1, id) || sqlite3_step(count->get()) != SQLITE_ROW) {
+        auto error = count ? database_error(database, "Could not count encoder presets")
+                           : std::move(count.error());
+        rollback();
+        return std::unexpected(std::move(error));
+    }
+    const auto preset_count = sqlite3_column_int64(count->get(), 0);
+    const auto already_exists = sqlite3_column_int(count->get(), 1) != 0;
+    count->reset();
+    if (!already_exists && preset_count >= static_cast<sqlite3_int64>(maximum_encoder_presets)) {
+        rollback();
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::limit_exceeded,
+            .message = "At most 256 encoder presets can be saved",
+            .context = {},
+        });
+    }
+    auto name = prepare(database, "SELECT id FROM encoder_presets WHERE display_name = ?");
+    if (!name || !bind_blob(name->get(), 1, saved_preset.preset.display_name)) {
+        auto error = name ? database_error(database, "Could not bind encoder preset name")
+                          : std::move(name.error());
+        rollback();
+        return std::unexpected(std::move(error));
+    }
+    const auto name_result = sqlite3_step(name->get());
+    const auto name_owner =
+        name_result == SQLITE_ROW ? std::optional{column_text(name->get(), 0)} : std::nullopt;
+    name->reset();
+    if (name_owner && *name_owner != id) {
+        rollback();
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::conflict,
+            .message = "A saved encoder preset already uses that exact name",
+            .context = {{"name", saved_preset.preset.display_name}},
+        });
+    }
+    if (name_result != SQLITE_ROW && name_result != SQLITE_DONE) {
+        auto error = database_error(database, "Could not check encoder preset name");
+        rollback();
+        return std::unexpected(std::move(error));
+    }
+    const auto& preset = saved_preset.preset;
+    auto statement = prepare(
+        database,
+        "INSERT INTO encoder_presets(id, preset_id, preset_version, display_name, codec_name, "
+        "container_name, file_extension, lossless, bit_rate, vbr_quality, sample_format_hint) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(id) DO UPDATE SET preset_id=excluded.preset_id, "
+        "preset_version=excluded.preset_version, display_name=excluded.display_name, "
+        "codec_name=excluded.codec_name, container_name=excluded.container_name, "
+        "file_extension=excluded.file_extension, lossless=excluded.lossless, "
+        "bit_rate=excluded.bit_rate, vbr_quality=excluded.vbr_quality, "
+        "sample_format_hint=excluded.sample_format_hint");
+    const auto bind_optional_int = [](sqlite3_stmt* target, const int column,
+                                      const std::optional<std::int64_t> value) {
+        return value ? sqlite3_bind_int64(target, column, *value) == SQLITE_OK
+                     : sqlite3_bind_null(target, column) == SQLITE_OK;
+    };
+    if (!statement || !bind_text(statement->get(), 1, id) ||
+        !bind_blob(statement->get(), 2, preset.id) ||
+        sqlite3_bind_int64(statement->get(), 3, preset.version) != SQLITE_OK ||
+        !bind_blob(statement->get(), 4, preset.display_name) ||
+        !bind_blob(statement->get(), 5, preset.codec_name) ||
+        !bind_blob(statement->get(), 6, preset.container_name) ||
+        !bind_blob(statement->get(), 7, preset.file_extension) ||
+        sqlite3_bind_int64(statement->get(), 8, preset.lossless ? 1 : 0) != SQLITE_OK ||
+        !bind_optional_int(statement->get(), 9, preset.bit_rate) ||
+        !bind_optional_int(statement->get(), 10,
+                           preset.vbr_quality
+                               ? std::optional{static_cast<std::int64_t>(*preset.vbr_quality)}
+                               : std::nullopt) ||
+        !bind_blob(statement->get(), 11, preset.sample_format_hint)) {
+        auto error = statement ? database_error(database, "Could not bind encoder preset")
+                               : std::move(statement.error());
+        rollback();
+        return std::unexpected(std::move(error));
+    }
+    if (auto result = step_done(database, statement->get(), "Could not store encoder preset");
+        !result) {
+        rollback();
+        return result;
+    }
+    if (auto result = execute(database, "COMMIT"); !result) {
+        rollback();
+        return result;
+    }
+    return {};
+}
+
+core::Result<void> ListRepository::remove_encoder_preset(const core::StableId& id) {
+    if (id.is_nil()) {
+        return std::unexpected(core::Error{.code = core::ErrorCode::invalid_argument,
+                                           .message = "A saved encoder preset ID cannot be nil",
+                                           .context = {}});
+    }
+    auto* database = implementation_->database;
+    if (auto result = execute(database, "BEGIN IMMEDIATE"); !result) {
+        return result;
+    }
+    const auto rollback = [database] { static_cast<void>(execute(database, "ROLLBACK")); };
+    auto statement = prepare(database, "DELETE FROM encoder_presets WHERE id = ?");
+    const auto encoded = id.to_string();
+    if (!statement || !bind_text(statement->get(), 1, encoded)) {
+        auto error = statement ? database_error(database, "Could not bind encoder preset deletion")
+                               : std::move(statement.error());
+        rollback();
+        return std::unexpected(std::move(error));
+    }
+    if (auto result = step_done(database, statement->get(), "Could not remove encoder preset");
+        !result) {
+        rollback();
+        return result;
+    }
+    if (sqlite3_changes(database) != 1) {
+        rollback();
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::not_found,
+            .message = "Saved encoder preset was not found",
+            .context = {{"preset_id", encoded}},
         });
     }
     if (auto result = execute(database, "COMMIT"); !result) {

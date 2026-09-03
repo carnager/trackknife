@@ -2979,12 +2979,31 @@ void BenchMainWindowTest::convertDialogPlansAndConvertsSelection() {
                 .containment_policy = {"lexical-beneath-root", 1U},
             },
     }};
-    auto* dialog =
-        new ConvertDialog({make_item(loud_path, QStringLiteral("Loud"), QStringLiteral("01")),
-                           make_item(quiet_path, QStringLiteral("Quiet"), QStringLiteral("02"))},
-                          [&saved_layouts, &saved_destinations](auto completion) {
-                              completion(saved_layouts, saved_destinations, QString{});
-                          });
+    std::vector<persistence::SavedEncoderPreset> preset_catalog;
+    ConvertPresetStore preset_store{
+        .load =
+            [&preset_catalog](ConvertPresetStore::LoadCompletion completion) {
+                completion(preset_catalog, QString{});
+            },
+        .save =
+            [&preset_catalog](persistence::SavedEncoderPreset preset,
+                              ConvertPresetStore::Completion completion) {
+                preset_catalog.push_back(std::move(preset));
+                completion(QString{});
+            },
+        .remove =
+            [&preset_catalog](const core::StableId id, ConvertPresetStore::Completion completion) {
+                std::erase_if(preset_catalog, [&id](const auto& entry) { return entry.id == id; });
+                completion(QString{});
+            },
+    };
+    auto* dialog = new ConvertDialog(
+        {make_item(loud_path, QStringLiteral("Loud"), QStringLiteral("01")),
+         make_item(quiet_path, QStringLiteral("Quiet"), QStringLiteral("02"))},
+        [&saved_layouts, &saved_destinations](auto completion) {
+            completion(saved_layouts, saved_destinations, QString{});
+        },
+        preset_store);
     dialog->show();
 
     auto* preset = dialog->findChild<QComboBox*>(QStringLiteral("bench-convert-preset"));
@@ -3018,14 +3037,53 @@ void BenchMainWindowTest::convertDialogPlansAndConvertsSelection() {
     QTest::keyClick(names, Qt::Key_X);
     QCOMPARE(layout_choice->currentIndex(), 0);
 
+    // A new encoder preset saves from the editor, joins the combo as a
+    // selectable profile, and deletes again; built-ins are untouched.
+    const auto builtin_count = preset->count();
+    auto* preset_new = dialog->findChild<QPushButton*>(QStringLiteral("bench-convert-preset-new"));
+    auto* preset_delete =
+        dialog->findChild<QPushButton*>(QStringLiteral("bench-convert-preset-delete"));
+    QVERIFY(preset_new != nullptr && preset_delete != nullptr);
+    QVERIFY(!preset_delete->isVisible());
+    QTest::mouseClick(preset_new, Qt::LeftButton);
+    auto* editor = dialog->findChild<QDialog*>(QStringLiteral("bench-preset-editor"));
+    QVERIFY(editor != nullptr);
+    auto* editor_name = editor->findChild<QLineEdit*>(QStringLiteral("bench-preset-editor-name"));
+    auto* editor_format =
+        editor->findChild<QComboBox*>(QStringLiteral("bench-preset-editor-format"));
+    auto* editor_bitrate =
+        editor->findChild<QSpinBox*>(QStringLiteral("bench-preset-editor-bitrate"));
+    auto* editor_buttons =
+        editor->findChild<QDialogButtonBox*>(QStringLiteral("bench-preset-editor-buttons"));
+    QVERIFY(editor_name != nullptr && editor_format != nullptr && editor_bitrate != nullptr &&
+            editor_buttons != nullptr);
+    QVERIFY(!editor_buttons->button(QDialogButtonBox::Save)->isEnabled());
+    editor_name->setText(QStringLiteral("Phone Opus"));
+    editor_format->setCurrentIndex(1);
+    editor_bitrate->setValue(96);
+    QVERIFY(editor_buttons->button(QDialogButtonBox::Save)->isEnabled());
+    QTest::mouseClick(editor_buttons->button(QDialogButtonBox::Save), Qt::LeftButton);
+    QTRY_COMPARE(preset_catalog.size(), 1U);
+    QCOMPARE(preset_catalog.front().preset.codec_name, std::string{"libopus"});
+    QCOMPARE(preset_catalog.front().preset.bit_rate, std::optional<std::int64_t>{96'000});
+    // Separator + the saved preset, selected as the current choice.
+    QTRY_COMPARE(preset->count(), builtin_count + 2);
+    QCOMPARE(preset->currentText(), QStringLiteral("Phone Opus"));
+    QTRY_VERIFY(preset_delete->isVisible());
+    QTest::mouseClick(preset_delete, Qt::LeftButton);
+    QTRY_VERIFY(preset_catalog.empty());
+    QTRY_COMPARE(preset->count(), builtin_count);
+    QTRY_VERIFY(!preset_delete->isVisible());
+
     preset->setCurrentIndex(preset->findData(QStringLiteral("opus-192")));
     root->setText(destination.path());
     directories->setText(QStringLiteral("%album%"));
     names->setText(QStringLiteral("%tracknumber% - %title%"));
-    QTRY_VERIFY(run->isEnabled());
+    QTRY_VERIFY(preview->count() > 0 &&
+                preview->item(0)->text() == QStringLiteral("Converted Album/01 - Loud.opus"));
     QCOMPARE(preview->count(), 2);
-    QCOMPARE(preview->item(0)->text(), QStringLiteral("Converted Album/01 - Loud.opus"));
     QCOMPARE(preview->item(1)->text(), QStringLiteral("Converted Album/02 - Quiet.opus"));
+    QTRY_VERIFY(run->isEnabled());
 
     // A colliding layout blocks Convert with a problems-only explanation.
     names->setText(QStringLiteral("same"));

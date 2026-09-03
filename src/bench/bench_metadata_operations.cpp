@@ -318,6 +318,35 @@ void BenchMainWindow::showConvertDialog() {
             }
             persistence_service->loadOutputProfiles(std::move(completion));
         },
+        ConvertPresetStore{
+            .load =
+                [persistence_service](ConvertPresetStore::LoadCompletion completion) {
+                    if (persistence_service == nullptr) {
+                        completion({}, QStringLiteral("Trackbench persistence is unavailable"));
+                        return;
+                    }
+                    persistence_service->loadEncoderPresets(std::move(completion));
+                },
+            .save =
+                [persistence_service](persistence::SavedEncoderPreset preset,
+                                      ConvertPresetStore::Completion completion) {
+                    if (persistence_service == nullptr) {
+                        completion(QStringLiteral("Trackbench persistence is unavailable"));
+                        return;
+                    }
+                    persistence_service->saveEncoderPreset(std::move(preset),
+                                                           std::move(completion));
+                },
+            .remove =
+                [persistence_service](core::StableId id,
+                                      ConvertPresetStore::Completion completion) {
+                    if (persistence_service == nullptr) {
+                        completion(QStringLiteral("Trackbench persistence is unavailable"));
+                        return;
+                    }
+                    persistence_service->removeEncoderPreset(id, std::move(completion));
+                },
+        },
         this);
     dialog->show();
 }

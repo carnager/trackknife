@@ -1293,9 +1293,14 @@ afterwards is a separate explicit command in Trackbench's MPD authority.
   track context menu, restores the regular menu bar (hamburger button
   removed), and offers the app's saved naming layouts and destination
   roots inside the converter as one-click, still-editable choices.
-- Next: user-defined encoder profiles, mirror-source-structure
-  destination mode, artwork carriage, bit-depth/dither policy, and
-  stale-ReplayGain handling on signal change.
+- Done: ADR-0108 lands saved encoder presets: user-defined profiles in
+  the workspace database (migration 27) listed beside the immutable
+  built-ins, created from a prefilled editor where editing always
+  saves a new profile, constrained to the qualified encode formats
+  with one rate control, and deletable when saved.
+- Next: mirror-source-structure destination mode, artwork carriage,
+  bit-depth/dither policy, and stale-ReplayGain handling on signal
+  change.
 
 ### Exit criteria
 

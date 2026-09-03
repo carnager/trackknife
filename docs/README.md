@@ -9,8 +9,8 @@ The ordered delivery plan is [`../MILESTONES.md`](../MILESTONES.md).
 
 ## Current continuation point
 
-M5 is closing into M6, implementation is accepted through ADR-0107, and the persistence
-schema is version 26. In-app MusicBrainz identification is end-to-end: Properties'
+M5 is closing into M6, implementation is accepted through ADR-0108, and the persistence
+schema is version 27. In-app MusicBrainz identification is end-to-end: Properties'
 Identify… opens a no-id text-search dialog whose ranked rows are individual
 release versions, and the chosen version stages as one undoable colored draft
 through the ADR-0086 preview, fetched via a lazy cache-first paced service.
@@ -115,7 +115,8 @@ Start metadata and file-operation work with
 [`adr/0104-grouped-numbering-transformation.md`](adr/0104-grouped-numbering-transformation.md),
 [`adr/0105-qualified-audio-conversion-core.md`](adr/0105-qualified-audio-conversion-core.md),
 [`adr/0106-conversion-metadata-and-parallel-scan.md`](adr/0106-conversion-metadata-and-parallel-scan.md),
-and [`adr/0107-trackbench-converter-dialog.md`](adr/0107-trackbench-converter-dialog.md).
+[`adr/0107-trackbench-converter-dialog.md`](adr/0107-trackbench-converter-dialog.md),
+and [`adr/0108-saved-encoder-presets.md`](adr/0108-saved-encoder-presets.md).
 The development, ASan/UBSan, TSan, and clang-tidy builds and their complete
 55/55 test suites pass at this continuation point (validated 2026-09-03).
 The TSan-only bench test shim routes Qt 6.9+'s uninstrumented

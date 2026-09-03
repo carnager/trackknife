@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "trackknife/convert/preset.hpp"
 #include "trackknife/core/local_sources.hpp"
 #include "trackknife/core/result.hpp"
 #include "trackknife/core/stable_id.hpp"
@@ -122,6 +123,15 @@ struct SavedDestinationProfile {
                            const SavedDestinationProfile&) = default;
 };
 
+// A user-defined encode target beside the built-in presets. Editing any
+// preset saves a new profile; built-ins are immutable.
+struct SavedEncoderPreset {
+    core::StableId id;
+    convert::EncoderPreset preset;
+
+    friend bool operator==(const SavedEncoderPreset&, const SavedEncoderPreset&) = default;
+};
+
 struct LocalMetadataRefresh {
     core::StableId operation_id;
     std::string source_reference;
@@ -204,6 +214,10 @@ class ListRepository final {
     [[nodiscard]] core::Result<void>
     upsert_destination_profile(const SavedDestinationProfile& saved_profile);
     [[nodiscard]] core::Result<void> remove_destination_profile(const core::StableId& id);
+
+    [[nodiscard]] core::Result<std::vector<SavedEncoderPreset>> load_encoder_presets() const;
+    [[nodiscard]] core::Result<void> upsert_encoder_preset(const SavedEncoderPreset& saved_preset);
+    [[nodiscard]] core::Result<void> remove_encoder_preset(const core::StableId& id);
 
   private:
     struct Impl;

@@ -22,6 +22,7 @@
 #include <vector>
 
 class QComboBox;
+class QFormLayout;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -46,6 +47,19 @@ using ConvertProfilesLoader = std::function<void(
     std::function<void(std::vector<persistence::SavedOutputLayoutProfile>,
                        std::vector<persistence::SavedDestinationProfile>, QString)>)>;
 
+// Saved encoder presets beside the built-ins: load populates the preset
+// combo, save persists a new profile (editing always saves a new one —
+// built-ins are immutable), remove deletes a saved profile.
+struct ConvertPresetStore {
+    using LoadCompletion =
+        std::function<void(std::vector<persistence::SavedEncoderPreset>, QString)>;
+    using Completion = std::function<void(QString)>;
+
+    std::function<void(LoadCompletion)> load;
+    std::function<void(persistence::SavedEncoderPreset, Completion)> save;
+    std::function<void(core::StableId, Completion)> remove;
+};
+
 // Converts the current selection below a destination root (ADR-0107):
 // preset choice with probed availability, a tkfmt-1 naming layout with a
 // live target preview, and a direct bounded parallel conversion with
@@ -55,7 +69,8 @@ class ConvertDialog final : public QDialog {
 
   public:
     explicit ConvertDialog(std::vector<ConvertDialogItem> items,
-                           ConvertProfilesLoader profiles = {}, QWidget* parent = nullptr);
+                           ConvertProfilesLoader profiles = {},
+                           ConvertPresetStore preset_store = {}, QWidget* parent = nullptr);
     ~ConvertDialog() override;
 
   protected:
@@ -69,11 +84,20 @@ class ConvertDialog final : public QDialog {
 
     void applySavedLayout(int combo_index);
     void applySavedDestination(int combo_index);
+    void reloadPresets(const QString& select_data);
+    void rebuildPresetCombo(const QString& select_data);
+    void openPresetEditor();
+    void deleteSelectedPreset();
 
     std::vector<ConvertDialogItem> items_;
     std::vector<persistence::SavedOutputLayoutProfile> layout_catalog_;
     std::vector<persistence::SavedDestinationProfile> destination_catalog_;
+    ConvertPresetStore preset_store_;
+    std::vector<persistence::SavedEncoderPreset> saved_presets_;
+    QFormLayout* form_{nullptr};
     QComboBox* preset_{nullptr};
+    QPushButton* preset_new_{nullptr};
+    QPushButton* preset_delete_{nullptr};
     QComboBox* layout_choice_{nullptr};
     QComboBox* destination_choice_{nullptr};
     QLineEdit* destination_{nullptr};

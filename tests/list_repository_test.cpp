@@ -101,7 +101,7 @@ void list_documents_round_trip_transactionally() {
         }
         require(opened.has_value(), "list repository must create and migrate a new database");
         auto repository = std::move(*opened);
-        require(repository.schema_version() == 26U, "state repository schema must be explicit");
+        require(repository.schema_version() == 27U, "state repository schema must be explicit");
         require(repository.replace_all(expected).has_value(),
                 "valid list documents must commit in one transaction");
         require(repository.load_all() == expected,
@@ -467,7 +467,7 @@ void output_layout_and_destination_profiles_round_trip_transactionally() {
         auto opened = persistence::ListRepository::open(database_path);
         require(opened.has_value(), "output-profile repository must open");
         auto repository = std::move(*opened);
-        require(repository.schema_version() == 26U,
+        require(repository.schema_version() == 27U,
                 "output profiles must survive the explicit schema-18 migration");
         require(repository.upsert_output_layout_profile(expected_layout).has_value() &&
                     repository.upsert_destination_profile(expected_destination).has_value(),
@@ -536,6 +536,103 @@ void output_layout_and_destination_profiles_round_trip_transactionally() {
                     !missing_destination &&
                     missing_destination.error().code == core::ErrorCode::not_found,
                 "deleting absent output profiles must report not-found");
+    }
+    cleanup();
+}
+
+void encoder_presets_round_trip_transactionally() {
+    namespace core = trackknife::core;
+    namespace convert = trackknife::convert;
+    namespace persistence = trackknife::persistence;
+    const auto database_path =
+        std::filesystem::temp_directory_path() /
+        ("trackknife-encoder-presets-" + core::StableId::random().to_string() + ".sqlite3");
+    const auto cleanup = [&database_path] {
+        std::error_code ignored;
+        std::filesystem::remove(database_path, ignored);
+        std::filesystem::remove(database_path.string() + "-wal", ignored);
+        std::filesystem::remove(database_path.string() + "-shm", ignored);
+    };
+    cleanup();
+
+    const auto opus_id = core::StableId::random();
+    const auto flac_id = core::StableId::random();
+    const persistence::SavedEncoderPreset custom_opus{
+        .id = opus_id,
+        .preset =
+            convert::EncoderPreset{
+                .id = opus_id.to_string(),
+                .version = 1,
+                .display_name = "Opus for the car",
+                .codec_name = "libopus",
+                .container_name = "opus",
+                .file_extension = "opus",
+                .lossless = false,
+                .bit_rate = 96'000,
+                .vbr_quality = std::nullopt,
+                .sample_format_hint = {},
+            },
+    };
+    const persistence::SavedEncoderPreset custom_flac{
+        .id = flac_id,
+        .preset =
+            convert::EncoderPreset{
+                .id = flac_id.to_string(),
+                .version = 1,
+                .display_name = "Archive FLAC",
+                .codec_name = "flac",
+                .container_name = "flac",
+                .file_extension = "flac",
+                .lossless = true,
+                .bit_rate = std::nullopt,
+                .vbr_quality = std::nullopt,
+                .sample_format_hint = "s32",
+            },
+    };
+    {
+        auto opened = persistence::ListRepository::open(database_path);
+        require(opened.has_value(), "encoder-preset repository must open");
+        auto repository = std::move(*opened);
+        require(repository.load_encoder_presets().value_or(
+                    std::vector<persistence::SavedEncoderPreset>{{}}) ==
+                    std::vector<persistence::SavedEncoderPreset>{},
+                "a fresh repository has no encoder presets");
+        require(repository.upsert_encoder_preset(custom_opus).has_value(),
+                "custom opus preset must save");
+        require(repository.upsert_encoder_preset(custom_flac).has_value(),
+                "custom flac preset must save");
+
+        auto name_clash = custom_flac;
+        name_clash.id = core::StableId::random();
+        name_clash.preset.id = name_clash.id.to_string();
+        const auto clashed = repository.upsert_encoder_preset(name_clash);
+        require(!clashed.has_value() &&
+                    clashed.error().code == trackknife::core::ErrorCode::conflict,
+                "duplicate encoder preset names must conflict");
+
+        auto both_rates = custom_opus;
+        both_rates.preset.vbr_quality = 2;
+        require(!repository.upsert_encoder_preset(both_rates).has_value(),
+                "bit rate and VBR quality together must be rejected");
+    }
+    {
+        auto reopened = persistence::ListRepository::open(database_path);
+        require(reopened.has_value(), "encoder-preset repository must reopen");
+        const auto loaded = reopened->load_encoder_presets();
+        require(loaded.has_value() && loaded->size() == 2U,
+                "both encoder presets survive a restart");
+        require(loaded && loaded->front() == custom_flac && loaded->back() == custom_opus,
+                "encoder presets reload exactly, ordered by name");
+        require(reopened->remove_encoder_preset(opus_id).has_value(),
+                "encoder preset removal must succeed");
+        const auto missing = reopened->remove_encoder_preset(opus_id);
+        require(!missing.has_value() &&
+                    missing.error().code == trackknife::core::ErrorCode::not_found,
+                "removing a removed encoder preset reports not_found");
+        const auto remaining = reopened->load_encoder_presets();
+        require(remaining.has_value() && remaining->size() == 1U &&
+                    remaining->front() == custom_flac,
+                "the remaining encoder preset is intact");
     }
     cleanup();
 }
@@ -1087,7 +1184,7 @@ void committed_source_relocation_rekeys_every_occurrence_and_stale_snapshot() {
                 repository.load_all() == loaded,
             "a persisted target collision must reject the complete relocation transaction");
     auto reopened = persistence::ListRepository::open(database_path);
-    require(reopened && reopened->schema_version() == 26U && reopened->load_all() == loaded,
+    require(reopened && reopened->schema_version() == 27U && reopened->load_all() == loaded,
             "relocation evidence and resolved paths must survive reopening schema 18");
 
     cleanup();
@@ -1416,6 +1513,7 @@ int main() {
     list_documents_round_trip_transactionally();
     metadata_transformation_chains_round_trip_transactionally();
     output_layout_and_destination_profiles_round_trip_transactionally();
+    encoder_presets_round_trip_transactionally();
     committed_metadata_refreshes_every_occurrence_idempotently();
     committed_source_relocation_rekeys_every_occurrence_and_stale_snapshot();
     unowned_target_metadata_cache_is_superseded_by_relocation();

@@ -309,6 +309,66 @@ void ListPersistenceService::loadOutputProfiles(OutputProfilesCallback callback)
     });
 }
 
+void ListPersistenceService::loadEncoderPresets(EncoderPresetsCallback callback) {
+    const QPointer self{this};
+    invokeQueued(worker_, [self, state = state_, callback = std::move(callback)]() mutable {
+        std::vector<persistence::SavedEncoderPreset> presets;
+        QString error = state->initialization_error;
+        if (error.isEmpty() && !state->repository) {
+            error = QStringLiteral("List persistence is not initialized");
+        } else if (error.isEmpty()) {
+            if (auto loaded = state->repository->load_encoder_presets(); loaded) {
+                presets = std::move(*loaded);
+            } else {
+                error = errorText(loaded.error());
+            }
+        }
+        if (!self || !callback) {
+            return;
+        }
+        invokeQueued(self, [callback = std::move(callback), presets = std::move(presets),
+                            error]() mutable { callback(std::move(presets), error); });
+    });
+}
+
+void ListPersistenceService::saveEncoderPreset(persistence::SavedEncoderPreset preset,
+                                               CompletionCallback callback) {
+    const QPointer self{this};
+    invokeQueued(worker_, [self, state = state_, preset = std::move(preset),
+                           callback = std::move(callback)]() mutable {
+        QString error = state->initialization_error;
+        if (error.isEmpty() && !state->repository) {
+            error = QStringLiteral("List persistence is not initialized");
+        } else if (error.isEmpty()) {
+            if (auto stored = state->repository->upsert_encoder_preset(preset); !stored) {
+                error = errorText(stored.error());
+            }
+        }
+        if (!self || !callback) {
+            return;
+        }
+        invokeQueued(self, [callback = std::move(callback), error]() mutable { callback(error); });
+    });
+}
+
+void ListPersistenceService::removeEncoderPreset(core::StableId id, CompletionCallback callback) {
+    const QPointer self{this};
+    invokeQueued(worker_, [self, state = state_, id, callback = std::move(callback)]() mutable {
+        QString error = state->initialization_error;
+        if (error.isEmpty() && !state->repository) {
+            error = QStringLiteral("List persistence is not initialized");
+        } else if (error.isEmpty()) {
+            if (auto removed = state->repository->remove_encoder_preset(id); !removed) {
+                error = errorText(removed.error());
+            }
+        }
+        if (!self || !callback) {
+            return;
+        }
+        invokeQueued(self, [callback = std::move(callback), error]() mutable { callback(error); });
+    });
+}
+
 void ListPersistenceService::saveOutputLayoutProfile(persistence::SavedOutputLayoutProfile profile,
                                                      CompletionCallback callback) {
     const QPointer self{this};

@@ -7,6 +7,7 @@
 
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -23,6 +24,8 @@
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
 
+#include <algorithm>
+#include <array>
 #include <filesystem>
 #include <system_error>
 #include <utility>
@@ -38,11 +41,143 @@ constexpr int preview_limit = 200;
     return value.isEmpty() ? fallback : value;
 }
 
+// One fixed encode format per row keeps user presets inside the qualified
+// encoder set; the rate controls adapt to the chosen format.
+struct EditorFormat {
+    const char* label;
+    const char* codec;
+    const char* container;
+    const char* extension;
+    bool lossless;
+    const char* sample_format_hint;
+};
+
+constexpr std::array<EditorFormat, 4> editor_formats{{
+    {"FLAC (lossless)", "flac", "flac", "flac", true, "s32"},
+    {"Opus", "libopus", "opus", "opus", false, ""},
+    {"MP3", "libmp3lame", "mp3", "mp3", false, ""},
+    {"Ogg Vorbis", "libvorbis", "ogg", "ogg", false, ""},
+}};
+
 } // namespace
 
+// Creates a new saved preset, prefilled from whichever preset was selected;
+// built-ins stay immutable, so "editing" always saves a new profile.
+class EncoderPresetEditor final : public QDialog {
+  public:
+    explicit EncoderPresetEditor(const convert::EncoderPreset& base, QWidget* parent)
+        : QDialog(parent) {
+        setWindowTitle(QStringLiteral("New encoder preset"));
+        setObjectName(QStringLiteral("bench-preset-editor"));
+        auto* form = new QFormLayout(this);
+
+        name_ = new QLineEdit(this);
+        name_->setObjectName(QStringLiteral("bench-preset-editor-name"));
+        name_->setPlaceholderText(QStringLiteral("Preset name"));
+        form->addRow(QStringLiteral("Name:"), name_);
+
+        format_ = new QComboBox(this);
+        format_->setObjectName(QStringLiteral("bench-preset-editor-format"));
+        for (const auto& entry : editor_formats) {
+            format_->addItem(QLatin1String(entry.label));
+        }
+        form->addRow(QStringLiteral("Format:"), format_);
+
+        rate_mode_ = new QComboBox(this);
+        rate_mode_->setObjectName(QStringLiteral("bench-preset-editor-rate-mode"));
+        rate_mode_->addItem(QStringLiteral("Bit rate"));
+        rate_mode_->addItem(QStringLiteral("VBR quality"));
+        form->addRow(QStringLiteral("Rate control:"), rate_mode_);
+
+        bitrate_ = new QSpinBox(this);
+        bitrate_->setObjectName(QStringLiteral("bench-preset-editor-bitrate"));
+        bitrate_->setRange(8, 2'000);
+        bitrate_->setSuffix(QStringLiteral(" kbps"));
+        bitrate_->setValue(192);
+        form->addRow(QStringLiteral("Bit rate:"), bitrate_);
+
+        quality_ = new QSpinBox(this);
+        quality_->setObjectName(QStringLiteral("bench-preset-editor-quality"));
+        quality_->setRange(-2, 12);
+        quality_->setValue(4);
+        form->addRow(QStringLiteral("Quality:"), quality_);
+
+        auto* buttons =
+            new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, this);
+        buttons->setObjectName(QStringLiteral("bench-preset-editor-buttons"));
+        connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+        form->addRow(buttons);
+        save_button_ = buttons->button(QDialogButtonBox::Save);
+
+        const auto refresh_controls = [this] {
+            const auto& entry = editor_formats[static_cast<std::size_t>(format_->currentIndex())];
+            rate_mode_->setEnabled(!entry.lossless);
+            const auto quality_mode = rate_mode_->currentIndex() == 1;
+            bitrate_->setEnabled(!entry.lossless && !quality_mode);
+            quality_->setEnabled(!entry.lossless && quality_mode);
+            save_button_->setEnabled(!name_->text().trimmed().isEmpty());
+        };
+        connect(format_, &QComboBox::currentIndexChanged, this, refresh_controls);
+        connect(rate_mode_, &QComboBox::currentIndexChanged, this, refresh_controls);
+        connect(name_, &QLineEdit::textChanged, this, refresh_controls);
+
+        // Prefill from the selected preset.
+        for (std::size_t index = 0U; index < editor_formats.size(); ++index) {
+            if (editor_formats[index].codec == base.codec_name) {
+                format_->setCurrentIndex(static_cast<int>(index));
+                break;
+            }
+        }
+        if (base.vbr_quality) {
+            rate_mode_->setCurrentIndex(1);
+            quality_->setValue(*base.vbr_quality);
+        } else if (base.bit_rate) {
+            rate_mode_->setCurrentIndex(0);
+            bitrate_->setValue(static_cast<int>(*base.bit_rate / 1'000));
+        }
+        refresh_controls();
+    }
+
+    [[nodiscard]] persistence::SavedEncoderPreset result() const {
+        const auto id = core::StableId::random();
+        const auto& entry = editor_formats[static_cast<std::size_t>(format_->currentIndex())];
+        persistence::SavedEncoderPreset saved;
+        saved.id = id;
+        saved.preset = convert::EncoderPreset{
+            .id = id.to_string(),
+            .version = 1,
+            .display_name = name_->text().trimmed().toStdString(),
+            .codec_name = entry.codec,
+            .container_name = entry.container,
+            .file_extension = entry.extension,
+            .lossless = entry.lossless,
+            .bit_rate = std::nullopt,
+            .vbr_quality = std::nullopt,
+            .sample_format_hint = entry.sample_format_hint,
+        };
+        if (!entry.lossless) {
+            if (rate_mode_->currentIndex() == 1) {
+                saved.preset.vbr_quality = quality_->value();
+            } else {
+                saved.preset.bit_rate = static_cast<std::int64_t>(bitrate_->value()) * 1'000;
+            }
+        }
+        return saved;
+    }
+
+  private:
+    QLineEdit* name_{nullptr};
+    QComboBox* format_{nullptr};
+    QComboBox* rate_mode_{nullptr};
+    QSpinBox* bitrate_{nullptr};
+    QSpinBox* quality_{nullptr};
+    QPushButton* save_button_{nullptr};
+};
+
 ConvertDialog::ConvertDialog(std::vector<ConvertDialogItem> items, ConvertProfilesLoader profiles,
-                             QWidget* parent)
-    : QDialog(parent), items_(std::move(items)) {
+                             ConvertPresetStore preset_store, QWidget* parent)
+    : QDialog(parent), items_(std::move(items)), preset_store_(std::move(preset_store)) {
     setWindowTitle(QStringLiteral("Convert %1 file%2")
                        .arg(items_.size())
                        .arg(items_.size() == 1U ? QString{} : QStringLiteral("s")));
@@ -53,25 +188,28 @@ ConvertDialog::ConvertDialog(std::vector<ConvertDialogItem> items, ConvertProfil
     const QSettings settings;
     auto* layout = new QVBoxLayout(this);
     auto* form = new QFormLayout;
+    form_ = form;
 
+    auto* preset_row = new QHBoxLayout;
     preset_ = new QComboBox(this);
     preset_->setObjectName(QStringLiteral("bench-convert-preset"));
-    const auto saved_preset = settings.value(QStringLiteral("convert/preset")).toString();
-    for (const auto& preset : convert::builtin_encoder_presets()) {
-        preset_->addItem(displayText(preset.display_name), displayText(preset.id));
-        const auto availability = convert::probe_encoder_preset(preset);
-        if (!availability.available) {
-            const auto row = preset_->count() - 1;
-            auto* model = qobject_cast<QStandardItemModel*>(preset_->model());
-            if (model != nullptr && model->item(row) != nullptr) {
-                model->item(row)->setEnabled(false);
-                model->item(row)->setToolTip(displayText(availability.detail));
-            }
-        } else if (displayText(preset.id) == saved_preset) {
-            preset_->setCurrentIndex(preset_->count() - 1);
-        }
+    preset_row->addWidget(preset_, 1);
+    preset_new_ = new QPushButton(QStringLiteral("New…"), this);
+    preset_new_->setObjectName(QStringLiteral("bench-convert-preset-new"));
+    preset_new_->setToolTip(
+        QStringLiteral("Save a new encoder preset starting from the selected one"));
+    connect(preset_new_, &QPushButton::clicked, this, &ConvertDialog::openPresetEditor);
+    preset_row->addWidget(preset_new_);
+    preset_delete_ = new QPushButton(QStringLiteral("Delete"), this);
+    preset_delete_->setObjectName(QStringLiteral("bench-convert-preset-delete"));
+    preset_delete_->setVisible(false);
+    connect(preset_delete_, &QPushButton::clicked, this, &ConvertDialog::deleteSelectedPreset);
+    preset_row->addWidget(preset_delete_);
+    form->addRow(QStringLiteral("Preset:"), preset_row);
+    rebuildPresetCombo(settings.value(QStringLiteral("convert/preset")).toString());
+    if (!preset_store_.load) {
+        preset_new_->setVisible(false);
     }
-    form->addRow(QStringLiteral("Preset:"), preset_);
 
     auto* destination_row = new QHBoxLayout;
     destination_choice_ = new QComboBox(this);
@@ -101,9 +239,9 @@ ConvertDialog::ConvertDialog(std::vector<ConvertDialogItem> items, ConvertProfil
     layout_choice_ = new QComboBox(this);
     layout_choice_->setObjectName(QStringLiteral("bench-convert-layout"));
     layout_choice_->addItem(QStringLiteral("Custom"));
-    layout_choice_->setVisible(false);
     connect(layout_choice_, &QComboBox::activated, this, &ConvertDialog::applySavedLayout);
     form->addRow(QStringLiteral("Layout:"), layout_choice_);
+    form->setRowVisible(layout_choice_, false);
 
     directory_expression_ = new QLineEdit(this);
     directory_expression_->setObjectName(QStringLiteral("bench-convert-directory-expression"));
@@ -170,6 +308,12 @@ ConvertDialog::ConvertDialog(std::vector<ConvertDialogItem> items, ConvertProfil
     connect(directory_expression_, &QLineEdit::textChanged, this, schedule);
     connect(basename_expression_, &QLineEdit::textChanged, this, schedule);
     connect(preset_, &QComboBox::currentIndexChanged, this, schedule);
+    connect(preset_, &QComboBox::currentIndexChanged, this, [this] {
+        const auto chosen = preset_->currentData().toString().toStdString();
+        const auto saved = std::ranges::any_of(
+            saved_presets_, [&chosen](const auto& entry) { return entry.preset.id == chosen; });
+        preset_delete_->setVisible(saved && preset_store_.remove != nullptr);
+    });
     // Hand-editing an expression or the root leaves the saved choice.
     connect(directory_expression_, &QLineEdit::textEdited, this,
             [this] { layout_choice_->setCurrentIndex(0); });
@@ -191,7 +335,7 @@ ConvertDialog::ConvertDialog(std::vector<ConvertDialogItem> items, ConvertProfil
             for (const auto& saved : self->layout_catalog_) {
                 self->layout_choice_->addItem(displayText(saved.profile.name));
             }
-            self->layout_choice_->setVisible(!self->layout_catalog_.empty());
+            self->form_->setRowVisible(self->layout_choice_, !self->layout_catalog_.empty());
             for (const auto& destination : self->destination_catalog_) {
                 self->destination_choice_->addItem(displayText(destination.profile.name));
             }
@@ -199,7 +343,112 @@ ConvertDialog::ConvertDialog(std::vector<ConvertDialogItem> items, ConvertProfil
         });
     }
 
+    reloadPresets(preset_->currentData().toString());
+
     refreshPreview();
+}
+
+// The combo lists the immutable built-ins first, then the user's saved
+// presets; unavailable encoders stay visible but disabled with the probe
+// detail as tooltip.
+void ConvertDialog::rebuildPresetCombo(const QString& select_data) {
+    const QSignalBlocker blocker{preset_};
+    preset_->clear();
+    const auto add_preset = [this](const convert::EncoderPreset& preset) {
+        preset_->addItem(displayText(preset.display_name), displayText(preset.id));
+        const auto availability = convert::probe_encoder_preset(preset);
+        if (!availability.available) {
+            const auto row = preset_->count() - 1;
+            auto* model = qobject_cast<QStandardItemModel*>(preset_->model());
+            if (model != nullptr && model->item(row) != nullptr) {
+                model->item(row)->setEnabled(false);
+                model->item(row)->setToolTip(displayText(availability.detail));
+            }
+        }
+    };
+    for (const auto& preset : convert::builtin_encoder_presets()) {
+        add_preset(preset);
+    }
+    if (!saved_presets_.empty()) {
+        preset_->insertSeparator(preset_->count());
+        for (const auto& saved : saved_presets_) {
+            add_preset(saved.preset);
+        }
+    }
+    const auto position = preset_->findData(select_data);
+    preset_->setCurrentIndex(position >= 0 ? position : 0);
+    const auto chosen = preset_->currentData().toString().toStdString();
+    const auto saved_selected = std::ranges::any_of(
+        saved_presets_, [&chosen](const auto& entry) { return entry.preset.id == chosen; });
+    preset_delete_->setVisible(saved_selected && preset_store_.remove != nullptr);
+}
+
+void ConvertDialog::reloadPresets(const QString& select_data) {
+    if (!preset_store_.load) {
+        return;
+    }
+    const QPointer self{this};
+    preset_store_.load([self, select_data](std::vector<persistence::SavedEncoderPreset> presets,
+                                           const QString& error) {
+        if (self == nullptr) {
+            return;
+        }
+        if (!error.isEmpty()) {
+            self->status_->setText(error);
+            return;
+        }
+        self->saved_presets_ = std::move(presets);
+        self->rebuildPresetCombo(select_data);
+        self->refreshPreview();
+    });
+}
+
+void ConvertDialog::openPresetEditor() {
+    if (!preset_store_.save) {
+        return;
+    }
+    const auto base = selectedPreset();
+    auto* editor = new EncoderPresetEditor(base ? *base : convert::EncoderPreset{}, this);
+    editor->setAttribute(Qt::WA_DeleteOnClose);
+    connect(editor, &QDialog::accepted, this, [this, editor] {
+        if (!preset_store_.save) {
+            return;
+        }
+        auto saved = editor->result();
+        const auto select = displayText(saved.preset.id);
+        const QPointer self{this};
+        preset_store_.save(std::move(saved), [self, select](const QString& error) {
+            if (self == nullptr) {
+                return;
+            }
+            if (!error.isEmpty()) {
+                self->status_->setText(error);
+                return;
+            }
+            self->reloadPresets(select);
+        });
+    });
+    editor->open();
+}
+
+void ConvertDialog::deleteSelectedPreset() {
+    const auto chosen = preset_->currentData().toString().toStdString();
+    const auto found = std::ranges::find_if(
+        saved_presets_, [&chosen](const auto& entry) { return entry.preset.id == chosen; });
+    if (found == saved_presets_.end() || !preset_store_.remove) {
+        return;
+    }
+    const QPointer self{this};
+    preset_store_.remove(found->id, [self](const QString& error) {
+        if (self == nullptr) {
+            return;
+        }
+        if (!error.isEmpty()) {
+            self->status_->setText(error);
+            return;
+        }
+        self->reloadPresets({});
+    });
 }
 
 // Selecting a saved naming layout fills the expressions; they stay editable
@@ -238,7 +487,13 @@ void ConvertDialog::closeEvent(QCloseEvent* event) {
 }
 
 std::optional<convert::EncoderPreset> ConvertDialog::selectedPreset() const {
-    return convert::find_encoder_preset(preset_->currentData().toString().toStdString());
+    const auto chosen = preset_->currentData().toString().toStdString();
+    if (auto builtin = convert::find_encoder_preset(chosen)) {
+        return builtin;
+    }
+    const auto found = std::ranges::find_if(
+        saved_presets_, [&chosen](const auto& entry) { return entry.preset.id == chosen; });
+    return found != saved_presets_.end() ? std::optional{found->preset} : std::nullopt;
 }
 
 void ConvertDialog::refreshPreview() {

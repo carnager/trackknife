@@ -34,6 +34,8 @@ class ListPersistenceService final : public QObject {
     using OutputProfilesCallback =
         std::function<void(std::vector<persistence::SavedOutputLayoutProfile>,
                            std::vector<persistence::SavedDestinationProfile>, QString)>;
+    using EncoderPresetsCallback =
+        std::function<void(std::vector<persistence::SavedEncoderPreset>, QString)>;
 
     explicit ListPersistenceService(std::filesystem::path database_path, QObject* parent = nullptr);
     ~ListPersistenceService() override;
@@ -58,6 +60,10 @@ class ListPersistenceService final : public QObject {
     void saveDestinationProfile(persistence::SavedDestinationProfile profile,
                                 CompletionCallback callback = {});
     void removeDestinationProfile(core::StableId id, CompletionCallback callback = {});
+    void loadEncoderPresets(EncoderPresetsCallback callback);
+    void saveEncoderPreset(persistence::SavedEncoderPreset preset,
+                           CompletionCallback callback = {});
+    void removeEncoderPreset(core::StableId id, CompletionCallback callback = {});
     void loadUiState(QString key, UiStateCallback callback);
     void saveUiState(QString key, QByteArray value, CompletionCallback callback = {});
 
