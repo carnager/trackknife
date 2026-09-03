@@ -410,6 +410,14 @@ void MpdProbeController::cropQueueToItems(const QVariantList& rows) {
     emit stateChanged();
 }
 
+void MpdProbeController::updateDatabase(const QString& uri) {
+    if (!session_ || !connected_) {
+        return;
+    }
+    pending_commands_.insert(session_->update_database(uri.toUtf8().toStdString()));
+    emit stateChanged();
+}
+
 void MpdProbeController::clearQueue() {
     if (!session_ || !connected_ || queue_model_.rowCount() == 0) {
         return;

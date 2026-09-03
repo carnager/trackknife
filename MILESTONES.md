@@ -1367,7 +1367,9 @@ handoff to Local Queue playback.
    update stays an explicit MPD action afterwards (ADR-0058). ADR-0112
    delivered the first piece: a global music-root setting plus explicit
    "Load as local files" from the MPD queue and server library into a
-   local tab.
+   local tab, and its addendum added the explicit companion: "Update
+   this folder in MPD" on library nodes, scoped to the common directory
+   prefix of the node's files.
 
 ### Exit criteria
 

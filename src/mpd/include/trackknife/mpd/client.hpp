@@ -113,6 +113,8 @@ class Client final {
     [[nodiscard]] core::Result<void> delete_id(std::uint32_t song_id);
     [[nodiscard]] core::Result<void> delete_ids(std::span<const std::uint32_t> song_ids);
     [[nodiscard]] core::Result<void> clear_queue();
+    // Requests a database update scoped to the URI; empty updates everything.
+    [[nodiscard]] core::Result<void> update_database(const std::string& uri);
     [[nodiscard]] core::Result<void> move_id(std::uint32_t song_id, unsigned position);
     [[nodiscard]] core::Result<void> move_ids(std::span<const QueueMove> moves);
     [[nodiscard]] core::Result<void> set_priority_id(std::uint32_t song_id, unsigned priority);

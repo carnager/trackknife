@@ -150,6 +150,8 @@ class MpdProbeController final : public QObject {
     Q_INVOKABLE void removeQueueItems(const QVariantList& rows);
     Q_INVOKABLE void cropQueueToItems(const QVariantList& rows);
     Q_INVOKABLE void clearQueue();
+    // Asks MPD to update its database below uri; empty updates everything.
+    Q_INVOKABLE void updateDatabase(const QString& uri);
     Q_INVOKABLE void moveQueueItem(int row, int target_row);
     Q_INVOKABLE void moveQueueItems(const QVariantList& rows, int insertion_row);
     Q_INVOKABLE void setQueuePriority(const QVariantList& rows, int priority);

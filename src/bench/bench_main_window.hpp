@@ -275,7 +275,14 @@ class BenchMainWindow final : public QMainWindow {
     bool mpd_view_layout_persistence_protected_{false};
     std::vector<persistence::ConnectionProfile> mpd_profiles_;
     bool mpd_was_connected_{false};
-    enum class MpdLibraryAction : std::uint8_t { append, next, replace, insert, load_local };
+    enum class MpdLibraryAction : std::uint8_t {
+        append,
+        next,
+        replace,
+        insert,
+        load_local,
+        update_directory,
+    };
     std::optional<MpdLibraryAction> pending_mpd_library_action_;
     QPersistentModelIndex pending_mpd_library_index_;
     int pending_mpd_library_insertion_row_{-1};

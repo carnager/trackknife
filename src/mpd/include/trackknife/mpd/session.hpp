@@ -47,6 +47,7 @@ enum class SessionCommandKind {
     queue_move,
     queue_move_batch,
     queue_priority,
+    database_update,
     database_browse,
     database_tag,
     database_tag_tracks,
@@ -126,6 +127,7 @@ class Session final {
     [[nodiscard]] std::uint64_t move_queue_ids(std::vector<QueueMove> moves);
     [[nodiscard]] std::uint64_t set_queue_priority(std::vector<std::uint32_t> song_ids,
                                                    unsigned priority);
+    [[nodiscard]] std::uint64_t update_database(std::string uri);
     [[nodiscard]] std::uint64_t browse(std::string uri = {});
     [[nodiscard]] std::uint64_t list_tag(std::string tag);
     [[nodiscard]] std::uint64_t find_tag_tracks(std::string tag, std::string value,

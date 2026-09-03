@@ -998,6 +998,14 @@ core::Result<void> Client::delete_ids(const std::span<const std::uint32_t> song_
     return {};
 }
 
+core::Result<void> Client::update_database(const std::string& uri) {
+    if (mpd_run_update(implementation_->connection.get(), uri.empty() ? nullptr : uri.c_str()) ==
+        0U) {
+        return std::unexpected(implementation_->take_error("update"));
+    }
+    return {};
+}
+
 core::Result<void> Client::clear_queue() {
     if (!mpd_run_clear(implementation_->connection.get())) {
         return std::unexpected(implementation_->take_error("clear"));

@@ -230,6 +230,8 @@ class FakeMpdServer final {
                    command.starts_with("playlistclear ") || command.starts_with("rename ") ||
                    command.starts_with("rm ") || command == "clear") {
             write_all(client, "OK\n");
+        } else if (command.starts_with("update")) {
+            write_all(client, "updating_db: 7\nOK\n");
         } else if (command == "ping") {
             write_all(client, "OK\n");
         } else if (command == "idle") {
@@ -422,6 +424,10 @@ void client_negotiates_and_preserves_extensions() {
                 missing_delete.error().code == trackknife::core::ErrorCode::not_found,
             "MPD no-exist ACKs must retain a recoverable typed error");
     require(client.clear_queue().has_value(), "queue clear must use the command connection");
+    require(client.update_database("Some Artist").has_value(),
+            "a scoped database update must reach the server");
+    require(client.update_database({}).has_value(),
+            "an unscoped database update must reach the server");
     require(client.move_id(9U, 0U).has_value(), "queue move must address the stable song ID");
     const std::array moves{
         trackknife::mpd::QueueMove{.song_id = 7U, .position = 1U},

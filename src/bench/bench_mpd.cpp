@@ -863,11 +863,42 @@ void BenchMainWindow::buildMpdWorkspace() {
             });
 }
 
+// The tag-organized library only reaches MPD's path-scoped update through
+// its files: the common directory prefix of a node's track URIs is the
+// folder that provably contains everything the node showed.
+namespace {
+[[nodiscard]] QString commonMpdDirectory(const QStringList& uris) {
+    QStringList common;
+    bool first = true;
+    for (const auto& uri : uris) {
+        const auto slash = uri.lastIndexOf(QLatin1Char('/'));
+        auto components = slash <= 0 ? QStringList{}
+                                     : uri.left(slash).split(QLatin1Char('/'), Qt::SkipEmptyParts);
+        if (first) {
+            common = std::move(components);
+            first = false;
+            continue;
+        }
+        qsizetype shared = 0;
+        while (shared < common.size() && shared < components.size() &&
+               common[shared] == components[shared]) {
+            ++shared;
+        }
+        common = common.mid(0, shared);
+        if (common.isEmpty()) {
+            break;
+        }
+    }
+    return common.join(QLatin1Char('/'));
+}
+} // namespace
+
 void BenchMainWindow::activateMpdLibraryAction(const QModelIndex& index, const int action) {
-    const auto load_local = action == static_cast<int>(MpdLibraryAction::load_local);
+    const auto local_actions = action == static_cast<int>(MpdLibraryAction::load_local) ||
+                               action == static_cast<int>(MpdLibraryAction::update_directory);
     if (!index.isValid() ||
-        (!load_local && (action < static_cast<int>(MpdLibraryAction::append) ||
-                         action > static_cast<int>(MpdLibraryAction::replace)))) {
+        (!local_actions && (action < static_cast<int>(MpdLibraryAction::append) ||
+                            action > static_cast<int>(MpdLibraryAction::replace)))) {
         return;
     }
     server_library_view_->setCurrentIndex(index);
@@ -896,6 +927,15 @@ void BenchMainWindow::activateMpdLibraryAction(const QModelIndex& index, const i
     const auto requested = static_cast<MpdLibraryAction>(action);
     if (requested == MpdLibraryAction::load_local) {
         loadMpdUrisAsLocalFiles(uris);
+        return;
+    }
+    if (requested == MpdLibraryAction::update_directory) {
+        const auto directory = commonMpdDirectory(uris);
+        mpd_controller_->updateDatabase(directory);
+        statusBar()->showMessage(
+            directory.isEmpty() ? QStringLiteral("Requested an MPD update of the whole database")
+                                : QStringLiteral("Requested an MPD update of %1").arg(directory),
+            5'000);
         return;
     }
     if (requested == MpdLibraryAction::replace) {
@@ -964,6 +1004,16 @@ void BenchMainWindow::showMpdLibraryContextMenu(const QPoint& position) {
         });
     }
     mpd_library_context_menu_->addSeparator();
+    auto* update_directory =
+        mpd_library_context_menu_->addAction(QIcon::fromTheme(QStringLiteral("view-refresh")),
+                                             QStringLiteral("Update this folder in MPD"));
+    update_directory->setObjectName(QStringLiteral("action-mpd-library-update"));
+    update_directory->setEnabled(command_ready);
+    connect(update_directory, &QAction::triggered, this, [this, target] {
+        if (target.isValid()) {
+            activateMpdLibraryAction(target, static_cast<int>(MpdLibraryAction::update_directory));
+        }
+    });
     auto* load_local = mpd_library_context_menu_->addAction(
         QIcon::fromTheme(QStringLiteral("folder-open")), QStringLiteral("Load as local files"));
     load_local->setObjectName(QStringLiteral("action-mpd-library-load-local"));
