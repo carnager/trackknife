@@ -13,6 +13,8 @@ qt_add_library(
     bench_track_views.cpp
     bench_transport.cpp
     bench_workspace_layout.cpp
+    convert_dialog.cpp
+    convert_dialog.hpp
     local_list_model.cpp
     local_list_model.hpp
     metadata_artwork_section.cpp
@@ -45,7 +47,7 @@ add_library(Trackknife::BenchUi ALIAS trackknife_bench_ui)
 target_link_libraries(
     trackknife_bench_ui
     PUBLIC Qt6::Widgets Trackknife::Core Trackknife::UiCommon Trackknife::Persistence
-           Trackknife::Formats Trackknife::Loudness Trackknife::Metadata Trackknife::MusicBrainz
+           Trackknife::Convert Trackknife::Formats Trackknife::Loudness Trackknife::Metadata Trackknife::MusicBrainz
            Trackknife::Operations
            trackknife_project_options
     PRIVATE Trackknife::Audio Trackknife::MpdUi Trackknife::Ui Qt6::Concurrent Qt6::Network

@@ -228,6 +228,10 @@ void BenchMainWindow::buildWorkspace() {
     properties_action_->setEnabled(false);
     connect(properties_action_, &QAction::triggered, this,
             &BenchMainWindow::showMetadataProperties);
+    convert_action_ = edit_menu->addAction(QStringLiteral("Convert files…"));
+    convert_action_->setObjectName(QStringLiteral("action-convert-files"));
+    convert_action_->setEnabled(false);
+    connect(convert_action_, &QAction::triggered, this, &BenchMainWindow::showConvertDialog);
     edit_menu->addSeparator();
     remove_selected_action_ = edit_menu->addAction(QStringLiteral("Remove selected"));
     remove_selected_action_->setObjectName(QStringLiteral("action-remove-selected-tracks"));

@@ -3,6 +3,7 @@
 #include "bench/bench_main_window.hpp"
 
 #include "bench/bench_main_window_helpers.hpp"
+#include "bench/convert_dialog.hpp"
 #include "bench/metadata_properties_dialog.hpp"
 #include "bench/musicbrainz_fetch_service.hpp"
 #include "bench/preparation_feedback_dialog.hpp"
@@ -269,6 +270,44 @@ run_metadata_operation_job(const std::filesystem::path& database_path,
 }
 
 } // namespace
+
+void BenchMainWindow::showConvertDialog() {
+    auto* tab = currentListTab();
+    if (tab == nullptr || tab->view->selectionModel() == nullptr) {
+        return;
+    }
+    auto selected = tab->view->selectionModel()->selectedRows();
+    std::ranges::sort(selected, {}, &QModelIndex::row);
+    if (selected.empty()) {
+        return;
+    }
+    std::vector<ConvertDialogItem> items;
+    items.reserve(static_cast<std::size_t>(selected.size()));
+    for (const auto& index : selected) {
+        const auto row_index = index.row();
+        if (row_index < 0 || row_index >= static_cast<int>(tab->model->rows().size())) {
+            continue;
+        }
+        const auto& row = tab->model->rows()[static_cast<std::size_t>(row_index)];
+        auto label = tab->model->index(row_index, local_title_column).data().toString();
+        if (!row.artist.empty()) {
+            label = QStringLiteral("%1 — %2").arg(displayText(row.artist), label);
+        }
+        items.push_back(ConvertDialogItem{
+            .raw_path = row.raw_path,
+            .selection = row.selection,
+            .segment = row.segment,
+            .source_revision = row.source_revision,
+            .metadata = row.metadata,
+            .label = std::move(label),
+        });
+    }
+    if (items.empty()) {
+        return;
+    }
+    auto* dialog = new ConvertDialog(std::move(items), this);
+    dialog->show();
+}
 
 void BenchMainWindow::showMetadataProperties() {
     auto* tab = currentListTab();

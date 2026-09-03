@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "bench/bench_main_window.hpp"
+#include "bench/convert_dialog.hpp"
 #include "bench/local_list_model.hpp"
 #include "bench/metadata_grid_model.hpp"
 #include "bench/metadata_properties_dialog.hpp"
@@ -177,6 +178,7 @@ class BenchMainWindowTest final : public QObject {
     void musicBrainzIdentifyStagesChosenVersion();
     void musicBrainzFingerprintScanRanksAndStages();
     void replayGainScanStagesMeasuredGainsAsDrafts();
+    void convertDialogPlansAndConvertsSelection();
     void folderBookmarksRevealTreePaths();
     void folderBookmarksMigrateFromLibraryRoots();
     void artworkFetchesCoverArtFromArchiveAndAddsFront();
@@ -2922,6 +2924,90 @@ void write_sine_wav_fixture(const QString& path, const double amplitude) {
 }
 
 } // namespace
+
+void BenchMainWindowTest::convertDialogPlansAndConvertsSelection() {
+    QTemporaryDir media;
+    QTemporaryDir destination;
+    QVERIFY(media.isValid());
+    QVERIFY(destination.isValid());
+    const auto loud_path = media.filePath(QStringLiteral("loud.wav"));
+    const auto quiet_path = media.filePath(QStringLiteral("quiet.wav"));
+    write_sine_wav_fixture(loud_path, 0.8);
+    write_sine_wav_fixture(quiet_path, 0.2);
+
+    const auto field = [](std::string name, std::vector<std::string> values) {
+        return metadata::MetadataField{
+            .canonical_name = metadata::canonicalize_field_name(name),
+            .native_name = std::move(name),
+            .values = std::move(values),
+            .qualifier = {},
+            .provenance = metadata::FieldProvenance::embedded,
+        };
+    };
+    const auto make_item = [&field](const QString& path, const QString& title,
+                                    const QString& track) {
+        const auto encoded = QFile::encodeName(path);
+        return ConvertDialogItem{
+            .raw_path = std::string{encoded.constData(), static_cast<std::size_t>(encoded.size())},
+            .selection = {},
+            .segment = {},
+            .source_revision = {},
+            .metadata =
+                metadata::MetadataDocument{
+                    .fields = {field("TITLE", {title.toStdString()}),
+                               field("ALBUM", {"Converted Album"}),
+                               field("TRACKNUMBER", {track.toStdString()})},
+                    .unsupported_native_objects = {},
+                },
+            .label = title,
+        };
+    };
+    auto* dialog =
+        new ConvertDialog({make_item(loud_path, QStringLiteral("Loud"), QStringLiteral("01")),
+                           make_item(quiet_path, QStringLiteral("Quiet"), QStringLiteral("02"))});
+    dialog->show();
+
+    auto* preset = dialog->findChild<QComboBox*>(QStringLiteral("bench-convert-preset"));
+    auto* root = dialog->findChild<QLineEdit*>(QStringLiteral("bench-convert-destination"));
+    auto* directories =
+        dialog->findChild<QLineEdit*>(QStringLiteral("bench-convert-directory-expression"));
+    auto* names =
+        dialog->findChild<QLineEdit*>(QStringLiteral("bench-convert-basename-expression"));
+    auto* preview = dialog->findChild<QListWidget*>(QStringLiteral("bench-convert-preview"));
+    auto* run = dialog->findChild<QPushButton*>(QStringLiteral("bench-convert-run"));
+    auto* status = dialog->findChild<QLabel*>(QStringLiteral("bench-convert-status"));
+    QVERIFY(preset != nullptr && root != nullptr && directories != nullptr && names != nullptr);
+    QVERIFY(preview != nullptr && run != nullptr && status != nullptr);
+
+    preset->setCurrentIndex(preset->findData(QStringLiteral("opus-192")));
+    root->setText(destination.path());
+    directories->setText(QStringLiteral("%album%"));
+    names->setText(QStringLiteral("%tracknumber% - %title%"));
+    QTRY_VERIFY(run->isEnabled());
+    QCOMPARE(preview->count(), 2);
+    QCOMPARE(preview->item(0)->text(), QStringLiteral("Converted Album/01 - Loud.opus"));
+    QCOMPARE(preview->item(1)->text(), QStringLiteral("Converted Album/02 - Quiet.opus"));
+
+    // A colliding layout blocks Convert with a problems-only explanation.
+    names->setText(QStringLiteral("same"));
+    QTRY_VERIFY(!run->isEnabled());
+    QTRY_VERIFY(status->text().contains(QStringLiteral("target")));
+    names->setText(QStringLiteral("%tracknumber% - %title%"));
+    QTRY_VERIFY(run->isEnabled());
+
+    QTest::mouseClick(run, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(status->text().startsWith(QStringLiteral("Converted 2 of 2 files.")),
+                             15'000);
+    const auto album_dir = QDir{destination.path()}.filePath(QStringLiteral("Converted Album"));
+    QVERIFY(QFileInfo::exists(album_dir + QStringLiteral("/01 - Loud.opus")));
+    QVERIFY(QFileInfo::exists(album_dir + QStringLiteral("/02 - Quiet.opus")));
+    const auto encoded = QFile::encodeName(album_dir + QStringLiteral("/02 - Quiet.opus"));
+    const auto reread = metadata::read_local_metadata(
+        std::string{encoded.constData(), static_cast<std::size_t>(encoded.size())});
+    QVERIFY(reread.has_value());
+    QCOMPARE(reread->document.first_effective_value("title"), std::optional<std::string>{"Quiet"});
+    delete dialog;
+}
 
 void BenchMainWindowTest::replayGainScanStagesMeasuredGainsAsDrafts() {
     QTemporaryDir media;

@@ -193,6 +193,67 @@ void linuxSanitizationAndTechnicalContextAreExact() {
     CHECK(rejected && has_issue(*rejected, OutputPathPlanIssueKind::invalid_expression_output));
 }
 
+void forcedTargetExtensionRenamesAndResolvesInExpressions() {
+    using namespace trackknife::operations;
+    OutputLayoutProfile forced_layout;
+    forced_layout.name = "forced";
+    forced_layout.relative_directory_expression = "";
+    forced_layout.basename_expression = "%title%.$info(extension)-suffix";
+    const std::array items{OutputPathPlanningItem{
+        .item_index = 0U,
+        .source_raw_path = "/incoming/Original.FLAC",
+        .source_revision = revision(1U),
+        .final_metadata = document("Converted"),
+    }};
+    const auto planned = plan_output_paths(items, {.rename_files = true, .move_files = false},
+                                           forced_layout, std::nullopt, {}, {}, {},
+                                           ConvertedPublicationPolicy{.target_extension = "opus"});
+    CHECK(planned.has_value());
+    CHECK(planned && planned->ready());
+    // The expression's %extension% resolves to the forced target and the
+    // planned filename carries it instead of the source's.
+    CHECK(planned && planned->sources[0].target_raw_path == "/incoming/Converted.opus-suffix.opus");
+
+    const auto unforced = plan_output_paths(items, {.rename_files = true, .move_files = false},
+                                            forced_layout, std::nullopt);
+    CHECK(unforced.has_value());
+    CHECK(unforced &&
+          unforced->sources[0].target_raw_path == "/incoming/Converted.FLAC-suffix.FLAC");
+
+    // Cue subtracks share one physical source and fan out to one converted
+    // target per item — never merged, never a shared-source conflict.
+    OutputLayoutProfile fanout_layout;
+    fanout_layout.name = "fanout";
+    fanout_layout.relative_directory_expression = "";
+    fanout_layout.basename_expression = "%title%";
+    const std::array fanout_items{OutputPathPlanningItem{
+                                      .item_index = 0U,
+                                      .source_raw_path = "/incoming/Album Image.flac",
+                                      .source_revision = revision(1U),
+                                      .final_metadata = document("First"),
+                                  },
+                                  OutputPathPlanningItem{
+                                      .item_index = 1U,
+                                      .source_raw_path = "/incoming/Album Image.flac",
+                                      .source_revision = revision(1U),
+                                      .final_metadata = document("Second"),
+                                  }};
+    const auto fanned = plan_output_paths(fanout_items, {.rename_files = true, .move_files = false},
+                                          fanout_layout, std::nullopt, {}, {}, {},
+                                          ConvertedPublicationPolicy{.target_extension = "opus"});
+    CHECK(fanned.has_value());
+    CHECK(fanned && fanned->ready());
+    CHECK(fanned && fanned->sources.size() == 2U);
+    CHECK(fanned && fanned->sources[0].target_raw_path == "/incoming/First.opus");
+    CHECK(fanned && fanned->sources[1].target_raw_path == "/incoming/Second.opus");
+
+    // Without the converted policy the same items still merge and block.
+    const auto relocated = plan_output_paths(
+        fanout_items, {.rename_files = true, .move_files = false}, fanout_layout, std::nullopt);
+    CHECK(relocated.has_value());
+    CHECK(relocated && !relocated->ready());
+}
+
 void sharedSourcesAndPathCollisionsFailClosed() {
     using namespace trackknife::operations;
     auto flat = layout();
@@ -371,6 +432,7 @@ void validationLimitsAndCancellationRejectInvalidPlans() {
 int main() {
     renameAndMoveUseFinalMetadataAndExposeSanitization();
     independentTogglesPreserveDirectoryExtensionAndRawFilename();
+    forcedTargetExtensionRenamesAndResolvesInExpressions();
     linuxSanitizationAndTechnicalContextAreExact();
     sharedSourcesAndPathCollisionsFailClosed();
     dependenciesCaseChangesAndContainmentAreVisible();

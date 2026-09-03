@@ -170,6 +170,7 @@ class BenchMainWindow final : public QMainWindow {
     void completeMpdLibraryGoTo(const QString& artist, const QString& album);
     void playCurrentRow();
     void showMetadataProperties();
+    void showConvertDialog();
     void startMetadataOperationRecovery();
     [[nodiscard]] MusicBrainzLookupService musicBrainzLookupService();
     void finishMetadataOperationJob();
@@ -292,6 +293,7 @@ class BenchMainWindow final : public QMainWindow {
     QAction* close_tab_action_{nullptr};
     QAction* play_selected_action_{nullptr};
     QAction* properties_action_{nullptr};
+    QAction* convert_action_{nullptr};
     QAction* remove_selected_action_{nullptr};
     QAction* folder_add_to_list_action_{nullptr};
     QAction* folder_toggle_expanded_action_{nullptr};

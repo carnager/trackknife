@@ -1281,9 +1281,17 @@ afterwards is a separate explicit command in Trackbench's MPD authority.
   pull pool with per-item revision capture/recheck, isolated typed
   failures, atomic in-scan collision resolution, throttled per-item
   progress, and clean cancellation.
-- Next: destination planning for conversion (reuse the output-path
-  planner with preset extensions), artwork carriage, and the Trackbench
-  converter UI.
+- Done: ADR-0107 lands converted-publication planning and the converter
+  dialog: the output-path planner gains a ConvertedPublicationPolicy
+  (target extension in names and %extension%, cue subtracks fan out to
+  one target per logical item instead of deduplicating per source), and
+  "Convert files…" offers presets with probed availability, a
+  destination root, tkfmt-1 folder/name expressions with a debounced
+  live preview, problems-only feedback, and a cancellable parallel run
+  with persistent settings.
+- Next: mirror-source-structure destination mode, artwork carriage,
+  bit-depth/dither policy, and stale-ReplayGain handling on signal
+  change.
 
 ### Exit criteria
 

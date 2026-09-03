@@ -320,6 +320,9 @@ void BenchMainWindow::refreshSelectionStatus() {
         if (properties_action_ != nullptr) {
             properties_action_->setEnabled(false);
         }
+        if (convert_action_ != nullptr) {
+            convert_action_->setEnabled(false);
+        }
         if (mpd_queue_view_->selectionModel() == nullptr) {
             selection_status_->setText(QStringLiteral("MPD Queue"));
             return;
@@ -347,6 +350,9 @@ void BenchMainWindow::refreshSelectionStatus() {
         if (properties_action_ != nullptr) {
             properties_action_->setEnabled(false);
         }
+        if (convert_action_ != nullptr) {
+            convert_action_->setEnabled(false);
+        }
         selection_status_->setText(QStringLiteral("No tracks selected"));
         selection_status_->setToolTip({});
         return;
@@ -355,6 +361,9 @@ void BenchMainWindow::refreshSelectionStatus() {
     const auto selected = tab->view->selectionModel()->selectedRows();
     if (properties_action_ != nullptr) {
         properties_action_->setEnabled(!selected.empty());
+    }
+    if (convert_action_ != nullptr) {
+        convert_action_->setEnabled(!selected.empty());
     }
     if (selected.empty()) {
         selection_status_->setText(QStringLiteral("No tracks selected"));

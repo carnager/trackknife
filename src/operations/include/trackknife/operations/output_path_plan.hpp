@@ -152,6 +152,19 @@ validate_output_layout_profile(const OutputLayoutProfile& profile,
 validate_destination_profile(const DestinationProfile& profile,
                              const OutputPathPlanningLimits& limits = {});
 
+// Converted publication plans new files encoded from the sources rather
+// than relocations of the sources themselves: planned names carry the
+// target extension (no leading dot, and %extension% resolves to it), and
+// logical items sharing one physical source — cue subtracks of an album
+// image — legitimately fan out to one distinct target per item instead of
+// deduplicating per source file.
+struct ConvertedPublicationPolicy {
+    std::string target_extension;
+
+    friend bool operator==(const ConvertedPublicationPolicy&,
+                           const ConvertedPublicationPolicy&) = default;
+};
+
 // Pure planning boundary: callers provide the selected items, final metadata,
 // and an explicit filesystem observation snapshot. The planner performs no I/O
 // and never mutates a source.
@@ -159,6 +172,7 @@ validate_destination_profile(const DestinationProfile& profile,
     std::span<const OutputPathPlanningItem> items, OutputPathOperationSelection operations,
     OutputLayoutProfile layout, std::optional<DestinationProfile> destination,
     OutputPathPlanningSnapshot snapshot = {}, const core::CancellationToken& cancellation = {},
-    const OutputPathPlanningLimits& limits = {});
+    const OutputPathPlanningLimits& limits = {},
+    const std::optional<ConvertedPublicationPolicy>& converted = {});
 
 } // namespace trackknife::operations

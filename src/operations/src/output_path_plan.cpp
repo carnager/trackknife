@@ -97,8 +97,9 @@ compile_expression(const OutputLayoutProfile& profile, const std::string& source
 
 class PathEvaluationContext final : public titleformat::EvaluationContext {
   public:
-    PathEvaluationContext(const metadata::MetadataDocument& document, std::string_view source_path)
-        : document_(document), source_path_(source_path) {}
+    PathEvaluationContext(const metadata::MetadataDocument& document, std::string_view source_path,
+                          const std::optional<std::string>& target_extension)
+        : document_(document), source_path_(source_path), target_extension_(target_extension) {}
 
     [[nodiscard]] titleformat::FormatContextKind kind() const noexcept override {
         return titleformat::FormatContextKind::path_generation;
@@ -140,9 +141,13 @@ class PathEvaluationContext final : public titleformat::EvaluationContext {
         } else if (lowered == "filename_ext") {
             value = source.filename().native();
         } else if (lowered == "extension") {
-            value = source.extension().native();
-            if (value.starts_with('.')) {
-                value.erase(value.begin());
+            if (target_extension_) {
+                value = *target_extension_;
+            } else {
+                value = source.extension().native();
+                if (value.starts_with('.')) {
+                    value.erase(value.begin());
+                }
             }
         } else {
             return std::nullopt;
@@ -153,6 +158,7 @@ class PathEvaluationContext final : public titleformat::EvaluationContext {
   private:
     const metadata::MetadataDocument& document_;
     std::string_view source_path_;
+    const std::optional<std::string>& target_extension_;
 };
 
 struct SanitizedComponent {
@@ -352,13 +358,17 @@ core::Result<void> validate_destination_profile(const DestinationProfile& profil
     return validate_utf8(profile.name, "destination name");
 }
 
-core::Result<OutputPathPlan> plan_output_paths(const std::span<const OutputPathPlanningItem> items,
-                                               const OutputPathOperationSelection operations,
-                                               OutputLayoutProfile layout,
-                                               std::optional<DestinationProfile> destination,
-                                               OutputPathPlanningSnapshot snapshot,
-                                               const core::CancellationToken& cancellation,
-                                               const OutputPathPlanningLimits& limits) {
+core::Result<OutputPathPlan>
+plan_output_paths(const std::span<const OutputPathPlanningItem> items,
+                  const OutputPathOperationSelection operations, OutputLayoutProfile layout,
+                  std::optional<DestinationProfile> destination,
+                  OutputPathPlanningSnapshot snapshot, const core::CancellationToken& cancellation,
+                  const OutputPathPlanningLimits& limits,
+                  const std::optional<ConvertedPublicationPolicy>& converted) {
+    std::optional<std::string> target_extension;
+    if (converted) {
+        target_extension = converted->target_extension;
+    }
     if (!operations.rename_files && !operations.move_files) {
         return std::unexpected(plan_error(core::ErrorCode::invalid_argument,
                                           "output path planning requires rename or move"));
@@ -460,7 +470,8 @@ core::Result<OutputPathPlan> plan_output_paths(const std::span<const OutputPathP
             continue;
         }
 
-        const PathEvaluationContext context{input.final_metadata, input.source_raw_path};
+        const PathEvaluationContext context{input.final_metadata, input.source_raw_path,
+                                            target_extension};
         if (operations.move_files) {
             auto evaluated = titleformat::evaluate(
                 *directory_program, context,
@@ -531,9 +542,10 @@ core::Result<OutputPathPlan> plan_output_paths(const std::span<const OutputPathP
         if (operations.move_files && !sanitized_directory.value.empty()) {
             target_parent /= std::filesystem::path{sanitized_directory.value};
         }
-        const auto filename = operations.rename_files
-                                  ? sanitized_basename.value + source_path.extension().native()
-                                  : source_path.filename().native();
+        const auto target_suffix =
+            target_extension ? "." + *target_extension : source_path.extension().native();
+        const auto filename = operations.rename_files ? sanitized_basename.value + target_suffix
+                                                      : source_path.filename().native();
         const auto target = (target_parent / std::filesystem::path{filename}).lexically_normal();
         item.source.target_raw_path = target.native();
         item.source.no_change = item.source.target_raw_path == item.source.source_raw_path;
@@ -577,7 +589,10 @@ core::Result<OutputPathPlan> plan_output_paths(const std::span<const OutputPathP
             }
             plan.issues.push_back(std::move(issue));
         }
-        const auto found = source_positions.find(item.source.source_raw_path);
+        // Converted publication fans logical items out to one output each,
+        // so entries sharing a source file are independent, never merged.
+        const auto found =
+            converted ? source_positions.end() : source_positions.find(item.source.source_raw_path);
         if (found == source_positions.end()) {
             source_positions.emplace(item.source.source_raw_path, plan.sources.size());
             plan.sources.push_back(std::move(item.source));
@@ -634,7 +649,7 @@ core::Result<OutputPathPlan> plan_output_paths(const std::span<const OutputPathP
 
     std::unordered_map<PhysicalSourceKey, std::size_t, PhysicalSourceKeyHash> physical_sources;
     physical_sources.reserve(plan.sources.size());
-    for (std::size_t index = 0U; index < plan.sources.size(); ++index) {
+    for (std::size_t index = 0U; !converted && index < plan.sources.size(); ++index) {
         const auto& source = plan.sources[index];
         const PhysicalSourceKey key{.device = source.source_revision.device,
                                     .inode = source.source_revision.inode};
