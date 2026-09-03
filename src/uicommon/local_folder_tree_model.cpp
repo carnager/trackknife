@@ -6,11 +6,13 @@
 
 #include <QByteArray>
 #include <QFutureWatcher>
+#include <QIcon>
 #include <QPersistentModelIndex>
 #include <QString>
 #include <QtConcurrentRun>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <filesystem>
 #include <iterator>
@@ -35,6 +37,41 @@ constexpr std::size_t children_per_directory_limit = 10'000U;
 [[nodiscard]] QString display_path(const std::string& raw_path, const bool root) {
     const auto displayed = root ? raw_path : std::filesystem::path{raw_path}.filename().native();
     return QString::fromUtf8(core::escape_raw_path(displayed));
+}
+
+[[nodiscard]] bool hidden_entry(const std::filesystem::path& path) {
+    const auto name = path.filename().native();
+    return !name.empty() && name.front() == '.';
+}
+
+[[nodiscard]] bool audio_file_name(const std::string& raw_path) {
+    const auto dot = raw_path.rfind('.');
+    if (dot == std::string::npos) {
+        return false;
+    }
+    auto extension = raw_path.substr(dot + 1U);
+    for (auto& character : extension) {
+        if (character >= 'A' && character <= 'Z') {
+            character = static_cast<char>(character - 'A' + 'a');
+        }
+    }
+    static constexpr std::array known{"flac", "wv",  "mp3", "ogg", "opus", "m4a", "mp4",
+                                      "aac",  "ape", "mpc", "wav", "aiff", "aif", "wma",
+                                      "mka",  "dsf", "dff", "cue", "tak",  "tta", "spx"};
+    return std::ranges::find(known, extension) != known.end();
+}
+
+[[nodiscard]] QIcon entry_icon(const bool directory, const std::string& raw_path) {
+    if (directory) {
+        static const QIcon folder = QIcon::fromTheme(QStringLiteral("folder"));
+        return folder;
+    }
+    if (audio_file_name(raw_path)) {
+        static const QIcon audio = QIcon::fromTheme(QStringLiteral("audio-x-generic"));
+        return audio;
+    }
+    static const QIcon generic = QIcon::fromTheme(QStringLiteral("text-x-generic"));
+    return generic;
 }
 
 } // namespace
@@ -141,6 +178,9 @@ QVariant LocalFolderTreeModel::data(const QModelIndex& index, const int role) co
     if (role == Qt::UserRole) {
         return QByteArray{node->raw_path.data(), static_cast<qsizetype>(node->raw_path.size())};
     }
+    if (role == Qt::DecorationRole) {
+        return entry_icon(node->directory, node->raw_path);
+    }
     return {};
 }
 
@@ -212,7 +252,20 @@ void LocalFolderTreeModel::fetchMore(const QModelIndex& parent_index) {
         }
         while (iterator != end && result.entries.size() < children_per_directory_limit) {
             const auto child_path = iterator->path();
+            if (hidden_entry(child_path)) {
+                iterator.increment(error);
+                error.clear();
+                continue;
+            }
             auto raw_child = child_path.native();
+            // A music workstation's browser: directories and audio only.
+            if (!std::filesystem::is_directory(iterator->symlink_status(error)) &&
+                !audio_file_name(raw_child)) {
+                iterator.increment(error);
+                error.clear();
+                continue;
+            }
+            error.clear();
             auto status = iterator->symlink_status(error);
             if (!error && std::filesystem::is_symlink(status)) {
                 status = iterator->status(error);
@@ -239,7 +292,11 @@ void LocalFolderTreeModel::fetchMore(const QModelIndex& parent_index) {
         if (result.entries.size() == children_per_directory_limit && iterator != end) {
             result.error = "local folder contains more than 10,000 direct entries";
         }
+        // Directories first, each group in byte order.
         std::ranges::sort(result.entries, [](const auto& left, const auto& right) {
+            if (left.directory != right.directory) {
+                return left.directory;
+            }
             return raw_less(left.raw_path, right.raw_path);
         });
         return result;

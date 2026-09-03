@@ -1207,9 +1207,11 @@ quickly and correctly.
   artist / Go to album context actions asynchronously load roots, fetch
   the artist branch, and select the album with definition-aware
   matching; misses report in the status bar instead of failing silently.
-- Done: ADR-0101 adds folder bookmarks to the local Sources panel — a
-  persisted quick-access list above the lazy tree with reveal-in-tree
-  activation, add-from-tree-menu, and removal.
+- Done: ADR-0101 (with addendum) rebuilds the local Sources panel: a
+  labeled bookmarks section (old library roots migrated, home seeded)
+  above a real filesystem tree from / — hidden entries skipped,
+  directories first, audio files only, folder/audio icons, home
+  revealed at startup — with asynchronous bookmark reveal.
 - Done: ADR-0100 wires the user-facing scan. ReplayGain scan replaces the
   inert checkbox with a grouping combo (release default, selection,
   track, tkfmt-1); measurement runs off the UI thread over

@@ -14,3 +14,7 @@ race:QtPrivate::ResultStoreBase::clear<std::vector<trackknife::bench::BenchMainW
 # clears its QImage future result store on the UI thread after the worker's
 # emplaceResult, synchronized inside the uninstrumented Qt library.
 race:QtPrivate::ResultStoreBase::clear<QImage
+# Fourth inline template instance of the same gap: the folder tree clears
+# its DirectoryListing future result store on the UI thread after the
+# worker's emplaceResult, synchronized inside the uninstrumented Qt library.
+race:QtPrivate::ResultStoreBase::clear<trackknife::ui::LocalFolderTreeModel::DirectoryListing

@@ -349,6 +349,7 @@ class BenchMainWindow final : public QMainWindow {
     QWidget* folders_panel_{nullptr};
     QLabel* source_heading_{nullptr};
     QListWidget* folder_bookmarks_{nullptr};
+    QLabel* folder_bookmarks_heading_{nullptr};
     QMenu* folder_bookmark_menu_{nullptr};
     QAction* folder_bookmark_add_action_{nullptr};
     QAction* folder_bookmark_remove_action_{nullptr};

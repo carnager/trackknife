@@ -640,17 +640,14 @@ void BenchMainWindow::openFolderDialog() {
 }
 
 void BenchMainWindow::addFolderRoot() {
-    const auto folder =
-        QFileDialog::getExistingDirectory(this, QStringLiteral("Add library folder"));
+    const auto folder = QFileDialog::getExistingDirectory(this, QStringLiteral("Bookmark folder"));
     if (folder.isEmpty()) {
         return;
     }
     const auto encoded = QFile::encodeName(folder);
-    folder_model_->addRoot({encoded.constData(), static_cast<std::size_t>(encoded.size())});
-    QSettings settings;
-    auto roots = settings.value(QStringLiteral("library/roots")).toList();
-    roots.push_back(QByteArray{encoded.constData(), encoded.size()});
-    settings.setValue(QStringLiteral("library/roots"), roots);
+    const std::string raw_path{encoded.constData(), static_cast<std::size_t>(encoded.size())};
+    addFolderBookmark(raw_path);
+    revealFolderPath(raw_path);
 }
 
 void BenchMainWindow::openLocalPaths(std::vector<std::string> raw_paths) {

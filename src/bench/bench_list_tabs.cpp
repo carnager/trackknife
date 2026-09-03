@@ -498,6 +498,7 @@ void BenchMainWindow::refreshActiveContext() {
     }
     if (folder_bookmarks_ != nullptr) {
         folder_bookmarks_->setVisible(!mpd && folder_bookmarks_->count() > 0);
+        folder_bookmarks_heading_->setVisible(!mpd && folder_bookmarks_->count() > 0);
     }
     if (connect_mpd_action_ != nullptr) {
         connect_mpd_action_->setEnabled(!mpd_controller_->busy());

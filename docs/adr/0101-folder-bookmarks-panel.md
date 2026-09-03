@@ -32,3 +32,16 @@ with collapsed roots and manual digging.
 - The offscreen test covers persisted load, name display, asynchronous
   reveal of a nested path, deduplicated adds from the tree menu, and
   removal updating both the list and the stored value.
+
+## Addendum (2026-09-03): a real filesystem tree
+
+Field feedback: the roots-only tree read as "the same manually
+bookmarked folders as before" — not the requested browser. The panel
+was redesigned: the tree now browses the whole filesystem from `/`
+(hidden entries skipped, directories first, and only audio-relevant
+files shown — a music workstation's browser, not a general file
+manager), with folder and audio-note icons and the home directory
+revealed at startup. The old `library/roots` entries migrate into the
+bookmarks on first run, headed by the home directory, under a labeled
+Bookmarks section; the File-menu action became "Bookmark folder…". The
+bookmark reveal walker descends from `/` unchanged.

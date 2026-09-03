@@ -178,6 +178,7 @@ class BenchMainWindowTest final : public QObject {
     void musicBrainzFingerprintScanRanksAndStages();
     void replayGainScanStagesMeasuredGainsAsDrafts();
     void folderBookmarksRevealTreePaths();
+    void folderBookmarksMigrateFromLibraryRoots();
     void artworkFetchesCoverArtFromArchiveAndAddsFront();
     void artworkArchivePickerAddsChosenImageWithItsRole();
     void automaticScriptsStageOnOpen();
@@ -3060,6 +3061,10 @@ void BenchMainWindowTest::folderBookmarksRevealTreePaths() {
                                  folder_model->rawPath(folder_view->currentIndex()) == nested_raw,
                              5'000);
 
+    // The tree is the whole filesystem now: exactly one root, "/".
+    QCOMPARE(folder_model->rowCount(), 1);
+    QCOMPARE(folder_model->rawPath(folder_model->index(0, 0)), std::string{"/"});
+
     // Bookmarking from the tree persists, deduplicates, and removal both
     // updates the list and the stored value.
     auto* add_action = window.findChild<QAction*>(QStringLiteral("action-folder-bookmark-add"));
@@ -3079,8 +3084,33 @@ void BenchMainWindowTest::folderBookmarksRevealTreePaths() {
         const QSettings settings;
         const auto stored = settings.value(QStringLiteral("library/bookmarks")).toList();
         QCOMPARE(stored.size(), 1);
-        QCOMPARE(stored.front().toByteArray(), root_bytes);
+        QCOMPARE(stored.front().toByteArray(), QByteArray{"/"});
     }
+    {
+        QSettings settings;
+        settings.remove(QStringLiteral("library/bookmarks"));
+    }
+}
+
+void BenchMainWindowTest::folderBookmarksMigrateFromLibraryRoots() {
+    QTemporaryDir media;
+    QVERIFY(media.isValid());
+    const auto migrated_bytes = QFile::encodeName(media.path());
+    {
+        QSettings settings;
+        settings.remove(QStringLiteral("library/bookmarks"));
+        settings.setValue(QStringLiteral("library/roots"), QVariantList{migrated_bytes});
+    }
+    BenchMainWindow window;
+    window.show();
+    auto* bookmarks = window.findChild<QListWidget*>(QStringLiteral("bench-folder-bookmarks"));
+    QVERIFY(bookmarks != nullptr);
+    // Home first, then the migrated root.
+    QTRY_COMPARE(bookmarks->count(), 2);
+    QCOMPARE(bookmarks->item(0)->data(Qt::UserRole).toByteArray(),
+             QFile::encodeName(QDir::homePath()));
+    QCOMPARE(bookmarks->item(1)->data(Qt::UserRole).toByteArray(), migrated_bytes);
+    QVERIFY(!bookmarks->item(0)->icon().isNull());
     {
         QSettings settings;
         settings.remove(QStringLiteral("library/roots"));
@@ -3962,7 +3992,12 @@ void BenchMainWindowTest::contextMenusTargetSelectionsListsAndFolders() {
     const std::string directory_raw{directory_encoded.constData(),
                                     static_cast<std::size_t>(directory_encoded.size())};
     folder_model->addRoot(directory_raw);
-    const auto root = folder_model->index(0, 0);
+    QModelIndex root;
+    for (int row = 0; row < folder_model->rowCount(); ++row) {
+        if (folder_model->rawPath(folder_model->index(row, 0)) == directory_raw) {
+            root = folder_model->index(row, 0);
+        }
+    }
     QVERIFY(root.isValid());
     folder_view->scrollTo(root);
     const auto root_position = folder_view->visualRect(root).center();
