@@ -72,6 +72,11 @@ void MetadataTransformationInterchangeTest::roundTripsEveryTypedActionExactly() 
                 },
                 MetadataNumberSelectedItemsAction{
                     .target_field = "TRACKNUMBER", .start = 7U, .padding = 2U},
+                MetadataNumberGroupedItemsAction{.target_field = "TRACKNUMBER",
+                                                 .dialect = {},
+                                                 .group_expression = "%album%",
+                                                 .start = 1U,
+                                                 .padding = 2U},
                 MetadataKeepFirstCharactersAction{.target_field = "DATE", .character_count = 4U},
                 MetadataCaptureValuesAction{
                     .dialect = {},

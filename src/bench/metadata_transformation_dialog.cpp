@@ -588,6 +588,13 @@ class MetadataTransformationDialog final : public QDialog {
                         .arg(index + 1U)
                         .arg(field, match, display_plan_values(typed.replacement_values));
                 } else if constexpr (std::is_same_v<Action,
+                                                    metadata::MetadataNumberGroupedItemsAction>) {
+                    return QStringLiteral("%1. Number %2 from %3 within each %4 group")
+                        .arg(index + 1U)
+                        .arg(field)
+                        .arg(typed.start)
+                        .arg(display_utf8(typed.group_expression));
+                } else if constexpr (std::is_same_v<Action,
                                                     metadata::MetadataNumberSelectedItemsAction>) {
                     return typed.padding == 0U
                                ? QStringLiteral("%1. Number %2 from %3 by selected-file order")

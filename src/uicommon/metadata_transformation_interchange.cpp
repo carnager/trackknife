@@ -413,6 +413,14 @@ readCaptureSource(const QJsonObject& object, const std::string_view location) {
                         {QStringLiteral("start"), static_cast<qint64>(typed.start)},
                         {QStringLiteral("target_field"), jsonString(typed.target_field)}};
             } else if constexpr (std::is_same_v<Action,
+                                                metadata::MetadataNumberGroupedItemsAction>) {
+                return {{QStringLiteral("dialect"), dialectToJson(typed.dialect)},
+                        {QStringLiteral("group_expression"), jsonString(typed.group_expression)},
+                        {QStringLiteral("kind"), QStringLiteral("number_grouped_items")},
+                        {QStringLiteral("padding"), static_cast<qint64>(typed.padding)},
+                        {QStringLiteral("start"), static_cast<qint64>(typed.start)},
+                        {QStringLiteral("target_field"), jsonString(typed.target_field)}};
+            } else if constexpr (std::is_same_v<Action,
                                                 metadata::MetadataKeepFirstCharactersAction>) {
                 return {
                     {QStringLiteral("character_count"), static_cast<qint64>(typed.character_count)},
@@ -621,6 +629,41 @@ readAction(const QJsonValue& value, const std::size_t index) {
             .target_field = std::move(*target),
             .match = std::move(*match),
             .replacement_values = std::move(*replacement),
+        };
+    }
+    if (*kind == "number_grouped_items") {
+        if (auto keys = requireExactKeys(
+                object, {"dialect", "group_expression", "kind", "padding", "start", "target_field"},
+                location);
+            !keys) {
+            return std::unexpected(keys.error());
+        }
+        auto target = readString(object, "target_field", location);
+        if (!target) {
+            return std::unexpected(target.error());
+        }
+        auto dialect = readDialect<titleformat::DialectVersion>(object, location);
+        if (!dialect) {
+            return std::unexpected(dialect.error());
+        }
+        auto expression = readString(object, "group_expression", location);
+        if (!expression) {
+            return std::unexpected(expression.error());
+        }
+        auto start = readUnsigned(object, "start", location);
+        if (!start) {
+            return std::unexpected(start.error());
+        }
+        auto padding = readUnsigned(object, "padding", location);
+        if (!padding) {
+            return std::unexpected(padding.error());
+        }
+        return metadata::MetadataNumberGroupedItemsAction{
+            .target_field = std::move(*target),
+            .dialect = std::move(*dialect),
+            .group_expression = std::move(*expression),
+            .start = *start,
+            .padding = *padding,
         };
     }
     if (*kind == "number_selected_items") {

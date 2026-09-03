@@ -1007,7 +1007,14 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   for ID3, and one adapter-keyed prepare dispatch for every qualified
   format. Musepack/Monkey's Audio wait on fixture encoders; Ogg
   Vorbis/Opus wait on a decoded-PCM verification design.
-- Next: grouped numbering and the remaining open M5 capability decisions.
+- Done: ADR-0104 closes grouped numbering: a chain action numbering
+  selected items with an independent counter per evaluated tkfmt-1
+  group value (per-album/per-disc), persisted as kind 17 through
+  migration 26, interchanged as number_grouped_items, and offered in
+  the script editor as "Number within each group".
+- Next: the remaining open M5 capability decisions (sanitization and
+  Unicode normalization options, richer match dialects, further format
+  writers).
 
 ### Exit criteria
 

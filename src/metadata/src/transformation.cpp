@@ -399,7 +399,8 @@ evaluate_action_program(const PreparedAction& prepared, const WorkingDocument& d
 apply_action(const PreparedAction& prepared, WorkingDocument& document,
              WorkingNativeDocument& native_document, const std::size_t action_index,
              const std::size_t item_index, const std::size_t selection_position,
-             const std::string_view raw_path, const core::CancellationToken& cancellation,
+             std::map<std::string, std::uint64_t>& group_counters, const std::string_view raw_path,
+             const core::CancellationToken& cancellation,
              const MetadataTransformationLimits& limits) {
     return std::visit(
         [&](const auto& action) -> core::Result<void> {
@@ -527,6 +528,25 @@ apply_action(const PreparedAction& prepared, WorkingDocument& document,
                     }
                 }
                 found->second = std::move(replaced);
+            } else if constexpr (std::is_same_v<Action, MetadataNumberGroupedItemsAction>) {
+                auto group = evaluate_action_program(prepared, document, action_index, item_index,
+                                                     cancellation);
+                if (!group) {
+                    return std::unexpected(std::move(group.error()));
+                }
+                const auto position = group_counters[*group]++;
+                const auto number = static_cast<std::uint64_t>(action.start) + position;
+                if (number > std::numeric_limits<std::uint32_t>::max()) {
+                    return std::unexpected(transformation_error(
+                        core::ErrorCode::limit_exceeded,
+                        "metadata numbering exceeds the supported integer range", action_index,
+                        item_index));
+                }
+                auto value = std::to_string(number);
+                if (value.size() < action.padding) {
+                    value.insert(0U, static_cast<std::size_t>(action.padding) - value.size(), '0');
+                }
+                document[prepared.canonical_field] = {std::move(value)};
             } else if constexpr (std::is_same_v<Action, MetadataNumberSelectedItemsAction>) {
                 const auto number = static_cast<std::uint64_t>(action.start) + selection_position;
                 if (number > std::numeric_limits<std::uint32_t>::max()) {
@@ -1007,6 +1027,39 @@ prepare_chain(const MetadataTransformationChain& chain,
                 !valid) {
                 return std::unexpected(std::move(valid.error()));
             }
+        } else if (const auto* grouped = std::get_if<MetadataNumberGroupedItemsAction>(&action)) {
+            constexpr auto maximum_start = std::uint32_t{1'000'000'000U};
+            constexpr auto maximum_padding = std::uint32_t{32U};
+            if (grouped->start == 0U || grouped->start > maximum_start ||
+                grouped->padding > maximum_padding) {
+                return std::unexpected(transformation_error(
+                    core::ErrorCode::invalid_argument,
+                    "metadata numbering requires a start from 1 to 1000000000 and padding from "
+                    "0 to 32",
+                    action_index));
+            }
+            if (grouped->dialect != titleformat::DialectVersion{}) {
+                return std::unexpected(transformation_error(
+                    core::ErrorCode::unsupported,
+                    "grouped numbering understands only tkfmt-1 expressions", action_index));
+            }
+            if (grouped->group_expression.empty() ||
+                grouped->group_expression.size() > limits.action_text_bytes) {
+                return std::unexpected(transformation_error(
+                    core::ErrorCode::invalid_argument,
+                    "grouped numbering needs a nonempty bounded group expression", action_index));
+            }
+            titleformat::CompileOptions options;
+            options.context = titleformat::FormatContextKind::metadata_transformation;
+            options.dialect = grouped->dialect;
+            auto compiled = titleformat::compile(grouped->group_expression, options);
+            if (!compiled.isValid()) {
+                return std::unexpected(transformation_error(
+                    core::ErrorCode::invalid_argument,
+                    "grouped numbering group expression does not compile as tkfmt-1",
+                    action_index));
+            }
+            prepared_action.program = std::move(*compiled.program);
         } else if (const auto* number = std::get_if<MetadataNumberSelectedItemsAction>(&action)) {
             constexpr auto maximum_start = std::uint32_t{1'000'000'000U};
             constexpr auto maximum_padding = std::uint32_t{32U};
@@ -1158,6 +1211,7 @@ core::Result<MetadataTransformationPreview> plan_metadata_transformation(
     std::size_t unchanged_present_cell_count = 0U;
     std::size_t unchanged_missing_cell_count = 0U;
     std::size_t preview_text_bytes = 0U;
+    std::vector<std::map<std::string, std::uint64_t>> group_counters(prepared.size());
     for (std::size_t selection_position = 0U; selection_position < item_indexes.size();
          ++selection_position) {
         const auto item_index = item_indexes[selection_position];
@@ -1241,7 +1295,7 @@ core::Result<MetadataTransformationPreview> plan_metadata_transformation(
             }
             if (auto applied =
                     apply_action(prepared[action_index], document, native_document, action_index,
-                                 item_index, selection_position,
+                                 item_index, selection_position, group_counters[action_index],
                                  selection.source(item_index).raw_path, cancellation, limits);
                 !applied) {
                 return std::unexpected(std::move(applied.error()));

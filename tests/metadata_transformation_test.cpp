@@ -492,6 +492,83 @@ void importedDeleteKeepsSimilarConventionalAndFreeformFieldsSeparate() {
     }
 }
 
+void groupedNumberingRestartsPerGroupValue() {
+    using trackknife::metadata::MetadataDocument;
+    using trackknife::metadata::StagedMetadataSelection;
+    using trackknife::metadata::StagedMetadataSource;
+    // Two interleaved albums: counters are per evaluated group value, not
+    // adjacency, so each album numbers 1..N in selection order.
+    const auto source = [](const std::string& path, std::optional<std::string> album,
+                           const std::string& title) {
+        MetadataDocument document;
+        if (album) {
+            document.fields.push_back(field("ALBUM", {*album}));
+        }
+        document.fields.push_back(field("TITLE", {title}));
+        return StagedMetadataSource{
+            .raw_path = path,
+            .source_revision = std::nullopt,
+            .baseline = std::move(document),
+        };
+    };
+    const auto selection = StagedMetadataSelection::create({
+        source("/g/a1.flac", "Alpha", "a1"),
+        source("/g/b1.flac", "Beta", "b1"),
+        source("/g/a2.flac", "Alpha", "a2"),
+        source("/g/b2.flac", "Beta", "b2"),
+        source("/g/loose.flac", std::nullopt, "loose"),
+    });
+    CHECK(selection.has_value());
+    if (!selection) {
+        return;
+    }
+    trackknife::metadata::StagedMetadataPatchSet patches;
+    const std::array<std::size_t, 5> items{0U, 1U, 2U, 3U, 4U};
+    trackknife::metadata::MetadataTransformationChain chain{
+        .schema_version = 1U,
+        .name = "grouped numbering",
+        .actions = {trackknife::metadata::MetadataNumberGroupedItemsAction{
+            .target_field = "Track Number",
+            .dialect = {},
+            .group_expression = "%album%",
+            .start = 1U,
+            .padding = 2U,
+        }},
+    };
+    const auto preview =
+        trackknife::metadata::plan_metadata_transformation(*selection, patches, items, chain);
+    CHECK(preview.has_value());
+    if (!preview) {
+        std::cerr << preview.error().message << '\n';
+        return;
+    }
+    const auto value_for = [&preview](const std::size_t item) -> std::string {
+        for (const auto& cell : preview->cells) {
+            if (cell.item_index == item && cell.canonical_field == "tracknumber" && cell.after) {
+                return cell.after->front();
+            }
+        }
+        return {};
+    };
+    CHECK(value_for(0U) == "01");
+    CHECK(value_for(1U) == "01");
+    CHECK(value_for(2U) == "02");
+    CHECK(value_for(3U) == "02");
+    // The file with no album shares the empty-group counter.
+    CHECK(value_for(4U) == "01");
+
+    // Broken group expressions fail typed before any item is touched.
+    chain.actions = {trackknife::metadata::MetadataNumberGroupedItemsAction{
+        .target_field = "Track Number",
+        .dialect = {},
+        .group_expression = "$unknown(%album%)",
+        .start = 1U,
+        .padding = 0U,
+    }};
+    CHECK(!trackknife::metadata::plan_metadata_transformation(*selection, patches, items, chain)
+               .has_value());
+}
+
 void exactMatchingAndSelectionNumberingComposeInOrder() {
     using namespace trackknife::metadata;
     const auto baseline = selection();
@@ -885,6 +962,7 @@ int main() {
     pastedCleanupScriptGeneratesTypedPreviewedRules();
     importedDeleteKeepsSimilarConventionalAndFreeformFieldsSeparate();
     exactMatchingAndSelectionNumberingComposeInOrder();
+    groupedNumberingRestartsPerGroupValue();
     capturePatternGrammarRejectsGuessingAndPreservesExactValues();
     captureSourcesComposeAsOneMultiTargetTransformation();
     plansRejectInvalidDialectInputLimitsAndCancellation();

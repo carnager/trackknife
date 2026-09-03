@@ -140,6 +140,20 @@ struct MetadataNumberSelectedItemsAction {
                            const MetadataNumberSelectedItemsAction&) = default;
 };
 
+// Numbers selected items in selection order with an independent counter
+// per evaluated tkfmt-1 group value, so every album or disc restarts at
+// start. An empty group result shares one counter.
+struct MetadataNumberGroupedItemsAction {
+    std::string target_field;
+    titleformat::DialectVersion dialect;
+    std::string group_expression;
+    std::uint32_t start{1U};
+    std::uint32_t padding{0U};
+
+    friend bool operator==(const MetadataNumberGroupedItemsAction&,
+                           const MetadataNumberGroupedItemsAction&) = default;
+};
+
 // Keeps at most the first character_count Unicode scalar values of every
 // existing value. Shorter and empty values are retained exactly; a missing
 // target field remains missing.
@@ -177,7 +191,8 @@ using MetadataTransformationAction =
                  MetadataFormatValueAction, MetadataCopyFieldAction, MetadataSplitValuesAction,
                  MetadataJoinValuesAction, MetadataRemoveMatchingValuesAction,
                  MetadataReplaceMatchingValuesAction, MetadataNumberSelectedItemsAction,
-                 MetadataKeepFirstCharactersAction, MetadataCaptureValuesAction>;
+                 MetadataKeepFirstCharactersAction, MetadataCaptureValuesAction,
+                 MetadataNumberGroupedItemsAction>;
 
 struct MetadataTransformationChain {
     std::uint32_t schema_version{1U};
