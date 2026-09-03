@@ -1303,9 +1303,15 @@ afterwards is a separate explicit command in Trackbench's MPD authority.
   apply afterwards, so Opus maps requests into its 48 kHz family),
   offered in the converter as a persisted "Resample" choice from Keep
   source rate up to 192 kHz.
-- Next: mirror-source-structure destination mode, artwork carriage,
-  bit-depth/dither policy, a downsample-only rate cap, and
-  stale-ReplayGain handling on signal change.
+- Done: ADR-0110 adds the bit-depth policy: an optional 16/24 target on
+  request and scan that outranks the preset's sample-format hint where
+  the encoder stores integer PCM, high-passed triangular dither
+  whenever quantizing to 16-bit, and a persisted "Bit depth" choice in
+  the converter — 24/96 sources convert to dithered 16/44.1 FLAC in
+  one run.
+- Next: mirror-source-structure destination mode, artwork carriage, a
+  downsample-only rate cap, keep-source bit depth, and stale-ReplayGain
+  handling on signal change.
 
 ### Exit criteria
 

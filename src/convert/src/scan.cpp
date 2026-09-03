@@ -47,6 +47,7 @@ struct ItemOutcome {
             .destination_raw_path = item.destination_raw_path,
             .preset = options.preset,
             .target_sample_rate = options.target_sample_rate,
+            .target_bit_depth = options.target_bit_depth,
             .metadata = item.metadata,
         },
         item_progress, cancellation);

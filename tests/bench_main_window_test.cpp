@@ -10,6 +10,7 @@
 #include "quick/mpd_search_result_model.hpp"
 #include "trackknife/core/unicode.hpp"
 #include "trackknife/formats/decoder.hpp"
+#include "trackknife/formats/probe.hpp"
 #include "trackknife/metadata/flac_writer.hpp"
 #include "trackknife/metadata/local_reader.hpp"
 #include "trackknife/metadata/staged_patch.hpp"
@@ -3105,11 +3106,15 @@ void BenchMainWindowTest::convertDialogPlansAndConvertsSelection() {
     QVERIFY(reread.has_value());
     QCOMPARE(reread->document.first_effective_value("title"), std::optional<std::string>{"Quiet"});
 
-    // The resampling choice reaches the pipeline: FLAC at a forced 96 kHz.
+    // The resampling and bit-depth choices reach the pipeline: FLAC at a
+    // forced 96 kHz stored as dithered 16-bit.
     auto* resample = dialog->findChild<QComboBox*>(QStringLiteral("bench-convert-resample"));
-    QVERIFY(resample != nullptr);
+    auto* bit_depth = dialog->findChild<QComboBox*>(QStringLiteral("bench-convert-bit-depth"));
+    QVERIFY(resample != nullptr && bit_depth != nullptr);
     QCOMPARE(resample->currentData().toInt(), 0);
+    QCOMPARE(bit_depth->currentData().toInt(), 0);
     resample->setCurrentIndex(resample->findData(96'000));
+    bit_depth->setCurrentIndex(bit_depth->findData(16));
     preset->setCurrentIndex(preset->findData(QStringLiteral("flac")));
     names->setText(QStringLiteral("%tracknumber% - %title% 96k"));
     QTRY_VERIFY(preview->count() > 0 &&
@@ -3125,6 +3130,12 @@ void BenchMainWindowTest::convertDialogPlansAndConvertsSelection() {
         resampled_encoded.constData(), static_cast<std::size_t>(resampled_encoded.size())});
     QVERIFY(resampled.has_value());
     QCOMPARE(resampled->output_format().sample_rate, 96'000);
+    const auto probed = formats::probe_local_media(std::string{
+        resampled_encoded.constData(), static_cast<std::size_t>(resampled_encoded.size())});
+    QVERIFY(probed.has_value() && probed->best_audio_stream.has_value());
+    QCOMPARE(
+        probed->audio_streams[static_cast<std::size_t>(*probed->best_audio_stream)].sample_format,
+        std::string{"s16"});
     delete dialog;
 }
 

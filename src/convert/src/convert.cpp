@@ -132,7 +132,8 @@ struct EncoderPipeline {
 }
 
 [[nodiscard]] AVSampleFormat choose_sample_format(const AVCodec* codec,
-                                                  const std::string& hint_name) {
+                                                  const std::string& hint_name,
+                                                  const std::optional<int>& target_bit_depth) {
     const auto* const supported = supported_sample_formats(codec);
     const auto hint = hint_name.empty() ? AV_SAMPLE_FMT_NONE : av_get_sample_fmt(hint_name.c_str());
     if (supported == nullptr) {
@@ -146,6 +147,18 @@ struct EncoderPipeline {
         }
         return false;
     };
+    // A requested bit depth outranks the preset hint where the encoder
+    // stores integer PCM; encoders without integer formats fall through.
+    if (target_bit_depth) {
+        const auto packed = *target_bit_depth == 16 ? AV_SAMPLE_FMT_S16 : AV_SAMPLE_FMT_S32;
+        const auto planar = *target_bit_depth == 16 ? AV_SAMPLE_FMT_S16P : AV_SAMPLE_FMT_S32P;
+        if (is_supported(packed)) {
+            return packed;
+        }
+        if (is_supported(planar)) {
+            return planar;
+        }
+    }
     if (hint != AV_SAMPLE_FMT_NONE && is_supported(hint)) {
         return hint;
     }
@@ -377,6 +390,7 @@ ensure_convert_capacity(EncoderPipeline& pipeline, const std::string& raw_path, 
 [[nodiscard]] core::Result<std::unique_ptr<EncoderPipeline>>
 open_pipeline(const EncoderPreset& preset, const formats::PcmFormat& source_format,
               const std::optional<int>& target_sample_rate,
+              const std::optional<int>& target_bit_depth,
               const metadata::MetadataDocument& document, const std::string& temporary_path,
               const std::string& destination_raw_path) {
     const auto* const codec = avcodec_find_encoder_by_name(preset.codec_name.c_str());
@@ -400,7 +414,8 @@ open_pipeline(const EncoderPreset& preset, const formats::PcmFormat& source_form
         return std::unexpected(
             convert_error(AVERROR(ENOMEM), "allocating the encoder context", destination_raw_path));
     }
-    pipeline->codec->sample_fmt = choose_sample_format(codec, preset.sample_format_hint);
+    pipeline->codec->sample_fmt =
+        choose_sample_format(codec, preset.sample_format_hint, target_bit_depth);
     pipeline->codec->sample_rate =
         choose_sample_rate(codec, target_sample_rate.value_or(source_format.sample_rate));
     pipeline->codec->time_base = AVRational{1, pipeline->codec->sample_rate};
@@ -439,6 +454,12 @@ open_pipeline(const EncoderPreset& preset, const formats::PcmFormat& source_form
         pipeline->codec->sample_rate, &source_layout, AV_SAMPLE_FMT_FLT, source_format.sample_rate,
         0, nullptr);
     av_channel_layout_uninit(&source_layout);
+    // Quantizing the float pipeline down to 16-bit gets high-passed
+    // triangular dither; 24-bit output is exact from 32-bit float.
+    if (swr_configured >= 0 &&
+        av_get_packed_sample_fmt(pipeline->codec->sample_fmt) == AV_SAMPLE_FMT_S16) {
+        av_opt_set(pipeline->resampler, "dither_method", "triangular_hp", 0);
+    }
     if (swr_configured < 0 || swr_init(pipeline->resampler) < 0) {
         return std::unexpected(
             convert_error(swr_configured, "configuring the resampler", destination_raw_path));
@@ -504,6 +525,13 @@ core::Result<ConvertedAudioFile> convert_audio_file(const AudioConversionRequest
                         .message = "the requested sample rate must be between 8 and 768 kHz",
                         .context = {{.key = "path", .value = request.destination_raw_path}}});
     }
+    if (request.target_bit_depth &&
+        (*request.target_bit_depth != 16 && *request.target_bit_depth != 24)) {
+        return std::unexpected(
+            core::Error{.code = core::ErrorCode::invalid_argument,
+                        .message = "the requested bit depth must be 16 or 24",
+                        .context = {{.key = "path", .value = request.destination_raw_path}}});
+    }
     std::error_code parent_error;
     if (!std::filesystem::is_directory(destination.parent_path(), parent_error)) {
         return std::unexpected(
@@ -530,9 +558,9 @@ core::Result<ConvertedAudioFile> convert_audio_file(const AudioConversionRequest
                                      core::StableId::random().to_string());
     TemporaryOutputGuard guard{temporary};
 
-    auto pipeline_result =
-        open_pipeline(request.preset, source_format, request.target_sample_rate, request.metadata,
-                      temporary.native(), request.destination_raw_path);
+    auto pipeline_result = open_pipeline(request.preset, source_format, request.target_sample_rate,
+                                         request.target_bit_depth, request.metadata,
+                                         temporary.native(), request.destination_raw_path);
     if (!pipeline_result) {
         return std::unexpected(pipeline_result.error());
     }

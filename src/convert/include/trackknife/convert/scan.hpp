@@ -39,6 +39,9 @@ struct ConversionScanOptions {
     // One resampling policy for the whole scan; absent keeps each source's
     // rate (see AudioConversionRequest::target_sample_rate).
     std::optional<int> target_sample_rate;
+    // One stored-bit-depth policy for the whole scan (16 or 24; see
+    // AudioConversionRequest::target_bit_depth).
+    std::optional<int> target_bit_depth;
 };
 
 enum class ConversionScanState : std::uint8_t { pending, running, converted, failed, cancelled };

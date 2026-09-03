@@ -28,6 +28,11 @@ struct AudioConversionRequest {
     // way the encoder's supported-rate constraint applies afterwards, so
     // Opus maps any request into its 48 kHz family.
     std::optional<int> target_sample_rate;
+    // Forces the stored bit depth (16 or 24) where the encoder keeps integer
+    // PCM — FLAC — overriding the preset's sample-format hint; float-based
+    // encoders like Opus have no stored depth and ignore it. Quantizing to
+    // 16-bit engages high-passed triangular dither in the resampler.
+    std::optional<int> target_bit_depth;
     // Effective text metadata to carry into the output, written at mux time
     // and verified by rereading the finished file with the project metadata
     // reader before it may become the destination. Vorbis-comment containers

@@ -270,6 +270,20 @@ ConvertDialog::ConvertDialog(std::vector<ConvertDialogItem> items, ConvertProfil
         "choice into its 48 kHz family"));
     form->addRow(QStringLiteral("Resample:"), resample_);
 
+    bit_depth_ = new QComboBox(this);
+    bit_depth_->setObjectName(QStringLiteral("bench-convert-bit-depth"));
+    bit_depth_->addItem(QStringLiteral("Preset default"), 0);
+    bit_depth_->addItem(QStringLiteral("16-bit (dithered)"), 16);
+    bit_depth_->addItem(QStringLiteral("24-bit"), 24);
+    const auto saved_depth = settings.value(QStringLiteral("convert/bit-depth"), 0).toInt();
+    if (const auto depth_position = bit_depth_->findData(saved_depth); depth_position >= 0) {
+        bit_depth_->setCurrentIndex(depth_position);
+    }
+    bit_depth_->setToolTip(
+        QStringLiteral("Stored bit depth for lossless output; Opus and other float-based "
+                       "encoders have no stored depth and ignore this"));
+    form->addRow(QStringLiteral("Bit depth:"), bit_depth_);
+
     parallelism_ = new QSpinBox(this);
     parallelism_->setObjectName(QStringLiteral("bench-convert-parallelism"));
     parallelism_->setRange(1, static_cast<int>(convert::maximum_conversion_parallelism));
@@ -629,6 +643,7 @@ void ConvertDialog::startConversion() {
     settings.setValue(QStringLiteral("convert/basename-expression"), basename_expression_->text());
     settings.setValue(QStringLiteral("convert/parallelism"), parallelism_->value());
     settings.setValue(QStringLiteral("convert/resample-rate"), resample_->currentData().toInt());
+    settings.setValue(QStringLiteral("convert/bit-depth"), bit_depth_->currentData().toInt());
 
     std::vector<convert::ConversionScanItem> scan_items;
     scan_items.reserve(plan_->sources.size());
@@ -672,27 +687,30 @@ void ConvertDialog::startConversion() {
     const auto parallelism = static_cast<std::size_t>(parallelism_->value());
     const auto resample_rate = resample_->currentData().toInt();
     const auto target_sample_rate = resample_rate > 0 ? std::optional{resample_rate} : std::nullopt;
-    watcher_.setFuture(
-        QtConcurrent::run([scan_items = std::move(scan_items), preset = *preset, parallelism,
-                           target_sample_rate, completed = completed_, cancellation] {
-            // The conversion core requires existing target directories; create
-            // them up front so parallel workers never race directory creation.
-            for (const auto& item : scan_items) {
-                std::error_code create_error;
-                std::filesystem::create_directories(
-                    std::filesystem::path{item.destination_raw_path}.parent_path(), create_error);
-            }
-            auto scan = convert::scan_conversion(
-                scan_items,
-                {.preset = preset,
-                 .maximum_parallelism = parallelism,
-                 .target_sample_rate = target_sample_rate},
-                [completed](const convert::ConversionScanProgress& update) {
-                    completed->store(update.completed_items);
-                },
-                cancellation);
-            return std::make_shared<core::Result<convert::ConversionScanResult>>(std::move(scan));
-        }));
+    const auto depth_choice = bit_depth_->currentData().toInt();
+    const auto target_bit_depth = depth_choice > 0 ? std::optional{depth_choice} : std::nullopt;
+    watcher_.setFuture(QtConcurrent::run([scan_items = std::move(scan_items), preset = *preset,
+                                          parallelism, target_sample_rate, target_bit_depth,
+                                          completed = completed_, cancellation] {
+        // The conversion core requires existing target directories; create
+        // them up front so parallel workers never race directory creation.
+        for (const auto& item : scan_items) {
+            std::error_code create_error;
+            std::filesystem::create_directories(
+                std::filesystem::path{item.destination_raw_path}.parent_path(), create_error);
+        }
+        auto scan = convert::scan_conversion(
+            scan_items,
+            {.preset = preset,
+             .maximum_parallelism = parallelism,
+             .target_sample_rate = target_sample_rate,
+             .target_bit_depth = target_bit_depth},
+            [completed](const convert::ConversionScanProgress& update) {
+                completed->store(update.completed_items);
+            },
+            cancellation);
+        return std::make_shared<core::Result<convert::ConversionScanResult>>(std::move(scan));
+    }));
 }
 
 void ConvertDialog::finishConversion() {

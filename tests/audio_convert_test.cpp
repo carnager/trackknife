@@ -5,6 +5,7 @@
 #include "trackknife/convert/scan.hpp"
 #include "trackknife/core/cancellation.hpp"
 #include "trackknife/core/stable_id.hpp"
+#include "trackknife/formats/probe.hpp"
 #include "trackknife/metadata/document.hpp"
 #include "trackknife/metadata/local_reader.hpp"
 
@@ -20,6 +21,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -94,6 +96,51 @@ void write_sine_wav(const std::filesystem::path& path, const double amplitude,
     }
 }
 
+void write_sine_wav_24_96(const std::filesystem::path& path, const double amplitude,
+                          const double seconds) {
+    constexpr int rate = 96'000;
+    const auto frames = static_cast<std::uint32_t>(seconds * rate);
+    const std::uint32_t data_bytes = frames * 2U * 3U;
+    std::ofstream output{path, std::ios::binary};
+    const auto write_u32 = [&output](const std::uint32_t value) {
+        const std::array<char, 4> bytes{
+            static_cast<char>(value & 0xFFU), static_cast<char>((value >> 8U) & 0xFFU),
+            static_cast<char>((value >> 16U) & 0xFFU), static_cast<char>((value >> 24U) & 0xFFU)};
+        output.write(bytes.data(), 4);
+    };
+    const auto write_u16 = [&output](const std::uint16_t value) {
+        const std::array<char, 2> bytes{static_cast<char>(value & 0xFFU),
+                                        static_cast<char>((value >> 8U) & 0xFFU)};
+        output.write(bytes.data(), 2);
+    };
+    const auto write_s24 = [&output](const std::int32_t value) {
+        const std::array<char, 3> bytes{static_cast<char>(value & 0xFF),
+                                        static_cast<char>((value >> 8) & 0xFF),
+                                        static_cast<char>((value >> 16) & 0xFF)};
+        output.write(bytes.data(), 3);
+    };
+    output.write("RIFF", 4);
+    write_u32(36U + data_bytes);
+    output.write("WAVE", 4);
+    output.write("fmt ", 4);
+    write_u32(16U);
+    write_u16(1U);
+    write_u16(2U);
+    write_u32(rate);
+    write_u32(rate * 6U);
+    write_u16(6U);
+    write_u16(24U);
+    output.write("data", 4);
+    write_u32(data_bytes);
+    for (std::uint32_t frame = 0U; frame < frames; ++frame) {
+        const auto value = amplitude * std::sin(2.0 * std::numbers::pi * tone_hertz *
+                                                static_cast<double>(frame) / rate);
+        const auto sample = static_cast<std::int32_t>(std::clamp(value, -1.0, 1.0) * 8'388'607.0);
+        write_s24(sample);
+        write_s24(sample);
+    }
+}
+
 // Anything besides the named survivors — hidden temporaries above all —
 // counts as leftover.
 [[nodiscard]] std::size_t entries_besides(const std::filesystem::path& directory,
@@ -148,6 +195,7 @@ void convertsToEveryPresetAtomically() {
              .destination_raw_path = destination.native(),
              .preset = preset,
              .target_sample_rate = {},
+             .target_bit_depth = {},
              .metadata = {}},
             [&last_frames, &total_present](const std::uint64_t frames_done,
                                            const std::optional<std::uint64_t> frames_total) {
@@ -206,6 +254,7 @@ void carriesMetadataIntoEveryPreset() {
                                                      .destination_raw_path = destination.native(),
                                                      .preset = preset,
                                                      .target_sample_rate = {},
+                                                     .target_bit_depth = {},
                                                      .metadata = document});
         if (!converted) {
             std::cerr << preset.id << ": " << converted.error().message << '\n';
@@ -244,6 +293,7 @@ void resamplesOnRequestWithinEncoderConstraints() {
          .destination_raw_path = (directory.path() / "up.flac").native(),
          .preset = *trackknife::convert::find_encoder_preset("flac"),
          .target_sample_rate = 96'000,
+         .target_bit_depth = {},
          .metadata = {}});
     CHECK(upsampled.has_value());
     CHECK(upsampled && upsampled->sample_rate == 96'000);
@@ -258,6 +308,7 @@ void resamplesOnRequestWithinEncoderConstraints() {
          .destination_raw_path = (directory.path() / "constrained.opus").native(),
          .preset = *trackknife::convert::find_encoder_preset("opus-192"),
          .target_sample_rate = 96'000,
+         .target_bit_depth = {},
          .metadata = {}});
     CHECK(constrained.has_value());
     CHECK(constrained && constrained->sample_rate == 48'000);
@@ -270,10 +321,91 @@ void resamplesOnRequestWithinEncoderConstraints() {
          .destination_raw_path = (directory.path() / "absurd.flac").native(),
          .preset = *trackknife::convert::find_encoder_preset("flac"),
          .target_sample_rate = 4'000,
+         .target_bit_depth = {},
          .metadata = {}});
     CHECK(!absurd.has_value());
     CHECK(!absurd && absurd.error().code == trackknife::core::ErrorCode::invalid_argument);
     CHECK(entries_besides(directory.path(), {"tone.wav", "up.flac", "constrained.opus"}) == 0U);
+}
+
+void quantizesHiResToSixteenFortyFourWithDither() {
+    TemporaryDirectory directory;
+    const auto source = directory.path() / "hires.wav";
+    write_sine_wav_24_96(source, 0.6, 0.5);
+    const auto probe_format = [](const std::filesystem::path& path) {
+        const auto probed = trackknife::formats::probe_local_media(path.native());
+        CHECK(probed.has_value());
+        if (!probed || !probed->best_audio_stream) {
+            return std::pair<std::string, int>{{}, 0};
+        }
+        const auto& stream =
+            probed->audio_streams[static_cast<std::size_t>(*probed->best_audio_stream)];
+        return std::pair{stream.sample_format, stream.sample_rate};
+    };
+
+    // The headline use case: 24-bit 96 kHz down to a dithered 16/44.1 FLAC.
+    const auto cd = directory.path() / "cd.flac";
+    const auto quantized = trackknife::convert::convert_audio_file(
+        {.source_raw_path = source.native(),
+         .source_selection = {},
+         .source_range = {},
+         .destination_raw_path = cd.native(),
+         .preset = *trackknife::convert::find_encoder_preset("flac"),
+         .target_sample_rate = 44'100,
+         .target_bit_depth = 16,
+         .metadata = {}});
+    CHECK(quantized.has_value());
+    if (!quantized) {
+        std::cerr << quantized.error().message << '\n';
+        return;
+    }
+    CHECK(quantized->sample_rate == 44'100);
+    CHECK(std::abs(quantized->duration_samples - 22'050) <= 44'100 / 5);
+    const auto [cd_format, cd_rate] = probe_format(cd);
+    CHECK(cd_format == "s16");
+    CHECK(cd_rate == 44'100);
+
+    // Without a depth request the FLAC preset keeps its 24-bit default.
+    const auto archive = directory.path() / "archive.flac";
+    const auto kept = trackknife::convert::convert_audio_file(
+        {.source_raw_path = source.native(),
+         .source_selection = {},
+         .source_range = {},
+         .destination_raw_path = archive.native(),
+         .preset = *trackknife::convert::find_encoder_preset("flac"),
+         .target_sample_rate = {},
+         .target_bit_depth = {},
+         .metadata = {}});
+    CHECK(kept.has_value());
+    const auto [archive_format, archive_rate] = probe_format(archive);
+    CHECK(archive_format == "s32");
+    CHECK(archive_rate == 96'000);
+
+    // Float-based encoders have no stored depth; the request is inert.
+    const auto lossy = trackknife::convert::convert_audio_file(
+        {.source_raw_path = source.native(),
+         .source_selection = {},
+         .source_range = {},
+         .destination_raw_path = (directory.path() / "lossy.opus").native(),
+         .preset = *trackknife::convert::find_encoder_preset("opus-192"),
+         .target_sample_rate = {},
+         .target_bit_depth = 16,
+         .metadata = {}});
+    CHECK(lossy.has_value());
+    CHECK(lossy && lossy->sample_rate == 48'000);
+
+    // Unsupported depths fail typed before any decoding.
+    const auto odd = trackknife::convert::convert_audio_file(
+        {.source_raw_path = source.native(),
+         .source_selection = {},
+         .source_range = {},
+         .destination_raw_path = (directory.path() / "odd.flac").native(),
+         .preset = *trackknife::convert::find_encoder_preset("flac"),
+         .target_sample_rate = {},
+         .target_bit_depth = 20,
+         .metadata = {}});
+    CHECK(!odd.has_value());
+    CHECK(!odd && odd.error().code == trackknife::core::ErrorCode::invalid_argument);
 }
 
 void refusesExistingDestinationAndMissingDirectory() {
@@ -291,6 +423,7 @@ void refusesExistingDestinationAndMissingDirectory() {
                                                  .destination_raw_path = occupied.native(),
                                                  .preset = preset,
                                                  .target_sample_rate = {},
+                                                 .target_bit_depth = {},
                                                  .metadata = {}});
     CHECK(!conflicting.has_value());
     CHECK(!conflicting && conflicting.error().code == trackknife::core::ErrorCode::conflict);
@@ -309,6 +442,7 @@ void refusesExistingDestinationAndMissingDirectory() {
                                                  .destination_raw_path = orphan.native(),
                                                  .preset = preset,
                                                  .target_sample_rate = {},
+                                                 .target_bit_depth = {},
                                                  .metadata = {}});
     CHECK(!orphaned.has_value());
     CHECK(!orphaned && orphaned.error().code == trackknife::core::ErrorCode::invalid_argument);
@@ -329,6 +463,7 @@ void cancellationLeavesNoPartialOutput() {
          .destination_raw_path = (directory.path() / "cancelled.opus").native(),
          .preset = *trackknife::convert::find_encoder_preset("opus-192"),
          .target_sample_rate = {},
+         .target_bit_depth = {},
          .metadata = {}},
         {}, cancellation.token());
     CHECK(!cancelled.has_value());
@@ -368,7 +503,11 @@ void scansItemsInParallelIsolatingFailures() {
 
     std::size_t final_completed = 0U;
     const auto result = trackknife::convert::scan_conversion(
-        items, {.preset = preset, .maximum_parallelism = 3U, .target_sample_rate = {}},
+        items,
+        {.preset = preset,
+         .maximum_parallelism = 3U,
+         .target_sample_rate = {},
+         .target_bit_depth = {}},
         [&final_completed](const trackknife::convert::ConversionScanProgress& update) {
             final_completed = std::max(final_completed, update.completed_items);
             CHECK(update.total_items == 7U);
@@ -397,16 +536,20 @@ void scansItemsInParallelIsolatingFailures() {
     CHECK(collision.issue.has_value() &&
           collision.issue->code == trackknife::core::ErrorCode::conflict);
 
-    CHECK(trackknife::convert::scan_conversion(
-              items, {.preset = preset, .maximum_parallelism = 0U, .target_sample_rate = {}})
+    CHECK(trackknife::convert::scan_conversion(items, {.preset = preset,
+                                                       .maximum_parallelism = 0U,
+                                                       .target_sample_rate = {},
+                                                       .target_bit_depth = {}})
               .has_value() == false);
 
     trackknife::core::CancellationSource cancellation;
     cancellation.request_cancellation();
-    const auto cancelled = trackknife::convert::scan_conversion(
-        std::span{items}.subspan(0U, 1U),
-        {.preset = preset, .maximum_parallelism = 1U, .target_sample_rate = {}}, {},
-        cancellation.token());
+    const auto cancelled = trackknife::convert::scan_conversion(std::span{items}.subspan(0U, 1U),
+                                                                {.preset = preset,
+                                                                 .maximum_parallelism = 1U,
+                                                                 .target_sample_rate = {},
+                                                                 .target_bit_depth = {}},
+                                                                {}, cancellation.token());
     CHECK(cancelled.has_value());
     CHECK(cancelled && cancelled->cancellation_requested);
     CHECK(cancelled &&
@@ -420,6 +563,7 @@ int main() {
     convertsToEveryPresetAtomically();
     carriesMetadataIntoEveryPreset();
     resamplesOnRequestWithinEncoderConstraints();
+    quantizesHiResToSixteenFortyFourWithDither();
     refusesExistingDestinationAndMissingDirectory();
     cancellationLeavesNoPartialOutput();
     scansItemsInParallelIsolatingFailures();
