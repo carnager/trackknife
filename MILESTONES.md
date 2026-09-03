@@ -1370,8 +1370,9 @@ handoff to Local Queue playback.
    local tab, and its addendum added the explicit companion: "Update
    this folder in MPD" on library nodes, scoped to the common directory
    prefix of the node's files. ADR-0113 added the library heading's
-   A-Z / Latest toggle, ranking artists by their most recently modified
-   music through a sorted MPD search.
+   A-Z / Latest toggle, ranking artists by database insertion time
+   (MPD 0.24 Added, mtime approximation on older servers) through a
+   sorted MPD search.
 
 ### Exit criteria
 

@@ -154,7 +154,18 @@ class FakeMpdServer final {
         } else if (command.starts_with("list ")) {
             write_all(client, "AlbumArtist: Credited Artist\nAlbumArtist: Various Artists\nOK\n");
         } else if (command.starts_with("search ")) {
-            if (command.find("window") != std::string_view::npos) {
+            if (command.find("sort") != std::string_view::npos) {
+                // The banner advertises MPD 0.24, so the newest lookup must
+                // sort by database insertion time, newest first.
+                if (command.find("-Added") == std::string_view::npos) {
+                    write_all(client, "ACK [2@0] {search} expected sort -Added\n");
+                    return;
+                }
+                write_all(client, "file: Fresh/A/01.flac\nAlbumArtist: Fresh Artist\n"
+                                  "file: Fresh/A/02.flac\nAlbumArtist: Fresh Artist\n"
+                                  "file: Mid/B/01.flac\nAlbumArtist: Middle Artist\n"
+                                  "file: Old/C/01.flac\nAlbumArtist: Old Artist\nOK\n");
+            } else if (command.find("window") != std::string_view::npos) {
                 write_all(client, "file: Artist/Release/01.flac\nArtist: Credited Artist\n"
                                   "Title: Search one\nMusicBrainzTrackId: recording-id\n"
                                   "file: Artist/Release/02.flac\nArtist: Credited Artist\n"
@@ -424,6 +435,10 @@ void client_negotiates_and_preserves_extensions() {
                 missing_delete.error().code == trackknife::core::ErrorCode::not_found,
             "MPD no-exist ACKs must retain a recoverable typed error");
     require(client.clear_queue().has_value(), "queue clear must use the command connection");
+    const auto newest = client.newest_tag_values("AlbumArtist", 2'000U);
+    require(newest &&
+                *newest == std::vector<std::string>{"Fresh Artist", "Middle Artist", "Old Artist"},
+            "newest lookup must sort by Added and dedupe in arrival order");
     require(client.update_database("Some Artist").has_value(),
             "a scoped database update must reach the server");
     require(client.update_database({}).has_value(),

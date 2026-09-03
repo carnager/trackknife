@@ -1002,13 +1002,19 @@ core::Result<std::vector<std::string>> Client::newest_tag_values(const std::stri
                                                                  const unsigned track_limit) {
     const std::string tag_name{tag};
     auto* connection = implementation_->connection.get();
+    // "Added" is the database insertion time (MPD 0.24) — the honest
+    // "recently added" signal. File mtime is only an approximation for
+    // older servers: copies that preserve timestamps sort by their
+    // original encode dates there.
+    const auto* const sort_key =
+        mpd_connection_cmp_server_version(connection, 0, 24, 0) >= 0 ? "Added" : "Last-Modified";
     if (!mpd_search_db_songs(connection, false)) {
         return std::unexpected(implementation_->take_error("begin newest lookup"));
     }
     // Sorted searches need an expression; every track modified since the
     // epoch is every track.
     if (!mpd_search_add_expression(connection, "(modified-since '1970-01-01T00:00:00Z')") ||
-        !mpd_search_add_sort_name(connection, "Last-Modified", true) ||
+        !mpd_search_add_sort_name(connection, sort_key, true) ||
         !mpd_search_add_window(connection, 0U, track_limit)) {
         mpd_search_cancel(connection);
         return std::unexpected(implementation_->take_error("build newest lookup"));

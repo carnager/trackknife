@@ -15,9 +15,13 @@ recently" — the second most common way into a library.
 - The library heading gains an exclusive A-Z / Latest toggle, shown only
   in MPD context and persisted in QSettings. A-Z is today's alphabetical
   order; Latest ranks root entries by their most recently modified music.
-- The ranking derives from MPD itself: a sorted search
-  (`modified-since` epoch, sort `-Last-Modified`, windowed to the newest
-  2000 tracks) travels the stack as a first-class read command
+- The ranking derives from MPD itself: a sorted search windowed to the
+  newest 2000 tracks travels the stack as a first-class read command.
+  The sort key is `Added` — the database insertion time (MPD 0.24+),
+  matching when music actually entered the library — with
+  `Last-Modified` only as an approximation on older servers, where
+  copies that preserve file timestamps sort by their original encode
+  dates instead. The command
   (`Client::newest_tag_values` → `database_newest` →
   `MpdProbeController::loadNewestRootOrder`), and the distinct root-tag
   values arrive newest-first. AlbumArtist falls back to Artist per track
