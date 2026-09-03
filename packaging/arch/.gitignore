@@ -1,0 +1,6 @@
+# makepkg works in this directory: VCS clone, build/package trees, products.
+/trackknife/
+/src/
+/pkg/
+*.pkg.tar.zst
+*.log

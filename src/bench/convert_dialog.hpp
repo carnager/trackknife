@@ -103,6 +103,7 @@ class ConvertDialog final : public QDialog {
     QLineEdit* destination_{nullptr};
     QLineEdit* directory_expression_{nullptr};
     QLineEdit* basename_expression_{nullptr};
+    QComboBox* resample_{nullptr};
     QSpinBox* parallelism_{nullptr};
     QListWidget* preview_{nullptr};
     QLabel* status_{nullptr};

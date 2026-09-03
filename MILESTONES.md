@@ -1298,9 +1298,14 @@ afterwards is a separate explicit command in Trackbench's MPD authority.
   built-ins, created from a prefilled editor where editing always
   saves a new profile, constrained to the qualified encode formats
   with one rate control, and deletable when saved.
+- Done: ADR-0109 adds the resampling option: an optional target sample
+  rate on the conversion request and scan (encoder constraints still
+  apply afterwards, so Opus maps requests into its 48 kHz family),
+  offered in the converter as a persisted "Resample" choice from Keep
+  source rate up to 192 kHz.
 - Next: mirror-source-structure destination mode, artwork carriage,
-  bit-depth/dither policy, and stale-ReplayGain handling on signal
-  change.
+  bit-depth/dither policy, a downsample-only rate cap, and
+  stale-ReplayGain handling on signal change.
 
 ### Exit criteria
 

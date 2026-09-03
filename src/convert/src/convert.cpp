@@ -376,6 +376,7 @@ ensure_convert_capacity(EncoderPipeline& pipeline, const std::string& raw_path, 
 
 [[nodiscard]] core::Result<std::unique_ptr<EncoderPipeline>>
 open_pipeline(const EncoderPreset& preset, const formats::PcmFormat& source_format,
+              const std::optional<int>& target_sample_rate,
               const metadata::MetadataDocument& document, const std::string& temporary_path,
               const std::string& destination_raw_path) {
     const auto* const codec = avcodec_find_encoder_by_name(preset.codec_name.c_str());
@@ -400,7 +401,8 @@ open_pipeline(const EncoderPreset& preset, const formats::PcmFormat& source_form
             convert_error(AVERROR(ENOMEM), "allocating the encoder context", destination_raw_path));
     }
     pipeline->codec->sample_fmt = choose_sample_format(codec, preset.sample_format_hint);
-    pipeline->codec->sample_rate = choose_sample_rate(codec, source_format.sample_rate);
+    pipeline->codec->sample_rate =
+        choose_sample_rate(codec, target_sample_rate.value_or(source_format.sample_rate));
     pipeline->codec->time_base = AVRational{1, pipeline->codec->sample_rate};
     av_channel_layout_default(&pipeline->codec->ch_layout, source_format.channels);
     if (preset.bit_rate) {
@@ -495,6 +497,13 @@ core::Result<ConvertedAudioFile> convert_audio_file(const AudioConversionRequest
                         .message = "the conversion destination already exists",
                         .context = {{.key = "path", .value = request.destination_raw_path}}});
     }
+    if (request.target_sample_rate &&
+        (*request.target_sample_rate < 8'000 || *request.target_sample_rate > 768'000)) {
+        return std::unexpected(
+            core::Error{.code = core::ErrorCode::invalid_argument,
+                        .message = "the requested sample rate must be between 8 and 768 kHz",
+                        .context = {{.key = "path", .value = request.destination_raw_path}}});
+    }
     std::error_code parent_error;
     if (!std::filesystem::is_directory(destination.parent_path(), parent_error)) {
         return std::unexpected(
@@ -521,8 +530,9 @@ core::Result<ConvertedAudioFile> convert_audio_file(const AudioConversionRequest
                                      core::StableId::random().to_string());
     TemporaryOutputGuard guard{temporary};
 
-    auto pipeline_result = open_pipeline(request.preset, source_format, request.metadata,
-                                         temporary.native(), request.destination_raw_path);
+    auto pipeline_result =
+        open_pipeline(request.preset, source_format, request.target_sample_rate, request.metadata,
+                      temporary.native(), request.destination_raw_path);
     if (!pipeline_result) {
         return std::unexpected(pipeline_result.error());
     }

@@ -9,6 +9,7 @@
 #include "quick/mpd_queue_model.hpp"
 #include "quick/mpd_search_result_model.hpp"
 #include "trackknife/core/unicode.hpp"
+#include "trackknife/formats/decoder.hpp"
 #include "trackknife/metadata/flac_writer.hpp"
 #include "trackknife/metadata/local_reader.hpp"
 #include "trackknife/metadata/staged_patch.hpp"
@@ -3103,6 +3104,27 @@ void BenchMainWindowTest::convertDialogPlansAndConvertsSelection() {
         std::string{encoded.constData(), static_cast<std::size_t>(encoded.size())});
     QVERIFY(reread.has_value());
     QCOMPARE(reread->document.first_effective_value("title"), std::optional<std::string>{"Quiet"});
+
+    // The resampling choice reaches the pipeline: FLAC at a forced 96 kHz.
+    auto* resample = dialog->findChild<QComboBox*>(QStringLiteral("bench-convert-resample"));
+    QVERIFY(resample != nullptr);
+    QCOMPARE(resample->currentData().toInt(), 0);
+    resample->setCurrentIndex(resample->findData(96'000));
+    preset->setCurrentIndex(preset->findData(QStringLiteral("flac")));
+    names->setText(QStringLiteral("%tracknumber% - %title% 96k"));
+    QTRY_VERIFY(preview->count() > 0 &&
+                preview->item(0)->text() == QStringLiteral("Converted Album/01 - Loud 96k.flac"));
+    QTRY_VERIFY(run->isEnabled());
+    QTest::mouseClick(run, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(status->text().startsWith(QStringLiteral("Converted 2 of 2 files.")),
+                             15'000);
+    const auto resampled_path = album_dir + QStringLiteral("/01 - Loud 96k.flac");
+    QVERIFY(QFileInfo::exists(resampled_path));
+    const auto resampled_encoded = QFile::encodeName(resampled_path);
+    auto resampled = formats::AudioDecoder::open(std::string{
+        resampled_encoded.constData(), static_cast<std::size_t>(resampled_encoded.size())});
+    QVERIFY(resampled.has_value());
+    QCOMPARE(resampled->output_format().sample_rate, 96'000);
     delete dialog;
 }
 

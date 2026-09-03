@@ -147,6 +147,7 @@ void convertsToEveryPresetAtomically() {
              .source_range = {},
              .destination_raw_path = destination.native(),
              .preset = preset,
+             .target_sample_rate = {},
              .metadata = {}},
             [&last_frames, &total_present](const std::uint64_t frames_done,
                                            const std::optional<std::uint64_t> frames_total) {
@@ -204,6 +205,7 @@ void carriesMetadataIntoEveryPreset() {
                                                      .source_range = {},
                                                      .destination_raw_path = destination.native(),
                                                      .preset = preset,
+                                                     .target_sample_rate = {},
                                                      .metadata = document});
         if (!converted) {
             std::cerr << preset.id << ": " << converted.error().message << '\n';
@@ -228,6 +230,52 @@ void carriesMetadataIntoEveryPreset() {
     }
 }
 
+void resamplesOnRequestWithinEncoderConstraints() {
+    TemporaryDirectory directory;
+    const auto source = directory.path() / "tone.wav";
+    write_sine_wav(source, 0.6, 0.5);
+
+    // FLAC accepts any rate, so the requested 96 kHz sticks and the
+    // duration scales with it.
+    const auto upsampled = trackknife::convert::convert_audio_file(
+        {.source_raw_path = source.native(),
+         .source_selection = {},
+         .source_range = {},
+         .destination_raw_path = (directory.path() / "up.flac").native(),
+         .preset = *trackknife::convert::find_encoder_preset("flac"),
+         .target_sample_rate = 96'000,
+         .metadata = {}});
+    CHECK(upsampled.has_value());
+    CHECK(upsampled && upsampled->sample_rate == 96'000);
+    CHECK(upsampled && std::abs(upsampled->duration_samples - 48'000) <= 96'000 / 5);
+
+    // Opus only speaks the 48 kHz family: the same request lands on 48 kHz
+    // instead of failing.
+    const auto constrained = trackknife::convert::convert_audio_file(
+        {.source_raw_path = source.native(),
+         .source_selection = {},
+         .source_range = {},
+         .destination_raw_path = (directory.path() / "constrained.opus").native(),
+         .preset = *trackknife::convert::find_encoder_preset("opus-192"),
+         .target_sample_rate = 96'000,
+         .metadata = {}});
+    CHECK(constrained.has_value());
+    CHECK(constrained && constrained->sample_rate == 48'000);
+
+    // Absurd rates fail typed before any decoding starts.
+    const auto absurd = trackknife::convert::convert_audio_file(
+        {.source_raw_path = source.native(),
+         .source_selection = {},
+         .source_range = {},
+         .destination_raw_path = (directory.path() / "absurd.flac").native(),
+         .preset = *trackknife::convert::find_encoder_preset("flac"),
+         .target_sample_rate = 4'000,
+         .metadata = {}});
+    CHECK(!absurd.has_value());
+    CHECK(!absurd && absurd.error().code == trackknife::core::ErrorCode::invalid_argument);
+    CHECK(entries_besides(directory.path(), {"tone.wav", "up.flac", "constrained.opus"}) == 0U);
+}
+
 void refusesExistingDestinationAndMissingDirectory() {
     TemporaryDirectory directory;
     const auto source = directory.path() / "tone.wav";
@@ -242,6 +290,7 @@ void refusesExistingDestinationAndMissingDirectory() {
                                                  .source_range = {},
                                                  .destination_raw_path = occupied.native(),
                                                  .preset = preset,
+                                                 .target_sample_rate = {},
                                                  .metadata = {}});
     CHECK(!conflicting.has_value());
     CHECK(!conflicting && conflicting.error().code == trackknife::core::ErrorCode::conflict);
@@ -259,6 +308,7 @@ void refusesExistingDestinationAndMissingDirectory() {
                                                  .source_range = {},
                                                  .destination_raw_path = orphan.native(),
                                                  .preset = preset,
+                                                 .target_sample_rate = {},
                                                  .metadata = {}});
     CHECK(!orphaned.has_value());
     CHECK(!orphaned && orphaned.error().code == trackknife::core::ErrorCode::invalid_argument);
@@ -278,6 +328,7 @@ void cancellationLeavesNoPartialOutput() {
          .source_range = {},
          .destination_raw_path = (directory.path() / "cancelled.opus").native(),
          .preset = *trackknife::convert::find_encoder_preset("opus-192"),
+         .target_sample_rate = {},
          .metadata = {}},
         {}, cancellation.token());
     CHECK(!cancelled.has_value());
@@ -317,7 +368,7 @@ void scansItemsInParallelIsolatingFailures() {
 
     std::size_t final_completed = 0U;
     const auto result = trackknife::convert::scan_conversion(
-        items, {.preset = preset, .maximum_parallelism = 3U},
+        items, {.preset = preset, .maximum_parallelism = 3U, .target_sample_rate = {}},
         [&final_completed](const trackknife::convert::ConversionScanProgress& update) {
             final_completed = std::max(final_completed, update.completed_items);
             CHECK(update.total_items == 7U);
@@ -346,13 +397,15 @@ void scansItemsInParallelIsolatingFailures() {
     CHECK(collision.issue.has_value() &&
           collision.issue->code == trackknife::core::ErrorCode::conflict);
 
-    CHECK(trackknife::convert::scan_conversion(items, {.preset = preset, .maximum_parallelism = 0U})
+    CHECK(trackknife::convert::scan_conversion(
+              items, {.preset = preset, .maximum_parallelism = 0U, .target_sample_rate = {}})
               .has_value() == false);
 
     trackknife::core::CancellationSource cancellation;
     cancellation.request_cancellation();
     const auto cancelled = trackknife::convert::scan_conversion(
-        std::span{items}.subspan(0U, 1U), {.preset = preset, .maximum_parallelism = 1U}, {},
+        std::span{items}.subspan(0U, 1U),
+        {.preset = preset, .maximum_parallelism = 1U, .target_sample_rate = {}}, {},
         cancellation.token());
     CHECK(cancelled.has_value());
     CHECK(cancelled && cancelled->cancellation_requested);
@@ -366,6 +419,7 @@ int main() {
     builtinPresetsProbeAvailable();
     convertsToEveryPresetAtomically();
     carriesMetadataIntoEveryPreset();
+    resamplesOnRequestWithinEncoderConstraints();
     refusesExistingDestinationAndMissingDirectory();
     cancellationLeavesNoPartialOutput();
     scansItemsInParallelIsolatingFailures();

@@ -29,7 +29,8 @@ struct ItemOutcome {
     std::optional<core::Error> issue;
 };
 
-[[nodiscard]] ItemOutcome convert_item(const ConversionScanItem& item, const EncoderPreset& preset,
+[[nodiscard]] ItemOutcome convert_item(const ConversionScanItem& item,
+                                       const ConversionScanOptions& options,
                                        const ConversionProgress& item_progress,
                                        const core::CancellationToken& cancellation) {
     ItemOutcome outcome;
@@ -44,7 +45,8 @@ struct ItemOutcome {
             .source_selection = item.selection,
             .source_range = item.range,
             .destination_raw_path = item.destination_raw_path,
-            .preset = preset,
+            .preset = options.preset,
+            .target_sample_rate = options.target_sample_rate,
             .metadata = item.metadata,
         },
         item_progress, cancellation);
@@ -160,7 +162,7 @@ core::Result<ConversionScanResult> scan_conversion(const std::span<const Convers
                 report(position, ConversionScanState::running, false, frames_done, frames_total);
             };
             auto outcome = convert_item(
-                items[position], options.preset,
+                items[position], options,
                 progress ? ConversionProgress{item_progress} : ConversionProgress{}, cancellation);
             if (outcome.issue) {
                 entry.state = outcome.issue->code == core::ErrorCode::cancelled

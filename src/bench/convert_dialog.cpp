@@ -255,6 +255,21 @@ ConvertDialog::ConvertDialog(std::vector<ConvertDialogItem> items, ConvertProfil
                                                QStringLiteral("%tracknumber% - %title%")));
     form->addRow(QStringLiteral("Names:"), basename_expression_);
 
+    resample_ = new QComboBox(this);
+    resample_->setObjectName(QStringLiteral("bench-convert-resample"));
+    resample_->addItem(QStringLiteral("Keep source rate"), 0);
+    for (const auto rate : {44'100, 48'000, 88'200, 96'000, 176'400, 192'000}) {
+        resample_->addItem(QStringLiteral("%1 kHz").arg(rate / 1000.0), rate);
+    }
+    const auto saved_rate = settings.value(QStringLiteral("convert/resample-rate"), 0).toInt();
+    if (const auto position = resample_->findData(saved_rate); position >= 0) {
+        resample_->setCurrentIndex(position);
+    }
+    resample_->setToolTip(QStringLiteral(
+        "Encoders that only speak certain rates still constrain the result — Opus maps every "
+        "choice into its 48 kHz family"));
+    form->addRow(QStringLiteral("Resample:"), resample_);
+
     parallelism_ = new QSpinBox(this);
     parallelism_->setObjectName(QStringLiteral("bench-convert-parallelism"));
     parallelism_->setRange(1, static_cast<int>(convert::maximum_conversion_parallelism));
@@ -613,6 +628,7 @@ void ConvertDialog::startConversion() {
                       directory_expression_->text());
     settings.setValue(QStringLiteral("convert/basename-expression"), basename_expression_->text());
     settings.setValue(QStringLiteral("convert/parallelism"), parallelism_->value());
+    settings.setValue(QStringLiteral("convert/resample-rate"), resample_->currentData().toInt());
 
     std::vector<convert::ConversionScanItem> scan_items;
     scan_items.reserve(plan_->sources.size());
@@ -654,23 +670,29 @@ void ConvertDialog::startConversion() {
 
     const auto cancellation = cancellation_.token();
     const auto parallelism = static_cast<std::size_t>(parallelism_->value());
-    watcher_.setFuture(QtConcurrent::run([scan_items = std::move(scan_items), preset = *preset,
-                                          parallelism, completed = completed_, cancellation] {
-        // The conversion core requires existing target directories; create
-        // them up front so parallel workers never race directory creation.
-        for (const auto& item : scan_items) {
-            std::error_code create_error;
-            std::filesystem::create_directories(
-                std::filesystem::path{item.destination_raw_path}.parent_path(), create_error);
-        }
-        auto scan = convert::scan_conversion(
-            scan_items, {.preset = preset, .maximum_parallelism = parallelism},
-            [completed](const convert::ConversionScanProgress& update) {
-                completed->store(update.completed_items);
-            },
-            cancellation);
-        return std::make_shared<core::Result<convert::ConversionScanResult>>(std::move(scan));
-    }));
+    const auto resample_rate = resample_->currentData().toInt();
+    const auto target_sample_rate = resample_rate > 0 ? std::optional{resample_rate} : std::nullopt;
+    watcher_.setFuture(
+        QtConcurrent::run([scan_items = std::move(scan_items), preset = *preset, parallelism,
+                           target_sample_rate, completed = completed_, cancellation] {
+            // The conversion core requires existing target directories; create
+            // them up front so parallel workers never race directory creation.
+            for (const auto& item : scan_items) {
+                std::error_code create_error;
+                std::filesystem::create_directories(
+                    std::filesystem::path{item.destination_raw_path}.parent_path(), create_error);
+            }
+            auto scan = convert::scan_conversion(
+                scan_items,
+                {.preset = preset,
+                 .maximum_parallelism = parallelism,
+                 .target_sample_rate = target_sample_rate},
+                [completed](const convert::ConversionScanProgress& update) {
+                    completed->store(update.completed_items);
+                },
+                cancellation);
+            return std::make_shared<core::Result<convert::ConversionScanResult>>(std::move(scan));
+        }));
 }
 
 void ConvertDialog::finishConversion() {

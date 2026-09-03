@@ -36,6 +36,9 @@ struct ConversionScanItem {
 struct ConversionScanOptions {
     EncoderPreset preset;
     std::size_t maximum_parallelism{2U};
+    // One resampling policy for the whole scan; absent keeps each source's
+    // rate (see AudioConversionRequest::target_sample_rate).
+    std::optional<int> target_sample_rate;
 };
 
 enum class ConversionScanState : std::uint8_t { pending, running, converted, failed, cancelled };

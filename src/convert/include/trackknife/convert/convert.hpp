@@ -24,6 +24,10 @@ struct AudioConversionRequest {
     std::optional<formats::SampleRange> source_range;
     std::string destination_raw_path;
     EncoderPreset preset;
+    // Forces the output sample rate; absent keeps the source rate. Either
+    // way the encoder's supported-rate constraint applies afterwards, so
+    // Opus maps any request into its 48 kHz family.
+    std::optional<int> target_sample_rate;
     // Effective text metadata to carry into the output, written at mux time
     // and verified by rereading the finished file with the project metadata
     // reader before it may become the destination. Vorbis-comment containers
