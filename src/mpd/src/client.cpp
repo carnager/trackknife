@@ -998,6 +998,49 @@ core::Result<void> Client::delete_ids(const std::span<const std::uint32_t> song_
     return {};
 }
 
+core::Result<std::vector<std::string>> Client::newest_tag_values(const std::string_view tag,
+                                                                 const unsigned track_limit) {
+    const std::string tag_name{tag};
+    auto* connection = implementation_->connection.get();
+    if (!mpd_search_db_songs(connection, false)) {
+        return std::unexpected(implementation_->take_error("begin newest lookup"));
+    }
+    // Sorted searches need an expression; every track modified since the
+    // epoch is every track.
+    if (!mpd_search_add_expression(connection, "(modified-since '1970-01-01T00:00:00Z')") ||
+        !mpd_search_add_sort_name(connection, "Last-Modified", true) ||
+        !mpd_search_add_window(connection, 0U, track_limit)) {
+        mpd_search_cancel(connection);
+        return std::unexpected(implementation_->take_error("build newest lookup"));
+    }
+    if (!mpd_search_commit(connection)) {
+        return std::unexpected(implementation_->take_error("send newest lookup"));
+    }
+    auto pairs = implementation_->receive_pairs("receive newest lookup");
+    if (!pairs) {
+        return std::unexpected(std::move(pairs.error()));
+    }
+    auto tracks = project_tracks(*pairs);
+    if (!tracks) {
+        return std::unexpected(std::move(tracks.error()));
+    }
+    std::vector<std::string> ordered;
+    std::unordered_set<std::string> seen;
+    for (const auto& track : *tracks) {
+        auto values = track.metadata.values(tag_name);
+        if (values.empty() && tag_name == "AlbumArtist") {
+            values = track.metadata.values("Artist");
+        }
+        for (const auto value : values) {
+            std::string owned{value};
+            if (!owned.empty() && seen.insert(owned).second) {
+                ordered.push_back(std::move(owned));
+            }
+        }
+    }
+    return ordered;
+}
+
 core::Result<void> Client::update_database(const std::string& uri) {
     if (mpd_run_update(implementation_->connection.get(), uri.empty() ? nullptr : uri.c_str()) ==
         0U) {

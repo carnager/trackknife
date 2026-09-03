@@ -16,6 +16,7 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QButtonGroup>
 #include <QDir>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -26,6 +27,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QSettings>
+#include <QToolButton>
 
 #include <QShortcut>
 #include <QSplitter>
@@ -93,7 +95,42 @@ void BenchMainWindow::buildWorkspace() {
     source_heading_->setObjectName(QStringLiteral("bench-folders-heading"));
     source_heading_->setAlignment(Qt::AlignCenter);
     source_heading_->setContentsMargins(8, 4, 8, 4);
-    folders_layout->addWidget(source_heading_);
+    auto* heading_row = new QHBoxLayout;
+    heading_row->setContentsMargins(4, 0, 4, 0);
+    heading_row->setSpacing(2);
+    heading_row->addWidget(source_heading_, 1);
+    const auto make_order_button = [this](const QString& label, const QString& name) {
+        auto* button = new QToolButton(folders_panel_);
+        button->setText(label);
+        button->setObjectName(name);
+        button->setCheckable(true);
+        button->setAutoRaise(true);
+        button->setVisible(false);
+        return button;
+    };
+    library_order_az_ =
+        make_order_button(QStringLiteral("A–Z"), QStringLiteral("bench-library-order-az"));
+    library_order_az_->setToolTip(QStringLiteral("Sort artists alphabetically"));
+    library_order_latest_ =
+        make_order_button(QStringLiteral("Latest"), QStringLiteral("bench-library-order-latest"));
+    library_order_latest_->setToolTip(
+        QStringLiteral("Sort artists by their most recently added music"));
+    {
+        const QSettings settings;
+        const auto latest = settings.value(QStringLiteral("mpd/library-order")).toString() ==
+                            QStringLiteral("latest");
+        library_order_az_->setChecked(!latest);
+        library_order_latest_->setChecked(latest);
+    }
+    auto* order_group = new QButtonGroup(this);
+    order_group->setExclusive(true);
+    order_group->addButton(library_order_az_);
+    order_group->addButton(library_order_latest_);
+    connect(order_group, &QButtonGroup::buttonClicked, this,
+            [this](QAbstractButton*) { applyLibraryOrder(true); });
+    heading_row->addWidget(library_order_az_);
+    heading_row->addWidget(library_order_latest_);
+    folders_layout->addLayout(heading_row);
     folder_bookmarks_heading_ = new QLabel(QStringLiteral("Bookmarks"), folders_panel_);
     auto* bookmarks_heading = folder_bookmarks_heading_;
     bookmarks_heading->setObjectName(QStringLiteral("bench-folder-bookmarks-heading"));

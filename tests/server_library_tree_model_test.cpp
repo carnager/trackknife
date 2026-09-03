@@ -50,6 +50,7 @@ class ServerLibraryTreeModelTest final : public QObject {
     void roundTripsDefinition();
     void rejectsBrokenExpression();
     void expandsMultiValueGrouping();
+    void ordersRootsByNewestRanking();
 };
 
 void ServerLibraryTreeModelTest::buildsDefaultHierarchyLazily() {
@@ -272,6 +273,36 @@ void ServerLibraryTreeModelTest::expandsMultiValueGrouping() {
     QCOMPARE(model.index(1, 0, artist).data().toString(), QStringLiteral("Rock"));
     QCOMPARE(model.tracks(model.index(0, 0, artist)).front().uri, std::string{"both.flac"});
     QCOMPARE(model.tracks(model.index(1, 0, artist)).front().uri, std::string{"both.flac"});
+}
+
+void ServerLibraryTreeModelTest::ordersRootsByNewestRanking() {
+    trackknife::ui::ServerLibraryTreeModel model;
+    QSignalSpy roots{&model, &trackknife::ui::ServerLibraryTreeModel::rootRequested};
+    model.reload();
+    QCOMPARE(roots.size(), 1);
+    model.acceptRoot(roots.front().at(0).toULongLong(), QStringLiteral("AlbumArtist"),
+                     {QStringLiteral("Zulu"), QStringLiteral("Alpha"), QStringLiteral("Mike")}, {});
+    QCOMPARE(model.index(0, 0).data().toString(), QStringLiteral("Alpha"));
+
+    // Ranked values lead in rank order; unranked artists follow
+    // alphabetically.
+    model.setRootOrdering({QStringLiteral("Mike"), QStringLiteral("Zulu")});
+    QCOMPARE(model.rowCount(), 3);
+    QCOMPARE(model.index(0, 0).data().toString(), QStringLiteral("Mike"));
+    QCOMPARE(model.index(1, 0).data().toString(), QStringLiteral("Zulu"));
+    QCOMPARE(model.index(2, 0).data().toString(), QStringLiteral("Alpha"));
+
+    // A later root load keeps the Latest ordering applied.
+    model.reload();
+    QCOMPARE(roots.size(), 2);
+    model.acceptRoot(roots.back().at(0).toULongLong(), QStringLiteral("AlbumArtist"),
+                     {QStringLiteral("Alpha"), QStringLiteral("Mike")}, {});
+    QCOMPARE(model.index(0, 0).data().toString(), QStringLiteral("Mike"));
+    QCOMPARE(model.index(1, 0).data().toString(), QStringLiteral("Alpha"));
+
+    model.clearRootOrdering();
+    QCOMPARE(model.index(0, 0).data().toString(), QStringLiteral("Alpha"));
+    QCOMPARE(model.index(1, 0).data().toString(), QStringLiteral("Mike"));
 }
 
 QTEST_MAIN(ServerLibraryTreeModelTest)

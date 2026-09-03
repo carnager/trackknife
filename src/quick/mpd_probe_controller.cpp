@@ -410,6 +410,17 @@ void MpdProbeController::cropQueueToItems(const QVariantList& rows) {
     emit stateChanged();
 }
 
+void MpdProbeController::loadNewestRootOrder(const QString& tag) {
+    if (!session_ || !connected_) {
+        emit newestRootOrderLoaded({}, QStringLiteral("Not connected"));
+        return;
+    }
+    constexpr unsigned newest_track_window = 2'000U;
+    pending_newest_order_ =
+        session_->newest_root_values(tag.toUtf8().toStdString(), newest_track_window);
+    emit stateChanged();
+}
+
 void MpdProbeController::updateDatabase(const QString& uri) {
     if (!session_ || !connected_) {
         return;
@@ -1316,6 +1327,29 @@ void MpdProbeController::applyCommandResult(const std::uint64_t token,
         } else {
             emit notificationRequested(QStringLiteral("Folder returned an invalid response"));
         }
+        emit stateChanged();
+        return;
+    }
+    if (result.kind == mpd::SessionCommandKind::database_newest) {
+        if (!pending_newest_order_ || *pending_newest_order_ != result.id) {
+            emit stateChanged();
+            return;
+        }
+        pending_newest_order_.reset();
+        QStringList values;
+        QString error;
+        if (result.error) {
+            error = from_utf8(result.error->message);
+        } else if (const auto* result_values =
+                       std::get_if<std::vector<std::string>>(&result.payload)) {
+            values.reserve(static_cast<qsizetype>(result_values->size()));
+            for (const auto& value : *result_values) {
+                values.push_back(from_utf8(value));
+            }
+        } else {
+            error = QStringLiteral("Newest ordering returned an invalid response");
+        }
+        emit newestRootOrderLoaded(values, error);
         emit stateChanged();
         return;
     }

@@ -348,6 +348,8 @@ struct ServerLibraryTreeModel::Impl {
     Node root;
     quint64 generation{0U};
     QString active_root_tag;
+    QHash<QString, int> newest_rank;
+    bool newest_ordering{false};
     bool artwork_enabled{false};
 
     [[nodiscard]] bool isAlbumLevel(const std::size_t level) const {
@@ -639,8 +641,42 @@ void ServerLibraryTreeModel::acceptRoot(const quint64 token, const QString& tag,
         children.push_back(std::move(child));
     }
     std::ranges::stable_sort(children, {}, [](const auto& child) { return child->sort_key; });
+    if (implementation_->newest_ordering) {
+        std::ranges::stable_sort(children, {}, [this](const auto& child) {
+            return implementation_->newest_rank.value(child->query_value,
+                                                      std::numeric_limits<int>::max());
+        });
+    }
     beginResetModel();
     implementation_->root.children = std::move(children);
+    endResetModel();
+}
+
+void ServerLibraryTreeModel::setRootOrdering(const QStringList& newest_first) {
+    implementation_->newest_rank.clear();
+    for (qsizetype rank = 0; rank < newest_first.size(); ++rank) {
+        implementation_->newest_rank.insert(newest_first[rank], static_cast<int>(rank));
+    }
+    implementation_->newest_ordering = true;
+    beginResetModel();
+    std::ranges::stable_sort(implementation_->root.children, {},
+                             [](const auto& child) { return child->sort_key; });
+    std::ranges::stable_sort(implementation_->root.children, {}, [this](const auto& child) {
+        return implementation_->newest_rank.value(child->query_value,
+                                                  std::numeric_limits<int>::max());
+    });
+    endResetModel();
+}
+
+void ServerLibraryTreeModel::clearRootOrdering() {
+    if (!implementation_->newest_ordering) {
+        return;
+    }
+    implementation_->newest_ordering = false;
+    implementation_->newest_rank.clear();
+    beginResetModel();
+    std::ranges::stable_sort(implementation_->root.children, {},
+                             [](const auto& child) { return child->sort_key; });
     endResetModel();
 }
 

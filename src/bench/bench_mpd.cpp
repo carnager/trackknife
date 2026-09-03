@@ -789,6 +789,23 @@ void BenchMainWindow::buildMpdWorkspace() {
             &quick::MpdProbeController::loadServerLibraryArtwork);
     connect(queue_model, &quick::MpdQueueModel::artworkRequested, mpd_controller_,
             &quick::MpdProbeController::loadServerLibraryArtwork);
+    connect(mpd_controller_, &quick::MpdProbeController::newestRootOrderLoaded, this,
+            [this](const QStringList& values, const QString& error) {
+                if (!error.isEmpty()) {
+                    statusBar()->showMessage(
+                        QStringLiteral("Could not load the newest ordering: %1").arg(error), 5'000);
+                    return;
+                }
+                if (library_order_latest_ != nullptr && library_order_latest_->isChecked()) {
+                    server_library_model_->setRootOrdering(values);
+                }
+            });
+    connect(mpd_controller_, &quick::MpdProbeController::serverLibraryRootLoaded, this,
+            [this](quint64, const QString&, const QStringList&, const QString& error) {
+                if (error.isEmpty()) {
+                    applyLibraryOrder(false);
+                }
+            });
     connect(mpd_controller_, &quick::MpdProbeController::serverLibraryRootLoaded,
             server_library_model_, &ui::ServerLibraryTreeModel::acceptRoot);
     connect(mpd_controller_, &quick::MpdProbeController::serverLibraryBranchLoaded,
@@ -1458,6 +1475,27 @@ QStringList BenchMainWindow::selectedMpdQueueUris() const {
 // Resolves MPD URIs below the configured music folder and opens the hits
 // as ordinary local files in a fresh tab (ADR-0112) — from there tagging,
 // conversion, and ReplayGain behave exactly like any local selection.
+// Applies the chosen library root ordering: Latest asks MPD for the
+// newest-first artist ranking, A-Z restores the alphabetical order.
+void BenchMainWindow::applyLibraryOrder(const bool persist) {
+    const auto latest = library_order_latest_ != nullptr && library_order_latest_->isChecked();
+    if (persist) {
+        QSettings settings;
+        settings.setValue(QStringLiteral("mpd/library-order"),
+                          latest ? QStringLiteral("latest") : QStringLiteral("az"));
+    }
+    if (server_library_model_ == nullptr) {
+        return;
+    }
+    if (latest) {
+        if (mpd_controller_ != nullptr && mpd_controller_->connected()) {
+            mpd_controller_->loadNewestRootOrder(server_library_model_->activeRootTag());
+        }
+    } else {
+        server_library_model_->clearRootOrdering();
+    }
+}
+
 void BenchMainWindow::loadMpdUrisAsLocalFiles(const QStringList& uris) {
     if (uris.isEmpty()) {
         return;

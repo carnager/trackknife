@@ -173,6 +173,7 @@ class BenchMainWindow final : public QMainWindow {
     void showMetadataProperties();
     void showConvertDialog();
     void showSettingsDialog();
+    void applyLibraryOrder(bool persist);
     void startMetadataOperationRecovery();
     [[nodiscard]] MusicBrainzLookupService musicBrainzLookupService();
     void finishMetadataOperationJob();
@@ -304,6 +305,8 @@ class BenchMainWindow final : public QMainWindow {
     QAction* properties_action_{nullptr};
     QAction* convert_action_{nullptr};
     QAction* mpd_load_local_action_{nullptr};
+    QToolButton* library_order_az_{nullptr};
+    QToolButton* library_order_latest_{nullptr};
     QAction* remove_selected_action_{nullptr};
     QAction* folder_add_to_list_action_{nullptr};
     QAction* folder_toggle_expanded_action_{nullptr};

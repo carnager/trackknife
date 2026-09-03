@@ -79,6 +79,11 @@ class ServerLibraryTreeModel final : public QAbstractItemModel {
     [[nodiscard]] std::vector<mpd::Track> tracks(const QModelIndex& index) const;
     void setArtworkEnabled(bool enabled);
     void reload();
+    // Newest-first root ordering for Latest browsing: listed values rank in
+    // order, everything else follows alphabetically. Clearing restores the
+    // pure alphabetical order.
+    void setRootOrdering(const QStringList& newest_first);
+    void clearRootOrdering();
 
   public slots:
     void acceptRoot(quint64 token, const QString& tag, const QStringList& values,

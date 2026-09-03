@@ -152,6 +152,9 @@ class MpdProbeController final : public QObject {
     Q_INVOKABLE void clearQueue();
     // Asks MPD to update its database below uri; empty updates everything.
     Q_INVOKABLE void updateDatabase(const QString& uri);
+    // Requests the newest-first root ordering for the library's Latest
+    // mode; the result arrives on newestRootOrderLoaded.
+    Q_INVOKABLE void loadNewestRootOrder(const QString& tag);
     Q_INVOKABLE void moveQueueItem(int row, int target_row);
     Q_INVOKABLE void moveQueueItems(const QVariantList& rows, int insertion_row);
     Q_INVOKABLE void setQueuePriority(const QVariantList& rows, int priority);
@@ -204,6 +207,7 @@ class MpdProbeController final : public QObject {
     void storedPlaylistRenamed(const QString& from, const QString& to);
     void storedPlaylistDeleted(const QString& name);
     void tagListLoaded(const QString& tag, const QStringList& values);
+    void newestRootOrderLoaded(const QStringList& values, const QString& error);
     void serverLibraryRootLoaded(quint64 token, const QString& tag, const QStringList& values,
                                  const QString& error);
     void serverLibraryBranchLoaded(quint64 token, const std::vector<mpd::Track>& tracks,
@@ -269,6 +273,7 @@ class MpdProbeController final : public QObject {
     bool pending_search_append_{false};
     bool search_has_more_{false};
     std::optional<std::uint64_t> pending_browser_query_;
+    std::optional<std::uint64_t> pending_newest_order_;
     std::optional<std::uint64_t> pending_tag_query_;
     std::optional<std::uint64_t> pending_stored_playlists_query_;
     QString pending_tag_name_;

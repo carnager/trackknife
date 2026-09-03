@@ -2996,12 +2996,38 @@ void BenchMainWindowTest::settingsControlStartupContextAndMusicRoot() {
 
         // The queue and library context actions exist for discoverability.
         QVERIFY(window.findChild<QAction*>(QStringLiteral("action-mpd-load-local")) != nullptr);
+
+        // The library order toggle lives in the heading: hidden for local
+        // folders, shown in MPD context, persisting the chosen mode.
+        auto* order_az = window.findChild<QToolButton*>(QStringLiteral("bench-library-order-az"));
+        auto* order_latest =
+            window.findChild<QToolButton*>(QStringLiteral("bench-library-order-latest"));
+        auto* mpd_queue = window.findChild<QTableView*>(QStringLiteral("bench-mpd-queue"));
+        QVERIFY(order_az != nullptr && order_latest != nullptr && mpd_queue != nullptr);
+        QVERIFY(!order_az->isVisible() && !order_latest->isVisible());
+        QVERIFY(order_az->isChecked());
+        tabs->setCurrentWidget(mpd_queue);
+        QTRY_VERIFY(order_az->isVisible() && order_latest->isVisible());
+        QTest::mouseClick(order_latest, Qt::LeftButton);
+        QVERIFY(order_latest->isChecked());
+        {
+            const QSettings persisted;
+            QCOMPARE(persisted.value(QStringLiteral("mpd/library-order")).toString(),
+                     QStringLiteral("latest"));
+        }
+        QTest::mouseClick(order_az, Qt::LeftButton);
+        {
+            const QSettings persisted;
+            QCOMPARE(persisted.value(QStringLiteral("mpd/library-order")).toString(),
+                     QStringLiteral("az"));
+        }
     }
 
     // Leave a clean slate for the other window tests.
     QSettings settings;
     settings.remove(QLatin1String(SettingsDialog::startup_context_key));
     settings.remove(QLatin1String(SettingsDialog::music_root_key));
+    settings.remove(QStringLiteral("mpd/library-order"));
     settings.sync();
 }
 

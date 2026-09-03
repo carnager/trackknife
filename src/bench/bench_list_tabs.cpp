@@ -35,6 +35,7 @@
 #include <QTabWidget>
 #include <QTableView>
 #include <QTimer>
+#include <QToolButton>
 #include <QTreeView>
 
 #include <algorithm>
@@ -502,6 +503,10 @@ void BenchMainWindow::refreshActiveContext() {
     }
     if (source_heading_ != nullptr) {
         source_heading_->setText(mpd ? QStringLiteral("MPD Library") : QStringLiteral("Folders"));
+        if (library_order_az_ != nullptr && library_order_latest_ != nullptr) {
+            library_order_az_->setVisible(mpd);
+            library_order_latest_->setVisible(mpd);
+        }
     }
     if (folder_bookmarks_ != nullptr) {
         folder_bookmarks_->setVisible(!mpd && folder_bookmarks_->count() > 0);

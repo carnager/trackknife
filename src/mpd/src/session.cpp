@@ -309,6 +309,13 @@ struct Session::Impl {
             return without_payload(client.clear_queue());
         case SessionCommandKind::database_update:
             return without_payload(client.update_database(command.uri));
+        case SessionCommandKind::database_newest: {
+            auto result = client.newest_tag_values(command.uri, command.priority);
+            if (!result) {
+                return std::unexpected(std::move(result.error()));
+            }
+            return SessionCommandPayload{std::move(*result)};
+        }
         case SessionCommandKind::queue_move:
             if (auto result =
                     client.move_id(command.object_id, command.queue_position.value_or(0U));
@@ -443,6 +450,7 @@ struct Session::Impl {
             return static_cast<std::uint32_t>(IdleEvent::queue) |
                    static_cast<std::uint32_t>(IdleEvent::player);
         case SessionCommandKind::database_update:
+        case SessionCommandKind::database_newest:
         case SessionCommandKind::database_browse:
         case SessionCommandKind::database_tag:
         case SessionCommandKind::database_tag_tracks:
@@ -757,6 +765,14 @@ std::uint64_t Session::delete_queue_ids(std::vector<std::uint32_t> song_ids) {
     command.kind = SessionCommandKind::queue_delete_batch;
     command.object_ids = std::move(song_ids);
     return implementation_->enqueue(std::move(command));
+}
+
+std::uint64_t Session::newest_root_values(std::string tag, const unsigned track_limit) {
+    Impl::PendingCommand command;
+    command.kind = SessionCommandKind::database_newest;
+    command.uri = std::move(tag);
+    command.priority = track_limit;
+    return implementation_->enqueue(command);
 }
 
 std::uint64_t Session::update_database(std::string uri) {

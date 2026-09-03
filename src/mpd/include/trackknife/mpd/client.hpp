@@ -115,6 +115,10 @@ class Client final {
     [[nodiscard]] core::Result<void> clear_queue();
     // Requests a database update scoped to the URI; empty updates everything.
     [[nodiscard]] core::Result<void> update_database(const std::string& uri);
+    // Distinct values of tag over the library's most recently modified
+    // tracks, newest first — the ordering source for "Latest" browsing.
+    [[nodiscard]] core::Result<std::vector<std::string>> newest_tag_values(std::string_view tag,
+                                                                           unsigned track_limit);
     [[nodiscard]] core::Result<void> move_id(std::uint32_t song_id, unsigned position);
     [[nodiscard]] core::Result<void> move_ids(std::span<const QueueMove> moves);
     [[nodiscard]] core::Result<void> set_priority_id(std::uint32_t song_id, unsigned priority);
