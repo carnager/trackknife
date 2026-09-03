@@ -10,6 +10,8 @@ add_library(
     src/field_suggestions.cpp
     src/flac_mapping.cpp
     src/flac_writer.cpp
+    src/apev2_trailer_detail.hpp
+    src/mp3_writer.cpp
     src/text_writer_detail.hpp
     src/wavpack_writer.cpp
     src/local_reader.cpp

@@ -9,7 +9,7 @@ The ordered delivery plan is [`../MILESTONES.md`](../MILESTONES.md).
 
 ## Current continuation point
 
-M5 is closing into M6, implementation is accepted through ADR-0102, and the persistence
+M5 is closing into M6, implementation is accepted through ADR-0103, and the persistence
 schema is version 25. In-app MusicBrainz identification is end-to-end: Properties'
 Identify… opens a no-id text-search dialog whose ranked rows are individual
 release versions, and the chosen version stages as one undoable colored draft
@@ -41,7 +41,9 @@ C-locale value formatting and conventional REPLAYGAIN_* identities. Native WavPa
 qualified text writer (ADR-0095): the shared prepared-copy core carries the
 paired-totals rules once for every format, and the WavPack prepare proves
 audio blocks and binary APEv2 items byte-exact while rejecting ID3v1
-trailers. Path-only Rename/Move now derives strictly from captured
+trailers, and MP3 is the third (ADR-0103): region-based audio proof through
+ID3v2 resizes with one adapter-keyed prepare dispatch for every qualified
+format. Path-only Rename/Move now derives strictly from captured
 revision-qualified source tags, never manual drafts or automatic chains, when
 Save tags is off. The transformation editor also exposes a canonical Raw script
 view for the bounded cleanup subset with live typed translation and explicit
@@ -108,9 +110,10 @@ Start metadata and file-operation work with
 [`adr/0099-loudness-grouping-modes.md`](adr/0099-loudness-grouping-modes.md),
 [`adr/0100-replaygain-scan-action.md`](adr/0100-replaygain-scan-action.md),
 [`adr/0101-folder-bookmarks-panel.md`](adr/0101-folder-bookmarks-panel.md),
-and [`adr/0102-mpd-go-to-artist-album.md`](adr/0102-mpd-go-to-artist-album.md).
+[`adr/0102-mpd-go-to-artist-album.md`](adr/0102-mpd-go-to-artist-album.md),
+and [`adr/0103-prepared-copy-mp3-text-writer.md`](adr/0103-prepared-copy-mp3-text-writer.md).
 The development, ASan/UBSan, TSan, and clang-tidy builds and their complete
-53/53 test suites pass at this continuation point (validated 2026-09-02).
+54/54 test suites pass at this continuation point (validated 2026-09-02).
 The TSan-only bench test shim routes Qt 6.9+'s uninstrumented
 `pthread_clockjoin_np` wait through TSan's intercepted blocking
 `pthread_join`; normal Trackbench builds are unchanged, and CTest retains the

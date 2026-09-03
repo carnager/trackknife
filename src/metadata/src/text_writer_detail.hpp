@@ -251,9 +251,10 @@ mapping_native_name(const MetadataWritePlanChange& change) noexcept {
 // two spellings are one identity (writes refresh both, removal clears
 // both), so the partner never survives to resurrect the value.
 [[nodiscard]] inline std::vector<std::string>
-exact_native_targets(const MetadataWritePlanChange& change) {
+exact_native_targets(const MetadataWritePlanChange& change, const bool paired_totals = true) {
     std::vector<std::string> targets{*change.exact_native_name};
-    const auto paired = paired_flac_property_names(change.canonical_name);
+    const auto paired = paired_totals ? paired_flac_property_names(change.canonical_name)
+                                      : std::vector<std::string>{};
     const auto pair_member =
         std::ranges::any_of(paired, [&change](const std::string& property_name) {
             return canonicalize_native_field_name(property_name) == *change.exact_native_name;
@@ -272,12 +273,12 @@ exact_native_targets(const MetadataWritePlanChange& change) {
 [[nodiscard]] inline core::Result<void>
 verify_text_result(const std::string_view format_label, const MetadataDocument& before,
                    const MetadataDocument& after, const MetadataWritePlanSource& source_plan,
-                   const std::string& prepared_raw_path) {
+                   const std::string& prepared_raw_path, const bool paired_totals = true) {
     auto expected = effective_native_text(before);
     for (const auto& change : source_plan.changes) {
         const auto& intent = change.intents.front();
         if (change.exact_native_name) {
-            const auto targets = exact_native_targets(change);
+            const auto targets = exact_native_targets(change, paired_totals);
             for (const auto& target : targets) {
                 expected.erase(target);
             }
@@ -290,7 +291,9 @@ verify_text_result(const std::string_view format_label, const MetadataDocument& 
                 }
                 // A pair-member target writes both spellings and the reread
                 // load rule surfaces only the pair primary.
-                const auto paired = paired_flac_property_names(change.canonical_name);
+                const auto paired = paired_totals
+                                        ? paired_flac_property_names(change.canonical_name)
+                                        : std::vector<std::string>{};
                 const auto& property_name =
                     targets.size() > 1U ? paired.front() : mapping->property_name;
                 const auto identity = resolve_text_property_identity(property_name);
@@ -313,7 +316,8 @@ verify_text_result(const std::string_view format_label, const MetadataDocument& 
             // Paired identities are written under every paired spelling, but
             // the reread applies the Picard load rule and surfaces only the
             // primary; expect exactly that primary.
-            const auto paired = paired_flac_property_names(change.canonical_name);
+            const auto paired = paired_totals ? paired_flac_property_names(change.canonical_name)
+                                              : std::vector<std::string>{};
             const auto& property_name = paired.empty() ? mapping->property_name : paired.front();
             const auto identity = resolve_text_property_identity(property_name);
             expected[canonicalize_native_field_name(property_name)] = EffectiveNativeTextField{
@@ -370,11 +374,10 @@ verify_plan_originals(const std::string_view format_label, const MetadataDocumen
 
 // Applies every planned change through TagLib's generic property surface on
 // an already-validated file. The caller owns construction and save().
-[[nodiscard]] inline core::Result<void>
-apply_text_changes_to_properties(const std::string_view format_label,
-                                 const MetadataWritePlanSource& source_plan, TagLib::File& file,
-                                 const std::string& prepared_raw_path,
-                                 const core::CancellationToken& cancellation) {
+[[nodiscard]] inline core::Result<void> apply_text_changes_to_properties(
+    const std::string_view format_label, const MetadataWritePlanSource& source_plan,
+    TagLib::File& file, const std::string& prepared_raw_path,
+    const core::CancellationToken& cancellation, const bool paired_totals = true) {
     auto properties = file.properties();
     for (const auto& change : source_plan.changes) {
         if (cancellation.is_cancellation_requested()) {
@@ -391,8 +394,9 @@ apply_text_changes_to_properties(const std::string_view format_label,
             return std::unexpected(std::move(mapping_error));
         }
 
-        const auto exact_targets =
-            change.exact_native_name ? exact_native_targets(change) : std::vector<std::string>{};
+        const auto exact_targets = change.exact_native_name
+                                       ? exact_native_targets(change, paired_totals)
+                                       : std::vector<std::string>{};
         std::vector<TagLib::String> aliases;
         for (auto property = properties.cbegin(); property != properties.cend(); ++property) {
             const auto native_name = property->first.to8Bit(true);
@@ -422,9 +426,10 @@ apply_text_changes_to_properties(const std::string_view format_label,
             // else keeps its single mapped property name. A pair-member
             // exact target refreshes both spellings exactly like the
             // logical write; other exact targets stay single-name.
-            auto property_names = change.exact_native_name && exact_targets.size() <= 1U
-                                      ? std::vector<std::string>{}
-                                      : paired_flac_property_names(change.canonical_name);
+            auto property_names =
+                (change.exact_native_name && exact_targets.size() <= 1U) || !paired_totals
+                    ? std::vector<std::string>{}
+                    : paired_flac_property_names(change.canonical_name);
             if (property_names.empty()) {
                 property_names.push_back(mapping->property_name);
             }

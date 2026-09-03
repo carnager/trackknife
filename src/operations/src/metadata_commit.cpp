@@ -5,7 +5,7 @@
 #include "trackknife/metadata/flac_mapping.hpp"
 #include "trackknife/metadata/flac_writer.hpp"
 #include "trackknife/metadata/local_reader.hpp"
-#include "trackknife/metadata/wavpack_writer.hpp"
+#include "trackknife/metadata/mp3_writer.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1492,8 +1492,7 @@ commit_flac_metadata_source(const metadata::MetadataWritePlanSource& source_plan
     }
     if (!dependent_state_committer || source_plan.raw_path.empty() ||
         source_plan.raw_path.find('\0') != std::string::npos || !source_plan.ready() ||
-        (source_plan.adapter_name != "taglib-flac-v1" &&
-         source_plan.adapter_name != "taglib-wavpack-v1") ||
+        !metadata::is_qualified_text_adapter(source_plan.adapter_name) ||
         !source_plan.expected_revision || !source_plan.observed_revision ||
         *source_plan.expected_revision != *source_plan.observed_revision ||
         source_plan.changes.empty()) {
@@ -1547,11 +1546,8 @@ commit_flac_metadata_source(const metadata::MetadataWritePlanSource& source_plan
         return std::unexpected(std::move(created.error()));
     }
 
-    auto prepared = source_plan.adapter_name == "taglib-wavpack-v1"
-                        ? metadata::prepare_wavpack_metadata_write_copy(
-                              source_plan, record->prepared_raw_path, cancellation)
-                        : metadata::prepare_flac_metadata_write_copy(
-                              source_plan, record->prepared_raw_path, cancellation);
+    auto prepared = metadata::prepare_qualified_metadata_write_copy(
+        source_plan, record->prepared_raw_path, cancellation);
     if (!prepared) {
         const auto& failure = prepared.error();
         auto terminal = record_terminal_failure(journal, *record, State::planned, std::nullopt,

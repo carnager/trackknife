@@ -1000,6 +1000,13 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   byte-exact with none invented, ID3v1 trailers rejected as unqualified.
   Commit and refreshed publication dispatch by adapter; artwork stays
   FLAC-only. Real-fixture round-trip and blocked-trailer tests cover it.
+- Done: ADR-0103 qualifies the MP3 (ID3v2) text writer as the third
+  format: region-based preservation proof (audio bytes identical through
+  leading-tag resizes, trailing ID3v1/APEv2 accounted, APE binary items
+  byte-exact via a shared trailer detail header), paired totals disabled
+  for ID3, and one adapter-keyed prepare dispatch for every qualified
+  format. Musepack/Monkey's Audio wait on fixture encoders; Ogg
+  Vorbis/Opus wait on a decoded-PCM verification design.
 - Next: grouped numbering and the remaining open M5 capability decisions.
 
 ### Exit criteria

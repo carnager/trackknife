@@ -6,6 +6,7 @@
 
 #include <fileref.h>
 #include <flacfile.h>
+#include <mpegfile.h>
 #include <tfile.h>
 #include <tpropertymap.h>
 #include <wavpackfile.h>
@@ -63,6 +64,20 @@ constexpr std::size_t maximum_text_bytes = 4U * 1024U * 1024U;
     return has_leading_marker(raw_path, {'w', 'v', 'p', 'k'});
 }
 
+[[nodiscard]] bool has_native_mpeg_marker(const std::string& raw_path) {
+    std::ifstream input{std::filesystem::path{raw_path}, std::ios::binary};
+    std::array<char, 3> marker{};
+    if (!input.read(marker.data(), static_cast<std::streamsize>(marker.size()))) {
+        return false;
+    }
+    if (marker == std::array<char, 3>{'I', 'D', '3'}) {
+        return true;
+    }
+    const auto first = static_cast<unsigned char>(marker[0]);
+    const auto second = static_cast<unsigned char>(marker[1]);
+    return first == 0xFFU && (second & 0xE0U) == 0xE0U;
+}
+
 } // namespace
 
 core::Result<LocalMetadataRead> read_local_metadata(const std::string& raw_path,
@@ -89,6 +104,9 @@ core::Result<LocalMetadataRead> read_local_metadata(const std::string& raw_path,
     const bool native_wavpack = !native_flac &&
                                 dynamic_cast<TagLib::WavPack::File*>(reference.file()) != nullptr &&
                                 has_native_wavpack_marker(raw_path);
+    const bool native_mpeg = !native_flac && !native_wavpack &&
+                             dynamic_cast<TagLib::MPEG::File*>(reference.file()) != nullptr &&
+                             has_native_mpeg_marker(raw_path);
     const auto properties = reference.file()->properties();
     if (cancellation.is_cancellation_requested()) {
         return std::unexpected(cancelled(raw_path));
@@ -183,18 +201,20 @@ core::Result<LocalMetadataRead> read_local_metadata(const std::string& raw_path,
     // verifies them byte-exactly on every prepared copy, so their presence
     // does not block writes.
     const bool preservation_supported =
-        (native_flac && document.unsupported_native_objects.empty()) || native_wavpack;
+        (native_flac && document.unsupported_native_objects.empty()) || native_wavpack ||
+        native_mpeg;
     return LocalMetadataRead{
         .raw_path = raw_path,
         .source_revision = *revision_after,
         .document = std::move(document),
         .adapter_name = native_flac      ? "taglib-flac-v1"
                         : native_wavpack ? "taglib-wavpack-v1"
+                        : native_mpeg    ? "taglib-mpeg-v1"
                                          : "taglib-properties-v1",
         .capabilities =
             MetadataCapabilities{
                 .fields_readable = true,
-                .fields_writable = native_flac || native_wavpack,
+                .fields_writable = native_flac || native_wavpack || native_mpeg,
                 .pictures_readable = native_flac,
                 .pictures_writable = native_flac,
                 .unknown_data_preserved_on_write = preservation_supported,

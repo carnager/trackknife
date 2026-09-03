@@ -279,3 +279,22 @@ audition starts at sample zero; other valid Vorbis encoders can also expose
 overlapping or gapped best-effort frame timestamps. The regression requires the
 4,282 decodable PCM frames to be published on one contiguous logical timeline
 starting at zero.
+
+## Tagged MP3 fixture
+
+`tagged-tone-mp3.b64` is a 0.1 s 44.1 kHz mono 997 Hz sine in an MP3
+container with a leading ID3v2.4 tag, generated with FFmpeg n9.0.1 /
+libmp3lame:
+
+```sh
+ffmpeg -f lavfi -i "sine=frequency=997:duration=0.1:sample_rate=44100" \
+  -metadata title="Fixture Tone" -metadata artist="Trackknife Project" \
+  -c:a libmp3lame -b:a 128k -write_id3v2 1 -id3v2_version 4 -bitexact \
+  tagged-tone.mp3
+```
+
+The binary SHA-256 is
+`05a2df905bb6d0398e7af6bb9451effc80f6252d9fb1006431b762aa3172bb9d`.
+The MP3 writer qualification requires both tags to survive projection and
+the MPEG audio region to stay byte-identical through a prepared-copy tag
+write.
