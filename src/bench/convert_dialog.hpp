@@ -8,12 +8,14 @@
 #include "trackknife/formats/decoder.hpp"
 #include "trackknife/metadata/document.hpp"
 #include "trackknife/operations/output_path_plan.hpp"
+#include "trackknife/persistence/list_repository.hpp"
 
 #include <QDialog>
 #include <QFutureWatcher>
 
 #include <atomic>
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -38,6 +40,12 @@ struct ConvertDialogItem {
     QString label;
 };
 
+// Loads the saved naming layouts and destination roots the rest of the app
+// already manages so the converter offers them as one-click choices.
+using ConvertProfilesLoader = std::function<void(
+    std::function<void(std::vector<persistence::SavedOutputLayoutProfile>,
+                       std::vector<persistence::SavedDestinationProfile>, QString)>)>;
+
 // Converts the current selection below a destination root (ADR-0107):
 // preset choice with probed availability, a tkfmt-1 naming layout with a
 // live target preview, and a direct bounded parallel conversion with
@@ -46,7 +54,8 @@ class ConvertDialog final : public QDialog {
     Q_OBJECT
 
   public:
-    explicit ConvertDialog(std::vector<ConvertDialogItem> items, QWidget* parent = nullptr);
+    explicit ConvertDialog(std::vector<ConvertDialogItem> items,
+                           ConvertProfilesLoader profiles = {}, QWidget* parent = nullptr);
     ~ConvertDialog() override;
 
   protected:
@@ -58,8 +67,15 @@ class ConvertDialog final : public QDialog {
     void finishConversion();
     [[nodiscard]] std::optional<convert::EncoderPreset> selectedPreset() const;
 
+    void applySavedLayout(int combo_index);
+    void applySavedDestination(int combo_index);
+
     std::vector<ConvertDialogItem> items_;
+    std::vector<persistence::SavedOutputLayoutProfile> layout_catalog_;
+    std::vector<persistence::SavedDestinationProfile> destination_catalog_;
     QComboBox* preset_{nullptr};
+    QComboBox* layout_choice_{nullptr};
+    QComboBox* destination_choice_{nullptr};
     QLineEdit* destination_{nullptr};
     QLineEdit* directory_expression_{nullptr};
     QLineEdit* basename_expression_{nullptr};

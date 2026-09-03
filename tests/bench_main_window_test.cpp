@@ -289,7 +289,6 @@ void BenchMainWindowTest::transportUsesStackedNowPlayingAndCompactDeviceButton()
     auto* seek = window.findChild<QSlider*>(QStringLiteral("bench-seek"));
     auto* volume = window.findChild<QSlider*>(QStringLiteral("bench-volume"));
     auto* device = window.findChild<QToolButton*>(QStringLiteral("bench-device"));
-    auto* app_menu = window.findChild<QToolButton*>(QStringLiteral("bench-main-menu"));
     auto* header = window.findChild<QWidget*>(QStringLiteral("bench-player-header"));
     auto* transport = window.findChild<QWidget*>(QStringLiteral("bench-transport-buttons"));
 
@@ -298,7 +297,6 @@ void BenchMainWindowTest::transportUsesStackedNowPlayingAndCompactDeviceButton()
     QVERIFY(seek != nullptr);
     QVERIFY(volume != nullptr);
     QVERIFY(device != nullptr);
-    QVERIFY(app_menu != nullptr);
     QVERIFY(header != nullptr);
     QVERIFY(transport != nullptr);
     QVERIFY(window.findChild<QComboBox*>(QStringLiteral("bench-device")) == nullptr);
@@ -308,13 +306,10 @@ void BenchMainWindowTest::transportUsesStackedNowPlayingAndCompactDeviceButton()
     QVERIFY(dynamic_cast<ui::LineSlider*>(seek) != nullptr);
     QVERIFY(dynamic_cast<ui::LineSlider*>(volume) != nullptr);
     QCOMPARE(device->accessibleName(), QStringLiteral("Audio output device"));
-    QCOMPARE(app_menu->accessibleName(), QStringLiteral("Application menu"));
-    QCOMPARE(app_menu->text(), QStringLiteral("☰"));
-    QCOMPARE(app_menu->popupMode(), QToolButton::InstantPopup);
-    QVERIFY(app_menu->menu() != nullptr);
-    QCOMPARE(app_menu->menu()->objectName(), QStringLiteral("bench-main-menu-popup"));
-    QCOMPARE(app_menu->menu()->actions().size(), 4);
-    QVERIFY(!window.menuBar()->isVisible());
+    // The regular menu bar is the application menu — no hamburger button.
+    QVERIFY(window.findChild<QToolButton*>(QStringLiteral("bench-main-menu")) == nullptr);
+    QVERIFY(!window.menuBar()->isHidden());
+    QCOMPARE(window.menuBar()->actions().size(), 4);
     QCOMPARE(device->toolButtonStyle(), Qt::ToolButtonIconOnly);
     QVERIFY(!device->icon().isNull());
     QVERIFY(device->menu() != nullptr);
@@ -2962,9 +2957,34 @@ void BenchMainWindowTest::convertDialogPlansAndConvertsSelection() {
             .label = title,
         };
     };
+    const auto saved_layouts = std::vector{persistence::SavedOutputLayoutProfile{
+        .id = core::StableId::random(),
+        .profile =
+            operations::OutputLayoutProfile{
+                .schema_version = 1U,
+                .name = "Saved album layout",
+                .dialect = {},
+                .relative_directory_expression = "saved/%album%",
+                .basename_expression = "%title%",
+                .sanitization_policy = {"linux", 1U},
+            },
+    }};
+    const auto saved_destinations = std::vector{persistence::SavedDestinationProfile{
+        .id = core::StableId::random(),
+        .profile =
+            operations::DestinationProfile{
+                .schema_version = 1U,
+                .name = "Saved root",
+                .root_raw_path = destination.path().toStdString(),
+                .containment_policy = {"lexical-beneath-root", 1U},
+            },
+    }};
     auto* dialog =
         new ConvertDialog({make_item(loud_path, QStringLiteral("Loud"), QStringLiteral("01")),
-                           make_item(quiet_path, QStringLiteral("Quiet"), QStringLiteral("02"))});
+                           make_item(quiet_path, QStringLiteral("Quiet"), QStringLiteral("02"))},
+                          [&saved_layouts, &saved_destinations](auto completion) {
+                              completion(saved_layouts, saved_destinations, QString{});
+                          });
     dialog->show();
 
     auto* preset = dialog->findChild<QComboBox*>(QStringLiteral("bench-convert-preset"));
@@ -2978,6 +2998,25 @@ void BenchMainWindowTest::convertDialogPlansAndConvertsSelection() {
     auto* status = dialog->findChild<QLabel*>(QStringLiteral("bench-convert-status"));
     QVERIFY(preset != nullptr && root != nullptr && directories != nullptr && names != nullptr);
     QVERIFY(preview != nullptr && run != nullptr && status != nullptr);
+
+    // The app's saved naming layouts and destination roots are offered
+    // directly; picking them fills the editable fields.
+    auto* layout_choice = dialog->findChild<QComboBox*>(QStringLiteral("bench-convert-layout"));
+    auto* root_choice =
+        dialog->findChild<QComboBox*>(QStringLiteral("bench-convert-destination-choice"));
+    QVERIFY(layout_choice != nullptr && root_choice != nullptr);
+    QTRY_COMPARE(layout_choice->count(), 2);
+    QTRY_COMPARE(root_choice->count(), 2);
+    layout_choice->setCurrentIndex(1);
+    emit layout_choice->activated(1);
+    QCOMPARE(directories->text(), QStringLiteral("saved/%album%"));
+    QCOMPARE(names->text(), QStringLiteral("%title%"));
+    root_choice->setCurrentIndex(1);
+    emit root_choice->activated(1);
+    QCOMPARE(root->text(), destination.path());
+    // Hand-editing drifts the choice back to Custom.
+    QTest::keyClick(names, Qt::Key_X);
+    QCOMPARE(layout_choice->currentIndex(), 0);
 
     preset->setCurrentIndex(preset->findData(QStringLiteral("opus-192")));
     root->setText(destination.path());
@@ -4051,9 +4090,13 @@ void BenchMainWindowTest::contextMenusTargetSelectionsListsAndFolders() {
     QVERIFY(play != nullptr);
     QVERIFY(properties != nullptr);
     QVERIFY(remove != nullptr);
+    auto* convert = window.findChild<QAction*>(QStringLiteral("action-convert-files"));
+    QVERIFY(convert != nullptr);
     QVERIFY(play->isEnabled());
     QVERIFY(properties->isEnabled());
+    QVERIFY(convert->isEnabled());
     QVERIFY(track_menu->actions().contains(properties));
+    QVERIFY(track_menu->actions().contains(convert));
     QVERIFY(remove->isEnabled());
     QCOMPARE(copy_menu->actions().size(), 1);
     QCOMPARE(move_menu->actions().size(), 1);

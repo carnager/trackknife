@@ -216,16 +216,6 @@ void BenchMainWindow::buildTransport() {
     header_layout->setVerticalSpacing(0);
     header_layout->setColumnStretch(2, 1);
 
-    auto* app_menu_button = new QToolButton(header);
-    app_menu_button->setObjectName(QStringLiteral("bench-main-menu"));
-    app_menu_button->setText(QStringLiteral("☰"));
-    app_menu_button->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    app_menu_button->setAutoRaise(true);
-    app_menu_button->setFixedSize(26, 26);
-    app_menu_button->setPopupMode(QToolButton::InstantPopup);
-    app_menu_button->setAccessibleName(QStringLiteral("Application menu"));
-    header_layout->addWidget(app_menu_button, 0, 0, Qt::AlignLeft | Qt::AlignVCenter);
-
     auto* transport = new QWidget(header);
     transport->setObjectName(QStringLiteral("bench-transport-buttons"));
     auto* transport_layout = new QHBoxLayout(transport);
@@ -377,14 +367,6 @@ void BenchMainWindow::buildTransport() {
             static_cast<void>(player_->refresh_output_devices());
         }
     });
-
-    auto* app_menu = new QMenu(app_menu_button);
-    app_menu->setObjectName(QStringLiteral("bench-main-menu-popup"));
-    for (auto* action : menuBar()->actions()) {
-        app_menu->addAction(action);
-    }
-    app_menu_button->setMenu(app_menu);
-    menuBar()->hide();
 }
 
 void BenchMainWindow::configurePlaybackBuffer(const QString& profile, const int capacity_ms,

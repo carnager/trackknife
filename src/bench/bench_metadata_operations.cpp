@@ -305,7 +305,20 @@ void BenchMainWindow::showConvertDialog() {
     if (items.empty()) {
         return;
     }
-    auto* dialog = new ConvertDialog(std::move(items), this);
+    auto* const persistence_service = persistence_;
+    auto* dialog = new ConvertDialog(
+        std::move(items),
+        [persistence_service](
+            std::function<void(std::vector<persistence::SavedOutputLayoutProfile>,
+                               std::vector<persistence::SavedDestinationProfile>, QString)>
+                completion) {
+            if (persistence_service == nullptr) {
+                completion({}, {}, QStringLiteral("Trackbench persistence is unavailable"));
+                return;
+            }
+            persistence_service->loadOutputProfiles(std::move(completion));
+        },
+        this);
     dialog->show();
 }
 

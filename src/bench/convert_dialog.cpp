@@ -13,6 +13,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QPointer>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSettings>
@@ -39,7 +40,8 @@ constexpr int preview_limit = 200;
 
 } // namespace
 
-ConvertDialog::ConvertDialog(std::vector<ConvertDialogItem> items, QWidget* parent)
+ConvertDialog::ConvertDialog(std::vector<ConvertDialogItem> items, ConvertProfilesLoader profiles,
+                             QWidget* parent)
     : QDialog(parent), items_(std::move(items)) {
     setWindowTitle(QStringLiteral("Convert %1 file%2")
                        .arg(items_.size())
@@ -72,6 +74,13 @@ ConvertDialog::ConvertDialog(std::vector<ConvertDialogItem> items, QWidget* pare
     form->addRow(QStringLiteral("Preset:"), preset_);
 
     auto* destination_row = new QHBoxLayout;
+    destination_choice_ = new QComboBox(this);
+    destination_choice_->setObjectName(QStringLiteral("bench-convert-destination-choice"));
+    destination_choice_->addItem(QStringLiteral("Custom"));
+    destination_choice_->setVisible(false);
+    connect(destination_choice_, &QComboBox::activated, this,
+            &ConvertDialog::applySavedDestination);
+    destination_row->addWidget(destination_choice_);
     destination_ = new QLineEdit(this);
     destination_->setObjectName(QStringLiteral("bench-convert-destination"));
     destination_->setText(settings.value(QStringLiteral("convert/destination-root")).toString());
@@ -88,6 +97,13 @@ ConvertDialog::ConvertDialog(std::vector<ConvertDialogItem> items, QWidget* pare
     destination_row->addWidget(destination_, 1);
     destination_row->addWidget(browse);
     form->addRow(QStringLiteral("Into:"), destination_row);
+
+    layout_choice_ = new QComboBox(this);
+    layout_choice_->setObjectName(QStringLiteral("bench-convert-layout"));
+    layout_choice_->addItem(QStringLiteral("Custom"));
+    layout_choice_->setVisible(false);
+    connect(layout_choice_, &QComboBox::activated, this, &ConvertDialog::applySavedLayout);
+    form->addRow(QStringLiteral("Layout:"), layout_choice_);
 
     directory_expression_ = new QLineEdit(this);
     directory_expression_->setObjectName(QStringLiteral("bench-convert-directory-expression"));
@@ -154,8 +170,56 @@ ConvertDialog::ConvertDialog(std::vector<ConvertDialogItem> items, QWidget* pare
     connect(directory_expression_, &QLineEdit::textChanged, this, schedule);
     connect(basename_expression_, &QLineEdit::textChanged, this, schedule);
     connect(preset_, &QComboBox::currentIndexChanged, this, schedule);
+    // Hand-editing an expression or the root leaves the saved choice.
+    connect(directory_expression_, &QLineEdit::textEdited, this,
+            [this] { layout_choice_->setCurrentIndex(0); });
+    connect(basename_expression_, &QLineEdit::textEdited, this,
+            [this] { layout_choice_->setCurrentIndex(0); });
+    connect(destination_, &QLineEdit::textEdited, this,
+            [this] { destination_choice_->setCurrentIndex(0); });
+
+    if (profiles) {
+        const QPointer self{this};
+        profiles([self](std::vector<persistence::SavedOutputLayoutProfile> layouts,
+                        std::vector<persistence::SavedDestinationProfile> destinations,
+                        const QString& error) {
+            if (self == nullptr || !error.isEmpty()) {
+                return;
+            }
+            self->layout_catalog_ = std::move(layouts);
+            self->destination_catalog_ = std::move(destinations);
+            for (const auto& saved : self->layout_catalog_) {
+                self->layout_choice_->addItem(displayText(saved.profile.name));
+            }
+            self->layout_choice_->setVisible(!self->layout_catalog_.empty());
+            for (const auto& destination : self->destination_catalog_) {
+                self->destination_choice_->addItem(displayText(destination.profile.name));
+            }
+            self->destination_choice_->setVisible(!self->destination_catalog_.empty());
+        });
+    }
 
     refreshPreview();
+}
+
+// Selecting a saved naming layout fills the expressions; they stay editable
+// and drift back to Custom on the first keystroke.
+void ConvertDialog::applySavedLayout(const int combo_index) {
+    const auto position = static_cast<std::size_t>(combo_index) - 1U;
+    if (combo_index <= 0 || position >= layout_catalog_.size()) {
+        return;
+    }
+    const auto& profile = layout_catalog_[position].profile;
+    directory_expression_->setText(displayText(profile.relative_directory_expression));
+    basename_expression_->setText(displayText(profile.basename_expression));
+}
+
+void ConvertDialog::applySavedDestination(const int combo_index) {
+    const auto position = static_cast<std::size_t>(combo_index) - 1U;
+    if (combo_index <= 0 || position >= destination_catalog_.size()) {
+        return;
+    }
+    destination_->setText(displayText(destination_catalog_[position].profile.root_raw_path));
 }
 
 ConvertDialog::~ConvertDialog() {

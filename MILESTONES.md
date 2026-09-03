@@ -1289,9 +1289,13 @@ afterwards is a separate explicit command in Trackbench's MPD authority.
   destination root, tkfmt-1 folder/name expressions with a debounced
   live preview, problems-only feedback, and a cancellable parallel run
   with persistent settings.
-- Next: mirror-source-structure destination mode, artwork carriage,
-  bit-depth/dither policy, and stale-ReplayGain handling on signal
-  change.
+- Done: the ADR-0107 addendum makes conversion reachable from the local
+  track context menu, restores the regular menu bar (hamburger button
+  removed), and offers the app's saved naming layouts and destination
+  roots inside the converter as one-click, still-editable choices.
+- Next: user-defined encoder profiles, mirror-source-structure
+  destination mode, artwork carriage, bit-depth/dither policy, and
+  stale-ReplayGain handling on signal change.
 
 ### Exit criteria
 
