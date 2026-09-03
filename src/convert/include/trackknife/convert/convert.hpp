@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+#pragma once
+
+#include "trackknife/convert/preset.hpp"
+#include "trackknife/core/cancellation.hpp"
+#include "trackknife/core/result.hpp"
+#include "trackknife/formats/decoder.hpp"
+
+#include <cstdint>
+#include <functional>
+#include <optional>
+#include <string>
+
+namespace trackknife::convert {
+
+// One source-to-destination conversion. The selection and range address
+// logical tracks inside container files exactly as the decoder does, so
+// cue-sheet segments convert like whole files.
+struct AudioConversionRequest {
+    std::string source_raw_path;
+    formats::AudioSourceSelection source_selection;
+    std::optional<formats::SampleRange> source_range;
+    std::string destination_raw_path;
+    EncoderPreset preset;
+
+    friend bool operator==(const AudioConversionRequest&, const AudioConversionRequest&) = default;
+};
+
+struct ConvertedAudioFile {
+    std::string destination_raw_path;
+    int sample_rate{0};
+    int channels{0};
+    // Verified duration of the written output, in output-rate samples.
+    std::int64_t duration_samples{0};
+
+    friend bool operator==(const ConvertedAudioFile&, const ConvertedAudioFile&) = default;
+};
+
+// Progress in decoded source frames; the total is absent when the source
+// container does not declare a duration.
+using ConversionProgress =
+    std::function<void(std::uint64_t frames_done, std::optional<std::uint64_t> frames_total)>;
+
+// Decodes one source and encodes it with the preset, atomically: the
+// encoder writes a hidden temporary beside the destination, the result is
+// verified by reopening it with the project decoder (format and duration),
+// and only then is it renamed into place without replacing an existing
+// file. Failure or cancellation leaves no partial output. This synchronous
+// I/O primitive belongs on a bounded worker; it never touches the source.
+[[nodiscard]] core::Result<ConvertedAudioFile>
+convert_audio_file(const AudioConversionRequest& request, const ConversionProgress& progress = {},
+                   const core::CancellationToken& cancellation = {});
+
+} // namespace trackknife::convert

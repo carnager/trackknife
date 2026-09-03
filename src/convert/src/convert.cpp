@@ -1,0 +1,601 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+#include "trackknife/convert/convert.hpp"
+
+#include "trackknife/core/stable_id.hpp"
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/audio_fifo.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/error.h>
+#include <libavutil/opt.h>
+#include <libavutil/samplefmt.h>
+#include <libswresample/swresample.h>
+}
+
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <array>
+#include <cerrno>
+#include <cmath>
+#include <cstdint>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+namespace trackknife::convert {
+namespace {
+
+[[nodiscard]] std::string ffmpeg_error(const int code) {
+    std::array<char, AV_ERROR_MAX_STRING_SIZE> buffer{};
+    if (av_strerror(code, buffer.data(), buffer.size()) < 0) {
+        return "unknown FFmpeg error " + std::to_string(code);
+    }
+    return buffer.data();
+}
+
+[[nodiscard]] core::Error convert_error(const int code, const std::string& operation,
+                                        const std::string& raw_path) {
+    return core::Error{
+        .code = core::ErrorCode::backend,
+        .message = operation + " failed: " + ffmpeg_error(code),
+        .context = {{.key = "path", .value = raw_path},
+                    {.key = "ffmpeg_error", .value = std::to_string(code)}},
+    };
+}
+
+[[nodiscard]] core::Error cancelled_error(const std::string& raw_path) {
+    return core::Error{.code = core::ErrorCode::cancelled,
+                       .message = "audio conversion was cancelled",
+                       .context = {{.key = "path", .value = raw_path}}};
+}
+
+// Removes the hidden temporary on every non-renamed exit so failure and
+// cancellation leave nothing behind.
+class TemporaryOutputGuard final {
+  public:
+    explicit TemporaryOutputGuard(std::filesystem::path path) : path_{std::move(path)} {}
+    TemporaryOutputGuard(const TemporaryOutputGuard&) = delete;
+    TemporaryOutputGuard& operator=(const TemporaryOutputGuard&) = delete;
+    ~TemporaryOutputGuard() {
+        if (armed_) {
+            std::error_code error;
+            std::filesystem::remove(path_, error);
+        }
+    }
+    void disarm() noexcept { armed_ = false; }
+
+  private:
+    std::filesystem::path path_;
+    bool armed_{true};
+};
+
+struct EncoderPipeline {
+    AVFormatContext* format{nullptr};
+    AVCodecContext* codec{nullptr};
+    SwrContext* resampler{nullptr};
+    AVAudioFifo* fifo{nullptr};
+    AVFrame* encode_frame{nullptr};
+    AVFrame* convert_frame{nullptr};
+    AVPacket* packet{nullptr};
+    AVStream* stream{nullptr};
+    std::int64_t next_pts{0};
+
+    EncoderPipeline() = default;
+    EncoderPipeline(const EncoderPipeline&) = delete;
+    EncoderPipeline& operator=(const EncoderPipeline&) = delete;
+    ~EncoderPipeline() {
+        av_packet_free(&packet);
+        av_frame_free(&convert_frame);
+        av_frame_free(&encode_frame);
+        if (fifo != nullptr) {
+            av_audio_fifo_free(fifo);
+        }
+        swr_free(&resampler);
+        avcodec_free_context(&codec);
+        if (format != nullptr) {
+            if (format->pb != nullptr) {
+                avio_closep(&format->pb);
+            }
+            avformat_free_context(format);
+        }
+    }
+};
+
+[[nodiscard]] const AVSampleFormat* supported_sample_formats(const AVCodec* codec) {
+    const void* configs = nullptr;
+    int count = 0;
+    if (avcodec_get_supported_config(nullptr, codec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0U, &configs,
+                                     &count) < 0) {
+        return nullptr;
+    }
+    return static_cast<const AVSampleFormat*>(configs);
+}
+
+[[nodiscard]] const int* supported_sample_rates(const AVCodec* codec) {
+    const void* configs = nullptr;
+    int count = 0;
+    if (avcodec_get_supported_config(nullptr, codec, AV_CODEC_CONFIG_SAMPLE_RATE, 0U, &configs,
+                                     &count) < 0) {
+        return nullptr;
+    }
+    return static_cast<const int*>(configs);
+}
+
+[[nodiscard]] AVSampleFormat choose_sample_format(const AVCodec* codec,
+                                                  const std::string& hint_name) {
+    const auto* const supported = supported_sample_formats(codec);
+    const auto hint = hint_name.empty() ? AV_SAMPLE_FMT_NONE : av_get_sample_fmt(hint_name.c_str());
+    if (supported == nullptr) {
+        return hint != AV_SAMPLE_FMT_NONE ? hint : AV_SAMPLE_FMT_FLT;
+    }
+    const auto is_supported = [supported](const AVSampleFormat format) {
+        for (const auto* entry = supported; *entry != AV_SAMPLE_FMT_NONE; ++entry) {
+            if (*entry == format) {
+                return true;
+            }
+        }
+        return false;
+    };
+    if (hint != AV_SAMPLE_FMT_NONE && is_supported(hint)) {
+        return hint;
+    }
+    for (const auto preferred : {AV_SAMPLE_FMT_FLT, AV_SAMPLE_FMT_FLTP, AV_SAMPLE_FMT_S32,
+                                 AV_SAMPLE_FMT_S32P, AV_SAMPLE_FMT_S16, AV_SAMPLE_FMT_S16P}) {
+        if (is_supported(preferred)) {
+            return preferred;
+        }
+    }
+    return supported[0];
+}
+
+// The source rate when the encoder accepts it, otherwise the smallest
+// supported rate at or above the source (so Opus resamples 44.1 kHz
+// material to 48 kHz, never down).
+[[nodiscard]] int choose_sample_rate(const AVCodec* codec, const int source_rate) {
+    const auto* const supported = supported_sample_rates(codec);
+    if (supported == nullptr) {
+        return source_rate;
+    }
+    int best_above = 0;
+    int best_any = 0;
+    for (const auto* entry = supported; *entry != 0; ++entry) {
+        const auto rate = *entry;
+        if (rate == source_rate) {
+            return rate;
+        }
+        if (rate > source_rate && (best_above == 0 || rate < best_above)) {
+            best_above = rate;
+        }
+        best_any = std::max(best_any, rate);
+    }
+    return best_above != 0 ? best_above : best_any;
+}
+
+[[nodiscard]] core::Result<void> drain_packets(EncoderPipeline& pipeline,
+                                               const std::string& raw_path) {
+    while (true) {
+        const auto receive = avcodec_receive_packet(pipeline.codec, pipeline.packet);
+        if (receive == AVERROR(EAGAIN) || receive == AVERROR_EOF) {
+            return {};
+        }
+        if (receive < 0) {
+            return std::unexpected(convert_error(receive, "receiving encoded audio", raw_path));
+        }
+        pipeline.packet->stream_index = pipeline.stream->index;
+        av_packet_rescale_ts(pipeline.packet, pipeline.codec->time_base,
+                             pipeline.stream->time_base);
+        const auto write = av_interleaved_write_frame(pipeline.format, pipeline.packet);
+        if (write < 0) {
+            return std::unexpected(convert_error(write, "writing encoded audio", raw_path));
+        }
+    }
+}
+
+// Encodes buffered samples in encoder-frame-sized chunks; when finishing,
+// the remainder becomes one final short frame.
+[[nodiscard]] core::Result<void> encode_buffered(EncoderPipeline& pipeline,
+                                                 const std::string& raw_path, const int frame_size,
+                                                 const bool finishing) {
+    while (true) {
+        const auto buffered = av_audio_fifo_size(pipeline.fifo);
+        if (buffered < frame_size && !(finishing && buffered > 0)) {
+            return {};
+        }
+        const auto take = std::min(buffered, frame_size);
+        if (const auto writable = av_frame_make_writable(pipeline.encode_frame); writable < 0) {
+            return std::unexpected(convert_error(writable, "preparing an encoder frame", raw_path));
+        }
+        pipeline.encode_frame->nb_samples = take;
+        const auto read = av_audio_fifo_read(
+            pipeline.fifo, reinterpret_cast<void**>(pipeline.encode_frame->data), take);
+        if (read < take) {
+            return std::unexpected(convert_error(read < 0 ? read : AVERROR(EINVAL),
+                                                 "reading buffered audio", raw_path));
+        }
+        pipeline.encode_frame->pts = pipeline.next_pts;
+        pipeline.next_pts += take;
+        const auto sent = avcodec_send_frame(pipeline.codec, pipeline.encode_frame);
+        if (sent < 0) {
+            return std::unexpected(convert_error(sent, "encoding audio", raw_path));
+        }
+        if (auto drained = drain_packets(pipeline, raw_path); !drained) {
+            return drained;
+        }
+    }
+}
+
+// Runs converted samples through the FIFO so encoders with fixed frame
+// sizes always see whole frames.
+[[nodiscard]] core::Result<void>
+buffer_converted(EncoderPipeline& pipeline, const std::string& raw_path, const int converted) {
+    if (converted <= 0) {
+        return {};
+    }
+    const auto written = av_audio_fifo_write(
+        pipeline.fifo, reinterpret_cast<void**>(pipeline.convert_frame->data), converted);
+    if (written < converted) {
+        return std::unexpected(convert_error(written < 0 ? written : AVERROR(EINVAL),
+                                             "buffering converted audio", raw_path));
+    }
+    return {};
+}
+
+[[nodiscard]] core::Result<void>
+ensure_convert_capacity(EncoderPipeline& pipeline, const std::string& raw_path, const int needed) {
+    if (pipeline.convert_frame->nb_samples >= needed) {
+        return {};
+    }
+    av_frame_unref(pipeline.convert_frame);
+    pipeline.convert_frame->format = pipeline.codec->sample_fmt;
+    pipeline.convert_frame->sample_rate = pipeline.codec->sample_rate;
+    if (const auto copied =
+            av_channel_layout_copy(&pipeline.convert_frame->ch_layout, &pipeline.codec->ch_layout);
+        copied < 0) {
+        return std::unexpected(convert_error(copied, "sizing the conversion buffer", raw_path));
+    }
+    pipeline.convert_frame->nb_samples = std::max(needed, 8192);
+    if (const auto allocated = av_frame_get_buffer(pipeline.convert_frame, 0); allocated < 0) {
+        return std::unexpected(convert_error(allocated, "sizing the conversion buffer", raw_path));
+    }
+    return {};
+}
+
+[[nodiscard]] core::Result<void> synchronize_and_rename(const std::filesystem::path& temporary,
+                                                        const std::filesystem::path& destination,
+                                                        const std::string& raw_path) {
+    const auto file = ::open(temporary.c_str(), O_RDONLY | O_CLOEXEC);
+    if (file < 0 || ::fsync(file) != 0) {
+        const auto saved = errno;
+        if (file >= 0) {
+            ::close(file);
+        }
+        return std::unexpected(
+            core::Error{.code = core::ErrorCode::io,
+                        .message = std::string{"synchronizing the converted file failed: "} +
+                                   std::generic_category().message(saved),
+                        .context = {{.key = "path", .value = raw_path}}});
+    }
+    ::close(file);
+    if (::renameat2(AT_FDCWD, temporary.c_str(), AT_FDCWD, destination.c_str(), RENAME_NOREPLACE) !=
+        0) {
+        const auto saved = errno;
+        return std::unexpected(
+            core::Error{.code = saved == EEXIST ? core::ErrorCode::conflict : core::ErrorCode::io,
+                        .message = std::string{"publishing the converted file failed: "} +
+                                   std::generic_category().message(saved),
+                        .context = {{.key = "path", .value = raw_path}}});
+    }
+    const auto directory = ::open(destination.parent_path().c_str(), O_RDONLY | O_DIRECTORY);
+    if (directory >= 0) {
+        ::fsync(directory);
+        ::close(directory);
+    }
+    return {};
+}
+
+[[nodiscard]] core::Result<std::unique_ptr<EncoderPipeline>>
+open_pipeline(const EncoderPreset& preset, const formats::PcmFormat& source_format,
+              const std::string& temporary_path, const std::string& destination_raw_path) {
+    const auto* const codec = avcodec_find_encoder_by_name(preset.codec_name.c_str());
+    if (codec == nullptr) {
+        return std::unexpected(core::Error{.code = core::ErrorCode::unsupported,
+                                           .message = "encoder " + preset.codec_name +
+                                                      " is not built into this FFmpeg",
+                                           .context = {{.key = "preset", .value = preset.id}}});
+    }
+
+    auto pipeline = std::make_unique<EncoderPipeline>();
+    if (const auto allocated = avformat_alloc_output_context2(
+            &pipeline->format, nullptr, preset.container_name.c_str(), temporary_path.c_str());
+        allocated < 0) {
+        return std::unexpected(
+            convert_error(allocated, "opening the output container", destination_raw_path));
+    }
+
+    pipeline->codec = avcodec_alloc_context3(codec);
+    if (pipeline->codec == nullptr) {
+        return std::unexpected(
+            convert_error(AVERROR(ENOMEM), "allocating the encoder context", destination_raw_path));
+    }
+    pipeline->codec->sample_fmt = choose_sample_format(codec, preset.sample_format_hint);
+    pipeline->codec->sample_rate = choose_sample_rate(codec, source_format.sample_rate);
+    pipeline->codec->time_base = AVRational{1, pipeline->codec->sample_rate};
+    av_channel_layout_default(&pipeline->codec->ch_layout, source_format.channels);
+    if (preset.bit_rate) {
+        pipeline->codec->bit_rate = *preset.bit_rate;
+    }
+    if (preset.vbr_quality) {
+        pipeline->codec->flags |= AV_CODEC_FLAG_QSCALE;
+        pipeline->codec->global_quality = *preset.vbr_quality * FF_QP2LAMBDA;
+    }
+    if ((pipeline->format->oformat->flags & AVFMT_GLOBALHEADER) != 0) {
+        pipeline->codec->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    }
+    if (const auto opened = avcodec_open2(pipeline->codec, codec, nullptr); opened < 0) {
+        return std::unexpected(convert_error(opened, "opening the encoder", destination_raw_path));
+    }
+
+    pipeline->stream = avformat_new_stream(pipeline->format, nullptr);
+    if (pipeline->stream == nullptr) {
+        return std::unexpected(
+            convert_error(AVERROR(ENOMEM), "creating the output stream", destination_raw_path));
+    }
+    pipeline->stream->time_base = pipeline->codec->time_base;
+    if (const auto copied =
+            avcodec_parameters_from_context(pipeline->stream->codecpar, pipeline->codec);
+        copied < 0) {
+        return std::unexpected(
+            convert_error(copied, "describing the output stream", destination_raw_path));
+    }
+
+    AVChannelLayout source_layout{};
+    av_channel_layout_default(&source_layout, source_format.channels);
+    const auto swr_configured = swr_alloc_set_opts2(
+        &pipeline->resampler, &pipeline->codec->ch_layout, pipeline->codec->sample_fmt,
+        pipeline->codec->sample_rate, &source_layout, AV_SAMPLE_FMT_FLT, source_format.sample_rate,
+        0, nullptr);
+    av_channel_layout_uninit(&source_layout);
+    if (swr_configured < 0 || swr_init(pipeline->resampler) < 0) {
+        return std::unexpected(
+            convert_error(swr_configured, "configuring the resampler", destination_raw_path));
+    }
+
+    pipeline->fifo = av_audio_fifo_alloc(pipeline->codec->sample_fmt,
+                                         pipeline->codec->ch_layout.nb_channels, 8192);
+    pipeline->encode_frame = av_frame_alloc();
+    pipeline->convert_frame = av_frame_alloc();
+    pipeline->packet = av_packet_alloc();
+    if (pipeline->fifo == nullptr || pipeline->encode_frame == nullptr ||
+        pipeline->convert_frame == nullptr || pipeline->packet == nullptr) {
+        return std::unexpected(
+            convert_error(AVERROR(ENOMEM), "allocating conversion buffers", destination_raw_path));
+    }
+
+    const auto frame_size = pipeline->codec->frame_size > 0 ? pipeline->codec->frame_size : 4096;
+    pipeline->encode_frame->format = pipeline->codec->sample_fmt;
+    pipeline->encode_frame->sample_rate = pipeline->codec->sample_rate;
+    pipeline->encode_frame->nb_samples = frame_size;
+    if (av_channel_layout_copy(&pipeline->encode_frame->ch_layout, &pipeline->codec->ch_layout) <
+            0 ||
+        av_frame_get_buffer(pipeline->encode_frame, 0) < 0) {
+        return std::unexpected(
+            convert_error(AVERROR(ENOMEM), "allocating the encoder frame", destination_raw_path));
+    }
+
+    if (const auto opened =
+            avio_open(&pipeline->format->pb, temporary_path.c_str(), AVIO_FLAG_WRITE);
+        opened < 0) {
+        return std::unexpected(
+            convert_error(opened, "creating the output file", destination_raw_path));
+    }
+    if (const auto header = avformat_write_header(pipeline->format, nullptr); header < 0) {
+        return std::unexpected(
+            convert_error(header, "writing the container header", destination_raw_path));
+    }
+    return pipeline;
+}
+
+} // namespace
+
+core::Result<ConvertedAudioFile> convert_audio_file(const AudioConversionRequest& request,
+                                                    const ConversionProgress& progress,
+                                                    const core::CancellationToken& cancellation) {
+    const std::filesystem::path destination{request.destination_raw_path};
+    std::error_code exists_error;
+    if (std::filesystem::exists(destination, exists_error)) {
+        return std::unexpected(
+            core::Error{.code = core::ErrorCode::conflict,
+                        .message = "the conversion destination already exists",
+                        .context = {{.key = "path", .value = request.destination_raw_path}}});
+    }
+    std::error_code parent_error;
+    if (!std::filesystem::is_directory(destination.parent_path(), parent_error)) {
+        return std::unexpected(
+            core::Error{.code = core::ErrorCode::invalid_argument,
+                        .message = "the conversion destination directory does not exist",
+                        .context = {{.key = "path", .value = request.destination_raw_path}}});
+    }
+
+    auto decoder =
+        request.source_range
+            ? formats::AudioDecoder::open_selected_segment(request.source_raw_path,
+                                                           request.source_selection,
+                                                           *request.source_range, cancellation)
+            : formats::AudioDecoder::open_selected(request.source_raw_path,
+                                                   request.source_selection, cancellation);
+    if (!decoder) {
+        return std::unexpected(decoder.error());
+    }
+    const auto source_format = decoder->output_format();
+    const auto expected_source_frames = decoder->duration_samples();
+
+    const auto temporary =
+        destination.parent_path() / ("." + destination.filename().native() + ".tk-part-" +
+                                     core::StableId::random().to_string());
+    TemporaryOutputGuard guard{temporary};
+
+    auto pipeline_result = open_pipeline(request.preset, source_format, temporary.native(),
+                                         request.destination_raw_path);
+    if (!pipeline_result) {
+        return std::unexpected(pipeline_result.error());
+    }
+    auto& pipeline = **pipeline_result;
+    const auto frame_size = pipeline.codec->frame_size > 0 ? pipeline.codec->frame_size : 4096;
+
+    std::uint64_t decoded_frames = 0U;
+    while (true) {
+        if (cancellation.is_cancellation_requested()) {
+            return std::unexpected(cancelled_error(request.source_raw_path));
+        }
+        auto chunk = decoder->next_chunk();
+        if (!chunk) {
+            return std::unexpected(chunk.error());
+        }
+        if (!*chunk) {
+            break;
+        }
+        const auto frames = static_cast<int>((*chunk)->frame_count(source_format.channels));
+        if (frames == 0) {
+            continue;
+        }
+        decoded_frames += static_cast<std::uint64_t>(frames);
+        const auto capacity = static_cast<int>(swr_get_out_samples(pipeline.resampler, frames));
+        if (auto sized = ensure_convert_capacity(pipeline, request.destination_raw_path,
+                                                 std::max(capacity, frames));
+            !sized) {
+            return std::unexpected(sized.error());
+        }
+        const auto* input_plane =
+            reinterpret_cast<const std::uint8_t*>((*chunk)->interleaved_samples.data());
+        const auto converted =
+            swr_convert(pipeline.resampler, pipeline.convert_frame->data,
+                        pipeline.convert_frame->nb_samples, &input_plane, frames);
+        if (converted < 0) {
+            return std::unexpected(
+                convert_error(converted, "resampling audio", request.source_raw_path));
+        }
+        if (auto buffered = buffer_converted(pipeline, request.destination_raw_path, converted);
+            !buffered) {
+            return std::unexpected(buffered.error());
+        }
+        if (auto encoded =
+                encode_buffered(pipeline, request.destination_raw_path, frame_size, false);
+            !encoded) {
+            return std::unexpected(encoded.error());
+        }
+        if (progress) {
+            progress(decoded_frames, expected_source_frames
+                                         ? std::optional<std::uint64_t>{static_cast<std::uint64_t>(
+                                               std::max<std::int64_t>(*expected_source_frames, 0))}
+                                         : std::nullopt);
+        }
+    }
+
+    // Drain the resampler's tail, then the FIFO remainder, then the encoder.
+    while (true) {
+        if (auto sized = ensure_convert_capacity(pipeline, request.destination_raw_path, 8192);
+            !sized) {
+            return std::unexpected(sized.error());
+        }
+        const auto converted = swr_convert(pipeline.resampler, pipeline.convert_frame->data,
+                                           pipeline.convert_frame->nb_samples, nullptr, 0);
+        if (converted < 0) {
+            return std::unexpected(
+                convert_error(converted, "draining the resampler", request.source_raw_path));
+        }
+        if (converted == 0) {
+            break;
+        }
+        if (auto buffered = buffer_converted(pipeline, request.destination_raw_path, converted);
+            !buffered) {
+            return std::unexpected(buffered.error());
+        }
+    }
+    if (auto encoded = encode_buffered(pipeline, request.destination_raw_path, frame_size, true);
+        !encoded) {
+        return std::unexpected(encoded.error());
+    }
+    if (const auto sent = avcodec_send_frame(pipeline.codec, nullptr); sent < 0) {
+        return std::unexpected(
+            convert_error(sent, "finishing the encoder", request.destination_raw_path));
+    }
+    if (auto drained = drain_packets(pipeline, request.destination_raw_path); !drained) {
+        return std::unexpected(drained.error());
+    }
+    if (const auto trailer = av_write_trailer(pipeline.format); trailer < 0) {
+        return std::unexpected(
+            convert_error(trailer, "writing the container trailer", request.destination_raw_path));
+    }
+    const auto output_rate = pipeline.codec->sample_rate;
+    const auto output_channels = pipeline.codec->ch_layout.nb_channels;
+    if (const auto closed = avio_closep(&pipeline.format->pb); closed < 0) {
+        return std::unexpected(
+            convert_error(closed, "closing the output file", request.destination_raw_path));
+    }
+
+    // Verify the temporary end to end with the project decoder before it
+    // may become the destination: the whole stream must decode, at the
+    // negotiated format, to the expected duration.
+    auto verify = formats::AudioDecoder::open(temporary.native(), cancellation);
+    if (!verify) {
+        return std::unexpected(std::move(verify.error())
+                                   .with_context("verify", "reopening the converted file failed"));
+    }
+    if (verify->output_format().sample_rate != output_rate ||
+        verify->output_format().channels != output_channels) {
+        return std::unexpected(
+            core::Error{.code = core::ErrorCode::invariant,
+                        .message = "converted audio reread with an unexpected format",
+                        .context = {{.key = "path", .value = request.destination_raw_path}}});
+    }
+    std::int64_t verified_frames = 0;
+    while (true) {
+        if (cancellation.is_cancellation_requested()) {
+            return std::unexpected(cancelled_error(request.source_raw_path));
+        }
+        auto chunk = verify->next_chunk();
+        if (!chunk) {
+            return std::unexpected(
+                std::move(chunk.error())
+                    .with_context("verify", "decoding the converted file failed"));
+        }
+        if (!*chunk) {
+            break;
+        }
+        verified_frames += static_cast<std::int64_t>((*chunk)->frame_count(output_channels));
+    }
+    const auto expected_output_frames = static_cast<std::int64_t>(std::llround(
+        static_cast<double>(decoded_frames) * output_rate / source_format.sample_rate));
+    const auto tolerance = std::max<std::int64_t>(output_rate / 5, 1);
+    if (std::abs(verified_frames - expected_output_frames) > tolerance) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invariant,
+            .message = "converted audio duration differs from the source",
+            .context = {{.key = "path", .value = request.destination_raw_path},
+                        {.key = "expected_frames", .value = std::to_string(expected_output_frames)},
+                        {.key = "verified_frames", .value = std::to_string(verified_frames)}}});
+    }
+
+    if (auto published =
+            synchronize_and_rename(temporary, destination, request.destination_raw_path);
+        !published) {
+        return std::unexpected(published.error());
+    }
+    guard.disarm();
+    return ConvertedAudioFile{
+        .destination_raw_path = request.destination_raw_path,
+        .sample_rate = output_rate,
+        .channels = output_channels,
+        .duration_samples = verified_frames,
+    };
+}
+
+} // namespace trackknife::convert

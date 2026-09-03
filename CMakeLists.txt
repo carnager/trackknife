@@ -62,6 +62,7 @@ add_subdirectory(src/mpd)
 add_subdirectory(src/formats)
 add_subdirectory(src/audio)
 add_subdirectory(src/loudness)
+add_subdirectory(src/convert)
 add_subdirectory(src/tools)
 
 if(TRACKKNIFE_BUILD_UI)

@@ -202,6 +202,14 @@ libebur128 accumulators, album reducers, sample/true peak, grouping, scan plans,
 and typed results. It consumes FFmpeg-decoded PCM independently of tag
 writability.
 
+### `convert`
+
+Versioned encoder presets with runtime FFmpeg capability probing and the
+qualified single-file conversion primitive: decoder-fed swresample into an
+FFmpeg encoder/muxer, hidden-temporary output verified by full decode before
+an atomic no-replace rename. Qt-free; scheduling and destination planning
+layer above it.
+
 ### `operations`
 
 Shared plan/preview/commit/journal framework for tags, artwork, files,

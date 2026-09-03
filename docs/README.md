@@ -9,7 +9,7 @@ The ordered delivery plan is [`../MILESTONES.md`](../MILESTONES.md).
 
 ## Current continuation point
 
-M5 is closing into M6, implementation is accepted through ADR-0104, and the persistence
+M5 is closing into M6, implementation is accepted through ADR-0105, and the persistence
 schema is version 26. In-app MusicBrainz identification is end-to-end: Properties'
 Identify… opens a no-id text-search dialog whose ranked rows are individual
 release versions, and the chosen version stages as one undoable colored draft
@@ -112,9 +112,10 @@ Start metadata and file-operation work with
 [`adr/0101-folder-bookmarks-panel.md`](adr/0101-folder-bookmarks-panel.md),
 [`adr/0102-mpd-go-to-artist-album.md`](adr/0102-mpd-go-to-artist-album.md),
 [`adr/0103-prepared-copy-mp3-text-writer.md`](adr/0103-prepared-copy-mp3-text-writer.md),
-and [`adr/0104-grouped-numbering-transformation.md`](adr/0104-grouped-numbering-transformation.md).
+[`adr/0104-grouped-numbering-transformation.md`](adr/0104-grouped-numbering-transformation.md),
+and [`adr/0105-qualified-audio-conversion-core.md`](adr/0105-qualified-audio-conversion-core.md).
 The development, ASan/UBSan, TSan, and clang-tidy builds and their complete
-54/54 test suites pass at this continuation point (validated 2026-09-02).
+55/55 test suites pass at this continuation point (validated 2026-09-03).
 The TSan-only bench test shim routes Qt 6.9+'s uninstrumented
 `pthread_clockjoin_np` wait through TSan's intercepted blocking
 `pthread_join`; normal Trackbench builds are unchanged, and CTest retains the

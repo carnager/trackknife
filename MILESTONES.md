@@ -21,7 +21,7 @@ retired once Trackbench reached parity (ADR-0071).
 | M5 | Active | Fast local tag workspace and safe file operations |
 | M6 | Planned | MusicBrainz identification and metadata providers |
 | M7 | Planned | Universal parallel ReplayGain workflow |
-| M8 | Planned | Parallel converter, resampler, and organized output |
+| M8 | In progress | Parallel converter, resampler, and organized output |
 | M9 | Planned | Melody output endpoint for the MPD client |
 | M10 | Planned | Hardening, packaging, and first public releases |
 
@@ -1265,6 +1265,19 @@ afterwards is a separate explicit command in Trackbench's MPD authority.
 6. Copy/move/converted publication below a configured root with explicit
    destination preview, staged verification, and atomic commit. Move deletes
    originals only after verified publication.
+
+### Progress
+
+- Done: ADR-0105 lands the qualified conversion core: a Qt-free convert
+  library where versioned presets (flac, opus-192, mp3-v0, vorbis-q6)
+  with runtime encoder/muxer probing drive decoder → swresample →
+  FFmpeg encode into a hidden temporary that is decoded end to end,
+  duration- and format-verified, then atomically renamed with
+  RENAME_NOREPLACE. Failure and cancellation leave nothing; cue-sheet
+  sample ranges convert like whole files.
+- Next: destination modes (mirror, preset, tkfmt-1 expression below a
+  root), metadata/artwork mapping, and bounded parallel scheduling with
+  progress UI.
 
 ### Exit criteria
 
