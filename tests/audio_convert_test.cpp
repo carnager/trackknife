@@ -2,8 +2,11 @@
 
 #include "trackknife/convert/convert.hpp"
 #include "trackknife/convert/preset.hpp"
+#include "trackknife/convert/scan.hpp"
 #include "trackknife/core/cancellation.hpp"
 #include "trackknife/core/stable_id.hpp"
+#include "trackknife/metadata/document.hpp"
+#include "trackknife/metadata/local_reader.hpp"
 
 #include <algorithm>
 #include <array>
@@ -14,6 +17,7 @@
 #include <iostream>
 #include <numbers>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -142,7 +146,8 @@ void convertsToEveryPresetAtomically() {
              .source_selection = {},
              .source_range = {},
              .destination_raw_path = destination.native(),
-             .preset = preset},
+             .preset = preset,
+             .metadata = {}},
             [&last_frames, &total_present](const std::uint64_t frames_done,
                                            const std::optional<std::uint64_t> frames_total) {
                 CHECK(frames_done >= last_frames);
@@ -171,6 +176,58 @@ void convertsToEveryPresetAtomically() {
     CHECK(entries_besides(directory.path(), survivors) == 0U);
 }
 
+void carriesMetadataIntoEveryPreset() {
+    TemporaryDirectory directory;
+    const auto source = directory.path() / "tone.wav";
+    write_sine_wav(source, 0.6, 0.5);
+
+    trackknife::metadata::MetadataDocument document;
+    const auto field = [](const std::string& canonical, const std::string& native,
+                          std::vector<std::string> values) {
+        trackknife::metadata::MetadataField result;
+        result.canonical_name = canonical;
+        result.native_name = native;
+        result.values = std::move(values);
+        return result;
+    };
+    document.fields.push_back(field("title", "TITLE", {"Converted Tone"}));
+    document.fields.push_back(field("artist", "ARTIST", {"Fixture Band"}));
+    document.fields.push_back(field("tracknumber", "TRACKNUMBER", {"7"}));
+    document.fields.push_back(field("replaygaintrackgain", "REPLAYGAIN_TRACK_GAIN", {"-6.50 dB"}));
+
+    for (const auto& preset : trackknife::convert::builtin_encoder_presets()) {
+        const auto destination =
+            directory.path() / ("tagged-" + preset.id + "." + preset.file_extension);
+        const auto converted =
+            trackknife::convert::convert_audio_file({.source_raw_path = source.native(),
+                                                     .source_selection = {},
+                                                     .source_range = {},
+                                                     .destination_raw_path = destination.native(),
+                                                     .preset = preset,
+                                                     .metadata = document});
+        if (!converted) {
+            std::cerr << preset.id << ": " << converted.error().message << '\n';
+        }
+        CHECK(converted.has_value());
+        if (!converted) {
+            continue;
+        }
+        const auto reread = trackknife::metadata::read_local_metadata(destination.native());
+        CHECK(reread.has_value());
+        if (!reread) {
+            continue;
+        }
+        CHECK(reread->document.first_effective_value("title") ==
+              std::optional<std::string>{"Converted Tone"});
+        CHECK(reread->document.first_effective_value("artist") ==
+              std::optional<std::string>{"Fixture Band"});
+        CHECK(reread->document.first_effective_value("tracknumber") ==
+              std::optional<std::string>{"7"});
+        CHECK(reread->document.first_effective_value("replaygaintrackgain") ==
+              std::optional<std::string>{"-6.50 dB"});
+    }
+}
+
 void refusesExistingDestinationAndMissingDirectory() {
     TemporaryDirectory directory;
     const auto source = directory.path() / "tone.wav";
@@ -184,7 +241,8 @@ void refusesExistingDestinationAndMissingDirectory() {
                                                  .source_selection = {},
                                                  .source_range = {},
                                                  .destination_raw_path = occupied.native(),
-                                                 .preset = preset});
+                                                 .preset = preset,
+                                                 .metadata = {}});
     CHECK(!conflicting.has_value());
     CHECK(!conflicting && conflicting.error().code == trackknife::core::ErrorCode::conflict);
     {
@@ -200,7 +258,8 @@ void refusesExistingDestinationAndMissingDirectory() {
                                                  .source_selection = {},
                                                  .source_range = {},
                                                  .destination_raw_path = orphan.native(),
-                                                 .preset = preset});
+                                                 .preset = preset,
+                                                 .metadata = {}});
     CHECK(!orphaned.has_value());
     CHECK(!orphaned && orphaned.error().code == trackknife::core::ErrorCode::invalid_argument);
 
@@ -218,11 +277,87 @@ void cancellationLeavesNoPartialOutput() {
          .source_selection = {},
          .source_range = {},
          .destination_raw_path = (directory.path() / "cancelled.opus").native(),
-         .preset = *trackknife::convert::find_encoder_preset("opus-192")},
+         .preset = *trackknife::convert::find_encoder_preset("opus-192"),
+         .metadata = {}},
         {}, cancellation.token());
     CHECK(!cancelled.has_value());
     CHECK(!cancelled && cancelled.error().code == trackknife::core::ErrorCode::cancelled);
     CHECK(entries_besides(directory.path(), {"tone.wav"}) == 0U);
+}
+
+void scansItemsInParallelIsolatingFailures() {
+    TemporaryDirectory directory;
+    const auto preset = *trackknife::convert::find_encoder_preset("opus-192");
+    std::vector<trackknife::convert::ConversionScanItem> items;
+    for (std::size_t index = 0U; index < 5U; ++index) {
+        const auto source = directory.path() / ("tone-" + std::to_string(index) + ".wav");
+        write_sine_wav(source, 0.5, 0.5);
+        items.push_back(
+            {.item_index = index * 10U,
+             .source_raw_path = source.native(),
+             .selection = {},
+             .range = {},
+             .destination_raw_path =
+                 (directory.path() / ("out-" + std::to_string(index) + ".opus")).native(),
+             .metadata = {}});
+    }
+    // A missing source and an in-scan destination collision must fail alone.
+    items.push_back({.item_index = 60U,
+                     .source_raw_path = (directory.path() / "missing.wav").native(),
+                     .selection = {},
+                     .range = {},
+                     .destination_raw_path = (directory.path() / "out-missing.opus").native(),
+                     .metadata = {}});
+    items.push_back({.item_index = 70U,
+                     .source_raw_path = items[0].source_raw_path,
+                     .selection = {},
+                     .range = {},
+                     .destination_raw_path = items[0].destination_raw_path,
+                     .metadata = {}});
+
+    std::size_t final_completed = 0U;
+    const auto result = trackknife::convert::scan_conversion(
+        items, {.preset = preset, .maximum_parallelism = 3U},
+        [&final_completed](const trackknife::convert::ConversionScanProgress& update) {
+            final_completed = std::max(final_completed, update.completed_items);
+            CHECK(update.total_items == 7U);
+        });
+    CHECK(result.has_value());
+    if (!result) {
+        std::cerr << result.error().message << '\n';
+        return;
+    }
+    CHECK(result->items.size() == 7U);
+    CHECK(result->converted_count() == 5U);
+    CHECK(result->failed_count() == 2U);
+    CHECK(final_completed == 7U);
+    CHECK(!result->cancellation_requested);
+    for (std::size_t index = 0U; index < 5U; ++index) {
+        const auto& entry = result->items[index];
+        CHECK(entry.state == trackknife::convert::ConversionScanState::converted);
+        CHECK(entry.source_revision.has_value());
+        CHECK(entry.converted.has_value() && entry.converted->sample_rate == 48'000);
+        CHECK(std::filesystem::exists(entry.destination_raw_path));
+    }
+    CHECK(result->items[5].state == trackknife::convert::ConversionScanState::failed);
+    CHECK(result->items[5].issue.has_value());
+    const auto& collision = result->items[6];
+    CHECK(collision.state == trackknife::convert::ConversionScanState::failed);
+    CHECK(collision.issue.has_value() &&
+          collision.issue->code == trackknife::core::ErrorCode::conflict);
+
+    CHECK(trackknife::convert::scan_conversion(items, {.preset = preset, .maximum_parallelism = 0U})
+              .has_value() == false);
+
+    trackknife::core::CancellationSource cancellation;
+    cancellation.request_cancellation();
+    const auto cancelled = trackknife::convert::scan_conversion(
+        std::span{items}.subspan(0U, 1U), {.preset = preset, .maximum_parallelism = 1U}, {},
+        cancellation.token());
+    CHECK(cancelled.has_value());
+    CHECK(cancelled && cancelled->cancellation_requested);
+    CHECK(cancelled &&
+          cancelled->items[0].state == trackknife::convert::ConversionScanState::cancelled);
 }
 
 } // namespace
@@ -230,7 +365,9 @@ void cancellationLeavesNoPartialOutput() {
 int main() {
     builtinPresetsProbeAvailable();
     convertsToEveryPresetAtomically();
+    carriesMetadataIntoEveryPreset();
     refusesExistingDestinationAndMissingDirectory();
     cancellationLeavesNoPartialOutput();
+    scansItemsInParallelIsolatingFailures();
     return failures == 0 ? 0 : 1;
 }

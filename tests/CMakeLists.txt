@@ -101,7 +101,7 @@ add_test(
 add_executable(trackknife_audio_convert_tests audio_convert_test.cpp)
 target_link_libraries(
     trackknife_audio_convert_tests
-    PRIVATE Trackknife::Convert Trackknife::Formats trackknife_project_options
+    PRIVATE Trackknife::Convert Trackknife::Formats Trackknife::Metadata trackknife_project_options
             trackknife_project_warnings
 )
 add_test(NAME audio-convert COMMAND trackknife_audio_convert_tests)

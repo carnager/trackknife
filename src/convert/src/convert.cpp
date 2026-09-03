@@ -3,12 +3,14 @@
 #include "trackknife/convert/convert.hpp"
 
 #include "trackknife/core/stable_id.hpp"
+#include "trackknife/metadata/local_reader.hpp"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/audio_fifo.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/opt.h>
 #include <libavutil/samplefmt.h>
@@ -301,9 +303,81 @@ ensure_convert_capacity(EncoderPipeline& pipeline, const std::string& raw_path, 
     return {};
 }
 
+// The ID3 muxer only writes proper frames for FFmpeg's generic key names;
+// everything else becomes a TXXX frame with the key as its description.
+[[nodiscard]] std::string id3_metadata_key(const std::string& canonical_name,
+                                           const std::string& native_name) {
+    if (canonical_name == "title" || canonical_name == "artist" || canonical_name == "album" ||
+        canonical_name == "date" || canonical_name == "genre" || canonical_name == "composer" ||
+        canonical_name == "comment") {
+        return canonical_name;
+    }
+    if (canonical_name == "albumartist") {
+        return "album_artist";
+    }
+    if (canonical_name == "tracknumber") {
+        return "track";
+    }
+    if (canonical_name == "discnumber") {
+        return "disc";
+    }
+    return native_name;
+}
+
+[[nodiscard]] core::Result<void> apply_request_metadata(AVFormatContext* format,
+                                                        const EncoderPreset& preset,
+                                                        const metadata::MetadataDocument& document,
+                                                        const std::string& raw_path) {
+    const auto id3 = preset.container_name == "mp3";
+    for (const auto& field : document.effective_fields()) {
+        const auto& key =
+            id3 ? id3_metadata_key(field.canonical_name, field.native_name) : field.native_name;
+        if (key.empty()) {
+            continue;
+        }
+        for (const auto& value : field.values) {
+            if (const auto set =
+                    av_dict_set(&format->metadata, key.c_str(), value.c_str(), AV_DICT_MULTIKEY);
+                set < 0) {
+                return std::unexpected(
+                    convert_error(set, "recording metadata for " + key, raw_path));
+            }
+        }
+    }
+    return {};
+}
+
+// Every requested field must reread from the finished file with exactly the
+// requested values — the same honesty the qualified tag writers prove.
+[[nodiscard]] core::Result<void> verify_written_metadata(const std::string& temporary_path,
+                                                         const metadata::MetadataDocument& document,
+                                                         const std::string& raw_path) {
+    const auto requested = document.effective_fields();
+    if (requested.empty()) {
+        return {};
+    }
+    const auto reread = metadata::read_local_metadata(temporary_path);
+    if (!reread) {
+        return std::unexpected(std::move(core::Error{reread.error()})
+                                   .with_context("verify", "rereading converted metadata failed"));
+    }
+    for (const auto& field : requested) {
+        const auto values = reread->document.effective_values(field.canonical_name);
+        if (values != field.values) {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::invariant,
+                .message = "converted metadata reread differs for " + field.canonical_name,
+                .context = {{.key = "path", .value = raw_path},
+                            {.key = "field", .value = field.canonical_name}}});
+        }
+    }
+    return {};
+}
+
 [[nodiscard]] core::Result<std::unique_ptr<EncoderPipeline>>
 open_pipeline(const EncoderPreset& preset, const formats::PcmFormat& source_format,
-              const std::string& temporary_path, const std::string& destination_raw_path) {
+              const metadata::MetadataDocument& document, const std::string& temporary_path,
+              const std::string& destination_raw_path) {
     const auto* const codec = avcodec_find_encoder_by_name(preset.codec_name.c_str());
     if (codec == nullptr) {
         return std::unexpected(core::Error{.code = core::ErrorCode::unsupported,
@@ -390,6 +464,11 @@ open_pipeline(const EncoderPreset& preset, const formats::PcmFormat& source_form
             convert_error(AVERROR(ENOMEM), "allocating the encoder frame", destination_raw_path));
     }
 
+    if (auto applied =
+            apply_request_metadata(pipeline->format, preset, document, destination_raw_path);
+        !applied) {
+        return std::unexpected(applied.error());
+    }
     if (const auto opened =
             avio_open(&pipeline->format->pb, temporary_path.c_str(), AVIO_FLAG_WRITE);
         opened < 0) {
@@ -442,8 +521,8 @@ core::Result<ConvertedAudioFile> convert_audio_file(const AudioConversionRequest
                                      core::StableId::random().to_string());
     TemporaryOutputGuard guard{temporary};
 
-    auto pipeline_result = open_pipeline(request.preset, source_format, temporary.native(),
-                                         request.destination_raw_path);
+    auto pipeline_result = open_pipeline(request.preset, source_format, request.metadata,
+                                         temporary.native(), request.destination_raw_path);
     if (!pipeline_result) {
         return std::unexpected(pipeline_result.error());
     }
@@ -582,6 +661,12 @@ core::Result<ConvertedAudioFile> convert_audio_file(const AudioConversionRequest
             .context = {{.key = "path", .value = request.destination_raw_path},
                         {.key = "expected_frames", .value = std::to_string(expected_output_frames)},
                         {.key = "verified_frames", .value = std::to_string(verified_frames)}}});
+    }
+
+    if (auto tags_verified = verify_written_metadata(temporary.native(), request.metadata,
+                                                     request.destination_raw_path);
+        !tags_verified) {
+        return std::unexpected(tags_verified.error());
     }
 
     if (auto published =

@@ -6,6 +6,7 @@
 #include "trackknife/core/cancellation.hpp"
 #include "trackknife/core/result.hpp"
 #include "trackknife/formats/decoder.hpp"
+#include "trackknife/metadata/document.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -23,6 +24,12 @@ struct AudioConversionRequest {
     std::optional<formats::SampleRange> source_range;
     std::string destination_raw_path;
     EncoderPreset preset;
+    // Effective text metadata to carry into the output, written at mux time
+    // and verified by rereading the finished file with the project metadata
+    // reader before it may become the destination. Vorbis-comment containers
+    // receive exact native key spellings; MP3 maps the common fields onto
+    // proper ID3 frames and passes the rest through as TXXX.
+    metadata::MetadataDocument metadata;
 
     friend bool operator==(const AudioConversionRequest&, const AudioConversionRequest&) = default;
 };

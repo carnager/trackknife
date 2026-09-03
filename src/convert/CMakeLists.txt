@@ -4,6 +4,7 @@ add_library(
     trackknife_convert STATIC
     src/convert.cpp
     src/preset.cpp
+    src/scan.cpp
 )
 add_library(Trackknife::Convert ALIAS trackknife_convert)
 
@@ -14,7 +15,7 @@ target_include_directories(
 )
 target_link_libraries(
     trackknife_convert
-    PUBLIC Trackknife::Core Trackknife::Formats trackknife_project_options
+    PUBLIC Trackknife::Core Trackknife::Formats Trackknife::Metadata trackknife_project_options
     PRIVATE PkgConfig::AVFORMAT PkgConfig::AVCODEC PkgConfig::AVUTIL PkgConfig::SWRESAMPLE
             trackknife_project_warnings
 )

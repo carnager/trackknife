@@ -1275,9 +1275,15 @@ afterwards is a separate explicit command in Trackbench's MPD authority.
   duration- and format-verified, then atomically renamed with
   RENAME_NOREPLACE. Failure and cancellation leave nothing; cue-sheet
   sample ranges convert like whole files.
-- Next: destination modes (mirror, preset, tkfmt-1 expression below a
-  root), metadata/artwork mapping, and bounded parallel scheduling with
-  progress UI.
+- Done: ADR-0106 adds metadata carriage (mux-time mapping — verbatim
+  Vorbis-comment keys, ID3 generic frames plus TXXX — verified by exact
+  reread before the atomic rename) and scan_conversion: a 1-16 worker
+  pull pool with per-item revision capture/recheck, isolated typed
+  failures, atomic in-scan collision resolution, throttled per-item
+  progress, and clean cancellation.
+- Next: destination planning for conversion (reuse the output-path
+  planner with preset extensions), artwork carriage, and the Trackbench
+  converter UI.
 
 ### Exit criteria
 
