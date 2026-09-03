@@ -3036,15 +3036,38 @@ void MetadataPropertiesDialog::finishFileApply() {
     const auto& outcome = **result;
     const auto changed = outcome.committed_source_count();
     const auto unchanged = outcome.unchanged_source_count();
+    // Limited destination filesystems publish successfully but may skip
+    // preservation (ADR-0111); those notes surface problems-only instead of
+    // silently closing.
+    std::vector<PreparationFeedbackRow> note_rows;
+    for (const auto& source : outcome.sources) {
+        if (!source.commit) {
+            continue;
+        }
+        for (const auto& note : source.commit->notes) {
+            note_rows.push_back(PreparationFeedbackRow{
+                .file = QString::fromStdString(core::escape_raw_path(source.source_raw_path)),
+                .detail = display_utf8(note),
+            });
+        }
+    }
     if (changed + unchanged == outcome.sources.size()) {
         read_only_->setText(
             QStringLiteral("Updated %1 %2")
                 .arg(changed)
                 .arg(pluralized(changed, QStringLiteral("file"), QStringLiteral("files"))));
+        if (!note_rows.empty()) {
+            showPreparationFeedback(
+                QStringLiteral("Updated with notes"),
+                QStringLiteral("Every file updated; the destination filesystem could not "
+                               "preserve everything."),
+                std::move(note_rows));
+            return;
+        }
         QTimer::singleShot(0, this, &QDialog::close);
         return;
     }
-    std::vector<PreparationFeedbackRow> rows;
+    std::vector<PreparationFeedbackRow> rows = std::move(note_rows);
     for (const auto& source : outcome.sources) {
         if (source.state == operations::FilePublicationApplySourceState::committed ||
             source.state == operations::FilePublicationApplySourceState::unchanged) {

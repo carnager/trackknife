@@ -1709,6 +1709,7 @@ void BenchMainWindowTest::pathOnlyPreparationUsesActualTagsAndAppliesReviewedPla
                         .source_revision = checked_source.planned.source_revision,
                         .target_revision = checked_source.observed_revision,
                         .occurrence_indexes = checked_source.planned.item_indexes,
+                        .notes = {},
                     };
                     return operations::FilePublicationApplyResult{
                         .sources = {operations::FilePublicationApplySourceResult{
@@ -1865,6 +1866,7 @@ void BenchMainWindowTest::combinedTagAndRenameReviewReachesPreparationApply() {
                         .source_revision = checked.planned.source_revision,
                         .target_revision = checked.observed_revision,
                         .occurrence_indexes = checked.planned.item_indexes,
+                        .notes = {},
                     };
                     return operations::FilePublicationApplyResult{
                         .sources = {operations::FilePublicationApplySourceResult{

@@ -1,6 +1,6 @@
 # Maintainer: Rasi <rasmus.steinke@gmail.com>
 pkgname=trackbench-git
-pkgver=r88.g19374d8
+pkgver=r90.gde3f0a4
 pkgrel=1
 pkgdesc="Audio tagging, conversion, and library workstation (Trackknife project, built from HEAD)"
 arch=(x86_64)

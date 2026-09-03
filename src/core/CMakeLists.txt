@@ -1,6 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-only
 
-add_library(trackknife_core STATIC src/local_sources.cpp src/stable_id.cpp src/unicode.cpp)
+add_library(
+    trackknife_core STATIC
+    src/atomic_rename.cpp
+    src/local_sources.cpp
+    src/stable_id.cpp
+    src/unicode.cpp
+)
 add_library(Trackknife::Core ALIAS trackknife_core)
 
 target_include_directories(

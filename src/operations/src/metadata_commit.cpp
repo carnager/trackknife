@@ -261,10 +261,21 @@ struct ExtendedAttribute {
     friend bool operator==(const ExtendedAttribute&, const ExtendedAttribute&) = default;
 };
 
-[[nodiscard]] core::Result<std::vector<ExtendedAttribute>>
+// Tag commits keep source and prepared copy on one filesystem, so a
+// filesystem without extended attributes has none to lose on either side;
+// the unsupported listing degrades preservation silently (ADR-0111).
+struct ExtendedAttributeListing {
+    std::vector<ExtendedAttribute> attributes;
+    bool supported{true};
+};
+
+[[nodiscard]] core::Result<ExtendedAttributeListing>
 read_extended_attributes(const Descriptor& descriptor, const std::string& source_raw_path,
                          const std::optional<core::StableId>& journal_id = std::nullopt) {
     const auto listed = ::flistxattr(descriptor.get(), nullptr, 0U);
+    if (listed < 0 && (errno == ENOTSUP || errno == EOPNOTSUPP)) {
+        return ExtendedAttributeListing{.attributes = {}, .supported = false};
+    }
     if (listed < 0) {
         return std::unexpected(
             system_error("listing extended attributes failed", errno, source_raw_path, journal_id));
@@ -323,30 +334,39 @@ read_extended_attributes(const Descriptor& descriptor, const std::string& source
             }
         }
         total_value_bytes += value.size();
-        attributes.push_back(ExtendedAttribute{.name = std::move(name), .value = std::move(value)});
+        // Only user-namespace attributes are user metadata; system.,
+        // security., and trusted. names are kernel- or filesystem-owned
+        // representations (NFS ACLs, SELinux labels) that the destination
+        // manages itself and often refuses to accept or remove.
+        if (name.starts_with("user.")) {
+            attributes.push_back(
+                ExtendedAttribute{.name = std::move(name), .value = std::move(value)});
+        }
         offset = static_cast<std::size_t>(std::distance(names.begin(), end)) + 1U;
     }
     std::ranges::sort(attributes, {}, &ExtendedAttribute::name);
-    return attributes;
+    return ExtendedAttributeListing{.attributes = std::move(attributes), .supported = true};
 }
 
 [[nodiscard]] core::Result<void>
 apply_filesystem_metadata(const Descriptor& source, const struct stat& source_status,
-                          const std::vector<ExtendedAttribute>& source_attributes,
+                          const ExtendedAttributeListing& source_attributes,
                           const Descriptor& prepared, const std::string& source_raw_path,
                           const core::StableId& journal_id) {
     auto prepared_attributes = read_extended_attributes(prepared, source_raw_path, journal_id);
     if (!prepared_attributes) {
         return std::unexpected(std::move(prepared_attributes.error()));
     }
-    for (const auto& attribute : *prepared_attributes) {
-        if (std::ranges::none_of(source_attributes,
-                                 [&attribute](const auto& source_attribute) {
-                                     return source_attribute.name == attribute.name;
-                                 }) &&
-            ::fremovexattr(prepared.get(), attribute.name.c_str()) != 0) {
-            return std::unexpected(system_error("removing unowned extended attribute failed", errno,
-                                                source_raw_path, journal_id));
+    if (prepared_attributes->supported) {
+        for (const auto& attribute : prepared_attributes->attributes) {
+            if (std::ranges::none_of(source_attributes.attributes,
+                                     [&attribute](const auto& source_attribute) {
+                                         return source_attribute.name == attribute.name;
+                                     }) &&
+                ::fremovexattr(prepared.get(), attribute.name.c_str()) != 0) {
+                return std::unexpected(system_error("removing unowned extended attribute failed",
+                                                    errno, source_raw_path, journal_id));
+            }
         }
     }
     struct stat prepared_status{};
@@ -354,22 +374,33 @@ apply_filesystem_metadata(const Descriptor& source, const struct stat& source_st
         return std::unexpected(system_error("observing prepared ownership failed", errno,
                                             source_raw_path, journal_id));
     }
-    if ((prepared_status.st_uid != source_status.st_uid ||
-         prepared_status.st_gid != source_status.st_gid) &&
-        ::fchown(prepared.get(), source_status.st_uid, source_status.st_gid) != 0) {
-        return std::unexpected(system_error("preserving prepared ownership failed", errno,
-                                            source_raw_path, journal_id));
+    // Filesystems with server-side identity mapping refuse ownership
+    // changes; source and prepared copy share the filesystem, so the
+    // published file keeps the identity the filesystem enforces anyway.
+    bool ownership_preserved = true;
+    if (prepared_status.st_uid != source_status.st_uid ||
+        prepared_status.st_gid != source_status.st_gid) {
+        if (::fchown(prepared.get(), source_status.st_uid, source_status.st_gid) != 0) {
+            if (errno == EPERM || errno == ENOTSUP || errno == EOPNOTSUPP) {
+                ownership_preserved = false;
+            } else {
+                return std::unexpected(system_error("preserving prepared ownership failed", errno,
+                                                    source_raw_path, journal_id));
+            }
+        }
     }
     if (::fchmod(prepared.get(), source_status.st_mode & 07777) != 0) {
         return std::unexpected(system_error("preserving prepared permissions failed", errno,
                                             source_raw_path, journal_id));
     }
-    for (const auto& attribute : source_attributes) {
-        const auto* data = attribute.value.empty() ? nullptr : attribute.value.data();
-        if (::fsetxattr(prepared.get(), attribute.name.c_str(), data, attribute.value.size(), 0) !=
-            0) {
-            return std::unexpected(system_error("preserving extended attribute failed", errno,
-                                                source_raw_path, journal_id));
+    if (prepared_attributes->supported) {
+        for (const auto& attribute : source_attributes.attributes) {
+            const auto* data = attribute.value.empty() ? nullptr : attribute.value.data();
+            if (::fsetxattr(prepared.get(), attribute.name.c_str(), data, attribute.value.size(),
+                            0) != 0) {
+                return std::unexpected(system_error("preserving extended attribute failed", errno,
+                                                    source_raw_path, journal_id));
+            }
         }
     }
     auto source_after = read_extended_attributes(source, source_raw_path, journal_id);
@@ -378,14 +409,17 @@ apply_filesystem_metadata(const Descriptor& source, const struct stat& source_st
         return std::unexpected(!source_after ? std::move(source_after.error())
                                              : std::move(prepared_after.error()));
     }
-    if (*source_after != source_attributes || *prepared_after != source_attributes) {
+    if ((source_after->supported && source_attributes.supported &&
+         source_after->attributes != source_attributes.attributes) ||
+        (prepared_after->supported && source_attributes.supported &&
+         prepared_after->attributes != source_attributes.attributes)) {
         return std::unexpected(operation_error(core::ErrorCode::conflict,
                                                "filesystem metadata changed during preparation",
                                                source_raw_path, journal_id));
     }
     if (::fstat(prepared.get(), &prepared_status) != 0 ||
-        prepared_status.st_uid != source_status.st_uid ||
-        prepared_status.st_gid != source_status.st_gid ||
+        (ownership_preserved && (prepared_status.st_uid != source_status.st_uid ||
+                                 prepared_status.st_gid != source_status.st_gid)) ||
         (prepared_status.st_mode & 07777) != (source_status.st_mode & 07777)) {
         return std::unexpected(operation_error(core::ErrorCode::conflict,
                                                "prepared ownership or permissions differ",
@@ -1222,7 +1256,7 @@ finish_metadata_undo(MetadataOperationBackupRecord backup, MetadataOperationJour
 
 [[nodiscard]] core::Result<MetadataCommitResult> publish_prepared_metadata_copy(
     const MetadataOperationJournalRecord& record, const Descriptor& source_descriptor,
-    const struct stat& source_status, const std::vector<ExtendedAttribute>& source_attributes,
+    const struct stat& source_status, const ExtendedAttributeListing& source_attributes,
     const core::LocalSourceRevision& initial_prepared_revision,
     const metadata::MetadataDocument& prepared_document, MetadataOperationJournal& journal,
     const MetadataDependentStateCommitter& dependent_state_committer,

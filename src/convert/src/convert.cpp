@@ -2,6 +2,7 @@
 
 #include "trackknife/convert/convert.hpp"
 
+#include "trackknife/core/atomic_rename.hpp"
 #include "trackknife/core/stable_id.hpp"
 #include "trackknife/metadata/local_reader.hpp"
 
@@ -299,14 +300,10 @@ ensure_convert_capacity(EncoderPipeline& pipeline, const std::string& raw_path, 
                         .context = {{.key = "path", .value = raw_path}}});
     }
     ::close(file);
-    if (::renameat2(AT_FDCWD, temporary.c_str(), AT_FDCWD, destination.c_str(), RENAME_NOREPLACE) !=
-        0) {
-        const auto saved = errno;
-        return std::unexpected(
-            core::Error{.code = saved == EEXIST ? core::ErrorCode::conflict : core::ErrorCode::io,
-                        .message = std::string{"publishing the converted file failed: "} +
-                                   std::generic_category().message(saved),
-                        .context = {{.key = "path", .value = raw_path}}});
+    if (auto published = core::publish_no_replace_at(AT_FDCWD, temporary.native(), AT_FDCWD,
+                                                     destination.native());
+        !published) {
+        return std::unexpected(std::move(published.error()).with_context("path", raw_path));
     }
     const auto directory = ::open(destination.parent_path().c_str(), O_RDONLY | O_DIRECTORY);
     if (directory >= 0) {

@@ -1309,6 +1309,13 @@ afterwards is a separate explicit command in Trackbench's MPD authority.
   whenever quantizing to 16-bit, and a persisted "Bit depth" choice in
   the converter — 24/96 sources convert to dithered 16/44.1 FLAC in
   one run.
+- Done: ADR-0111 makes conversion and publication degrade gracefully on
+  limited filesystems (NFS, sshfs, FAT): a shared no-replace publish
+  ladder replaces the bare RENAME_NOREPLACE, xattr preservation manages
+  the user. namespace only and tolerates unsupported destinations with
+  problems-only notes, ownership refusals note instead of fail, and the
+  whole path is proven live against the real NFS NAS — conversion,
+  and a verified local-to-NAS move publication.
 - Next: mirror-source-structure destination mode, artwork carriage, a
   downsample-only rate cap, keep-source bit depth, and stale-ReplayGain
   handling on signal change.

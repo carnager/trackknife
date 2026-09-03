@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+#include "trackknife/core/atomic_rename.hpp"
 #include "trackknife/core/cancellation.hpp"
 #include "trackknife/core/error.hpp"
 #include "trackknife/core/local_sources.hpp"
@@ -7,6 +8,8 @@
 #include "trackknife/core/revision.hpp"
 #include "trackknife/core/stable_id.hpp"
 #include "trackknife/core/unicode.hpp"
+
+#include <fcntl.h>
 
 #include <array>
 #include <cmath>
@@ -263,6 +266,51 @@ void containedSourceRevalidationFollowsSymlinksAndRejectsEscapes() {
 
 } // namespace
 
+void noReplacePublicationLaddersAndRefusesOccupiedTargets() {
+    namespace fs = std::filesystem;
+    const auto directory =
+        fs::temp_directory_path() /
+        ("trackknife-no-replace-" + trackknife::core::StableId::random().to_string());
+    fs::create_directory(directory);
+    const auto write = [](const fs::path& path, const std::string_view content) {
+        std::ofstream output{path, std::ios::binary};
+        output << content;
+    };
+
+    // Publish into an empty slot: the preferred rung succeeds and the
+    // temporary is gone.
+    write(directory / "temp-a", "alpha");
+    auto published = trackknife::core::publish_no_replace_at(
+        AT_FDCWD, (directory / "temp-a").native(), AT_FDCWD, (directory / "final-a").native());
+    check(published.has_value(), "no-replace publication succeeds", __LINE__);
+    // Which rung succeeded is the filesystem's business (tmpfs renames
+    // atomically, NFS falls back to the hard link); the outcome is what
+    // this pins.
+    check(fs::exists(directory / "final-a") && !fs::exists(directory / "temp-a"),
+          "publication moved the temporary", __LINE__);
+
+    // An occupied target is a typed conflict and both files stay put.
+    write(directory / "temp-b", "bravo");
+    auto conflicted = trackknife::core::publish_no_replace_at(
+        AT_FDCWD, (directory / "temp-b").native(), AT_FDCWD, (directory / "final-a").native());
+    check(!conflicted.has_value(), "occupied targets are refused", __LINE__);
+    check(!conflicted && conflicted.error().code == trackknife::core::ErrorCode::conflict,
+          "occupied targets report conflict", __LINE__);
+    check(fs::exists(directory / "temp-b"), "the temporary survives a conflict", __LINE__);
+    {
+        std::ifstream input{directory / "final-a"};
+        std::string content;
+        std::getline(input, content);
+        check(content == "alpha", "the occupied target was not replaced", __LINE__);
+    }
+
+    // A missing temporary is an error, not a silent success.
+    auto missing = trackknife::core::publish_no_replace_at(
+        AT_FDCWD, (directory / "gone").native(), AT_FDCWD, (directory / "final-c").native());
+    check(!missing.has_value(), "publishing a missing temporary fails", __LINE__);
+    fs::remove_all(directory);
+}
+
 int main() {
     stableIdsRoundTrip();
     cancellationIsSharedAndMonotonic();
@@ -273,5 +321,6 @@ int main() {
     unicodeCaseTransformsAndEncodingAreValidated();
     localSourceDiscoveryPreservesRawPathsAndOrder();
     containedSourceRevalidationFollowsSymlinksAndRejectsEscapes();
+    noReplacePublicationLaddersAndRefusesOccupiedTargets();
     return failures == 0 ? 0 : 1;
 }

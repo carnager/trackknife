@@ -2,6 +2,8 @@
 
 #include "trackknife/operations/file_publication.hpp"
 
+#include "trackknife/core/atomic_rename.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -93,6 +95,10 @@ struct LockedSource {
 struct PreparedCopy {
     Descriptor descriptor;
     core::LocalSourceRevision revision;
+    // Non-blocking degradations on limited destination filesystems
+    // (ADR-0111): preservation that could not happen, surfaced to the user
+    // without failing the publication.
+    std::vector<std::string> notes;
 };
 
 struct ExtendedAttribute {
@@ -100,6 +106,22 @@ struct ExtendedAttribute {
     std::vector<unsigned char> value;
 
     friend bool operator==(const ExtendedAttribute&, const ExtendedAttribute&) = default;
+};
+
+// A filesystem without extended-attribute support (NFS without server
+// xattrs, sshfs, FAT) reports an empty, unsupported listing instead of an
+// error; preservation and verification degrade accordingly (ADR-0111).
+struct ExtendedAttributeListing {
+    std::vector<ExtendedAttribute> attributes;
+    bool supported{true};
+};
+
+// What filesystem-metadata preservation actually achieved on the prepared
+// copy; later verification only enforces what was achievable.
+struct AppliedFilesystemMetadata {
+    bool ownership_preserved{true};
+    bool mode_preserved{true};
+    std::vector<std::string> notes;
 };
 
 [[nodiscard]] core::Error
@@ -442,30 +464,15 @@ require_locked_source_entry(const LockedSource& source, const std::string& sourc
                                                    const Descriptor& target_parent,
                                                    const std::string& target_name,
                                                    const FilePublicationJournalRecord& record) {
-#ifdef SYS_renameat2
-    if (::syscall(SYS_renameat2, source_parent.get(), source_name.c_str(), target_parent.get(),
-                  target_name.c_str(), RENAME_NOREPLACE) == 0) {
-        return {};
-    }
-    const auto number = errno;
-    if (number == ENOSYS || number == EINVAL || number == EOPNOTSUPP) {
+    auto published = core::publish_no_replace_at(source_parent.get(), source_name,
+                                                 target_parent.get(), target_name);
+    if (!published) {
         return std::unexpected(
-            publication_error(core::ErrorCode::unsupported,
-                              "This filesystem cannot atomically rename without replacing a target",
-                              record.source_raw_path, record.target_raw_path, record.id));
+            std::move(published.error())
+                .with_context("source", core::escape_raw_path(record.source_raw_path))
+                .with_context("journal_id", record.id.to_string()));
     }
-    return std::unexpected(system_error("Atomically publishing the renamed file failed", number,
-                                        record.source_raw_path, record.target_raw_path, record.id));
-#else
-    static_cast<void>(source_parent);
-    static_cast<void>(source_name);
-    static_cast<void>(target_parent);
-    static_cast<void>(target_name);
-    return std::unexpected(
-        publication_error(core::ErrorCode::unsupported,
-                          "This platform cannot atomically rename without replacing a target",
-                          record.source_raw_path, record.target_raw_path, record.id));
-#endif
+    return {};
 }
 
 [[nodiscard]] core::Result<void>
@@ -521,10 +528,13 @@ remove_descriptor_entry(const Descriptor& descriptor, const Descriptor& parent,
     return {};
 }
 
-[[nodiscard]] core::Result<std::vector<ExtendedAttribute>>
+[[nodiscard]] core::Result<ExtendedAttributeListing>
 read_extended_attributes(const Descriptor& descriptor, const FilePublicationJournalRecord& record,
                          const std::string_view description) {
     const auto listed = ::flistxattr(descriptor.get(), nullptr, 0U);
+    if (listed < 0 && (errno == ENOTSUP || errno == EOPNOTSUPP)) {
+        return ExtendedAttributeListing{.attributes = {}, .supported = false};
+    }
     if (listed < 0) {
         return std::unexpected(system_error(
             std::string{"Listing extended attributes on "} + std::string{description} + " failed",
@@ -597,33 +607,48 @@ read_extended_attributes(const Descriptor& descriptor, const FilePublicationJour
             }
         }
         total_value_bytes += value.size();
-        attributes.push_back(ExtendedAttribute{.name = std::move(name), .value = std::move(value)});
+        // Only user-namespace attributes are user metadata; system.,
+        // security., and trusted. names are kernel- or filesystem-owned
+        // representations (NFS ACLs, SELinux labels) that the destination
+        // manages itself and often refuses to accept or remove.
+        if (name.starts_with("user.")) {
+            attributes.push_back(
+                ExtendedAttribute{.name = std::move(name), .value = std::move(value)});
+        }
         offset = static_cast<std::size_t>(std::distance(names.begin(), end)) + 1U;
     }
     std::ranges::sort(attributes, {}, &ExtendedAttribute::name);
-    return attributes;
+    return ExtendedAttributeListing{.attributes = std::move(attributes), .supported = true};
 }
 
-[[nodiscard]] core::Result<void>
+[[nodiscard]] core::Result<AppliedFilesystemMetadata>
 apply_copy_filesystem_metadata(const LockedSource& source, const struct stat& source_status,
-                               const std::vector<ExtendedAttribute>& source_attributes,
+                               const ExtendedAttributeListing& source_attributes,
                                const Descriptor& prepared,
                                const FilePublicationJournalRecord& record) {
+    AppliedFilesystemMetadata applied;
     auto prepared_attributes =
         read_extended_attributes(prepared, record, "the prepared target copy");
     if (!prepared_attributes) {
         return std::unexpected(std::move(prepared_attributes.error()));
     }
-    for (const auto& attribute : *prepared_attributes) {
-        if (std::ranges::none_of(source_attributes,
-                                 [&attribute](const auto& source_attribute) {
-                                     return source_attribute.name == attribute.name;
-                                 }) &&
-            ::fremovexattr(prepared.get(), attribute.name.c_str()) != 0) {
-            return std::unexpected(
-                system_error("Removing an unowned prepared-copy extended attribute failed", errno,
-                             record.source_raw_path, record.target_raw_path, record.id));
+    if (prepared_attributes->supported) {
+        for (const auto& attribute : prepared_attributes->attributes) {
+            if (std::ranges::none_of(source_attributes.attributes,
+                                     [&attribute](const auto& source_attribute) {
+                                         return source_attribute.name == attribute.name;
+                                     }) &&
+                ::fremovexattr(prepared.get(), attribute.name.c_str()) != 0) {
+                return std::unexpected(
+                    system_error("Removing an unowned prepared-copy extended attribute failed",
+                                 errno, record.source_raw_path, record.target_raw_path, record.id));
+            }
         }
+    } else if (!source_attributes.attributes.empty()) {
+        // The destination filesystem cannot store what the source carries;
+        // the publication proceeds and says so instead of failing.
+        applied.notes.push_back("Extended attributes were not preserved: the destination "
+                                "filesystem does not support them");
     }
     struct stat prepared_status{};
     if (::fstat(prepared.get(), &prepared_status) != 0) {
@@ -631,25 +656,42 @@ apply_copy_filesystem_metadata(const LockedSource& source, const struct stat& so
                                             record.source_raw_path, record.target_raw_path,
                                             record.id));
     }
-    if ((prepared_status.st_uid != source_status.st_uid ||
-         prepared_status.st_gid != source_status.st_gid) &&
-        ::fchown(prepared.get(), source_status.st_uid, source_status.st_gid) != 0) {
-        return std::unexpected(system_error("Preserving prepared-copy ownership failed", errno,
-                                            record.source_raw_path, record.target_raw_path,
-                                            record.id));
+    if (prepared_status.st_uid != source_status.st_uid ||
+        prepared_status.st_gid != source_status.st_gid) {
+        if (::fchown(prepared.get(), source_status.st_uid, source_status.st_gid) != 0) {
+            // Network filesystems with server-side identity mapping refuse
+            // ownership changes; the copy keeps the writing user's identity.
+            if (errno == EPERM || errno == ENOTSUP || errno == EOPNOTSUPP) {
+                applied.ownership_preserved = false;
+                applied.notes.push_back("File ownership was not preserved: the destination "
+                                        "filesystem refused the change");
+            } else {
+                return std::unexpected(system_error("Preserving prepared-copy ownership failed",
+                                                    errno, record.source_raw_path,
+                                                    record.target_raw_path, record.id));
+            }
+        }
     }
     if (::fchmod(prepared.get(), source_status.st_mode & 07777) != 0) {
-        return std::unexpected(system_error("Preserving prepared-copy permissions failed", errno,
-                                            record.source_raw_path, record.target_raw_path,
-                                            record.id));
+        if (errno == ENOTSUP || errno == EOPNOTSUPP) {
+            applied.mode_preserved = false;
+            applied.notes.push_back("File permissions were not preserved: the destination "
+                                    "filesystem does not support them");
+        } else {
+            return std::unexpected(system_error("Preserving prepared-copy permissions failed",
+                                                errno, record.source_raw_path,
+                                                record.target_raw_path, record.id));
+        }
     }
-    for (const auto& attribute : source_attributes) {
-        const auto* data = attribute.value.empty() ? nullptr : attribute.value.data();
-        if (::fsetxattr(prepared.get(), attribute.name.c_str(), data, attribute.value.size(), 0) !=
-            0) {
-            return std::unexpected(
-                system_error("Preserving a prepared-copy extended attribute failed", errno,
-                             record.source_raw_path, record.target_raw_path, record.id));
+    if (prepared_attributes->supported) {
+        for (const auto& attribute : source_attributes.attributes) {
+            const auto* data = attribute.value.empty() ? nullptr : attribute.value.data();
+            if (::fsetxattr(prepared.get(), attribute.name.c_str(), data, attribute.value.size(),
+                            0) != 0) {
+                return std::unexpected(
+                    system_error("Preserving a prepared-copy extended attribute failed", errno,
+                                 record.source_raw_path, record.target_raw_path, record.id));
+            }
         }
     }
     auto source_after = read_extended_attributes(source.source, record, "the locked source");
@@ -658,22 +700,26 @@ apply_copy_filesystem_metadata(const LockedSource& source, const struct stat& so
         return std::unexpected(!source_after ? std::move(source_after.error())
                                              : std::move(prepared_after.error()));
     }
-    if (*source_after != source_attributes || *prepared_after != source_attributes) {
+    if ((source_after->supported && source_attributes.supported &&
+         source_after->attributes != source_attributes.attributes) ||
+        (prepared_after->supported && source_attributes.supported &&
+         prepared_after->attributes != source_attributes.attributes)) {
         return std::unexpected(
             publication_error(core::ErrorCode::conflict,
                               "Filesystem extended attributes changed during copy preparation",
                               record.source_raw_path, record.target_raw_path, record.id));
     }
     if (::fstat(prepared.get(), &prepared_status) != 0 ||
-        prepared_status.st_uid != source_status.st_uid ||
-        prepared_status.st_gid != source_status.st_gid ||
-        (prepared_status.st_mode & 07777) != (source_status.st_mode & 07777)) {
+        (applied.ownership_preserved && (prepared_status.st_uid != source_status.st_uid ||
+                                         prepared_status.st_gid != source_status.st_gid)) ||
+        (applied.mode_preserved &&
+         (prepared_status.st_mode & 07777) != (source_status.st_mode & 07777))) {
         return std::unexpected(
             publication_error(core::ErrorCode::conflict,
                               "Prepared-copy ownership or permissions differ from the source",
                               record.source_raw_path, record.target_raw_path, record.id));
     }
-    return {};
+    return applied;
 }
 
 [[nodiscard]] core::Result<void> verify_exact_copy(const LockedSource& source,
@@ -688,9 +734,9 @@ apply_copy_filesystem_metadata(const LockedSource& source, const struct stat& so
                                             record.source_raw_path, record.target_raw_path,
                                             record.id));
     }
+    // Ownership is host identity, not content: limited destinations keep the
+    // writing user's identity (ADR-0111), so recovery does not compare it.
     if (source.revision.size != candidate.revision.size ||
-        source_status.st_uid != candidate_status.st_uid ||
-        source_status.st_gid != candidate_status.st_gid ||
         (source_status.st_mode & 07777) != (candidate_status.st_mode & 07777) ||
         source_status.st_mtim.tv_sec != candidate_status.st_mtim.tv_sec ||
         source_status.st_mtim.tv_nsec != candidate_status.st_mtim.tv_nsec) {
@@ -705,7 +751,8 @@ apply_copy_filesystem_metadata(const LockedSource& source, const struct stat& so
         return std::unexpected(!source_attributes ? std::move(source_attributes.error())
                                                   : std::move(candidate_attributes.error()));
     }
-    if (*source_attributes != *candidate_attributes) {
+    if (source_attributes->supported && candidate_attributes->supported &&
+        source_attributes->attributes != candidate_attributes->attributes) {
         return std::unexpected(
             publication_error(core::ErrorCode::conflict,
                               "Prepared target copy differs from the source extended attributes",
@@ -834,10 +881,10 @@ copy_source_to_prepared(const LockedSource& source, const Descriptor& target_par
         offset += static_cast<std::uint64_t>(read_count);
     }
     const std::array times{source_status.st_atim, source_status.st_mtim};
-    if (auto metadata = apply_copy_filesystem_metadata(source, source_status, *source_attributes,
-                                                       prepared, record);
-        !metadata) {
-        return cleanup(std::move(metadata.error()));
+    auto applied =
+        apply_copy_filesystem_metadata(source, source_status, *source_attributes, prepared, record);
+    if (!applied) {
+        return cleanup(std::move(applied.error()));
     }
     if (::futimens(prepared.get(), times.data()) != 0 || ::fsync(prepared.get()) != 0) {
         return cleanup(system_error("Finalizing the prepared target copy failed", errno,
@@ -900,8 +947,10 @@ copy_source_to_prepared(const LockedSource& source, const Descriptor& target_par
         return cleanup(!source_attributes_after ? std::move(source_attributes_after.error())
                                                 : std::move(prepared_attributes_after.error()));
     }
-    if (*source_attributes_after != *source_attributes ||
-        *prepared_attributes_after != *source_attributes) {
+    if ((source_attributes_after->supported && source_attributes->supported &&
+         source_attributes_after->attributes != source_attributes->attributes) ||
+        (prepared_attributes_after->supported && source_attributes->supported &&
+         prepared_attributes_after->attributes != source_attributes->attributes)) {
         return cleanup(
             publication_error(core::ErrorCode::conflict,
                               "Filesystem extended attributes changed during byte verification",
@@ -914,9 +963,10 @@ copy_source_to_prepared(const LockedSource& source, const Descriptor& target_par
     struct stat final_status{};
     if (::fstat(prepared.get(), &final_status) != 0 ||
         revision_from_stat(final_status) != prepared_revision ||
-        final_status.st_uid != source_status.st_uid ||
-        final_status.st_gid != source_status.st_gid ||
-        (final_status.st_mode & 07777) != (source_status.st_mode & 07777) ||
+        (applied->ownership_preserved && (final_status.st_uid != source_status.st_uid ||
+                                          final_status.st_gid != source_status.st_gid)) ||
+        (applied->mode_preserved &&
+         (final_status.st_mode & 07777) != (source_status.st_mode & 07777)) ||
         final_status.st_atim.tv_sec != source_status.st_atim.tv_sec ||
         final_status.st_atim.tv_nsec != source_status.st_atim.tv_nsec ||
         final_status.st_mtim.tv_sec != source_status.st_mtim.tv_sec ||
@@ -926,7 +976,9 @@ copy_source_to_prepared(const LockedSource& source, const Descriptor& target_par
             "Prepared target copy changed while finalizing its preserved metadata",
             record.source_raw_path, record.target_raw_path, record.id));
     }
-    return PreparedCopy{.descriptor = std::move(prepared), .revision = prepared_revision};
+    return PreparedCopy{.descriptor = std::move(prepared),
+                        .revision = prepared_revision,
+                        .notes = std::move(applied->notes)};
 }
 
 [[nodiscard]] core::Result<PreparedCopy>
@@ -1012,10 +1064,10 @@ prepare_destination_artifact(const LockedSource& source, const Descriptor& targe
         !current_source) {
         return cleanup(std::move(current_source.error()));
     }
-    if (auto metadata = apply_copy_filesystem_metadata(source, source_status, *source_attributes,
-                                                       prepared, record);
-        !metadata) {
-        return cleanup(std::move(metadata.error()));
+    auto applied =
+        apply_copy_filesystem_metadata(source, source_status, *source_attributes, prepared, record);
+    if (!applied) {
+        return cleanup(std::move(applied.error()));
     }
     if (::fsync(prepared.get()) != 0 || ::fsync(target_parent.get()) != 0) {
         return cleanup(system_error("Making the destination artifact durable failed", errno,
@@ -1033,7 +1085,9 @@ prepare_destination_artifact(const LockedSource& source, const Descriptor& targe
         !current_source) {
         return cleanup(std::move(current_source.error()));
     }
-    return PreparedCopy{.descriptor = std::move(prepared), .revision = *prepared_result};
+    return PreparedCopy{.descriptor = std::move(prepared),
+                        .revision = *prepared_result,
+                        .notes = std::move(applied->notes)};
 }
 
 [[nodiscard]] core::Result<void>
@@ -1264,6 +1318,7 @@ commit_result(const FilePublicationJournalRecord& record,
         .source_revision = record.expected_source_revision,
         .target_revision = target_revision,
         .occurrence_indexes = record.occurrence_indexes,
+        .notes = {},
     };
 }
 
@@ -1440,6 +1495,7 @@ commit_result(const FilePublicationJournalRecord& record,
     record.state = State::target_published;
     record.target_revision = target_revision;
     auto result = commit_result(record, target_revision);
+    result.notes = prepared.notes;
     if (auto dependent = dependent_state_committer(result); !dependent) {
         const auto rolled_back = rollback_locked_cross_filesystem_target(
             record, prepared.descriptor, target_parent, target_revision);

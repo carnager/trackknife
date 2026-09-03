@@ -26,6 +26,10 @@ struct FilePublicationCommitResult {
     core::LocalSourceRevision source_revision;
     core::LocalSourceRevision target_revision;
     std::vector<std::size_t> occurrence_indexes;
+    // Non-blocking degradations on limited destination filesystems
+    // (ADR-0111) — preservation that could not happen; the publication
+    // itself succeeded and verified.
+    std::vector<std::string> notes;
 
     friend bool operator==(const FilePublicationCommitResult&,
                            const FilePublicationCommitResult&) = default;
