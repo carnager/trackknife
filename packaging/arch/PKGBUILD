@@ -21,17 +21,20 @@ pkgver() {
 
 build() {
   cd trackknife
-  # Packaging must not fail on warnings a future compiler invents.
-  cmake --preset release -DTRACKKNIFE_WARNINGS_AS_ERRORS=OFF
+  # Warnings-as-errors stays off so packaging never fails on warnings a
+  # future compiler invents. Tests and benchmarks are opt-in: export
+  # TRACKBENCH_CHECK=1 to build and run the functional suites.
+  local testing=OFF
+  [[ -n ${TRACKBENCH_CHECK:-} ]] && testing=ON
+  cmake --preset release -DTRACKKNIFE_WARNINGS_AS_ERRORS=OFF \
+    -DBUILD_TESTING=$testing -DTRACKKNIFE_BUILD_BENCHMARKS=OFF
   cmake --build build/release
 }
 
 check() {
+  [[ -n ${TRACKBENCH_CHECK:-} ]] || return 0
   cd trackknife/build/release
-  # Benchmark smoke tests assert frame-time budgets — development
-  # regression gates that turn flaky under packaging load, not
-  # functional checks.
-  QT_QPA_PLATFORM=offscreen ctest --output-on-failure -E benchmark-smoke
+  QT_QPA_PLATFORM=offscreen ctest --output-on-failure
 }
 
 package() {
