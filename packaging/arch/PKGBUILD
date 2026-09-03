@@ -11,7 +11,7 @@ makedepends=(cmake git ninja)
 optdepends=('chromaprint: AcoustID fingerprinting in the MusicBrainz Identify dialog')
 provides=(trackbench)
 conflicts=(trackbench)
-source=("trackknife::git+ssh://git@github.com/carnager/trackknife.git")
+source=("trackknife::git+https://github.com/carnager/trackknife.git")
 sha256sums=('SKIP')
 
 pkgver() {
