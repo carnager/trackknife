@@ -17,6 +17,7 @@
 #include <string_view>
 #include <sys/stat.h>
 #include <sys/xattr.h>
+#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -751,11 +752,18 @@ void crossFilesystemCopyPublishesExactBytesBeforeRemovingSource() {
                 read_file(target) == bytes,
             "verified cross-filesystem publication must leave only the exact target");
     struct stat target_status{};
-    require(::stat(target.c_str(), &target_status) == 0 &&
-                target_status.st_uid == source_status.st_uid &&
-                target_status.st_gid == source_status.st_gid &&
-                (target_status.st_mode & 0777) == 0640,
-            "verified copy must preserve source ownership and permissions");
+    require(::stat(target.c_str(), &target_status) == 0 && (target_status.st_mode & 0777) == 0640,
+            "verified copy must preserve source permissions");
+    // Filesystems with server-side identity mapping (NFS) refuse ownership
+    // changes; preservation is best-effort there (ADR-0111), so assert it
+    // only where the filesystem can express it.
+    const auto chown_supported =
+        ::chown(target.c_str(), source_status.st_uid, source_status.st_gid) == 0;
+    if (chown_supported) {
+        require(target_status.st_uid == source_status.st_uid &&
+                    target_status.st_gid == source_status.st_gid,
+                "verified copy must preserve source ownership where supported");
+    }
     if (xattrs_supported) {
         std::string value(attribute_value.size(), '\0');
         const auto read =

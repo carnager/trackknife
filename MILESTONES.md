@@ -1316,6 +1316,13 @@ afterwards is a separate explicit command in Trackbench's MPD authority.
   problems-only notes, ownership refusals note instead of fail, and the
   whole path is proven live against the real NFS NAS — conversion,
   and a verified local-to-NAS move publication.
+- Done: the ADR-0111 addendum degrades source locking the same way:
+  exclusive flock falls back to shared, then unlocked, where lock
+  emulation cannot express it (NFS needs write-open descriptors for
+  exclusivity) — revision revalidation before every mutation carries
+  correctness. The full publication executor suite and text tag commits
+  now pass with their files living on the NFS NAS; the artwork undo
+  chain on exchange-less filesystems remains a follow-up.
 - Next: mirror-source-structure destination mode, artwork carriage, a
   downsample-only rate cap, keep-source bit depth, and stale-ReplayGain
   handling on signal change.
@@ -1354,6 +1361,10 @@ handoff to Local Queue playback.
    primary/multi-output rules.
 4. Add advanced playback orders, optional DSP presets, MPRIS, media keys,
    notifications, and persisted statistics as separately gated capabilities.
+5. Configurable MPD music-root mapping (per connection profile): resolve MPD
+   queue/playlist URIs to local files below the configured root so Properties,
+   Convert, and ReplayGain work directly on MPD-mode selections; a database
+   update stays an explicit MPD action afterwards (ADR-0058).
 
 ### Exit criteria
 

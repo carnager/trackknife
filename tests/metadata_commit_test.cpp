@@ -1047,6 +1047,12 @@ void undoes_completed_metadata_and_recovers_interrupted_undo(
                   plan->changes.front().original_values);
             return {};
         });
+    // Undo needs RENAME_EXCHANGE; filesystems without it (NFS) report the
+    // deliberate typed unavailability instead of succeeding (ADR-0111).
+    if (!undone && undone.error().code == trackknife::core::ErrorCode::unsupported) {
+        std::cerr << "undo unavailable on this filesystem: " << undone.error().message << '\n';
+        return;
+    }
     if (!undone) {
         std::cerr << undone.error().message << '\n';
     }

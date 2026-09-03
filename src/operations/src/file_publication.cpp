@@ -298,12 +298,26 @@ create_planned_directories(const FilePublicationJournalRecord& record) {
     return result;
 }
 
+// Exclusive when the filesystem can express it. NFS emulates flock via
+// POSIX locks, which need a write-open descriptor for exclusivity, so
+// read-only descriptors get EBADF there; shared locks (or none, where no
+// lock manager exists) degrade gracefully — the revision revalidation
+// before every mutation carries correctness either way (ADR-0111).
 [[nodiscard]] core::Result<void>
 lock_descriptor(const Descriptor& descriptor, const core::CancellationToken& cancellation,
                 const std::string& source_raw_path, const std::string& target_raw_path,
                 const std::optional<core::StableId>& journal_id = std::nullopt) {
-    while (::flock(descriptor.get(), LOCK_EX | LOCK_NB) != 0) {
+    auto operation = LOCK_EX | LOCK_NB;
+    while (::flock(descriptor.get(), operation) != 0) {
         const auto number = errno;
+        if (number == EBADF && (operation & LOCK_EX) != 0) {
+            operation = LOCK_SH | LOCK_NB;
+            continue;
+        }
+        if (number == ENOLCK || number == EOPNOTSUPP || number == ENOTSUP ||
+            (number == EBADF && (operation & LOCK_SH) != 0)) {
+            return {};
+        }
         if (number != EWOULDBLOCK && number != EAGAIN && number != EINTR) {
             return std::unexpected(system_error("Locking the publication source failed", number,
                                                 source_raw_path, target_raw_path, journal_id));
@@ -890,7 +904,8 @@ copy_source_to_prepared(const LockedSource& source, const Descriptor& target_par
         return cleanup(system_error("Finalizing the prepared target copy failed", errno,
                                     record.source_raw_path, record.target_raw_path, record.id));
     }
-    if (::flock(prepared.get(), LOCK_EX | LOCK_NB) != 0) {
+    if (::flock(prepared.get(), LOCK_EX | LOCK_NB) != 0 && errno != ENOLCK && errno != EOPNOTSUPP &&
+        errno != ENOTSUP && errno != EBADF) {
         return cleanup(system_error("Locking the prepared target copy failed", errno,
                                     record.source_raw_path, record.target_raw_path, record.id));
     }

@@ -186,8 +186,21 @@ open_and_lock_file(const std::string& raw_path, const core::CancellationToken& c
         return std::unexpected(
             system_error("opening mutation source failed", errno, source_raw_path, journal_id));
     }
-    while (::flock(descriptor.get(), LOCK_EX | LOCK_NB) != 0) {
+    // Exclusive when the filesystem can express it; NFS needs write-open
+    // descriptors for exclusive flock emulation, so read-only descriptors
+    // degrade to shared or unlocked there. Revision revalidation before
+    // every mutation carries correctness either way (ADR-0111).
+    auto operation = LOCK_EX | LOCK_NB;
+    while (::flock(descriptor.get(), operation) != 0) {
         const auto number = errno;
+        if (number == EBADF && (operation & LOCK_EX) != 0) {
+            operation = LOCK_SH | LOCK_NB;
+            continue;
+        }
+        if (number == ENOLCK || number == EOPNOTSUPP || number == ENOTSUP ||
+            (number == EBADF && (operation & LOCK_SH) != 0)) {
+            return descriptor;
+        }
         if (number != EWOULDBLOCK && number != EAGAIN && number != EINTR) {
             return std::unexpected(system_error("locking mutation source failed", number,
                                                 source_raw_path, journal_id));
