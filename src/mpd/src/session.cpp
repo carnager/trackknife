@@ -424,8 +424,6 @@ struct Session::Impl {
             return without_payload(client.set_volume(command.volume));
         case SessionCommandKind::output_enabled:
             return without_payload(client.set_output_enabled(command.object_id, command.enabled));
-        case SessionCommandKind::switch_output:
-            return without_payload(client.switch_output(command.object_id));
         }
         return std::unexpected(core::Error{.code = core::ErrorCode::backend,
                                            .message = "Unknown MPD session command",
@@ -480,7 +478,6 @@ struct Session::Impl {
         case SessionCommandKind::volume:
             return static_cast<std::uint32_t>(IdleEvent::mixer);
         case SessionCommandKind::output_enabled:
-        case SessionCommandKind::switch_output:
             return static_cast<std::uint32_t>(IdleEvent::output);
         }
         return full_refresh;
@@ -1000,13 +997,6 @@ std::uint64_t Session::set_output_enabled(const std::uint32_t output_id, const b
     command.kind = SessionCommandKind::output_enabled;
     command.object_id = output_id;
     command.enabled = enabled;
-    return implementation_->enqueue(command);
-}
-
-std::uint64_t Session::switch_output(const std::uint32_t output_id) {
-    Impl::PendingCommand command;
-    command.kind = SessionCommandKind::switch_output;
-    command.object_id = output_id;
     return implementation_->enqueue(command);
 }
 

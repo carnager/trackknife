@@ -134,7 +134,6 @@ class Client final {
     [[nodiscard]] core::Result<ReplayGainMode> replay_gain_mode();
     [[nodiscard]] core::Result<void> set_replay_gain_mode(ReplayGainMode mode);
     [[nodiscard]] core::Result<void> set_output_enabled(std::uint32_t output_id, bool enabled);
-    [[nodiscard]] core::Result<void> switch_output(std::uint32_t output_id);
     [[nodiscard]] core::Result<void> ping();
     [[nodiscard]] core::Result<IdleEvents>
     wait_for_idle(const core::CancellationToken& cancellation);

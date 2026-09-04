@@ -1285,18 +1285,6 @@ core::Result<void> Client::set_output_enabled(const std::uint32_t output_id, con
     return {};
 }
 
-core::Result<void> Client::switch_output(const std::uint32_t output_id) {
-    const auto id = std::to_string(output_id);
-    if (!mpd_send_command(implementation_->connection.get(), "switchoutput", id.c_str(), nullptr)) {
-        return std::unexpected(implementation_->take_error("send switchoutput"));
-    }
-    auto response = implementation_->receive_pairs("switchoutput");
-    if (!response) {
-        return std::unexpected(std::move(response.error()));
-    }
-    return {};
-}
-
 core::Result<void> Client::ping() {
     auto response = command_pairs("ping");
     if (!response) {

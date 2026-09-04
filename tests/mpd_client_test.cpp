@@ -404,8 +404,6 @@ void client_negotiates_and_preserves_extensions() {
             "ReplayGain status and changes must stay typed across the adapter boundary");
     require(client.set_output_enabled(0U, true).has_value(),
             "additive MPD output enable must use the command connection");
-    require(client.switch_output(0U).has_value(),
-            "advertised Melody exclusive switching must use the command connection");
     require(client.play_id(9U).has_value(), "queue playback must address the stable song ID");
     const auto appended = client.add_id("Artist/Release/03.flac");
     require(appended == 11U, "queue append must return the server-assigned stable song ID");

@@ -129,7 +129,7 @@ int main(int argc, char** argv) {
     std::cout << "Capabilities: " << capabilities->commands.size() << " commands, "
               << capabilities->tag_types.size() << " tag types";
     if (capabilities->supports_command("switchoutput")) {
-        std::cout << ", Melody exclusive output switch advertised";
+        std::cout << ", legacy melodyd switchoutput advertised";
     }
     std::cout << '\n';
 

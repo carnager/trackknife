@@ -1152,14 +1152,6 @@ void MpdProbeController::setOutputEnabled(const quint32 output_id, const bool en
     emit stateChanged();
 }
 
-void MpdProbeController::switchOutput(const quint32 output_id) {
-    if (!session_ || !connected_ || !supports_exclusive_output_) {
-        return;
-    }
-    pending_commands_.insert(session_->switch_output(output_id));
-    emit stateChanged();
-}
-
 void MpdProbeController::applyState(const std::uint64_t token, mpd::SessionState state) {
     if (token != connection_token_ || state.generation < generation_) {
         return;
@@ -1281,7 +1273,10 @@ void MpdProbeController::applySnapshot(const std::uint64_t token, mpd::SessionSn
     if (optimistic_replay_gain_ == replay_gain_mode_) {
         optimistic_replay_gain_.reset();
     }
-    supports_exclusive_output_ = snapshot.capabilities.supports_command("switchoutput");
+    // melodyd removed exclusive output switching for MPD compatibility;
+    // the advertised command only survives as the legacy-release marker for
+    // the playback-restore quirk below.
+    legacy_melody_output_restore_ = snapshot.capabilities.supports_command("switchoutput");
     supports_replay_gain_ = snapshot.capabilities.supports_command("replay_gain_status") &&
                             snapshot.capabilities.supports_command("replay_gain_mode");
     updateElapsedTimer();
@@ -1292,9 +1287,6 @@ void MpdProbeController::applySnapshot(const std::uint64_t token, mpd::SessionSn
                    .arg(snapshot.capabilities.tag_types.size())
                    .arg(snapshot.queue.size())
                    .arg(now_playing_);
-    if (supports_exclusive_output_) {
-        details_ += QStringLiteral("Melody exclusive output switching advertised\n");
-    }
     details_ += QStringLiteral("\nOutputs\n") + output_summary_;
     queue_model_.replaceTracks(std::move(snapshot.queue));
     output_model_.replaceOutputs(std::move(snapshot.outputs));
@@ -1746,7 +1738,7 @@ void MpdProbeController::enqueueUrisAt(std::vector<std::string> uris,
     // preserve playback state themselves. Queue replacement explicitly submits Play
     // afterward either way.
     std::optional<mpd::TransportAction> restore_playback;
-    if (supports_exclusive_output_ && !supportsCommand(QStringLiteral("melody_version")) &&
+    if (legacy_melody_output_restore_ && !supportsCommand(QStringLiteral("melody_version")) &&
         queue_model_.rowCount() == 0) {
         switch (presentedPlaybackState()) {
         case mpd::PlaybackState::stopped:
@@ -1819,7 +1811,7 @@ void MpdProbeController::clearSessionState() {
     playback_state_ = mpd::PlaybackState::unknown;
     optimistic_playback_state_.reset();
     pending_playback_command_.reset();
-    supports_exclusive_output_ = false;
+    legacy_melody_output_restore_ = false;
     supports_replay_gain_ = false;
     advertised_commands_.clear();
     advertised_tag_types_.clear();

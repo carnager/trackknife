@@ -470,22 +470,17 @@ void BenchMainWindow::rebuildDeviceMenu() {
             const auto name = output_model->data(index, quick::MpdOutputModel::NameRole).toString();
             const auto enabled =
                 output_model->data(index, quick::MpdOutputModel::EnabledRole).toBool();
-            const auto primary =
-                output_model->data(index, quick::MpdOutputModel::PrimaryRole).toBool();
             auto* action = device_menu_->addAction(name);
             action->setObjectName(QStringLiteral("action-mpd-output-%1").arg(id));
             action->setCheckable(true);
-            action->setChecked(mpd_controller_->supportsExclusiveOutput() ? primary : enabled);
+            // MPD outputs are independent toggles; clicking one must never
+            // silently disable the others.
+            action->setChecked(enabled);
             action->setToolTip(
                 output_model->data(index, quick::MpdOutputModel::DetailRole).toString());
             device_group_->addAction(action);
-            connect(action, &QAction::triggered, this, [this, id, enabled] {
-                if (mpd_controller_->supportsExclusiveOutput()) {
-                    mpd_controller_->switchOutput(id);
-                } else {
-                    mpd_controller_->setOutputEnabled(id, !enabled);
-                }
-            });
+            connect(action, &QAction::triggered, this,
+                    [this, id, enabled] { mpd_controller_->setOutputEnabled(id, !enabled); });
         }
         if (device_menu_->isEmpty()) {
             auto* none = device_menu_->addAction(mpd_controller_->connected()

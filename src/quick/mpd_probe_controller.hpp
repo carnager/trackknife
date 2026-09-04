@@ -65,7 +65,6 @@ class MpdProbeController final : public QObject {
     Q_PROPERTY(int consumeMode READ consumeMode NOTIFY stateChanged)
     Q_PROPERTY(QString replayGainMode READ replayGainMode NOTIFY stateChanged)
     Q_PROPERTY(bool supportsReplayGain READ supportsReplayGain NOTIFY stateChanged)
-    Q_PROPERTY(bool supportsExclusiveOutput READ supportsExclusiveOutput NOTIFY stateChanged)
     Q_PROPERTY(QString activeOutputName READ activeOutputName NOTIFY stateChanged)
     Q_PROPERTY(QString profileId READ profileId NOTIFY stateChanged)
 
@@ -124,9 +123,6 @@ class MpdProbeController final : public QObject {
     [[nodiscard]] int consumeMode() const noexcept;
     [[nodiscard]] QString replayGainMode() const;
     [[nodiscard]] bool supportsReplayGain() const noexcept { return supports_replay_gain_; }
-    [[nodiscard]] bool supportsExclusiveOutput() const noexcept {
-        return supports_exclusive_output_;
-    }
     [[nodiscard]] bool supportsCommand(const QString& command) const {
         return advertised_commands_.contains(command.toLower());
     }
@@ -197,7 +193,6 @@ class MpdProbeController final : public QObject {
     Q_INVOKABLE void seekTo(qint64 position_ms);
     Q_INVOKABLE void setVolume(int volume);
     Q_INVOKABLE void setOutputEnabled(quint32 output_id, bool enabled);
-    Q_INVOKABLE void switchOutput(quint32 output_id);
 
   signals:
     void stateChanged();
@@ -235,7 +230,7 @@ class MpdProbeController final : public QObject {
 
     bool busy_{false};
     bool connected_{false};
-    bool supports_exclusive_output_{false};
+    bool legacy_melody_output_restore_{false};
     bool supports_replay_gain_{false};
     QSet<QString> advertised_commands_;
     QSet<QString> advertised_tag_types_;

@@ -74,7 +74,6 @@ enum class SessionCommandKind {
     seek,
     volume,
     output_enabled,
-    switch_output,
 };
 
 using SessionCommandPayload =
@@ -161,7 +160,6 @@ class Session final {
     [[nodiscard]] std::uint64_t set_consume(PlaybackModeState state);
     [[nodiscard]] std::uint64_t set_replay_gain_mode(ReplayGainMode mode);
     [[nodiscard]] std::uint64_t set_output_enabled(std::uint32_t output_id, bool enabled);
-    [[nodiscard]] std::uint64_t switch_output(std::uint32_t output_id);
 
   private:
     struct Impl;
