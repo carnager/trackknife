@@ -3,11 +3,14 @@
 #include "bench/bench_main_window.hpp"
 
 #include <QApplication>
+#include <QDateTime>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QStandardPaths>
 #include <QString>
 #include <QTimer>
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -30,6 +33,55 @@ void filtered_message_handler(const QtMsgType type, const QMessageLogContext& co
     }
 }
 
+} // namespace
+
+// QA soak hook: TRACKBENCH_SOAK_LOG=<path> appends one line per minute —
+// timestamp, resident memory, live QObject/widget counts, and event-loop
+// lateness — so gradual degradation over long sessions becomes measurable
+// instead of anecdotal.
+namespace {
+void startSoakLog(QObject* parent) {
+    const auto path = qEnvironmentVariable("TRACKBENCH_SOAK_LOG");
+    if (path.isEmpty()) {
+        return;
+    }
+    auto* timer = new QTimer(parent);
+    timer->setInterval(60'000);
+    auto* lateness = new qint64{0};
+    QObject::connect(timer, &QTimer::destroyed, parent, [lateness] { delete lateness; });
+    auto* expected = new QElapsedTimer{};
+    QObject::connect(timer, &QTimer::destroyed, parent, [expected] { delete expected; });
+    expected->start();
+    QObject::connect(timer, &QTimer::timeout, parent, [path, timer, lateness, expected] {
+        // How late the timer fired is a direct sample of event-loop
+        // congestion — the thing a user feels as sluggish tab switches.
+        *lateness = expected->elapsed() - timer->interval();
+        expected->restart();
+        long long resident_pages = 0;
+        if (QFile statm{QStringLiteral("/proc/self/statm")}; statm.open(QIODevice::ReadOnly)) {
+            const auto fields = QString::fromLatin1(statm.readAll()).split(QLatin1Char(' '));
+            if (fields.size() > 1) {
+                resident_pages = fields[1].toLongLong();
+            }
+        }
+        std::size_t object_count = 0;
+        const auto widgets = QApplication::allWidgets();
+        for (const auto* widget : widgets) {
+            object_count += static_cast<std::size_t>(widget->children().size());
+        }
+        QFile log{path};
+        if (log.open(QIODevice::Append | QIODevice::Text)) {
+            log.write(QStringLiteral("%1 rss_kb=%2 widgets=%3 child_objects=%4 late_ms=%5\n")
+                          .arg(QDateTime::currentDateTime().toString(Qt::ISODate))
+                          .arg(resident_pages * 4)
+                          .arg(widgets.size())
+                          .arg(object_count)
+                          .arg(*lateness)
+                          .toUtf8());
+        }
+    });
+    timer->start();
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -58,6 +110,7 @@ int main(int argc, char** argv) {
         QStandardPaths::setTestModeEnabled(true);
     }
 
+    startSoakLog(&application);
     trackknife::bench::BenchMainWindow window;
     window.show();
     if (!raw_paths.empty()) {
