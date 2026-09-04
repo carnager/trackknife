@@ -789,8 +789,11 @@ void BenchMainWindow::refreshTransport() {
     play_pause_action_->setEnabled(source_ready && snapshot.output_target_available &&
                                    !snapshot.output_suspended);
     play_pause_action_->setText(active ? QStringLiteral("Pause") : QStringLiteral("Play"));
-    play_pause_action_->setIcon(
-        style()->standardIcon(active ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
+    if (transport_icon_playing_ != std::optional{active}) {
+        transport_icon_playing_ = active;
+        play_pause_action_->setIcon(
+            style()->standardIcon(active ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
+    }
     stop_action_->setEnabled(source_ready);
 
     if (snapshot.state == audio::LocalAuditionState::empty) {

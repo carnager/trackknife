@@ -292,6 +292,11 @@ class BenchMainWindow final : public QMainWindow {
 
     QAction* previous_action_{nullptr};
     QAction* play_pause_action_{nullptr};
+    // QAction::setIcon cannot compare icons, so it fires changed on every
+    // call — and each ActionChanged makes QToolButton::setDefaultAction add
+    // another connection. The 30 Hz transport refresh must therefore only
+    // touch the icon when the playing state actually flips.
+    std::optional<bool> transport_icon_playing_;
     QAction* stop_action_{nullptr};
     QAction* next_action_{nullptr};
     QAction* connect_mpd_action_{nullptr};
