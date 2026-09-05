@@ -1012,9 +1012,13 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   group value (per-album/per-disc), persisted as kind 17 through
   migration 26, interchanged as number_grouped_items, and offered in
   the script editor as "Number within each group".
+- Done: ADR-0114 qualifies Ogg Vorbis and Opus text writers, proving
+  preservation at the logical packet layer (every packet except the
+  comment packet byte-identical, decode-verified in tests) with the
+  shared text-writer core and paired totals enabled.
 - Next: the remaining open M5 capability decisions (sanitization and
-  Unicode normalization options, richer match dialects, further format
-  writers).
+  Unicode normalization options, richer match dialects, Musepack and
+  Monkey's Audio writers).
 
 ### Exit criteria
 

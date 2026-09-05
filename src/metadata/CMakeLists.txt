@@ -12,6 +12,8 @@ add_library(
     src/flac_writer.cpp
     src/apev2_trailer_detail.hpp
     src/mp3_writer.cpp
+    src/ogg_stream_detail.hpp
+    src/ogg_writer.cpp
     src/text_writer_detail.hpp
     src/wavpack_writer.cpp
     src/local_reader.cpp

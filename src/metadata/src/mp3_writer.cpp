@@ -5,6 +5,7 @@
 #include "apev2_trailer_detail.hpp"
 #include "text_writer_detail.hpp"
 #include "trackknife/metadata/local_reader.hpp"
+#include "trackknife/metadata/ogg_writer.hpp"
 #include "trackknife/metadata/wavpack_writer.hpp"
 
 #include <mpegfile.h>
@@ -324,12 +325,17 @@ prepare_qualified_metadata_write_copy(const MetadataWritePlanSource& source_plan
     if (source_plan.adapter_name == mp3_adapter) {
         return prepare_mp3_metadata_write_copy(source_plan, prepared_raw_path, cancellation);
     }
+    if (source_plan.adapter_name == "taglib-vorbis-v1" ||
+        source_plan.adapter_name == "taglib-opus-v1") {
+        return prepare_ogg_metadata_write_copy(source_plan, prepared_raw_path, cancellation);
+    }
     return prepare_flac_metadata_write_copy(source_plan, prepared_raw_path, cancellation);
 }
 
 bool is_qualified_text_adapter(const std::string_view adapter_name) {
     return adapter_name == "taglib-flac-v1" || adapter_name == "taglib-wavpack-v1" ||
-           adapter_name == mp3_adapter;
+           adapter_name == mp3_adapter || adapter_name == "taglib-vorbis-v1" ||
+           adapter_name == "taglib-opus-v1";
 }
 
 } // namespace trackknife::metadata

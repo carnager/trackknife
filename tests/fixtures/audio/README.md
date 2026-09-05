@@ -298,3 +298,26 @@ The binary SHA-256 is
 The MP3 writer qualification requires both tags to survive projection and
 the MPEG audio region to stay byte-identical through a prepared-copy tag
 write.
+
+## Tagged Ogg Vorbis and Opus fixtures
+
+`tagged-tone-vorbis.b64` (0.1 s 44.1 kHz mono 997 Hz sine, libvorbis q3) and
+`tagged-tone-opus.b64` (the same tone at 48 kHz, libopus 64k) carry stream
+tags `title=Fixture Tone` and `artist=Trackknife Project`, generated with
+FFmpeg n9.0.1:
+
+```sh
+ffmpeg -f lavfi -i "sine=frequency=997:duration=0.1:sample_rate=44100" \
+  -metadata:s:a:0 title="Fixture Tone" -metadata:s:a:0 artist="Trackknife Project" \
+  -c:a libvorbis -q:a 3 -bitexact tagged-tone.ogg
+ffmpeg -f lavfi -i "sine=frequency=997:duration=0.1:sample_rate=48000" \
+  -metadata:s:a:0 title="Fixture Tone" -metadata:s:a:0 artist="Trackknife Project" \
+  -c:a libopus -b:a 64k -bitexact tagged-tone.opus
+```
+
+Binary SHA-256:
+`9cdff810ef048cc51d455e8467d1df92868426e9b6de01cbe0a2e4ce67bae65d` (ogg),
+`89a2e4bdf0382fcd3b5bc9b6ef3afd395b735a1749deeca6738967e53bcef0ae` (opus).
+The Ogg writer qualification requires the reread tags to match the plan
+exactly and every logical packet except the comment packet to stay
+byte-identical through a prepared-copy tag write.

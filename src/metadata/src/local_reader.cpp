@@ -7,8 +7,10 @@
 #include <fileref.h>
 #include <flacfile.h>
 #include <mpegfile.h>
+#include <opusfile.h>
 #include <tfile.h>
 #include <tpropertymap.h>
+#include <vorbisfile.h>
 #include <wavpackfile.h>
 
 #include <algorithm>
@@ -78,6 +80,13 @@ constexpr std::size_t maximum_text_bytes = 4U * 1024U * 1024U;
     return first == 0xFFU && (second & 0xE0U) == 0xE0U;
 }
 
+[[nodiscard]] bool has_native_ogg_marker(const std::string& raw_path) {
+    std::ifstream input{std::filesystem::path{raw_path}, std::ios::binary};
+    std::array<char, 4> marker{};
+    return input.read(marker.data(), static_cast<std::streamsize>(marker.size())) &&
+           marker == std::array<char, 4>{'O', 'g', 'g', 'S'};
+}
+
 } // namespace
 
 core::Result<LocalMetadataRead> read_local_metadata(const std::string& raw_path,
@@ -107,6 +116,12 @@ core::Result<LocalMetadataRead> read_local_metadata(const std::string& raw_path,
     const bool native_mpeg = !native_flac && !native_wavpack &&
                              dynamic_cast<TagLib::MPEG::File*>(reference.file()) != nullptr &&
                              has_native_mpeg_marker(raw_path);
+    const bool native_vorbis = !native_flac && !native_wavpack && !native_mpeg &&
+                               dynamic_cast<TagLib::Vorbis::File*>(reference.file()) != nullptr &&
+                               has_native_ogg_marker(raw_path);
+    const bool native_opus = !native_flac && !native_wavpack && !native_mpeg && !native_vorbis &&
+                             dynamic_cast<TagLib::Ogg::Opus::File*>(reference.file()) != nullptr &&
+                             has_native_ogg_marker(raw_path);
     const auto properties = reference.file()->properties();
     if (cancellation.is_cancellation_requested()) {
         return std::unexpected(cancelled(raw_path));
@@ -202,7 +217,7 @@ core::Result<LocalMetadataRead> read_local_metadata(const std::string& raw_path,
     // does not block writes.
     const bool preservation_supported =
         (native_flac && document.unsupported_native_objects.empty()) || native_wavpack ||
-        native_mpeg;
+        native_mpeg || native_vorbis || native_opus;
     return LocalMetadataRead{
         .raw_path = raw_path,
         .source_revision = *revision_after,
@@ -210,11 +225,14 @@ core::Result<LocalMetadataRead> read_local_metadata(const std::string& raw_path,
         .adapter_name = native_flac      ? "taglib-flac-v1"
                         : native_wavpack ? "taglib-wavpack-v1"
                         : native_mpeg    ? "taglib-mpeg-v1"
+                        : native_vorbis  ? "taglib-vorbis-v1"
+                        : native_opus    ? "taglib-opus-v1"
                                          : "taglib-properties-v1",
         .capabilities =
             MetadataCapabilities{
                 .fields_readable = true,
-                .fields_writable = native_flac || native_wavpack || native_mpeg,
+                .fields_writable =
+                    native_flac || native_wavpack || native_mpeg || native_vorbis || native_opus,
                 .pictures_readable = native_flac,
                 .pictures_writable = native_flac,
                 .unknown_data_preserved_on_write = preservation_supported,

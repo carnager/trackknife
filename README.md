@@ -42,8 +42,8 @@ Local side:
 Tag writing is deliberately conservative. Writers exist only for formats where
 the result can be proven: after every write the audio bytes are compared
 against the original and the tags are reread and compared against the plan.
-Currently that covers FLAC, WavPack, and MP3 (ID3v2). Formats without that
-proof are read-only until they get one.
+Currently that covers FLAC, WavPack, MP3 (ID3v2), Ogg Vorbis, and Opus.
+Formats without that proof are read-only until they get one.
 
 Network filesystems are treated as first-class: publication and conversion
 degrade cleanly on NFS, sshfs, and FAT (no `RENAME_NOREPLACE`, no xattrs, no

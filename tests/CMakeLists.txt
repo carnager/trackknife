@@ -117,6 +117,17 @@ add_test(
     COMMAND trackknife_metadata_wavpack_writer_tests "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
 )
 
+add_executable(trackknife_metadata_ogg_writer_tests metadata_ogg_writer_test.cpp)
+target_link_libraries(
+    trackknife_metadata_ogg_writer_tests
+    PRIVATE Trackknife::Metadata Trackknife::Formats PkgConfig::TAGLIB trackknife_project_options
+            trackknife_project_warnings
+)
+add_test(
+    NAME metadata-ogg-writer
+    COMMAND trackknife_metadata_ogg_writer_tests "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
+)
+
 add_executable(trackknife_metadata_mp3_writer_tests metadata_mp3_writer_test.cpp)
 target_link_libraries(
     trackknife_metadata_mp3_writer_tests
