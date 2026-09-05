@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "bench/bench_main_window.hpp"
+#include "bench/local_library_panel.hpp"
 #include "bench/settings_dialog.hpp"
 
 #include "bench/bench_main_window_helpers.hpp"
@@ -18,6 +19,7 @@
 
 #include <QAbstractItemView>
 #include <QAction>
+#include <QComboBox>
 #include <QDir>
 #include <QFile>
 #include <QHeaderView>
@@ -95,6 +97,13 @@ void BenchMainWindow::initializePersistence() {
             }
         }
         restoreLists(std::move(workspace.lists));
+        if (error.isEmpty()) {
+            local_library_ = new LocalLibraryPanel(database_path_, source_stack_);
+            source_stack_->addWidget(local_library_);
+            connect(local_library_, &LocalLibraryPanel::pathsRequested, this,
+                    &BenchMainWindow::openLocalPaths);
+            refreshActiveContext();
+        }
         autoConnectMpd();
         startMetadataOperationRecovery();
     });
@@ -495,22 +504,32 @@ void BenchMainWindow::refreshActiveContext() {
     const auto context_changed = property("trackknife-active-authority").toString() != authority;
     setProperty("trackknife-active-authority", authority);
     if (source_stack_ != nullptr) {
-        auto* source =
-            mpd ? static_cast<QWidget*>(server_library_view_) : static_cast<QWidget*>(folder_view_);
+        auto* source = mpd ? static_cast<QWidget*>(server_library_view_)
+                       : local_source_selector_ != nullptr &&
+                               local_source_selector_->currentIndex() == 1 &&
+                               local_library_ != nullptr
+                           ? static_cast<QWidget*>(local_library_)
+                           : static_cast<QWidget*>(folder_view_);
         if (source != nullptr) {
             source_stack_->setCurrentWidget(source);
         }
     }
     if (source_heading_ != nullptr) {
         source_heading_->setText(mpd ? QStringLiteral("MPD Library") : QStringLiteral("Folders"));
+        source_heading_->setVisible(mpd);
+        if (local_source_selector_ != nullptr) {
+            local_source_selector_->setVisible(!mpd);
+        }
         if (library_order_az_ != nullptr && library_order_latest_ != nullptr) {
             library_order_az_->setVisible(mpd);
             library_order_latest_->setVisible(mpd);
         }
     }
     if (folder_bookmarks_ != nullptr) {
-        folder_bookmarks_->setVisible(!mpd && folder_bookmarks_->count() > 0);
-        folder_bookmarks_heading_->setVisible(!mpd && folder_bookmarks_->count() > 0);
+        const auto folders_visible = !mpd && (local_source_selector_ == nullptr ||
+                                              local_source_selector_->currentIndex() == 0);
+        folder_bookmarks_->setVisible(folders_visible && folder_bookmarks_->count() > 0);
+        folder_bookmarks_heading_->setVisible(folders_visible && folder_bookmarks_->count() > 0);
     }
     if (connect_mpd_action_ != nullptr) {
         connect_mpd_action_->setEnabled(!mpd_controller_->busy());

@@ -73,6 +73,9 @@ class ConvertDialog final : public QDialog {
                            ConvertPresetStore preset_store = {}, QWidget* parent = nullptr);
     ~ConvertDialog() override;
 
+  signals:
+    void filesConverted();
+
   protected:
     void closeEvent(QCloseEvent* event) override;
 

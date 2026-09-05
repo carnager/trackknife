@@ -9,6 +9,12 @@ The ordered delivery plan is [`../MILESTONES.md`](../MILESTONES.md).
 
 ## Current continuation point
 
+ADR-0115 adds the optional [local music library](local-library.md), with
+migration 28, a Qt-free index/query service, and a bounded background Library
+panel beside Folders. Physical-file browsing/search and offline retention are
+implemented; logical-title indexing and autoplaylists remain future work.
+The following milestone history predates this requested workspace addition.
+
 M5 is closing into M6, implementation is accepted through ADR-0114, and the persistence
 schema is version 27. In-app MusicBrainz identification is end-to-end: Properties'
 Identify… opens a no-id text-search dialog whose ranked rows are individual
@@ -168,6 +174,8 @@ retired in ADR-0071.
 9. [`replaygain.md`](replaygain.md) — analysis, storage, playback, and conversion.
 10. [`playback-library-conversion.md`](playback-library-conversion.md) — remote/
    local playback, server library, lists, conversion, and integrity tools.
+   [`local-library.md`](local-library.md) specifies the optional indexed local
+   collection and its refresh/availability rules.
 11. [`query-language.md`](query-language.md) — deferred deeper search and
    autoplaylist design.
 12. [`architecture.md`](architecture.md) — subsystem boundaries and

@@ -98,6 +98,8 @@ class QueueTableViewTest final : public QObject {
   private slots:
     void preGroupedBatchReservesHeaderAboveFirstTrack();
     void homeAndEndSelectQueueBoundaries();
+    void shiftHomeAndEndExtendFromSelectionAnchor();
+    void boundaryKeysHandleEmptyQueue();
     void handledDropRestoresRowsAndShowsExactInsertionTarget();
     void typedMoveDoesNotAskModelToRemoveSourceRows();
 };
@@ -125,6 +127,64 @@ void QueueTableViewTest::homeAndEndSelectQueueBoundaries() {
     QCOMPARE(view.currentIndex().column(), track_title_column);
     QCOMPARE(view.selectionModel()->selectedRows().size(), 1);
     QCOMPARE(view.selectionModel()->selectedRows().front().row(), 4);
+}
+
+void QueueTableViewTest::shiftHomeAndEndExtendFromSelectionAnchor() {
+    QueueTableView view{nullptr};
+    CueBatchModel model;
+    model.appendCueAlbum(50);
+    view.setModel(&model);
+    view.setSelectionBehavior(QAbstractItemView::SelectRows);
+    view.setSelectionMode(QAbstractItemView::ExtendedSelection);
+    view.resize(640, 360);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    view.setFocus();
+
+    const auto expect_range = [&](const int first, const int last, const int current) {
+        QCOMPARE(view.currentIndex(), model.index(current, track_title_column));
+        QCOMPARE(view.selectionModel()->selectedRows().size(), last - first + 1);
+        for (int row = first; row <= last; ++row) {
+            QVERIFY(view.selectionModel()->isRowSelected(row, {}));
+        }
+        QVERIFY(view.viewport()->rect().intersects(view.visualRect(view.currentIndex())));
+    };
+
+    const auto anchor = model.index(4, track_title_column);
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier,
+                      view.visualRect(anchor).center());
+    QTest::keyClick(&view, Qt::Key_Home, Qt::ShiftModifier);
+    expect_range(0, 4, 0);
+    QTest::keyClick(&view, Qt::Key_Down, Qt::ShiftModifier);
+    expect_range(1, 4, 1);
+    QTest::keyClick(&view, Qt::Key_End, Qt::ShiftModifier);
+    expect_range(4, 49, 49);
+    QTest::keyClick(&view, Qt::Key_Up, Qt::ShiftModifier);
+    expect_range(4, 48, 48);
+    QTest::keyClick(&view, Qt::Key_Home, Qt::ShiftModifier);
+    expect_range(0, 4, 0);
+
+    QTest::keyClick(&view, Qt::Key_End);
+    expect_range(49, 49, 49);
+    QTest::keyClick(&view, Qt::Key_Home, Qt::ShiftModifier);
+    expect_range(0, 49, 0);
+
+    QTest::keyClick(&view, Qt::Key_Down);
+    expect_range(1, 1, 1);
+    QTest::keyClick(&view, Qt::Key_End, Qt::ShiftModifier);
+    expect_range(1, 49, 49);
+}
+
+void QueueTableViewTest::boundaryKeysHandleEmptyQueue() {
+    QueueTableView view{nullptr};
+    CueBatchModel model;
+    view.setModel(&model);
+    for (const auto key : {Qt::Key_Home, Qt::Key_End}) {
+        QTest::keyClick(&view, key);
+        QTest::keyClick(&view, key, Qt::ShiftModifier);
+        QVERIFY(!view.currentIndex().isValid());
+        QVERIFY(view.selectionModel()->selectedRows().isEmpty());
+    }
 }
 
 void QueueTableViewTest::preGroupedBatchReservesHeaderAboveFirstTrack() {

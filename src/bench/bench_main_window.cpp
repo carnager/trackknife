@@ -2,6 +2,7 @@
 
 #include "bench/bench_main_window.hpp"
 
+#include "bench/local_library_panel.hpp"
 #include "bench/metadata_properties_dialog.hpp"
 #include "trackknife/audio/local_audition.hpp"
 
@@ -30,6 +31,9 @@ extern "C" void __tsan_acquire(void* address);
 namespace trackknife::bench {
 
 void BenchMainWindow::stopBackgroundWork() {
+    if (local_library_ != nullptr) {
+        local_library_->stop();
+    }
     probe_cancellation_.request_cancellation();
     metadata_operation_cancellation_.request_cancellation();
     probe_queue_.clear();

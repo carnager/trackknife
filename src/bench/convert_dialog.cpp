@@ -726,6 +726,9 @@ void ConvertDialog::finishConversion() {
         return;
     }
     const auto& result = **outcome;
+    if (result.converted_count() > 0U) {
+        emit filesConverted();
+    }
     QStringList problems;
     for (const auto& item : result.items) {
         if (item.state == convert::ConversionScanState::failed && item.issue) {

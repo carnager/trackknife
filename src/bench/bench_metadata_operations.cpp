@@ -4,6 +4,7 @@
 
 #include "bench/bench_main_window_helpers.hpp"
 #include "bench/convert_dialog.hpp"
+#include "bench/local_library_panel.hpp"
 #include "bench/metadata_properties_dialog.hpp"
 #include "bench/musicbrainz_fetch_service.hpp"
 #include "bench/preparation_feedback_dialog.hpp"
@@ -348,6 +349,11 @@ void BenchMainWindow::showConvertDialog() {
                 },
         },
         this);
+    connect(dialog, &ConvertDialog::filesConverted, this, [this] {
+        if (local_library_ != nullptr) {
+            local_library_->refreshLibrary();
+        }
+    });
     dialog->show();
 }
 
@@ -849,6 +855,9 @@ void BenchMainWindow::startMetadataOperationRecovery() {
 }
 
 void BenchMainWindow::applyCommittedMetadata(const operations::MetadataCommitResult& result) {
+    if (local_library_ != nullptr) {
+        local_library_->refreshLibrary();
+    }
     for (auto& tab : list_tabs_) {
         auto applied = tab->model->applyCommittedMetadata(result.source_raw_path, result.document,
                                                           result.published_revision);
@@ -866,6 +875,9 @@ void BenchMainWindow::applyCommittedMetadata(const operations::MetadataCommitRes
 
 void BenchMainWindow::applyCommittedRelocation(
     const operations::FilePublicationCommitResult& result) {
+    if (local_library_ != nullptr) {
+        local_library_->refreshLibrary();
+    }
     for (auto& tab : list_tabs_) {
         auto applied =
             tab->model->applyCommittedRelocation(result.source_raw_path, result.target_raw_path,

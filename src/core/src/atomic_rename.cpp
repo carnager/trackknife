@@ -21,8 +21,8 @@ namespace {
                                   const int saved_errno, const std::string& target_name) {
     return Error{
         .code = code,
-        .message = operation + " failed: " +
-                   std::error_code{saved_errno, std::generic_category()}.message(),
+        .message = operation +
+                   " failed: " + std::error_code{saved_errno, std::generic_category()}.message(),
         .context = {{.key = "target", .value = target_name},
                     {.key = "errno", .value = std::to_string(saved_errno)}},
     };

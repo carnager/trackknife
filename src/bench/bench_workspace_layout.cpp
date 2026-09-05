@@ -17,6 +17,7 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QButtonGroup>
+#include <QComboBox>
 #include <QDir>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -99,6 +100,17 @@ void BenchMainWindow::buildWorkspace() {
     heading_row->setContentsMargins(4, 0, 4, 0);
     heading_row->setSpacing(2);
     heading_row->addWidget(source_heading_, 1);
+    local_source_selector_ = new QComboBox(folders_panel_);
+    local_source_selector_->setObjectName(QStringLiteral("bench-local-source-selector"));
+    local_source_selector_->setAccessibleName(QStringLiteral("Local music source"));
+    local_source_selector_->addItems({QStringLiteral("Folders"), QStringLiteral("Library")});
+    local_source_selector_->setCurrentIndex(
+        QSettings{}.value(QStringLiteral("local-library/view"), 0).toInt() == 1 ? 1 : 0);
+    heading_row->addWidget(local_source_selector_);
+    connect(local_source_selector_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        QSettings{}.setValue(QStringLiteral("local-library/view"), index);
+        refreshActiveContext();
+    });
     const auto make_order_button = [this](const QString& label, const QString& name) {
         auto* button = new QToolButton(folders_panel_);
         button->setText(label);

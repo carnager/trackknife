@@ -28,6 +28,17 @@ retired once Trackbench reached parity (ADR-0071).
 Only one milestone is normally active. Preparatory work is allowed when it
 removes a real dependency, but moving on never disguises a failed gate.
 
+### Requested workspace addition — optional local library (ADR-0115)
+
+M5 remains active. At the user's request, local context now offers an optional
+Library source beside Folders: chosen roots, background incremental indexing,
+paged artist/album browsing and album/track search, unavailable-file retention,
+and automatic refresh. Migration 28 joins index metadata/path updates to the
+existing list/cache transaction. Real-file and UI verification is recorded in
+[`docs/local-library.md`](docs/local-library.md). This supersedes the historical
+“no local index for now” scope below; autoplaylists and logical-title indexing
+remain future work.
+
 ## Rules applying to every milestone
 
 - Keep the core independent of Qt UI types.

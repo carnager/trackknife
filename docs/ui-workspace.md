@@ -2,6 +2,11 @@
 
 ## Application scope
 
+ADR-0115 adds a local source selector with **Folders** and **Library**. Folders
+keeps direct navigation and bookmarks; Library provides optional indexed
+artist/album browsing and album/track search. MPD context hides the local source
+selector and retains the server library. See [local-library.md](local-library.md).
+
 Per ADR-0058 these surfaces share one Trackbench shell while retaining distinct
 authorities. Selecting **MPD Queue** binds the sidebar, transport, and output
 selector to MPD; selecting **Local Queue** or another local list binds them to
@@ -117,6 +122,10 @@ The initial workspace is intentionally conventional:
   retains the stronger system highlight. Clicking an album header selects every
   contiguous track represented by that header. Unmodified `Home` and `End`
   select and reveal the first and last queue occurrence respectively.
+  `Shift+Home` and `Shift+End` extend the selection from its existing anchor
+  to that boundary. Reversing direction or continuing with Shift+arrow keys
+  retains the anchor; plain navigation starts a new selection. This behavior
+  is shared by MPD and local track lists.
 - In MPD context the row menu repeats play, append, add-next, remove, crop, and
   advertised priority choices for the current selection. Priority labels expose
   their numeric MPD values and mark a uniform selected value.

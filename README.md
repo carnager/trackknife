@@ -29,6 +29,10 @@ With MPD, you can:
 
 For local files, there's:
 
+- An optional music library: choose your folders, browse by artist and album,
+  or search for albums and tracks. It updates in the background and remembers
+  your collection when a drive is disconnected. Direct folder browsing still
+  works without setting up a library.
 - Gapless playback through PipeWire, tabs that survive restarts, and a folder
   browser with bookmarks. Cue sheet tracks and subsongs appear as individual
   tracks.

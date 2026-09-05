@@ -632,19 +632,21 @@ int QueueTableView::resolvedDropInsertionRow(const QPoint& position) const {
     return position.y() >= content_top + content_height / 2 ? hovered.row() + 1 : hovered.row();
 }
 
-void QueueTableView::keyPressEvent(QKeyEvent* event) {
-    if ((event->key() == Qt::Key_Home || event->key() == Qt::Key_End) &&
-        event->modifiers() == Qt::NoModifier && model() != nullptr && model()->rowCount() > 0 &&
-        model()->columnCount() > 0) {
-        const auto row = event->key() == Qt::Key_Home ? 0 : model()->rowCount() - 1;
+QModelIndex QueueTableView::moveCursor(const CursorAction action,
+                                       const Qt::KeyboardModifiers modifiers) {
+    if ((action == MoveHome || action == MoveEnd) &&
+        (modifiers == Qt::NoModifier || modifiers == Qt::ShiftModifier) && model() != nullptr &&
+        model()->rowCount() > 0 && model()->columnCount() > 0) {
+        // Change the destination only; Qt owns range selection, its anchor,
+        // and scrolling for both plain and Shift-modified navigation.
+        const auto row = action == MoveHome ? 0 : model()->rowCount() - 1;
         const auto column = currentIndex().isValid() ? currentIndex().column() : 0;
-        const auto target = model()->index(row, std::clamp(column, 0, model()->columnCount() - 1));
-        selectionModel()->setCurrentIndex(target, QItemSelectionModel::ClearAndSelect |
-                                                      QItemSelectionModel::Rows);
-        scrollTo(target);
-        event->accept();
-        return;
+        return model()->index(row, std::clamp(column, 0, model()->columnCount() - 1));
     }
+    return QTableView::moveCursor(action, modifiers);
+}
+
+void QueueTableView::keyPressEvent(QKeyEvent* event) {
     if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) &&
         event->modifiers() == Qt::NoModifier && currentIndex().isValid() && activate_callback_) {
         activate_callback_(currentIndex());

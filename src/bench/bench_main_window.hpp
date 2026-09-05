@@ -31,6 +31,7 @@
 #include <vector>
 
 class QActionGroup;
+class QComboBox;
 class QDialog;
 class QLabel;
 class QListWidget;
@@ -68,6 +69,7 @@ namespace trackknife::bench {
 
 struct MetadataOperationJobOutcome;
 class MusicBrainzFetchService;
+class LocalLibraryPanel;
 
 // Trackknife main window: composed Folders/Track Lists panels, configurable
 // local working-list views, and one transport over the serialized playback worker
@@ -259,6 +261,8 @@ class BenchMainWindow final : public QMainWindow {
     std::unique_ptr<audio::LocalAuditionService> player_storage_;
 
     ui::LocalFolderTreeModel* folder_model_{nullptr};
+    LocalLibraryPanel* local_library_{nullptr};
+    QComboBox* local_source_selector_{nullptr};
     QTreeView* folder_view_{nullptr};
     quick::MpdProbeController* mpd_controller_{nullptr};
     ui::ServerLibraryTreeModel* server_library_model_{nullptr};

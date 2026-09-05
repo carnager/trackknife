@@ -173,8 +173,9 @@ Export. Other container writers and configurable export naming remain open.
 
 ## Deferred
 
-- Whether a local-tool-owned library index is ever needed ("no database for
-  now, maybe later").
+- Resolved by ADR-0115: the user requested an optional local library over chosen
+  folders. Deeper local queries, autoplaylists, and logical-track indexing remain
+  future work.
 - Cross-authority conveniences: opening a mapped server item as an explicit
   local source and offering an explicit MPD database update after publication.
 - Deeper query/autoplaylist language.

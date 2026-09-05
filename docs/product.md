@@ -28,9 +28,9 @@ collection: audition it, group it by album, identify and tag it with
 MusicBrainz support, analyze ReplayGain, convert or resample it, and publish
 it into an organized destination. The key inspiration is still
 foobar2000, but with the tabbed working-list approach and a primary focus on
-performance and user experience. It maintains no library database for now;
-it grows from direct filesystem navigation, and an index may be reconsidered
-later if real use demands it.
+performance and user experience. Direct filesystem navigation works without
+setup. ADR-0115 adds an optional local library over user-chosen folders for
+artist/album browsing and collection-wide search.
 
 Both authorities share internal libraries — the `tkfmt-1` expression engine,
 the FFmpeg decode boundary, the bounded playback core, the PipeWire adapter,
@@ -107,8 +107,8 @@ is deliberately after both authority backbones are proven.
 - MPD is authoritative for its database, current queue, stored playlists,
   transport, and outputs. The MPD client is one of potentially several
   connected clients and reconciles server truth.
-- Trackbench speaks MPD only through the MPD authority. It maintains no local
-  library database for now and never implies MPD membership for a local file.
+- Trackbench speaks MPD only through the MPD authority. Its optional local
+  library is a file-metadata cache and never implies MPD membership for a file.
 - Queue/list tabs remain first-class persistent work surfaces in both
   authorities.
 - Local paths remain raw OS paths internally and need not be valid UTF-8.

@@ -75,6 +75,7 @@ class QueueTableView final : public QTableView {
 
   protected:
     void rowsInserted(const QModelIndex& parent, int start, int end) override;
+    QModelIndex moveCursor(CursorAction action, Qt::KeyboardModifiers modifiers) override;
     void keyPressEvent(QKeyEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void startDrag(Qt::DropActions supported_actions) override;

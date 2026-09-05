@@ -437,6 +437,15 @@ if(TRACKKNIFE_BUILD_UI)
     set_tests_properties(server-library-tree-model PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     qt_add_executable(trackknife_bench_main_window_tests bench_main_window_test.cpp)
+    qt_add_executable(trackknife_local_library_tests local_library_test.cpp)
+    target_compile_definitions(trackknife_local_library_tests PRIVATE
+        TRACKKNIFE_AUDIO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
+        TRACKKNIFE_MIGRATION_DIR="${PROJECT_SOURCE_DIR}/src/persistence/migrations")
+    target_link_libraries(trackknife_local_library_tests PRIVATE Trackknife::BenchUi
+        Qt6::Test PkgConfig::TAGLIB PkgConfig::SQLITE3 trackknife_project_options trackknife_project_warnings)
+    add_test(NAME local-library COMMAND trackknife_local_library_tests)
+    set_tests_properties(local-library PROPERTIES TIMEOUT 60 ENVIRONMENT
+        "QT_QPA_PLATFORM=offscreen;LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
     if(TRACKKNIFE_ENABLE_THREAD_SANITIZER)
         target_sources(
             trackknife_bench_main_window_tests

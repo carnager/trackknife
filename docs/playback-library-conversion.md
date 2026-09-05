@@ -1,5 +1,10 @@
 # Playback, server library, working lists, conversion, and verification
 
+ADR-0058 unifies the authorities in Trackbench. ADR-0115 adds the optional
+[local library](local-library.md): chosen folders, background indexing,
+artist/album browsing, album and track search, and retained unavailable files.
+Older descriptions of a permanent process split below are historical.
+
 ## Application scope
 
 Since ADR-0025 the repository builds two applications. Server playback and the
@@ -186,7 +191,9 @@ Local files enter Trackbench through open, drag/drop, command-line arguments,
 and working tabs. They can also be reached through its folder browser, which
 lazily browses explicitly selected filesystem roots rather than importing them
 into a collection database. Local metadata reads are job-backed, bounded, and
-cached only as needed by current views, lists, and operations.
+cached only as needed by current views, lists, and operations. Users may also
+opt into the separately configured ADR-0115 local library; ordinary folder
+browsing never enrolls a directory in that index automatically.
 
 ### Metadata cache and large fields
 

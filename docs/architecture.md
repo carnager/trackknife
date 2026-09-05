@@ -92,8 +92,14 @@ Local source --> playback: FFmpeg --> gain/DSP --> PipeWire
 
 MPD is the primary library and live-queue authority for its context. Trackbench
 persists authority-qualified profiles, workspace/list state, presets, jobs, and
-journals in SQLite. Neither store becomes a mandatory mirror of the MPD
-database or a local library index.
+journals in SQLite. ADR-0115 adds an optional local-library index in that store;
+it is a rebuildable file-metadata cache and never mirrors the MPD database.
+
+`persistence::LocalLibrary` owns folder configuration, revision-based scanning,
+and bounded artist/album/track queries without Qt types. The Library panel
+uses two bounded workers so queries can run alongside scanning. Metadata and
+relocation transactions call its index-refresh helper before committing list
+and cache state. See [local-library.md](local-library.md).
 
 ## Suggested modules
 
@@ -454,5 +460,5 @@ combining their queues or controllers:
 8. Melody endpoint in Trackbench's MPD authority; hardening and packaging
    (the compatibility shell was retired in ADR-0071).
 
-Do not build a local library index, plugin SDK, or elaborate theme system
-before both authority experiences are excellent.
+ADR-0115 authorizes the optional local library. A plugin SDK and elaborate
+theme system remain deferred until both authority experiences are excellent.

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "trackknife/persistence/list_repository.hpp"
+#include "trackknife/persistence/local_library.hpp"
 
 #include <sqlite3.h>
 
@@ -21,7 +22,7 @@
 namespace trackknife::persistence {
 namespace {
 
-constexpr unsigned current_schema_version = 27U;
+constexpr unsigned current_schema_version = 28U;
 constexpr std::size_t maximum_documents = 1'024U;
 constexpr std::size_t maximum_items_per_document = 1'000'000U;
 constexpr std::size_t maximum_fields_per_item = 4'096U;
@@ -854,6 +855,28 @@ read_optional_revision(sqlite3_stmt* statement, const int first,
             "lossless INTEGER NOT NULL CHECK(lossless IN (0, 1)), "
             "bit_rate INTEGER, vbr_quality INTEGER, sample_format_hint BLOB NOT NULL);"
             "UPDATE schema_version SET version = 27;";
+        if (auto result = execute(database, migration); !result) {
+            rollback();
+            return result;
+        }
+    }
+    if (version <= 27) {
+        constexpr auto migration =
+            "CREATE TABLE local_library_roots (raw_path BLOB PRIMARY KEY NOT NULL, "
+            "available INTEGER NOT NULL DEFAULT 0 CHECK(available IN (0,1)), "
+            "error TEXT NOT NULL DEFAULT '', scan_token TEXT NOT NULL DEFAULT '');"
+            "CREATE TABLE local_library_tracks (raw_path BLOB PRIMARY KEY NOT NULL, "
+            "root BLOB NOT NULL REFERENCES local_library_roots(raw_path) ON DELETE CASCADE, "
+            "revision TEXT NOT NULL, title TEXT NOT NULL, artist TEXT NOT NULL, "
+            "album TEXT NOT NULL, album_key TEXT NOT NULL, release_id TEXT NOT NULL, "
+            "date TEXT NOT NULL, disc INTEGER NOT NULL, track INTEGER NOT NULL, "
+            "search_track TEXT NOT NULL, search_album TEXT NOT NULL, "
+            "available INTEGER NOT NULL CHECK(available IN (0,1)), seen TEXT NOT NULL);"
+            "CREATE INDEX local_library_artist ON "
+            "local_library_tracks(artist,album_key,disc,track);"
+            "CREATE INDEX local_library_album ON local_library_tracks(album_key,disc,track);"
+            "CREATE INDEX local_library_root ON local_library_tracks(root,seen);"
+            "UPDATE schema_version SET version = 28;";
         if (auto result = execute(database, migration); !result) {
             rollback();
             return result;
@@ -2200,6 +2223,12 @@ ListRepository::refresh_local_metadata(const LocalMetadataRefresh& refresh) {
         rollback();
         return std::unexpected(std::move(result.error()));
     }
+    if (auto result = refresh_library_source(database, refresh.source_reference,
+                                             refresh.source_reference, &refresh.document);
+        !result) {
+        rollback();
+        return std::unexpected(std::move(result.error()));
+    }
     if (auto result = execute(database, "COMMIT"); !result) {
         rollback();
         return std::unexpected(std::move(result.error()));
@@ -2772,6 +2801,13 @@ ListRepository::relocate_local_source(const LocalSourceRelocation& relocation) {
         !stored) {
         rollback();
         return std::unexpected(std::move(stored.error()));
+    }
+    if (auto result = refresh_library_source(
+            database, relocation.source_reference, relocation.target_reference,
+            relocation.published_document ? &*relocation.published_document : nullptr);
+        !result) {
+        rollback();
+        return std::unexpected(std::move(result.error()));
     }
     if (auto committed = execute(database, "COMMIT"); !committed) {
         rollback();
