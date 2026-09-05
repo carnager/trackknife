@@ -208,7 +208,7 @@ class BenchMainWindow final : public QMainWindow {
     void openFolderDialog();
     void addFolderRoot();
     void startDiscovery(std::vector<std::string> raw_paths, QString target_document_id,
-                        int insertion_row);
+                        int insertion_row, bool replace_and_play = false);
     void finishDiscovery();
 
     struct DiscoveryOutcome {
@@ -395,6 +395,9 @@ class BenchMainWindow final : public QMainWindow {
     QFutureWatcher<DiscoveryOutcome> discovery_watcher_;
     QString discovery_target_document_;
     int discovery_insertion_row_{-1};
+    QPersistentModelIndex discovery_insertion_anchor_;
+    bool discovery_anchored_{false};
+    bool discovery_replace_and_play_{false};
     bool discovery_running_{false};
 
     QFutureWatcher<std::vector<ProbeOutcome>> probe_watcher_;

@@ -21,6 +21,7 @@ class QUrl;
 namespace trackknife::ui {
 
 class QueueTableViewTest;
+class LocalFilesMimeData;
 
 // Track-list view with album-header selection, Enter activation, and typed
 // drag/drop callbacks. Drops are executed by the owning window's callbacks —
@@ -61,6 +62,7 @@ class QueueTableView final : public QTableView {
         std::function<bool(QAbstractItemView*, const QVariantList&, int, Qt::DropAction)> callback);
     void setActivateCallback(std::function<void(const QModelIndex&)> callback);
     void setLocalUrlDropCallback(std::function<bool(const QList<QUrl>&, int)> callback);
+    void setLocalFilesDropCallback(std::function<bool(const LocalFilesMimeData&, int)> callback);
 
     // Maps a drop position to the row content should be inserted before.
     // Above/on the hovered row inserts before it, below inserts after it, and
@@ -104,6 +106,7 @@ class QueueTableView final : public QTableView {
     std::function<bool(QAbstractItemView*, const QVariantList&, int, Qt::DropAction)>
         external_drop_callback_;
     std::function<bool(const QList<QUrl>&, int)> local_url_drop_callback_;
+    std::function<bool(const LocalFilesMimeData&, int)> local_files_drop_callback_;
     std::function<void(const QModelIndex&)> activate_callback_;
     std::function<Qt::DropAction(QDrag*, Qt::DropActions, Qt::DropAction)>
         drag_executor_for_testing_;

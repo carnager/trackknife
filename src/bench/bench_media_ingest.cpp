@@ -672,7 +672,7 @@ void BenchMainWindow::openLocalPaths(std::vector<std::string> raw_paths) {
 }
 
 void BenchMainWindow::startDiscovery(std::vector<std::string> raw_paths, QString target_document_id,
-                                     const int insertion_row) {
+                                     const int insertion_row, const bool replace_and_play) {
     if (discovery_running_) {
         statusBar()->showMessage(QStringLiteral("A folder scan is already running"), 3'000);
         return;
@@ -680,6 +680,10 @@ void BenchMainWindow::startDiscovery(std::vector<std::string> raw_paths, QString
     discovery_running_ = true;
     discovery_target_document_ = std::move(target_document_id);
     discovery_insertion_row_ = insertion_row;
+    const auto* target = tabForDocument(discovery_target_document_);
+    discovery_insertion_anchor_ = target ? target->model->index(insertion_row, 0) : QModelIndex{};
+    discovery_anchored_ = discovery_insertion_anchor_.isValid();
+    discovery_replace_and_play_ = replace_and_play;
     connect(&discovery_watcher_, &QFutureWatcher<DiscoveryOutcome>::finished, this,
             &BenchMainWindow::finishDiscovery, Qt::SingleShotConnection);
     discovery_watcher_.setFuture(QtConcurrent::run([paths = std::move(raw_paths),
@@ -794,14 +798,18 @@ void BenchMainWindow::finishDiscovery() {
     discovery_running_ = false;
     auto result = discovery_watcher_.result();
     auto* tab = tabForDocument(discovery_target_document_);
-    if (tab == nullptr) {
-        tab = currentListTab();
-    }
-    if (tab == nullptr) {
+    if (tab == nullptr || (discovery_anchored_ && !discovery_insertion_anchor_.isValid())) {
         return;
     }
-    if (!result.rows.empty()) {
-        tab->model->appendRows(std::move(result.rows), discovery_insertion_row_);
+    if (!result.rows.empty() && (!discovery_replace_and_play_ || !result.cancelled)) {
+        if (discovery_replace_and_play_) {
+            tab->model->replaceRows(std::move(result.rows));
+            playRow(*tab, 0);
+        } else {
+            tab->model->appendRows(std::move(result.rows), discovery_anchored_
+                                                               ? discovery_insertion_anchor_.row()
+                                                               : discovery_insertion_row_);
+        }
         markTabDirty(*tab);
         enqueueUnprobedRows(*tab);
         syncArtwork(*tab);

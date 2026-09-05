@@ -13,14 +13,17 @@
 
 namespace trackknife::ui {
 
-// Shared server-library presentation used by both the compatibility client and
-// Trackknife's MPD authority. The three inline actions are append, add next,
-// and replace-and-play, in that order.
+// Shared library interaction and presentation. MPD defaults can be overridden
+// with local labels, availability, and row presentation without sharing authority.
+// The three inline actions are append, add next, and replace-and-play.
 class ServerLibraryTreeView final : public QTreeView {
   public:
     explicit ServerLibraryTreeView(QWidget* parent = nullptr);
 
     void setActionCallback(std::function<void(const QModelIndex&, int)> callback);
+    void setActionLabels(std::array<QString, 3> labels);
+    void setActionsAvailable(std::function<bool(const QModelIndex&)> available);
+    [[nodiscard]] bool actionsAvailable(const QModelIndex& index) const;
 
     [[nodiscard]] QModelIndex hoverIndex() const;
     [[nodiscard]] int hoverAction() const noexcept;
@@ -52,11 +55,22 @@ class ServerLibraryTreeView final : public QTreeView {
     bool pressed_expanded_{false};
     bool drag_started_{false};
     std::function<void(const QModelIndex&, int)> action_callback_;
+    std::function<bool(const QModelIndex&)> actions_available_;
+    std::array<QString, 3> action_labels_{QStringLiteral("Append to live queue"),
+                                          QStringLiteral("Insert next in live queue"),
+                                          QStringLiteral("Replace queue and play")};
 };
 
 class ServerLibraryTreeDelegate final : public QStyledItemDelegate {
   public:
-    ServerLibraryTreeDelegate(ServerLibraryTreeView* view, std::array<QIcon, 3> action_icons);
+    struct Presentation {
+        bool track{false};
+        bool album{false};
+        bool root{false};
+        QString secondary;
+    };
+    ServerLibraryTreeDelegate(ServerLibraryTreeView* view, std::array<QIcon, 3> action_icons,
+                              std::function<Presentation(const QModelIndex&)> presentation = {});
 
     [[nodiscard]] QSize sizeHint(const QStyleOptionViewItem& option,
                                  const QModelIndex& index) const override;
@@ -66,6 +80,7 @@ class ServerLibraryTreeDelegate final : public QStyledItemDelegate {
   private:
     ServerLibraryTreeView* view_;
     std::array<QIcon, 3> action_icons_;
+    std::function<Presentation(const QModelIndex&)> presentation_;
 };
 
 } // namespace trackknife::ui

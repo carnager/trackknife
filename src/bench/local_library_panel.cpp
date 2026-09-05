@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "bench/local_library_panel.hpp"
+#include "ui/server_library_tree_view.hpp"
+#include "uicommon/local_files_mime_data.hpp"
 
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -14,12 +16,15 @@
 #include <QMenu>
 #include <QPushButton>
 #include <QStandardItemModel>
+#include <QStyle>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeView>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
 
+#include <algorithm>
+#include <unordered_set>
 #include <utility>
 
 namespace trackknife::bench {
@@ -36,6 +41,74 @@ QByteArray entryKey(const persistence::LibraryEntry& entry) {
     return QByteArray::number(static_cast<int>(entry.kind)) + ':' +
            QByteArray::fromStdString(entry.key);
 }
+
+std::array<QIcon, 3> libraryActionIcons(const QWidget* widget) {
+    return {QIcon::fromTheme(QStringLiteral("list-add"),
+                             widget->style()->standardIcon(QStyle::SP_DialogOpenButton)),
+            QIcon::fromTheme(QStringLiteral("go-next"),
+                             widget->style()->standardIcon(QStyle::SP_ArrowRight)),
+            QIcon::fromTheme(QStringLiteral("media-playback-start"),
+                             widget->style()->standardIcon(QStyle::SP_MediaPlay))};
+}
+std::vector<persistence::LibraryEntry> selectedEntries(QModelIndexList indexes) {
+    if (indexes.size() > 1'000) {
+        return {};
+    }
+    // Tree order, independent of Ctrl-click order. Parent selections subsume
+    // selected descendants; search album/track overlap is deduplicated by path.
+    const auto position = [](QModelIndex index) {
+        std::vector<int> rows;
+        while (index.isValid()) {
+            rows.push_back(index.row());
+            index = index.parent();
+        }
+        std::ranges::reverse(rows);
+        return rows;
+    };
+    std::ranges::sort(indexes,
+                      [&](const auto& a, const auto& b) { return position(a) < position(b); });
+    std::vector<persistence::LibraryEntry> entries;
+    for (const auto& index : indexes) {
+        if (index.column() != 0 || !index.data(entry_role).isValid()) {
+            continue;
+        }
+        bool covered = false;
+        for (auto parent = index.parent(); parent.isValid(); parent = parent.parent()) {
+            if (indexes.contains(parent) && parent.data(entry_role).isValid()) {
+                covered = true;
+                break;
+            }
+        }
+        if (!covered) {
+            entries.push_back(index.data(entry_role).value<persistence::LibraryEntry>());
+        }
+    }
+    return entries;
+}
+
+class LibraryModel final : public QStandardItemModel {
+  public:
+    explicit LibraryModel(LocalLibraryPanel* panel) : QStandardItemModel(panel), panel_(panel) {}
+    QStringList mimeTypes() const override { return {ui::LocalFilesMimeData::mimeType()}; }
+    Qt::DropActions supportedDragActions() const override { return Qt::CopyAction; }
+    QMimeData* mimeData(const QModelIndexList& indexes) const override {
+        auto entries = selectedEntries(indexes);
+        if (entries.empty() || entries.size() > 1'000U ||
+            std::ranges::none_of(entries, [](const auto& entry) { return entry.available > 0U; })) {
+            return nullptr;
+        }
+        return new ui::LocalFilesMimeData{[panel = panel_, entries = std::move(entries)](
+                                              ui::LocalFilesMimeData::Completion done) {
+            if (panel) {
+                panel->resolveEntries(entries, std::move(done));
+            }
+        }};
+    }
+
+  private:
+    QPointer<LocalLibraryPanel> panel_;
+};
+
 } // namespace
 
 LocalLibraryPanel::LocalLibraryPanel(std::filesystem::path database_path, QWidget* parent)
@@ -73,14 +146,40 @@ LocalLibraryPanel::LocalLibraryPanel(std::filesystem::path database_path, QWidge
     tools->addStretch();
     tools->addWidget(scan_button_);
     layout->addLayout(tools);
-    tree_ = new QTreeView(this);
+    auto* library_view = new ui::ServerLibraryTreeView(this);
+    tree_ = library_view;
     tree_->setObjectName(QStringLiteral("local-library-tree"));
     tree_->setAccessibleName(tr("Local artists, albums, and tracks"));
     tree_->setHeaderHidden(true);
-    tree_->setUniformRowHeights(true);
+    tree_->setUniformRowHeights(false);
+    tree_->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    tree_->setDragEnabled(true);
+    tree_->setDragDropMode(QAbstractItemView::DragOnly);
+    tree_->setDefaultDropAction(Qt::CopyAction);
+    tree_->setExpandsOnDoubleClick(false);
+    tree_->setIndentation(18);
+    library_view->setActionLabels({tr("Append to current list"), tr("Insert next in current list"),
+                                   tr("Replace list and play")});
+    library_view->setActionsAvailable([](const QModelIndex& index) {
+        return index.data(entry_role).isValid() &&
+               index.data(entry_role).value<persistence::LibraryEntry>().available > 0U;
+    });
+    library_view->setActionCallback([this](const QModelIndex& index, int action) {
+        requestAction(index, static_cast<LocalLibraryAction>(action));
+    });
+    tree_->setItemDelegate(new ui::ServerLibraryTreeDelegate(
+        library_view, libraryActionIcons(this), [](const QModelIndex& index) {
+            const auto entry = index.data(entry_role).value<persistence::LibraryEntry>();
+            return ui::ServerLibraryTreeDelegate::Presentation{
+                .track = entry.kind == persistence::LibraryEntryKind::track,
+                .album = entry.kind == persistence::LibraryEntryKind::album,
+                .root = !index.parent().isValid(),
+                .secondary = entry.kind == persistence::LibraryEntryKind::album ? text(entry.artist)
+                                                                                : QString{}};
+        }));
     tree_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tree_->setContextMenuPolicy(Qt::CustomContextMenu);
-    model_ = new QStandardItemModel(tree_);
+    model_ = new LibraryModel(this);
     tree_->setModel(model_);
     layout->addWidget(tree_, 1);
     connect(tree_, &QTreeView::expanded, this, [this](const QModelIndex& index) {
@@ -111,17 +210,8 @@ LocalLibraryPanel::LocalLibraryPanel(std::filesystem::path database_path, QWidge
                 }
             });
     connect(tree_, &QTreeView::activated, this, &LocalLibraryPanel::activate);
-    connect(tree_, &QTreeView::customContextMenuRequested, this, [this](const QPoint& position) {
-        const auto index = tree_->indexAt(position);
-        if (!index.data(entry_role).isValid()) {
-            return;
-        }
-        auto* menu = new QMenu(tree_);
-        menu->setAttribute(Qt::WA_DeleteOnClose);
-        const QPersistentModelIndex target{index};
-        menu->addAction(tr("Open in local queue"), this, [this, target] { activate(target); });
-        menu->popup(tree_->viewport()->mapToGlobal(position));
-    });
+    connect(tree_, &QTreeView::customContextMenuRequested, this,
+            &LocalLibraryPanel::showContextMenu);
     status_ = new QLabel(tr("Press Refresh to scan your music folders."), this);
     status_->setObjectName(QStringLiteral("local-library-status"));
     status_->setWordWrap(true);
@@ -254,6 +344,7 @@ void LocalLibraryPanel::reloadTree() {
         auto* group = new QStandardItem(
             kind == persistence::LibraryEntryKind::album ? tr("Albums") : tr("Tracks"));
         group->setEditable(false);
+        group->setDragEnabled(false);
         group->setData(true, loaded_role);
         model_->appendRow(group);
         persistence::LibraryQuery query;
@@ -312,6 +403,13 @@ void LocalLibraryPanel::loadChildren(const QPersistentModelIndex& parent,
                  }
                  auto* item = new QStandardItem(label);
                  item->setEditable(false);
+                 item->setDragEnabled(entry.available > 0U);
+                 item->setDropEnabled(false);
+                 item->setIcon(QIcon::fromTheme(entry.kind == persistence::LibraryEntryKind::artist
+                                                    ? QStringLiteral("user-identity")
+                                                : entry.kind == persistence::LibraryEntryKind::album
+                                                    ? QStringLiteral("media-optical-audio")
+                                                    : QStringLiteral("audio-x-generic")));
                  item->setData(QVariant::fromValue(entry), entry_role);
                  item->setToolTip(entry.kind == persistence::LibraryEntryKind::track
                                       ? pathLabel(entry.key)
@@ -340,6 +438,7 @@ void LocalLibraryPanel::loadChildren(const QPersistentModelIndex& parent,
                  query.offset += outcome.page.entries.size();
                  auto* more = new QStandardItem(tr("Show more…"));
                  more->setEditable(false);
+                 more->setDragEnabled(false);
                  more->setData(true, more_role);
                  more->setData(QVariant::fromValue(query), query_role);
                  target->appendRow(more);
@@ -364,46 +463,126 @@ void LocalLibraryPanel::activate(const QModelIndex& index) {
         loadChildren(parent, query);
         return;
     }
-    if (!item->data(entry_role).isValid()) {
+    requestAction(index, LocalLibraryAction::append);
+}
+
+void LocalLibraryPanel::requestAction(const QModelIndex& index, LocalLibraryAction action) {
+    if (!index.data(entry_role).isValid()) {
         return;
     }
-    const auto entry = item->data(entry_role).value<persistence::LibraryEntry>();
-    if (entry.available == 0U) {
-        status_->setText(
-            tr("These files are unavailable. Reconnect the folder and refresh the library."));
+    if (!tree_->selectionModel()->isSelected(index)) {
+        tree_->selectionModel()->setCurrentIndex(index, QItemSelectionModel::ClearAndSelect |
+                                                            QItemSelectionModel::Rows);
+    }
+    auto entries = selectedEntries(tree_->selectionModel()->selectedRows());
+    if (entries.empty() && tree_->selectionModel()->selectedRows().size() > 1'000) {
+        status_->setText(tr("Select at most 1,000 library entries."));
+    }
+    if (!entries.empty()) {
+        emit actionRequested(std::move(entries), action);
+    }
+}
+
+void LocalLibraryPanel::showContextMenu(const QPoint& position) {
+    const auto index = tree_->indexAt(position);
+    if (!index.data(entry_role).isValid()) {
         return;
     }
-    persistence::LibraryQuery query;
-    if (entry.kind == persistence::LibraryEntryKind::artist) {
-        query.artist = entry.key;
-    } else if (entry.kind == persistence::LibraryEntryKind::album) {
-        query.album_key = entry.key;
-    } else {
-        query.raw_path = entry.key;
+    if (!tree_->selectionModel()->isSelected(index)) {
+        tree_->selectionModel()->setCurrentIndex(index, QItemSelectionModel::ClearAndSelect |
+                                                            QItemSelectionModel::Rows);
     }
-    enqueue({[query,
-              cancellation = lifetime_cancellation_.token()](persistence::LocalLibrary& library) {
-                 Outcome outcome;
-                 auto result = library.paths(query, cancellation);
-                 if (result) {
-                     outcome.paths = std::move(*result);
+    const auto entries = selectedEntries(tree_->selectionModel()->selectedRows());
+    const bool available =
+        entries.size() <= 1'000U &&
+        std::ranges::any_of(entries, [](const auto& entry) { return entry.available > 0U; });
+    auto* menu = new QMenu(tree_);
+    menu->setObjectName(QStringLiteral("local-library-context-menu"));
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    const std::array labels{tr("Append to current list"), tr("Insert next in current list"),
+                            tr("Replace list and play"), tr("Open in new tab")};
+    const auto icons = libraryActionIcons(this);
+    for (int action = 0; action < static_cast<int>(labels.size()); ++action) {
+        auto* command =
+            menu->addAction(action < 3 ? icons[static_cast<std::size_t>(action)]
+                                       : style()->standardIcon(QStyle::SP_FileDialogNewFolder),
+                            labels[static_cast<std::size_t>(action)]);
+        command->setObjectName(QStringLiteral("action-local-library-%1").arg(action));
+        command->setEnabled(available);
+        connect(command, &QAction::triggered, this, [this, entries, action] {
+            emit actionRequested(entries, static_cast<LocalLibraryAction>(action));
+        });
+    }
+    if (model_->hasChildren(index)) {
+        menu->addSeparator();
+        const QPersistentModelIndex target{index};
+        menu->addAction(tree_->isExpanded(index) ? tr("Collapse") : tr("Expand"), this,
+                        [this, target] {
+                            if (target.isValid()) {
+                                tree_->setExpanded(target, !tree_->isExpanded(target));
+                            }
+                        });
+    }
+    menu->popup(tree_->viewport()->mapToGlobal(position));
+}
+
+void LocalLibraryPanel::resolveEntries(std::vector<persistence::LibraryEntry> entries,
+                                       std::function<void(std::vector<std::string>)> completion) {
+    if (entries.empty() || entries.size() > 1'000U) {
+        status_->setText(tr("Select between 1 and 1,000 library entries."));
+        return;
+    }
+    status_->setText(tr("Loading library selection…"));
+    enqueue(
+        {[entries = std::move(entries),
+          cancellation = lifetime_cancellation_.token()](persistence::LocalLibrary& library) {
+             Outcome outcome;
+             std::unordered_set<std::string> seen;
+             std::size_t resolved = 0;
+             std::size_t unavailable = 0;
+             for (const auto& entry : entries) {
+                 unavailable += entry.tracks - entry.available;
+                 persistence::LibraryQuery query;
+                 if (entry.kind == persistence::LibraryEntryKind::artist) {
+                     query.artist = entry.key;
+                 } else if (entry.kind == persistence::LibraryEntryKind::album) {
+                     query.album_key = entry.key;
                  } else {
-                     outcome.error = text(result.error().message);
+                     query.raw_path = entry.key;
                  }
-                 return outcome;
-             },
-             [this, unavailable = entry.tracks - entry.available](Outcome outcome) {
-                 if (!outcome.error.isEmpty()) {
-                     status_->setText(outcome.error);
-                     return;
+                 auto paths = library.paths(query, cancellation);
+                 if (!paths) {
+                     outcome.error = text(paths.error().message);
+                     return outcome;
                  }
-                 if (unavailable > 0U) {
-                     status_->setText(tr("%1 unavailable files were skipped.").arg(unavailable));
+                 resolved += paths->size();
+                 if (resolved > 100'000U) {
+                     outcome.error = tr("This selection exceeds the 100,000-file limit.");
+                     return outcome;
                  }
-                 if (!outcome.paths.empty()) {
-                     emit pathsRequested(std::move(outcome.paths));
+                 for (auto& path : *paths) {
+                     if (seen.insert(path).second) {
+                         outcome.paths.push_back(std::move(path));
+                     }
                  }
-             }});
+             }
+             outcome.unavailable = unavailable;
+             return outcome;
+         },
+         [this, completion = std::move(completion)](Outcome outcome) {
+             if (!outcome.error.isEmpty()) {
+                 status_->setText(outcome.error);
+                 return;
+             }
+             if (outcome.paths.empty()) {
+                 status_->setText(tr(
+                     "These files are unavailable. Reconnect the folder and refresh the library."));
+                 return;
+             }
+             status_->setText(outcome.unavailable > 0U ? tr("Unavailable files were skipped.")
+                                                       : tr("Library selection loaded."));
+             completion(std::move(outcome.paths));
+         }});
 }
 
 void LocalLibraryPanel::addRoot(std::string raw_path) {

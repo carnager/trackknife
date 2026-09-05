@@ -26,6 +26,8 @@ class QTreeView;
 
 namespace trackknife::bench {
 
+enum class LocalLibraryAction { append, next, replace, new_list };
+
 class LocalLibraryPanel final : public QWidget {
     Q_OBJECT
   public:
@@ -35,9 +37,11 @@ class LocalLibraryPanel final : public QWidget {
     // Reload committed index records; filesystem scans require the Refresh button.
     void refreshLibrary();
     void stop();
+    void resolveEntries(std::vector<persistence::LibraryEntry> entries,
+                        std::function<void(std::vector<std::string>)> completion);
 
   signals:
-    void pathsRequested(std::vector<std::string> paths);
+    void actionRequested(std::vector<persistence::LibraryEntry> entries, LocalLibraryAction action);
 
   private:
     struct Outcome {
@@ -45,6 +49,7 @@ class LocalLibraryPanel final : public QWidget {
         std::vector<persistence::LibraryRoot> roots;
         std::vector<std::string> paths;
         QString error;
+        std::size_t unavailable{0};
     };
     struct Task {
         std::function<Outcome(persistence::LocalLibrary&)> work;
@@ -61,6 +66,8 @@ class LocalLibraryPanel final : public QWidget {
     void reloadTree();
     void loadChildren(const QPersistentModelIndex& parent, persistence::LibraryQuery query);
     void activate(const QModelIndex& index);
+    void requestAction(const QModelIndex& index, LocalLibraryAction action);
+    void showContextMenu(const QPoint& position);
     void showFolders();
     void loadRoots();
     void startScan();

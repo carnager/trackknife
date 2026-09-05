@@ -10,6 +10,7 @@ qt_add_library(
     list_persistence_service.hpp
     local_folder_tree_model.cpp
     local_folder_tree_model.hpp
+    local_files_mime_data.hpp
     metadata_transformation_interchange.cpp
     metadata_transformation_interchange.hpp
     panel_layout.cpp

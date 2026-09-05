@@ -3,6 +3,7 @@
 #include "bench/bench_main_window.hpp"
 #include "bench/local_library_panel.hpp"
 #include "bench/settings_dialog.hpp"
+#include "uicommon/local_files_mime_data.hpp"
 
 #include "bench/bench_main_window_helpers.hpp"
 #include "bench/metadata_properties_dialog.hpp"
@@ -100,8 +101,56 @@ void BenchMainWindow::initializePersistence() {
         if (error.isEmpty()) {
             local_library_ = new LocalLibraryPanel(database_path_, source_stack_);
             source_stack_->addWidget(local_library_);
-            connect(local_library_, &LocalLibraryPanel::pathsRequested, this,
-                    &BenchMainWindow::openLocalPaths);
+            connect(
+                local_library_, &LocalLibraryPanel::actionRequested, this,
+                [this](std::vector<persistence::LibraryEntry> entries, LocalLibraryAction action) {
+                    auto* target = currentListTab();
+                    if (!target || entries.empty()) {
+                        return;
+                    }
+                    const auto id = QString::fromStdString(target->document.id.to_string());
+                    const auto name =
+                        entries.size() == 1U ? entries.front().label : "Library selection";
+                    int insertion = -1;
+                    if (action == LocalLibraryAction::next) {
+                        insertion = playback_document_id_ == id ? playback_row_ + 1
+                                    : target->view->currentIndex().isValid()
+                                        ? target->view->currentIndex().row() + 1
+                                        : 0;
+                    }
+                    const QPersistentModelIndex anchor{target->model->index(insertion, 0)};
+                    const bool anchored = anchor.isValid();
+                    local_library_->resolveEntries(
+                        std::move(entries), [this, id, name, action, insertion, anchor,
+                                             anchored](std::vector<std::string> paths) {
+                            auto* destination = tabForDocument(id);
+                            if (!destination || (anchored && !anchor.isValid())) {
+                                return;
+                            }
+                            if (discovery_running_) {
+                                statusBar()->showMessage(
+                                    QStringLiteral("A file intake is already running"), 3'000);
+                                return;
+                            }
+                            if (action == LocalLibraryAction::new_list) {
+                                destination = addListTab(
+                                    persistence::ListDocument{.id = core::StableId::random(),
+                                                              .kind =
+                                                                  persistence::ListKind::scratch,
+                                                              .name = name,
+                                                              .pinned = false,
+                                                              .dirty = false,
+                                                              .items = {}},
+                                    true);
+                                schedulePersist();
+                            }
+                            startDiscovery(
+                                std::move(paths),
+                                QString::fromStdString(destination->document.id.to_string()),
+                                anchored ? anchor.row() : insertion,
+                                action == LocalLibraryAction::replace);
+                        });
+                });
             refreshActiveContext();
         }
         autoConnectMpd();
@@ -402,6 +451,24 @@ BenchMainWindow::ListTab* BenchMainWindow::addListTab(persistence::ListDocument 
         return table != nullptr &&
                transferRows(table, rows, id, action == Qt::MoveAction, insertion_row);
     });
+    view->setLocalFilesDropCallback(
+        [this, id](const ui::LocalFilesMimeData& files, int insertion_row) {
+            auto* target = tabForDocument(id);
+            if (!target || discovery_running_) {
+                return false;
+            }
+            const QPersistentModelIndex anchor{target->model->index(insertion_row, 0)};
+            const bool anchored = anchor.isValid();
+            const QPointer<BenchMainWindow> window{this};
+            files.resolve(
+                [window, id, insertion_row, anchor, anchored](std::vector<std::string> paths) {
+                    if (window && window->tabForDocument(id) && (!anchored || anchor.isValid())) {
+                        window->startDiscovery(std::move(paths), id,
+                                               anchored ? anchor.row() : insertion_row);
+                    }
+                });
+            return true;
+        });
     view->setLocalUrlDropCallback([this, id](const QList<QUrl>& urls, const int insertion_row) {
         std::vector<std::string> raw_paths;
         raw_paths.reserve(static_cast<std::size_t>(urls.size()));

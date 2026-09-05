@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+#include "uicommon/local_files_mime_data.hpp"
 #include "uicommon/queue_item_delegate.hpp"
 #include "uicommon/queue_table_view.hpp"
 #include "uicommon/track_row_roles.hpp"
@@ -102,7 +103,54 @@ class QueueTableViewTest final : public QObject {
     void boundaryKeysHandleEmptyQueue();
     void handledDropRestoresRowsAndShowsExactInsertionTarget();
     void typedMoveDoesNotAskModelToRemoveSourceRows();
+    void localFilesResolveOnlyOnAcceptedDrop();
 };
+
+void QueueTableViewTest::localFilesResolveOnlyOnAcceptedDrop() {
+    CueBatchModel model;
+    model.appendCueAlbum(2);
+    QueueTableView view{nullptr};
+    view.setModel(&model);
+    view.setAcceptDrops(true);
+    view.setDragDropMode(QAbstractItemView::DragDrop);
+    view.resize(640, 360);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    int resolutions = 0;
+    LocalFilesMimeData files{[&](LocalFilesMimeData::Completion done) {
+        ++resolutions;
+        done({"/music/raw-\xff.flac"});
+    }};
+    const auto position = view.visualRect(model.index(1, 0)).topLeft() + QPoint{2, 2};
+    QDragEnterEvent rejected{position, Qt::CopyAction, &files, Qt::LeftButton, Qt::NoModifier};
+    QApplication::sendEvent(view.viewport(), &rejected);
+    QVERIFY(!rejected.isAccepted());
+    QCOMPARE(resolutions, 0);
+    int inserted = -1;
+    std::vector<std::string> paths;
+    view.setLocalFilesDropCallback([&](const LocalFilesMimeData& payload, int row) {
+        inserted = row;
+        payload.resolve([&](std::vector<std::string> value) { paths = std::move(value); });
+        return true;
+    });
+    QMimeData counterfeit;
+    counterfeit.setData(LocalFilesMimeData::mimeType(), QByteArrayLiteral("1"));
+    QDragEnterEvent invalid{position, Qt::CopyAction, &counterfeit, Qt::LeftButton, Qt::NoModifier};
+    QApplication::sendEvent(view.viewport(), &invalid);
+    QVERIFY(!invalid.isAccepted());
+    QDragEnterEvent enter{position, Qt::CopyAction, &files, Qt::LeftButton, Qt::NoModifier};
+    QApplication::sendEvent(view.viewport(), &enter);
+    QVERIFY(enter.isAccepted());
+    QCOMPARE(resolutions, 0);
+    QDropEvent drop{QPointF{position}, Qt::CopyAction, &files, Qt::LeftButton, Qt::NoModifier};
+    QApplication::sendEvent(view.viewport(), &drop);
+    QVERIFY(drop.isAccepted());
+    QCOMPARE(drop.dropAction(), Qt::CopyAction);
+    QCOMPARE(inserted, 1);
+    QCOMPARE(resolutions, 1);
+    QCOMPARE(paths, std::vector<std::string>{"/music/raw-\xff.flac"});
+    QCOMPARE(model.rowCount(), 2);
+}
 
 void QueueTableViewTest::homeAndEndSelectQueueBoundaries() {
     QueueTableView view{nullptr};

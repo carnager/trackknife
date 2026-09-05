@@ -5,11 +5,18 @@
 #include "trackknife/metadata/local_reader.hpp"
 #include "trackknife/persistence/list_repository.hpp"
 #include "trackknife/persistence/local_library.hpp"
+#include "ui/server_library_tree_view.hpp"
+#include "uicommon/local_files_mime_data.hpp"
+#include "uicommon/queue_table_view.hpp"
 
 #include <QComboBox>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QFile>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
+#include <QMessageBox>
 #include <QSettings>
 #include <QStackedWidget>
 #include <QTabWidget>
@@ -64,6 +71,41 @@ persistence::LibraryQuery tracks(std::string text = {}) {
     return query;
 }
 
+QMenu* libraryMenu(LocalLibraryPanel* panel, const QModelIndex& index) {
+    auto* tree = panel->findChild<QTreeView*>();
+    tree->scrollTo(index);
+    QMetaObject::invokeMethod(tree, "customContextMenuRequested", Qt::DirectConnection,
+                              Q_ARG(QPoint, tree->visualRect(index).center()));
+    return panel->findChild<QMenu*>(QStringLiteral("local-library-context-menu"));
+}
+
+bool triggerLibraryAction(LocalLibraryPanel* panel, const QModelIndex& index, int action) {
+    auto* menu = libraryMenu(panel, index);
+    if (!menu) {
+        return false;
+    }
+    auto* command =
+        menu->findChild<QAction*>(QStringLiteral("action-local-library-%1").arg(action));
+    if (!command || !command->isEnabled()) {
+        menu->close();
+        return false;
+    }
+    command->trigger();
+    menu->close();
+    return true;
+}
+
+bool dropFiles(QTableView* view, const QMimeData* mime, const QPoint& position) {
+    QDragEnterEvent enter{position, Qt::CopyAction, mime, Qt::LeftButton, Qt::NoModifier};
+    QApplication::sendEvent(view->viewport(), &enter);
+    if (!enter.isAccepted()) {
+        return false;
+    }
+    QDropEvent drop{QPointF{position}, Qt::CopyAction, mime, Qt::LeftButton, Qt::NoModifier};
+    QApplication::sendEvent(view->viewport(), &drop);
+    return drop.isAccepted();
+}
+
 } // namespace
 
 class LocalLibraryTest final : public QObject {
@@ -77,6 +119,7 @@ class LocalLibraryTest final : public QObject {
     void scansOnlyOnRefresh_data();
     void scansOnlyOnRefresh();
     void localViewBrowsesSearchesAndOpensFiles();
+    void dragResolvesUnloadedPagesAndRawPaths();
 };
 
 void LocalLibraryTest::rootsRetainOfflineMusicAndRawPaths() {
@@ -425,25 +468,176 @@ void LocalLibraryTest::localViewBrowsesSearchesAndOpensFiles() {
                         .contains(QStringLiteral("First song")));
         const auto album = tree->model()->index(0, 0, tree->model()->index(0, 0));
         tree->setCurrentIndex(album);
-        QTest::keyClick(tree, Qt::Key_Return);
+        QVERIFY(triggerLibraryAction(panel, album, 0));
         QTRY_VERIFY(qobject_cast<QTableView*>(tabs->currentWidget()) != nullptr &&
                     qobject_cast<QTableView*>(tabs->currentWidget())->model()->rowCount() == 1);
         auto* local = qobject_cast<LocalListModel*>(
             qobject_cast<QTableView*>(tabs->currentWidget())->model());
         QVERIFY(local);
         QCOMPARE(local->rows().front().raw_path, path);
+        auto* local_view = qobject_cast<QTableView*>(tabs->currentWidget());
+        auto* mpd = window.findChild<QTableView*>(QStringLiteral("bench-mpd-queue"));
+        QVERIFY(local_view && mpd);
+        const auto second = fixture(root, "02.flac", "Second song");
+        panel->findChild<QToolButton*>(QStringLiteral("local-library-scan"))->click();
+        QTRY_VERIFY(tree->model()
+                        ->index(0, 0, tree->model()->index(0, 0))
+                        .data()
+                        .toString()
+                        .contains(QStringLiteral("(2)")));
+        const auto album_index = [&] {
+            return tree->model()->index(0, 0, tree->model()->index(0, 0));
+        };
+        // An album drag captures the selection before a search reset and resolves
+        // asynchronously into the exact target tab and insertion row.
+        std::unique_ptr<QMimeData> mime{tree->model()->mimeData({album_index()})};
+        QVERIFY(dynamic_cast<ui::LocalFilesMimeData*>(mime.get()));
+        const auto first_rect = local_view->visualRect(local->index(0, 0));
+        QVERIFY(dropFiles(local_view, mime.get(), first_rect.topLeft() + QPoint{5, 2}));
+        search->setText(QStringLiteral("no match"));
+        tabs->setCurrentWidget(mpd);
+        QTRY_COMPARE(local->rowCount(), 3);
+        QCOMPARE(local->rows()[0].raw_path, path);
+        QCOMPARE(local->rows()[1].raw_path, second);
+        QCOMPARE(local->rows()[2].raw_path, path);
+        QCOMPARE(tabs->currentWidget(), mpd);
+        QVERIFY(!dropFiles(mpd, mime.get(), QPoint{20, 20}));
+        QCOMPARE(mpd->model()->rowCount(), 0);
+        tabs->setCurrentWidget(local_view);
+        search->setText(QStringLiteral("Test album"));
+        QTRY_VERIFY(album_index().data().toString().contains(QStringLiteral("(2)")));
+        // Append an overlapping album + track selection once, preserving the
+        // multi-selection when opening the menu on an already selected entry.
+        QTRY_COMPARE(tree->model()->rowCount(tree->model()->index(1, 0)), 2);
+        tree->selectionModel()->select(album_index(), QItemSelectionModel::ClearAndSelect |
+                                                          QItemSelectionModel::Rows);
+        const auto first_track = tree->model()->index(0, 0, tree->model()->index(1, 0));
+        tree->selectionModel()->select(first_track,
+                                       QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        QVERIFY(triggerLibraryAction(panel, first_track, 0));
+        QCOMPARE(tree->selectionModel()->selectedRows().size(), 2);
+        QTRY_COMPARE(local->rowCount(), 5);
+        QCOMPARE(local->rows()[3].raw_path, path);
+        QCOMPARE(local->rows()[4].raw_path, second);
+        tree->setCurrentIndex(album_index());
+        local_view->setCurrentIndex(local->index(0, 0));
+        QVERIFY(triggerLibraryAction(panel, album_index(), 1));
+        QTRY_COMPARE(local->rowCount(), 7);
+        QCOMPARE(local->rows()[1].raw_path, path);
+        QCOMPARE(local->rows()[2].raw_path, second);
+        QVERIFY(triggerLibraryAction(panel, album_index(), 2));
+        QTRY_COMPARE(local->rowCount(), 2);
+        QCOMPARE(local->rows()[0].raw_path, path);
+        QCOMPARE(local->rows()[1].raw_path, second);
+        const auto original_tabs = tabs->count();
+        QVERIFY(triggerLibraryAction(panel, album_index(), 3));
+        QTRY_COMPARE(tabs->count(), original_tabs + 1);
+        auto* new_view = qobject_cast<QTableView*>(tabs->currentWidget());
+        QVERIFY(new_view && new_view != local_view);
+        QTRY_COMPARE(new_view->model()->rowCount(), 2);
+        // Closing a captured destination must never redirect its pending drop.
+        QVERIFY(dropFiles(new_view, mime.get(), QPoint{20, 20}));
+        const auto closed_index = tabs->currentIndex();
+        QTimer::singleShot(0, [] {
+            if (auto* confirmation =
+                    qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                confirmation->done(QMessageBox::Yes);
+            }
+        });
+        QVERIFY(QMetaObject::invokeMethod(tabs, "tabCloseRequested", Qt::DirectConnection,
+                                          Q_ARG(int, closed_index)));
+        tabs->setCurrentWidget(local_view);
+        QTest::qWait(300);
+        QCOMPARE(local->rowCount(), 2);
+        QVERIFY(!panel->property("scanning").toBool());
         if (const auto screenshot = qgetenv("TRACKKNIFE_LIBRARY_SCREENSHOT");
             !screenshot.isEmpty()) {
+            tree->setFocus();
+            tree->setCurrentIndex(album_index());
             QVERIFY(window.grab().save(QString::fromUtf8(screenshot)));
         }
-        auto* mpd = window.findChild<QTableView*>(QStringLiteral("bench-mpd-queue"));
-        QVERIFY(mpd);
         tabs->setCurrentWidget(mpd);
         QVERIFY(!panel->isVisible());
         QCOMPARE(window.property("trackknife-active-authority").toString(), QStringLiteral("mpd"));
         QVERIFY(sources->currentWidget() != panel);
     }
     qputenv("XDG_DATA_HOME", old_data);
+}
+
+void LocalLibraryTest::dragResolvesUnloadedPagesAndRawPaths() {
+    QTemporaryDir temporary;
+    const std::filesystem::path base{temporary.path().toStdString()};
+    const auto root = base / "music";
+    const auto raw = fixture(root, "raw-\xff.flac");
+    QVERIFY(!raw.empty());
+    for (int index = 0; index < 204; ++index) {
+        std::filesystem::copy_file(std::filesystem::path{raw},
+                                   root / (std::to_string(index) + ".flac"));
+    }
+    auto library = persistence::LocalLibrary::open(base / "state.sqlite");
+    QVERIFY(library && library->add_root(root.native()));
+    persistence::LibraryScanProgress progress;
+    QVERIFY(library->scan({}, progress));
+    LocalLibraryPanel panel{base / "state.sqlite"};
+    panel.resize(420, 400);
+    panel.show();
+    auto* tree = panel.findChild<QTreeView*>();
+    QTRY_COMPARE(tree->model()->rowCount(), 1);
+    const auto artist = tree->model()->index(0, 0);
+    QVERIFY(!tree->isExpanded(artist));
+    std::unique_ptr<QMimeData> mime{tree->model()->mimeData({artist})};
+    const auto* files = dynamic_cast<ui::LocalFilesMimeData*>(mime.get());
+    QVERIFY(files);
+    std::vector<std::string> paths;
+    files->resolve([&](std::vector<std::string> resolved) { paths = std::move(resolved); });
+    QTRY_COMPARE(paths.size(), 205U);
+    QVERIFY(std::ranges::find(paths, raw) != paths.end());
+    QVERIFY(!tree->isExpanded(artist));
+    QVERIFY(!panel.property("scanning").toBool());
+    // Shared MPD-style branch interaction and inline actions work with local
+    // presentation data, without enabling actions on placeholder rows.
+    tree->setCurrentIndex(artist);
+    QTest::keyClick(tree, Qt::Key_Return);
+    QTRY_VERIFY(tree->isExpanded(artist));
+    QTRY_VERIFY(tree->model()
+                    ->index(0, 0, artist)
+                    .data()
+                    .toString()
+                    .contains(QStringLiteral("Test album")));
+    const auto album = tree->model()->index(0, 0, artist);
+    std::vector<persistence::LibraryEntry> selected;
+    connect(&panel, &LocalLibraryPanel::actionRequested, &panel,
+            [&](std::vector<persistence::LibraryEntry> entries, LocalLibraryAction action) {
+                QCOMPARE(action, LocalLibraryAction::append);
+                selected = std::move(entries);
+            });
+    const auto action_rect = ui::ServerLibraryTreeView::actionRect(tree->visualRect(album), 0);
+    QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier, action_rect.center());
+    QCOMPARE(selected.size(), 1U);
+    QCOMPARE(selected.front().kind, persistence::LibraryEntryKind::album);
+    QCOMPARE(selected.front().tracks, 205U);
+    tree->selectionModel()->select(artist, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    selected.clear();
+    QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier, action_rect.center());
+    QCOMPARE(tree->selectionModel()->selectedRows().size(), 2);
+    QCOMPARE(selected.size(), 1U);
+    QCOMPARE(selected.front().kind, persistence::LibraryEntryKind::artist);
+    std::filesystem::rename(root, base / "offline");
+    persistence::LibraryScanProgress offline;
+    QVERIFY(library->scan({}, offline));
+    panel.refreshLibrary();
+    QTRY_VERIFY(
+        tree->model()->index(0, 0).data().toString().contains(QStringLiteral("unavailable")));
+    auto* menu = libraryMenu(&panel, tree->model()->index(0, 0));
+    QVERIFY(menu);
+    for (int action = 0; action < 4; ++action) {
+        auto* command =
+            menu->findChild<QAction*>(QStringLiteral("action-local-library-%1").arg(action));
+        QVERIFY(command && !command->isEnabled());
+    }
+    menu->close();
+    std::filesystem::rename(base / "offline", root);
+    std::filesystem::remove(std::filesystem::path{raw});
 }
 
 } // namespace trackknife::bench

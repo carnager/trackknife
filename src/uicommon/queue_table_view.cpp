@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "uicommon/queue_table_view.hpp"
+#include "uicommon/local_files_mime_data.hpp"
 
 #include "uicommon/queue_item_delegate.hpp"
 #include "uicommon/track_row_roles.hpp"
@@ -592,6 +593,11 @@ void QueueTableView::setActivateCallback(std::function<void(const QModelIndex&)>
     activate_callback_ = std::move(callback);
 }
 
+void QueueTableView::setLocalFilesDropCallback(
+    std::function<bool(const LocalFilesMimeData&, int)> callback) {
+    local_files_drop_callback_ = std::move(callback);
+}
+
 void QueueTableView::setLocalUrlDropCallback(
     std::function<bool(const QList<QUrl>&, int)> callback) {
     local_url_drop_callback_ = std::move(callback);
@@ -679,6 +685,10 @@ void QueueTableView::mousePressEvent(QMouseEvent* event) {
 }
 
 bool QueueTableView::handlesDrag(const QDropEvent* event) const {
+    if (event->mimeData()->hasFormat(LocalFilesMimeData::mimeType())) {
+        return local_files_drop_callback_ &&
+               dynamic_cast<const LocalFilesMimeData*>(event->mimeData()) != nullptr;
+    }
     if (local_url_drop_callback_ != nullptr && event->mimeData()->hasUrls()) {
         return true;
     }
@@ -825,6 +835,18 @@ void QueueTableView::dragLeaveEvent(QDragLeaveEvent* event) {
 
 void QueueTableView::dropEvent(QDropEvent* event) {
     const auto insertion_row = resolvedDropInsertionRow(event->position().toPoint());
+    if (event->mimeData()->hasFormat(LocalFilesMimeData::mimeType())) {
+        const auto* files = dynamic_cast<const LocalFilesMimeData*>(event->mimeData());
+        if (files && local_files_drop_callback_ &&
+            local_files_drop_callback_(*files, insertion_row)) {
+            event->setDropAction(Qt::CopyAction);
+            event->accept();
+        } else {
+            event->ignore();
+        }
+        finishDragPresentation();
+        return;
+    }
     if (local_url_drop_callback_ != nullptr && event->mimeData()->hasUrls()) {
         if (local_url_drop_callback_(event->mimeData()->urls(), insertion_row)) {
             event->setDropAction(Qt::CopyAction);
