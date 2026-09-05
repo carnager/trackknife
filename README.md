@@ -17,11 +17,12 @@ for audio files.
 
 With MPD, you can:
 
-- Browse and search your server's library, alphabetically or with the newest
+- Browse your server's library, alphabetically or with the newest
   additions first (requires MPD 0.24's `Added` field).
+- Search for albums and individual tracks, and add either straight to the
+  queue from the results.
 - Edit the queue, set track priorities, change playback and ReplayGain modes,
   toggle individual outputs, and view cover art.
-- Jump from a queued track to its artist or album in the library tree.
 - Open tracks or albums in a local tab for tagging or conversion, then ask
   MPD to rescan the affected folder. This requires access to the files and a
   music-root mapping in settings.
@@ -53,6 +54,10 @@ filesystem cannot preserve attributes such as ownership or extended
 attributes, Trackknife reports what was left out.
 
 ## Screenshots
+
+Searching the MPD library for albums and tracks:
+
+![MPD search results with albums and individual tracks](Screenshots/search.png)
 
 Editing tags across several files, with pending changes highlighted:
 
