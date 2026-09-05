@@ -4,8 +4,11 @@
 
 #include <QApplication>
 #include <QDateTime>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QString>
 #include <QTimer>
@@ -35,13 +38,13 @@ void filtered_message_handler(const QtMsgType type, const QMessageLogContext& co
 
 } // namespace
 
-// QA soak hook: TRACKBENCH_SOAK_LOG=<path> appends one line per minute —
+// QA soak hook: TRACKKNIFE_SOAK_LOG=<path> appends one line per minute —
 // timestamp, resident memory, live QObject/widget counts, and event-loop
 // lateness — so gradual degradation over long sessions becomes measurable
 // instead of anecdotal.
 namespace {
 void startSoakLog(QObject* parent) {
-    const auto path = qEnvironmentVariable("TRACKBENCH_SOAK_LOG");
+    const auto path = qEnvironmentVariable("TRACKKNIFE_SOAK_LOG");
     if (path.isEmpty()) {
         return;
     }
@@ -88,8 +91,25 @@ int main(int argc, char** argv) {
     QApplication application(argc, argv);
     default_message_handler = qInstallMessageHandler(filtered_message_handler);
     QApplication::setOrganizationName(QStringLiteral("trackknife"));
-    QApplication::setApplicationName(QStringLiteral("trackbench"));
-    QApplication::setApplicationDisplayName(QStringLiteral("Trackbench"));
+    QApplication::setApplicationName(QStringLiteral("trackknife"));
+    QApplication::setApplicationDisplayName(QStringLiteral("Trackknife"));
+
+    // The application reclaimed its original name; adopt settings and the
+    // workspace database written under the interim "trackbench" identity
+    // exactly once, before anything opens them.
+    {
+        const auto new_settings = QSettings{}.fileName();
+        const auto old_settings =
+            QFileInfo{new_settings}.dir().filePath(QStringLiteral("trackbench.conf"));
+        if (!QFile::exists(new_settings) && QFile::exists(old_settings)) {
+            QFile::rename(old_settings, new_settings);
+        }
+        const auto new_data = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        const auto old_data = QFileInfo{new_data}.dir().filePath(QStringLiteral("trackbench"));
+        if (!QDir{new_data}.exists() && QDir{old_data}.exists()) {
+            QDir{}.rename(old_data, new_data);
+        }
+    }
 
     // QA hook: --screenshot <file.png> renders the workspace, grabs it once
     // background probing has had a moment, and exits. It switches to the

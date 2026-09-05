@@ -176,7 +176,7 @@ void report(const Measurement& measurement) {
 int main(int argc, char* argv[]) {
     QApplication application(argc, argv);
     QApplication::setOrganizationName(QStringLiteral("TrackknifeBenchmarks"));
-    QApplication::setApplicationName(QStringLiteral("TrackbenchUiBenchmark"));
+    QApplication::setApplicationName(QStringLiteral("TrackknifeUiBenchmark"));
     QStandardPaths::setTestModeEnabled(true);
     QSettings{}.clear();
     const auto application_data = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -216,7 +216,7 @@ int main(int argc, char* argv[]) {
     auto* grouped = window.findChild<QAction*>(QStringLiteral("action-track-layout-albums-side"));
     if (tabs == nullptr || view == nullptr || model == nullptr || plain == nullptr ||
         grouped == nullptr) {
-        std::cerr << "benchmark could not locate the Trackbench list workspace\n";
+        std::cerr << "benchmark could not locate the Trackknife list workspace\n";
         return EXIT_FAILURE;
     }
 

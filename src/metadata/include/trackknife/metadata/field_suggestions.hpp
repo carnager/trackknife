@@ -32,7 +32,7 @@ struct MetadataFieldSuggestion {
                            const MetadataFieldSuggestion&) = default;
 };
 
-// Conventional and MusicBrainz names supplied by Trackbench. Arbitrary names
+// Conventional and MusicBrainz names supplied by Trackknife. Arbitrary names
 // remain valid and never need to appear in this catalog before use.
 [[nodiscard]] std::span<const MetadataFieldSuggestionCandidate>
 metadata_field_suggestion_catalog() noexcept;

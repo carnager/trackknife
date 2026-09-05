@@ -214,7 +214,7 @@ class BenchMainWindowTest final : public QObject {
 void BenchMainWindowTest::initTestCase() {
     QVERIFY(settings_directory_.isValid());
     QCoreApplication::setOrganizationName(QStringLiteral("TrackknifeTests"));
-    QCoreApplication::setApplicationName(QStringLiteral("trackbench-tests"));
+    QCoreApplication::setApplicationName(QStringLiteral("trackknife-tests"));
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings_directory_.path());
     QStandardPaths::setTestModeEnabled(true);
@@ -320,10 +320,10 @@ void BenchMainWindowTest::transportUsesStackedNowPlayingAndCompactDeviceButton()
     QCOMPARE(device->menu()->objectName(), QStringLiteral("bench-device-menu"));
     QVERIFY(!device->menu()->actions().empty());
     QCOMPARE(device->menu()->actions().front()->text(), QStringLiteral("System default"));
-    QVERIFY(window.property("trackbench-player-output-available").isValid());
-    QVERIFY(window.property("trackbench-player-output-suspended").isValid());
-    QVERIFY(window.property("trackbench-player-device-generation").isValid());
-    QVERIFY(window.property("trackbench-player-default-output").isValid());
+    QVERIFY(window.property("trackknife-player-output-available").isValid());
+    QVERIFY(window.property("trackknife-player-output-suspended").isValid());
+    QVERIFY(window.property("trackknife-player-device-generation").isValid());
+    QVERIFY(window.property("trackknife-player-default-output").isValid());
     QCOMPARE(transport->findChildren<QToolButton*>(QString{}, Qt::FindDirectChildrenOnly).size(),
              4);
 
@@ -416,7 +416,7 @@ void BenchMainWindowTest::unifiesMpdAndLocalAuthoritiesInOneWorkspace() {
     auto* mpd_close = tabs->tabBar()->tabButton(mpd_index, QTabBar::RightSide);
     QVERIFY(mpd_close == nullptr || !mpd_close->isVisible());
     tabs->setCurrentWidget(mpd_queue);
-    QTRY_COMPARE(window.property("trackbench-active-authority").toString(), QStringLiteral("mpd"));
+    QTRY_COMPARE(window.property("trackknife-active-authority").toString(), QStringLiteral("mpd"));
     QCOMPARE(heading->text(), QStringLiteral("MPD Library"));
     QVERIFY(mpd_library->isVisible());
     QVERIFY(!folder_view->isVisible());
@@ -459,7 +459,7 @@ void BenchMainWindowTest::unifiesMpdAndLocalAuthoritiesInOneWorkspace() {
     copy_layout->trigger();
     QVERIFY(qobject_cast<ui::QueueItemDelegate*>(mpd_queue->itemDelegate()) == nullptr);
     tabs->setCurrentWidget(local_queue);
-    QTRY_COMPARE(window.property("trackbench-active-authority").toString(),
+    QTRY_COMPARE(window.property("trackknife-active-authority").toString(),
                  QStringLiteral("local"));
     QCOMPARE(heading->text(), QStringLiteral("Folders"));
     QVERIFY(folder_view->isVisible());
@@ -868,14 +868,14 @@ void BenchMainWindowTest::playbackBufferProfilesPersistAndExposeDiagnostics() {
     QVERIFY(!balanced->isChecked());
     QCOMPARE(responsive->toolTip(), QStringLiteral("250 ms capacity; playback starts at 50 ms"));
     QCOMPARE(custom->text(), QStringLiteral("Custom…"));
-    QTRY_COMPARE(window.property("trackbench-player-buffer-capacity-ms").toLongLong(), 250);
-    QCOMPARE(window.property("trackbench-player-active-buffer-capacity-ms").toLongLong(), -1);
-    QVERIFY(!window.property("trackbench-player-buffer-pending").toBool());
-    QCOMPARE(window.property("trackbench-player-underruns").toULongLong(), 0ULL);
+    QTRY_COMPARE(window.property("trackknife-player-buffer-capacity-ms").toLongLong(), 250);
+    QCOMPARE(window.property("trackknife-player-active-buffer-capacity-ms").toLongLong(), -1);
+    QVERIFY(!window.property("trackknife-player-buffer-pending").toBool());
+    QCOMPARE(window.property("trackknife-player-underruns").toULongLong(), 0ULL);
 
     resilient->trigger();
     QVERIFY(resilient->isChecked());
-    QTRY_COMPARE(window.property("trackbench-player-buffer-capacity-ms").toLongLong(), 2'000);
+    QTRY_COMPARE(window.property("trackknife-player-buffer-capacity-ms").toLongLong(), 2'000);
     QTRY_VERIFY(device->toolTip().contains(QStringLiteral("Resilient")));
     QVERIFY(device->toolTip().contains(QStringLiteral("Underruns: 0")));
 
@@ -901,7 +901,7 @@ void BenchMainWindowTest::playbackBufferProfilesPersistAndExposeDiagnostics() {
     });
     custom->trigger();
     QVERIFY(custom->isChecked());
-    QTRY_COMPARE(window.property("trackbench-player-buffer-capacity-ms").toLongLong(), 1'234);
+    QTRY_COMPARE(window.property("trackknife-player-buffer-capacity-ms").toLongLong(), 1'234);
     QCOMPARE(settings.value(QStringLiteral("playback/buffer-profile")).toString(),
              QStringLiteral("custom"));
     QCOMPARE(settings.value(QStringLiteral("playback/buffer-capacity-ms")).toInt(), 1'234);
@@ -913,7 +913,7 @@ void BenchMainWindowTest::playbackBufferProfilesPersistAndExposeDiagnostics() {
     auto* restored_custom = restored.findChild<QAction*>(QStringLiteral("action-buffer-custom"));
     QVERIFY(restored_custom != nullptr);
     QVERIFY(restored_custom->isChecked());
-    QTRY_COMPARE(restored.property("trackbench-player-buffer-capacity-ms").toLongLong(), 1'234);
+    QTRY_COMPARE(restored.property("trackknife-player-buffer-capacity-ms").toLongLong(), 1'234);
 }
 
 void BenchMainWindowTest::statusBarSummarizesTrackSelection() {
@@ -1101,7 +1101,7 @@ void BenchMainWindowTest::metadataReadyPlanAppliesAndRefreshesHistory() {
     QVERIFY(tabs != nullptr);
     QVERIFY(properties_action != nullptr);
     QTRY_COMPARE(tabs->count(), 2);
-    QTRY_VERIFY(!window.property("trackbench-metadata-operation-running").toBool());
+    QTRY_VERIFY(!window.property("trackknife-metadata-operation-running").toBool());
     auto* view = qobject_cast<QTableView*>(tabs->currentWidget());
     QVERIFY(view != nullptr);
     auto* list_model = qobject_cast<LocalListModel*>(view->model());
@@ -1146,7 +1146,7 @@ void BenchMainWindowTest::metadataReadyPlanAppliesAndRefreshesHistory() {
     QVERIFY(window.findChild<QDialog*>(QStringLiteral("bench-preparation-feedback")) == nullptr);
     QTRY_VERIFY(window.findChild<QDialog*>(QStringLiteral("bench-metadata-properties")) == nullptr);
     QTRY_COMPARE(tabs->count(), 2);
-    QTRY_VERIFY_WITH_TIMEOUT(!window.property("trackbench-metadata-operation-running").toBool(),
+    QTRY_VERIFY_WITH_TIMEOUT(!window.property("trackknife-metadata-operation-running").toBool(),
                              5'000);
 }
 
@@ -3999,8 +3999,8 @@ void BenchMainWindowTest::metadataStartupPresentsReconciliation() {
     {
         BenchMainWindow window;
         window.show();
-        QTRY_VERIFY(!window.property("trackbench-metadata-operation-running").toBool());
-        QTRY_COMPARE(window.property("trackbench-metadata-reconciliation-count").toULongLong(),
+        QTRY_VERIFY(!window.property("trackknife-metadata-operation-running").toBool());
+        QTRY_COMPARE(window.property("trackknife-metadata-reconciliation-count").toULongLong(),
                      1ULL);
         QDialog* dialog = nullptr;
         QTRY_VERIFY((dialog = window.findChild<QDialog*>(
@@ -4019,8 +4019,8 @@ void BenchMainWindowTest::metadataStartupPresentsReconciliation() {
     // A presented incident is acknowledged and does not reopen on later starts.
     BenchMainWindow second;
     second.show();
-    QTRY_VERIFY(!second.property("trackbench-metadata-operation-running").toBool());
-    QTRY_COMPARE(second.property("trackbench-metadata-reconciliation-count").toULongLong(), 1ULL);
+    QTRY_VERIFY(!second.property("trackknife-metadata-operation-running").toBool());
+    QTRY_COMPARE(second.property("trackknife-metadata-reconciliation-count").toULongLong(), 1ULL);
     QVERIFY(second.findChild<QDialog*>(QStringLiteral("bench-preparation-feedback")) == nullptr);
 }
 
@@ -4068,9 +4068,9 @@ void BenchMainWindowTest::filePublicationStartupPresentsReconciliation() {
 
     BenchMainWindow window;
     window.show();
-    QTRY_VERIFY(!window.property("trackbench-metadata-operation-running").toBool());
-    QTRY_COMPARE(window.property("trackbench-metadata-reconciliation-count").toULongLong(), 0ULL);
-    QTRY_COMPARE(window.property("trackbench-file-reconciliation-count").toULongLong(), 1ULL);
+    QTRY_VERIFY(!window.property("trackknife-metadata-operation-running").toBool());
+    QTRY_COMPARE(window.property("trackknife-metadata-reconciliation-count").toULongLong(), 0ULL);
+    QTRY_COMPARE(window.property("trackknife-file-reconciliation-count").toULongLong(), 1ULL);
     QDialog* dialog = nullptr;
     QTRY_VERIFY((dialog = window.findChild<QDialog*>(
                      QStringLiteral("bench-preparation-feedback"))) != nullptr);
@@ -4186,7 +4186,7 @@ void BenchMainWindowTest::combinedPublicationStartupRecoversMetadataAndPath() {
     auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("bench-tabs"));
     QVERIFY(tabs != nullptr);
     QTRY_COMPARE(tabs->count(), 2);
-    QTRY_VERIFY_WITH_TIMEOUT(!window.property("trackbench-metadata-operation-running").toBool(),
+    QTRY_VERIFY_WITH_TIMEOUT(!window.property("trackknife-metadata-operation-running").toBool(),
                              5'000);
     auto* list_model =
         qobject_cast<LocalListModel*>(qobject_cast<QTableView*>(tabs->currentWidget())->model());
@@ -4199,7 +4199,7 @@ void BenchMainWindowTest::combinedPublicationStartupRecoversMetadataAndPath() {
 
     // Successful recovery is silent: no attention window, no history surface.
     QVERIFY(window.findChild<QDialog*>(QStringLiteral("bench-preparation-feedback")) == nullptr);
-    QCOMPARE(window.property("trackbench-file-reconciliation-count").toULongLong(), 0ULL);
+    QCOMPARE(window.property("trackknife-file-reconciliation-count").toULongLong(), 0ULL);
 }
 
 void BenchMainWindowTest::folderDiscoveryAdmitsWave64() {
@@ -5874,14 +5874,14 @@ void BenchMainWindowTest::autoAdvancesOncePerFinishedTrack() {
         int last_state = -1;
         int ticks = 0;
         while (!current(1) && !advance_deadline.hasExpired()) {
-            const auto state = window.property("trackbench-player-state").toInt();
+            const auto state = window.property("trackknife-player-state").toInt();
             ended_between_tracks = ended_between_tracks || state == 7;
             if (state != last_state || ++ticks % 20 == 0) {
                 qInfo() << "player state" << state << "position"
-                        << window.property("trackbench-player-position").toLongLong() << "buffered"
-                        << window.property("trackbench-player-buffered").toLongLong() << "callbacks"
-                        << window.property("trackbench-player-callbacks").toLongLong() << "output"
-                        << window.property("trackbench-player-outputstate").toInt();
+                        << window.property("trackknife-player-position").toLongLong() << "buffered"
+                        << window.property("trackknife-player-buffered").toLongLong() << "callbacks"
+                        << window.property("trackknife-player-callbacks").toLongLong() << "output"
+                        << window.property("trackknife-player-outputstate").toInt();
                 last_state = state;
             }
             QTest::qWait(50);
@@ -5895,7 +5895,7 @@ void BenchMainWindowTest::autoAdvancesOncePerFinishedTrack() {
         const QDeadlineTimer second_deadline{5'000};
         while (!current(2) && !second_deadline.hasExpired()) {
             ended_between_tracks =
-                ended_between_tracks || window.property("trackbench-player-state").toInt() == 7;
+                ended_between_tracks || window.property("trackknife-player-state").toInt() == 7;
             QTest::qWait(50);
         }
     }

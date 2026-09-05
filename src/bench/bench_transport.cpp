@@ -131,7 +131,7 @@ queued_source_from_snapshot(const audio::LocalAuditionSnapshot& snapshot) {
 } // namespace
 
 BenchMainWindow::BenchMainWindow(QWidget* parent) : QMainWindow(parent) {
-    setWindowTitle(QStringLiteral("Trackbench"));
+    setWindowTitle(QStringLiteral("Trackknife"));
     resize(1100, 720);
     setAcceptDrops(true);
 
@@ -641,7 +641,7 @@ void BenchMainWindow::refreshTransport() {
     }
     const auto snapshot = player_->snapshot();
     // Observable for offscreen tests and diagnostics.
-    setProperty("trackbench-player-state", static_cast<int>(snapshot.state));
+    setProperty("trackknife-player-state", static_cast<int>(snapshot.state));
 
     // A consumed gapless takeover moves the anchors and highlight without any
     // load; the engine already plays the next row.
@@ -659,25 +659,25 @@ void BenchMainWindow::refreshTransport() {
             }
         }
     }
-    setProperty("trackbench-player-position", static_cast<qlonglong>(snapshot.position_sample));
-    setProperty("trackbench-player-buffered", static_cast<qlonglong>(snapshot.buffered_frames));
-    setProperty("trackbench-player-buffer-capacity-ms",
+    setProperty("trackknife-player-position", static_cast<qlonglong>(snapshot.position_sample));
+    setProperty("trackknife-player-buffered", static_cast<qlonglong>(snapshot.buffered_frames));
+    setProperty("trackknife-player-buffer-capacity-ms",
                 static_cast<qlonglong>(snapshot.configured_buffer.capacity.count()));
-    setProperty("trackbench-player-active-buffer-capacity-ms",
+    setProperty("trackknife-player-active-buffer-capacity-ms",
                 snapshot.active_buffer
                     ? static_cast<qlonglong>(snapshot.active_buffer->capacity.count())
                     : static_cast<qlonglong>(-1));
-    setProperty("trackbench-player-buffer-pending",
+    setProperty("trackknife-player-buffer-pending",
                 snapshot.active_buffer && *snapshot.active_buffer != snapshot.configured_buffer);
-    setProperty("trackbench-player-underruns", static_cast<qulonglong>(snapshot.underrun_count));
-    setProperty("trackbench-player-callbacks",
+    setProperty("trackknife-player-underruns", static_cast<qulonglong>(snapshot.underrun_count));
+    setProperty("trackknife-player-callbacks",
                 static_cast<qlonglong>(snapshot.output.callback_count));
-    setProperty("trackbench-player-outputstate", static_cast<int>(snapshot.output.state));
-    setProperty("trackbench-player-output-available", snapshot.output_target_available);
-    setProperty("trackbench-player-output-suspended", snapshot.output_suspended);
-    setProperty("trackbench-player-device-generation",
+    setProperty("trackknife-player-outputstate", static_cast<int>(snapshot.output.state));
+    setProperty("trackknife-player-output-available", snapshot.output_target_available);
+    setProperty("trackknife-player-output-suspended", snapshot.output_suspended);
+    setProperty("trackknife-player-device-generation",
                 static_cast<qulonglong>(snapshot.device_generation));
-    setProperty("trackbench-player-default-output",
+    setProperty("trackknife-player-default-output",
                 snapshot.default_output_target ? displayText(*snapshot.default_output_target)
                                                : QString{});
 

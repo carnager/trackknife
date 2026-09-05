@@ -11,7 +11,7 @@ namespace trackknife::ui {
 // Optional QTableView properties used by the shared grouped delegate. Models
 // with a different physical column projection set these to their logical
 // metadata columns. The default projection is the shared seven-column
-// Trackbench contract.
+// Trackknife contract.
 inline constexpr auto track_artwork_column_property = "trackknife-track-artwork-column";
 inline constexpr auto track_artist_column_property = "trackknife-track-artist-column";
 inline constexpr auto track_number_column_property = "trackknife-track-number-column";
@@ -25,7 +25,7 @@ inline constexpr auto track_side_artwork_property = "trackknife-track-side-artwo
 // Shared role and column contract for the album-grouped track presentation
 // (QueueItemDelegate/QueueTableView). Any model rendered by the shared
 // delegate provides these roles and the seven-column layout below; the MPD
-// queue model and Trackbench's local list model both implement it.
+// queue model and Trackknife's local list model both implement it.
 enum TrackRowRole : int {
     track_source_role = Qt::UserRole + 1, // MPD URI or raw local path bytes
     track_id_role,                        // stable per-occurrence identity

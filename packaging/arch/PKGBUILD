@@ -1,16 +1,17 @@
 # Maintainer: Rasi <rasmus.steinke@gmail.com>
-pkgname=trackbench-git
-pkgver=r96.gb7ad8cb
+pkgname=trackknife-git
+pkgver=r99.ga74e532
 pkgrel=1
-pkgdesc="Audio tagging, conversion, and library workstation (Trackknife project, built from HEAD)"
+pkgdesc="MPD client and audio workstation: tagging, conversion, ReplayGain (built from HEAD)"
 arch=(x86_64)
 url="https://github.com/carnager/trackknife"
 license=(GPL-3.0-only)
 depends=(ffmpeg libebur128 libmpdclient libopenmpt libutf8proc pipewire qt6-base sqlite taglib)
 makedepends=(cmake git ninja)
 optdepends=('chromaprint: AcoustID fingerprinting in the MusicBrainz Identify dialog')
-provides=(trackbench)
-conflicts=(trackbench)
+provides=(trackknife)
+conflicts=(trackknife trackbench-git)
+replaces=(trackbench-git)
 source=("trackknife::git+https://github.com/carnager/trackknife.git")
 sha256sums=('SKIP')
 
@@ -23,28 +24,28 @@ build() {
   cd trackknife
   # Warnings-as-errors stays off so packaging never fails on warnings a
   # future compiler invents. Tests and benchmarks are opt-in: export
-  # TRACKBENCH_CHECK=1 to build and run the functional suites.
+  # TRACKKNIFE_CHECK=1 to build and run the functional suites.
   local testing=OFF
-  [[ -n ${TRACKBENCH_CHECK:-} ]] && testing=ON
+  [[ -n ${TRACKKNIFE_CHECK:-} ]] && testing=ON
   cmake --preset release -DTRACKKNIFE_WARNINGS_AS_ERRORS=OFF \
     -DBUILD_TESTING=$testing -DTRACKKNIFE_BUILD_BENCHMARKS=OFF
   cmake --build build/release
 }
 
 check() {
-  [[ -n ${TRACKBENCH_CHECK:-} ]] || return 0
+  [[ -n ${TRACKKNIFE_CHECK:-} ]] || return 0
   cd trackknife/build/release
   QT_QPA_PLATFORM=offscreen ctest --output-on-failure
 }
 
 package() {
   cd trackknife
-  install -Dm755 build/release/src/bench/trackbench "$pkgdir/usr/bin/trackbench"
+  install -Dm755 build/release/src/bench/trackknife "$pkgdir/usr/bin/trackknife"
   install -Dm755 build/release/src/tools/trackknife-titleformat \
     "$pkgdir/usr/bin/trackknife-titleformat"
   install -Dm755 build/release/src/tools/trackknife-mpd-probe \
     "$pkgdir/usr/bin/trackknife-mpd-probe"
-  install -Dm644 packaging/arch/trackbench.desktop \
-    "$pkgdir/usr/share/applications/trackbench.desktop"
+  install -Dm644 packaging/arch/trackknife.desktop \
+    "$pkgdir/usr/share/applications/trackknife.desktop"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

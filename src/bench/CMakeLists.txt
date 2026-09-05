@@ -58,10 +58,10 @@ target_link_libraries(
 target_include_directories(trackknife_bench_ui PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_compile_features(trackknife_bench_ui PUBLIC cxx_std_23)
 
-qt_add_executable(trackbench main.cpp)
+qt_add_executable(trackknife main.cpp)
 target_link_libraries(
-    trackbench
+    trackknife
     PRIVATE Trackknife::BenchUi Qt6::Widgets trackknife_project_options
             trackknife_project_warnings
 )
-set_target_properties(trackbench PROPERTIES OUTPUT_NAME trackbench)
+set_target_properties(trackknife PROPERTIES OUTPUT_NAME trackknife)

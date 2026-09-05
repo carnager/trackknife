@@ -1,6 +1,6 @@
-# Trackbench
+# Trackknife
 
-Trackbench is a Qt 6 music workstation for Linux. It is one window with two
+Trackknife is a Qt 6 music workstation for Linux. It is one window with two
 sides: an MPD client for the daemon that plays your library, and a local-file
 workspace for the work your library needs — tagging, MusicBrainz lookups,
 ReplayGain, format conversion, and file organization. The two sides share the
@@ -100,7 +100,7 @@ fingerprinting.
 ```sh
 cmake --preset release
 cmake --build build/release
-./build/release/src/bench/trackbench
+./build/release/src/bench/trackknife
 ```
 
 On Arch, `packaging/arch/` contains a PKGBUILD that builds from the
@@ -110,7 +110,7 @@ repository head:
 cd packaging/arch && makepkg -si
 ```
 
-Tests are opt-in for the package build (`TRACKBENCH_CHECK=1 makepkg`). For
+Tests are opt-in for the package build (`TRACKKNIFE_CHECK=1 makepkg`). For
 development, four configure presets exist — `dev`, `asan`, `tsan`, and
 `tidy` — and all of them are expected to pass the full suite:
 

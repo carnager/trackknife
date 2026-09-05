@@ -69,7 +69,7 @@ namespace trackknife::bench {
 struct MetadataOperationJobOutcome;
 class MusicBrainzFetchService;
 
-// Trackbench main window: composed Folders/Track Lists panels, configurable
+// Trackknife main window: composed Folders/Track Lists panels, configurable
 // local working-list views, and one transport over the serialized playback worker
 // (ADR-0021/0023/0024, promoted to first-class playback by ADR-0025).
 class BenchMainWindow final : public QMainWindow {

@@ -107,7 +107,12 @@ void MetadataTransformationInterchangeTest::roundTripsEveryTypedActionExactly() 
 
     const auto serialized = serializeMetadataTransformationChain(chain);
     QVERIFY2(serialized.has_value(), serialized ? "" : serialized.error().message.c_str());
-    QVERIFY(serialized->contains("trackbench-metadata-transformation-chain"));
+    QVERIFY(serialized->contains("trackknife-metadata-transformation-chain"));
+    // Exports written under the interim application name import unchanged.
+    auto legacy = *serialized;
+    legacy.replace("trackknife-metadata-transformation-chain",
+                   "trackbench-metadata-transformation-chain");
+    QVERIFY(deserializeMetadataTransformationChain(legacy).has_value());
     QVERIFY(!serialized->contains("automatic"));
     QVERIFY(!serialized->contains("stable_id"));
 

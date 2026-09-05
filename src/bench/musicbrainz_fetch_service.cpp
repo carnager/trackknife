@@ -28,7 +28,7 @@ namespace trackknife::bench {
 namespace {
 
 // MusicBrainz requires an identifying User-Agent naming the application.
-const auto user_agent = QStringLiteral("Trackbench/0.0.1 ( https://trackknife.dev )");
+const auto user_agent = QStringLiteral("Trackknife/0.0.1 ( https://trackknife.dev )");
 
 [[nodiscard]] std::optional<QByteArray> load_cached(const std::filesystem::path& database_path,
                                                     const std::string& url) {
@@ -210,7 +210,7 @@ void MusicBrainzFetchService::acoustidLookup(
             request.setHeader(QNetworkRequest::ContentTypeHeader,
                               QStringLiteral("application/x-www-form-urlencoded"));
             request.setHeader(QNetworkRequest::UserAgentHeader,
-                              QStringLiteral("Trackbench/0.0.1 ( https://trackknife.dev )"));
+                              QStringLiteral("Trackknife/0.0.1 ( https://trackknife.dev )"));
             auto* reply = self->network_->post(
                 request, QByteArray{body.data(), static_cast<qsizetype>(body.size())});
             connect(reply, &QNetworkReply::finished, self,

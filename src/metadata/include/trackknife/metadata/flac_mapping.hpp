@@ -36,7 +36,7 @@ struct TextPropertyIdentity {
 // Empty for fields written under a single name.
 [[nodiscard]] std::vector<std::string> paired_flac_property_names(std::string_view canonical_name);
 
-// Resolves one Trackbench field to the exact Xiph-comment key used by the
+// Resolves one Trackknife field to the exact Xiph-comment key used by the
 // native FLAC adapter. Existing native spelling wins; known newly added fields
 // use the repository-owned conventional mapping; arbitrary additions retain
 // their display spelling with ASCII letters uppercased. Exact empty values and

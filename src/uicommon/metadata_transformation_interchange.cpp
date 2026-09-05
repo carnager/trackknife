@@ -27,7 +27,9 @@
 namespace trackknife::ui {
 namespace {
 
-constexpr auto interchange_format = "trackbench-metadata-transformation-chain";
+constexpr auto interchange_format = "trackknife-metadata-transformation-chain";
+// Exports before the application reclaimed its original name used this id.
+constexpr auto legacy_interchange_format = "trackbench-metadata-transformation-chain";
 constexpr std::uint32_t interchange_version = 1U;
 
 [[nodiscard]] core::Error interchangeError(const core::ErrorCode code, std::string message,
@@ -809,7 +811,8 @@ deserializeMetadataTransformationChain(const QByteArray& bytes) {
     if (!version) {
         return std::unexpected(version.error());
     }
-    if (*format != interchange_format || *version != interchange_version) {
+    if ((*format != interchange_format && *format != legacy_interchange_format) ||
+        *version != interchange_version) {
         return std::unexpected(interchangeError(
             core::ErrorCode::unsupported,
             "Native tagging-script format or envelope version is unsupported", "root"));

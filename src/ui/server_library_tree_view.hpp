@@ -14,7 +14,7 @@
 namespace trackknife::ui {
 
 // Shared server-library presentation used by both the compatibility client and
-// Trackbench's MPD authority. The three inline actions are append, add next,
+// Trackknife's MPD authority. The three inline actions are append, add next,
 // and replace-and-play, in that order.
 class ServerLibraryTreeView final : public QTreeView {
   public:

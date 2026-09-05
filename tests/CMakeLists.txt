@@ -463,7 +463,7 @@ if(TRACKKNIFE_BUILD_UI)
 
     add_test(
         NAME ui-smoke
-        COMMAND trackbench --screenshot "${CMAKE_CURRENT_BINARY_DIR}/ui_smoke_screenshot.png"
+        COMMAND trackknife --screenshot "${CMAKE_CURRENT_BINARY_DIR}/ui_smoke_screenshot.png"
     )
     set_tests_properties(
         ui-smoke

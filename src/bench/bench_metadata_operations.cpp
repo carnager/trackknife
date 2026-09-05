@@ -139,7 +139,7 @@ run_metadata_operation_job(const std::filesystem::path& database_path,
         if (!persistence_service) {
             return std::unexpected(core::Error{
                 .code = core::ErrorCode::cancelled,
-                .message = "Trackbench closed during metadata recovery",
+                .message = "Trackknife closed during metadata recovery",
                 .context = {},
             });
         }
@@ -156,7 +156,7 @@ run_metadata_operation_job(const std::filesystem::path& database_path,
         if (!persistence_service) {
             return std::unexpected(core::Error{
                 .code = core::ErrorCode::cancelled,
-                .message = "Trackbench closed during source reconciliation",
+                .message = "Trackknife closed during source reconciliation",
                 .context = {},
             });
         }
@@ -169,7 +169,7 @@ run_metadata_operation_job(const std::filesystem::path& database_path,
             if (!persistence_service) {
                 return std::unexpected(core::Error{
                     .code = core::ErrorCode::cancelled,
-                    .message = "Trackbench closed during source reconciliation",
+                    .message = "Trackknife closed during source reconciliation",
                     .context = {},
                 });
             }
@@ -313,7 +313,7 @@ void BenchMainWindow::showConvertDialog() {
                                std::vector<persistence::SavedDestinationProfile>, QString)>
                 completion) {
             if (persistence_service == nullptr) {
-                completion({}, {}, QStringLiteral("Trackbench persistence is unavailable"));
+                completion({}, {}, QStringLiteral("Trackknife persistence is unavailable"));
                 return;
             }
             persistence_service->loadOutputProfiles(std::move(completion));
@@ -322,7 +322,7 @@ void BenchMainWindow::showConvertDialog() {
             .load =
                 [persistence_service](ConvertPresetStore::LoadCompletion completion) {
                     if (persistence_service == nullptr) {
-                        completion({}, QStringLiteral("Trackbench persistence is unavailable"));
+                        completion({}, QStringLiteral("Trackknife persistence is unavailable"));
                         return;
                     }
                     persistence_service->loadEncoderPresets(std::move(completion));
@@ -331,7 +331,7 @@ void BenchMainWindow::showConvertDialog() {
                 [persistence_service](persistence::SavedEncoderPreset preset,
                                       ConvertPresetStore::Completion completion) {
                     if (persistence_service == nullptr) {
-                        completion(QStringLiteral("Trackbench persistence is unavailable"));
+                        completion(QStringLiteral("Trackknife persistence is unavailable"));
                         return;
                     }
                     persistence_service->saveEncoderPreset(std::move(preset),
@@ -341,7 +341,7 @@ void BenchMainWindow::showConvertDialog() {
                 [persistence_service](core::StableId id,
                                       ConvertPresetStore::Completion completion) {
                     if (persistence_service == nullptr) {
-                        completion(QStringLiteral("Trackbench persistence is unavailable"));
+                        completion(QStringLiteral("Trackknife persistence is unavailable"));
                         return;
                     }
                     persistence_service->removeEncoderPreset(id, std::move(completion));
@@ -411,7 +411,7 @@ void BenchMainWindow::showMetadataProperties() {
                     if (!persistence_service) {
                         return std::unexpected(core::Error{
                             .code = core::ErrorCode::cancelled,
-                            .message = "Trackbench closed during metadata Apply",
+                            .message = "Trackknife closed during metadata Apply",
                             .context = {},
                         });
                     }
@@ -435,7 +435,7 @@ void BenchMainWindow::showMetadataProperties() {
                         if (!persistence_service) {
                             return std::unexpected(core::Error{
                                 .code = core::ErrorCode::cancelled,
-                                .message = "Trackbench closed during metadata Apply",
+                                .message = "Trackknife closed during metadata Apply",
                                 .context = {},
                             });
                         }
@@ -472,7 +472,7 @@ void BenchMainWindow::showMetadataProperties() {
             .load =
                 [persistence_service](MetadataTransformationStore::LoadCompletion completion) {
                     if (!persistence_service) {
-                        completion({}, QStringLiteral("Trackbench persistence is unavailable"));
+                        completion({}, QStringLiteral("Trackknife persistence is unavailable"));
                         return;
                     }
                     persistence_service->loadMetadataTransformationChains(std::move(completion));
@@ -481,7 +481,7 @@ void BenchMainWindow::showMetadataProperties() {
                 [persistence_service](persistence::SavedMetadataTransformationChain chain,
                                       MetadataTransformationStore::Completion completion) {
                     if (!persistence_service) {
-                        completion(QStringLiteral("Trackbench persistence is unavailable"));
+                        completion(QStringLiteral("Trackknife persistence is unavailable"));
                         return;
                     }
                     persistence_service->saveMetadataTransformationChain(std::move(chain),
@@ -491,7 +491,7 @@ void BenchMainWindow::showMetadataProperties() {
                 [persistence_service](core::StableId id,
                                       MetadataTransformationStore::Completion completion) {
                     if (!persistence_service) {
-                        completion(QStringLiteral("Trackbench persistence is unavailable"));
+                        completion(QStringLiteral("Trackknife persistence is unavailable"));
                         return;
                     }
                     persistence_service->removeMetadataTransformationChain(id,
@@ -502,7 +502,7 @@ void BenchMainWindow::showMetadataProperties() {
             .load =
                 [persistence_service](OutputProfileStore::LoadCompletion completion) {
                     if (!persistence_service) {
-                        completion({}, {}, QStringLiteral("Trackbench persistence is unavailable"));
+                        completion({}, {}, QStringLiteral("Trackknife persistence is unavailable"));
                         return;
                     }
                     persistence_service->loadOutputProfiles(std::move(completion));
@@ -511,7 +511,7 @@ void BenchMainWindow::showMetadataProperties() {
                 [persistence_service](persistence::SavedOutputLayoutProfile profile,
                                       OutputProfileStore::Completion completion) {
                     if (!persistence_service) {
-                        completion(QStringLiteral("Trackbench persistence is unavailable"));
+                        completion(QStringLiteral("Trackknife persistence is unavailable"));
                         return;
                     }
                     persistence_service->saveOutputLayoutProfile(std::move(profile),
@@ -521,7 +521,7 @@ void BenchMainWindow::showMetadataProperties() {
                 [persistence_service](core::StableId id,
                                       OutputProfileStore::Completion completion) {
                     if (!persistence_service) {
-                        completion(QStringLiteral("Trackbench persistence is unavailable"));
+                        completion(QStringLiteral("Trackknife persistence is unavailable"));
                         return;
                     }
                     persistence_service->removeOutputLayoutProfile(id, std::move(completion));
@@ -530,7 +530,7 @@ void BenchMainWindow::showMetadataProperties() {
                 [persistence_service](persistence::SavedDestinationProfile profile,
                                       OutputProfileStore::Completion completion) {
                     if (!persistence_service) {
-                        completion(QStringLiteral("Trackbench persistence is unavailable"));
+                        completion(QStringLiteral("Trackknife persistence is unavailable"));
                         return;
                     }
                     persistence_service->saveDestinationProfile(std::move(profile),
@@ -540,7 +540,7 @@ void BenchMainWindow::showMetadataProperties() {
                 [persistence_service](core::StableId id,
                                       OutputProfileStore::Completion completion) {
                     if (!persistence_service) {
-                        completion(QStringLiteral("Trackbench persistence is unavailable"));
+                        completion(QStringLiteral("Trackknife persistence is unavailable"));
                         return;
                     }
                     persistence_service->removeDestinationProfile(id, std::move(completion));
@@ -568,7 +568,7 @@ void BenchMainWindow::showMetadataProperties() {
                     if (!persistence_service) {
                         return std::unexpected(core::Error{
                             .code = core::ErrorCode::cancelled,
-                            .message = "Trackbench closed during file publication",
+                            .message = "Trackknife closed during file publication",
                             .context = {},
                         });
                     }
@@ -599,7 +599,7 @@ void BenchMainWindow::showMetadataProperties() {
                         if (!persistence_service) {
                             return std::unexpected(core::Error{
                                 .code = core::ErrorCode::cancelled,
-                                .message = "Trackbench closed during metadata reconciliation",
+                                .message = "Trackknife closed during metadata reconciliation",
                                 .context = {},
                             });
                         }
@@ -615,7 +615,7 @@ void BenchMainWindow::showMetadataProperties() {
                         if (!persistence_service) {
                             return std::unexpected(core::Error{
                                 .code = core::ErrorCode::cancelled,
-                                .message = "Trackbench closed during source reconciliation",
+                                .message = "Trackknife closed during source reconciliation",
                                 .context = {},
                             });
                         }
@@ -624,7 +624,7 @@ void BenchMainWindow::showMetadataProperties() {
                             if (!persistence_service) {
                                 return std::unexpected(core::Error{
                                     .code = core::ErrorCode::cancelled,
-                                    .message = "Trackbench closed during source reconciliation",
+                                    .message = "Trackknife closed during source reconciliation",
                                     .context = {},
                                 });
                             }
@@ -697,7 +697,7 @@ void BenchMainWindow::showMetadataProperties() {
                 [persistence_service](QString key,
                                       MetadataDialogLayoutStore::LoadCompletion completion) {
                     if (!persistence_service) {
-                        completion({}, QStringLiteral("Trackbench persistence is unavailable"));
+                        completion({}, QStringLiteral("Trackknife persistence is unavailable"));
                         return;
                     }
                     persistence_service->loadUiState(std::move(key), std::move(completion));
@@ -707,7 +707,7 @@ void BenchMainWindow::showMetadataProperties() {
                                       MetadataDialogLayoutStore::Completion completion) {
                     if (!persistence_service) {
                         if (completion) {
-                            completion(QStringLiteral("Trackbench persistence is unavailable"));
+                            completion(QStringLiteral("Trackknife persistence is unavailable"));
                         }
                         return;
                     }
@@ -730,7 +730,7 @@ void BenchMainWindow::showMetadataProperties() {
                     if (!persistence_service) {
                         return std::unexpected(core::Error{
                             .code = core::ErrorCode::cancelled,
-                            .message = "Trackbench closed during artwork Apply",
+                            .message = "Trackknife closed during artwork Apply",
                             .context = {},
                         });
                     }
@@ -754,7 +754,7 @@ void BenchMainWindow::showMetadataProperties() {
                         if (!persistence_service) {
                             return std::unexpected(core::Error{
                                 .code = core::ErrorCode::cancelled,
-                                .message = "Trackbench closed during artwork reconciliation",
+                                .message = "Trackknife closed during artwork reconciliation",
                                 .context = {},
                             });
                         }
@@ -838,7 +838,7 @@ void BenchMainWindow::startMetadataOperationRecovery() {
     metadata_recovery_started_ = true;
     metadata_operation_running_ = true;
     metadata_operation_cancellation_ = core::CancellationSource{};
-    setProperty("trackbench-metadata-operation-running", true);
+    setProperty("trackknife-metadata-operation-running", true);
     auto* const persistence_service = persistence_;
     const auto database_path = database_path_;
     const auto cancellation = metadata_operation_cancellation_.token();
@@ -909,7 +909,7 @@ void BenchMainWindow::applyCommittedPublicationMetadata(
 
 void BenchMainWindow::finishMetadataOperationJob() {
     metadata_operation_running_ = false;
-    setProperty("trackbench-metadata-operation-running", false);
+    setProperty("trackknife-metadata-operation-running", false);
     auto snapshot = metadata_operation_watcher_.result();
     if (!snapshot) {
         statusBar()->showMessage(QStringLiteral("Metadata operation returned no result"), 8'000);
@@ -934,9 +934,9 @@ void BenchMainWindow::finishMetadataOperationJob() {
                            operations::FilePublicationJournalState::needs_reconciliation,
                            &operations::FilePublicationJournalRecord::state);
     const auto metadata_attention = metadata_operation_snapshot_->reconciliation.size();
-    setProperty("trackbench-metadata-reconciliation-count",
+    setProperty("trackknife-metadata-reconciliation-count",
                 static_cast<qulonglong>(metadata_attention));
-    setProperty("trackbench-file-reconciliation-count", static_cast<qulonglong>(file_attention));
+    setProperty("trackknife-file-reconciliation-count", static_cast<qulonglong>(file_attention));
 
     if (metadata_operation_snapshot_->error) {
         statusBar()->showMessage(
@@ -1020,7 +1020,7 @@ void BenchMainWindow::presentInterruptedOperations() {
     }
     auto* dialog = createPreparationFeedbackDialog(
         QStringLiteral("Interrupted file work"),
-        QStringLiteral("Trackbench could not finish or safely undo %1 earlier %2. The listed "
+        QStringLiteral("Trackknife could not finish or safely undo %1 earlier %2. The listed "
                        "files were left as they are — check them before editing further.")
             .arg(rows.size())
             .arg(rows.size() == 1U ? QStringLiteral("operation") : QStringLiteral("operations")),

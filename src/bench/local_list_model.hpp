@@ -18,7 +18,7 @@
 
 namespace trackknife::bench {
 
-// Trackbench's local presentation has a real artwork/status column followed by
+// Trackknife's local presentation has a real artwork/status column followed by
 // independent metadata columns. Shared semantic roles still let the grouped
 // delegate and queue view consume the model without owning local-file state.
 enum LocalTrackColumn : int {
@@ -32,7 +32,7 @@ enum LocalTrackColumn : int {
     local_column_count = ui::track_column_count,
 };
 
-// One row of a Trackbench working list: raw Linux path bytes plus the
+// One row of a Trackknife working list: raw Linux path bytes plus the
 // display metadata enriched by the background probe or restored from the
 // persisted document.
 struct LocalTrackRow {
@@ -67,9 +67,9 @@ struct LocalTrackSource {
     friend bool operator==(const LocalTrackSource&, const LocalTrackSource&) = default;
 };
 
-// Table model over one Trackbench working list, implementing the shared
+// Table model over one Trackknife working list, implementing the shared
 // album-grouped semantic role contract (uicommon/track_row_roles.hpp). Its
-// seven-column Trackbench projection keeps artwork, artist, number, and title
+// seven-column Trackknife projection keeps artwork, artist, number, and title
 // independently arrangeable. Rows hold raw path bytes; presentation uses the
 // lossless escaped form from the core.
 class LocalListModel final : public QAbstractTableModel {

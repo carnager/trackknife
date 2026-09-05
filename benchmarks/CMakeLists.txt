@@ -16,14 +16,14 @@ target_link_libraries(
 add_test(NAME titleformat-benchmark-smoke COMMAND trackknife_titleformat_benchmark --quick)
 
 if(TRACKKNIFE_BUILD_UI)
-    qt_add_executable(trackbench_ui_benchmark trackbench_ui_benchmark.cpp)
+    qt_add_executable(trackknife_ui_benchmark trackknife_ui_benchmark.cpp)
     target_link_libraries(
-        trackbench_ui_benchmark
+        trackknife_ui_benchmark
         PRIVATE Trackknife::BenchUi Qt6::Test trackknife_project_options
                 trackknife_project_warnings
     )
-    add_test(NAME trackbench-ui-benchmark-smoke COMMAND trackbench_ui_benchmark --quick)
+    add_test(NAME trackknife-ui-benchmark-smoke COMMAND trackknife_ui_benchmark --quick)
     set_tests_properties(
-        trackbench-ui-benchmark-smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        trackknife-ui-benchmark-smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
 endif()

@@ -492,8 +492,8 @@ bool BenchMainWindow::isMpdContext() const {
 void BenchMainWindow::refreshActiveContext() {
     const auto mpd = isMpdContext();
     const auto authority = mpd ? QStringLiteral("mpd") : QStringLiteral("local");
-    const auto context_changed = property("trackbench-active-authority").toString() != authority;
-    setProperty("trackbench-active-authority", authority);
+    const auto context_changed = property("trackknife-active-authority").toString() != authority;
+    setProperty("trackknife-active-authority", authority);
     if (source_stack_ != nullptr) {
         auto* source =
             mpd ? static_cast<QWidget*>(server_library_view_) : static_cast<QWidget*>(folder_view_);
@@ -591,7 +591,7 @@ void BenchMainWindow::refreshTabChrome(ListTab& tab) {
     tabs_->setTabText(index, name + (tab.document.dirty ? QStringLiteral(" *") : QString{}));
     const auto kind = tab.document.kind == persistence::ListKind::scratch
                           ? QStringLiteral("Persistent scratch list")
-                          : QStringLiteral("Named Trackbench working list");
+                          : QStringLiteral("Named Trackknife working list");
     tabs_->setTabToolTip(index,
                          QStringLiteral("%1%2%3").arg(
                              kind, tab.document.pinned ? QStringLiteral(" · pinned") : QString{},

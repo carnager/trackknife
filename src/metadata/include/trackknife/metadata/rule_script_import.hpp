@@ -43,7 +43,7 @@ struct MetadataRuleScriptImportResult {
 };
 
 // Translates a deliberately bounded Picard-style cleanup subset into
-// Trackbench-owned declarative actions. This is an import convenience, not a
+// Trackknife-owned declarative actions. This is an import convenience, not a
 // Picard scripting runtime or compatibility contract. Supported mutation calls
 // are $unset/$delete, $set, and $if; supported pure expressions are fields plus
 // $if/$if2/$and/$or/$not/$eq/$ne/$left.

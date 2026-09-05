@@ -1855,7 +1855,7 @@ void MetadataPropertiesDialog::startOutputLayoutExample() {
                 return std::make_shared<OutputLayoutExampleResult>(
                     std::unexpected(std::move(documents.error())));
             }
-            constexpr auto preview_root = "/trackbench-layout-example";
+            constexpr auto preview_root = "/trackknife-layout-example";
             std::vector<operations::OutputPathPlanningItem> planning_items;
             planning_items.reserve(items.size());
             for (std::size_t position = 0U; position < items.size(); ++position) {
@@ -1903,7 +1903,7 @@ void MetadataPropertiesDialog::startOutputLayoutExample() {
                 .truncated = truncated,
             };
             preview.rows.reserve(planned->sources.size());
-            constexpr std::string_view prefix = "/trackbench-layout-example/";
+            constexpr std::string_view prefix = "/trackknife-layout-example/";
             for (const auto& planned_source : planned->sources) {
                 auto relative_path = planned_source.target_raw_path;
                 if (!relative_path.starts_with(prefix)) {
@@ -2052,7 +2052,7 @@ void MetadataPropertiesDialog::finishProposals() {
 }
 
 // Picard runs tagging scripts the moment new metadata arrives and saves
-// exactly what it displays. Trackbench goes one step further per the
+// exactly what it displays. Trackknife goes one step further per the
 // user's model: automatic scripts also stage over plain local baselines,
 // so every write is what the grid shows — never a hidden apply-time pass.
 void MetadataPropertiesDialog::stageAutomaticTransformations() {

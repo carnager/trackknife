@@ -1,6 +1,6 @@
-# tkfmt — the Trackbench formatting language
+# tkfmt — the Trackknife formatting language
 
-`tkfmt-1` is the expression language used everywhere Trackbench turns track
+`tkfmt-1` is the expression language used everywhere Trackknife turns track
 metadata into text: naming layouts for rename/move and conversion, library
 tree levels, ReplayGain album grouping, and metadata transformation scripts.
 If you have used foobar2000's title formatting or MusicBrainz Picard's
