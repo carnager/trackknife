@@ -57,7 +57,7 @@ The tag editor over a multi-file selection, with staged drafts:
 
 ![Tag editor](Screenshots/tagger.png)
 
-MusicBrainz identification with per-track match scores:
+MusicBrainz identification, one row per release version:
 
 ![MusicBrainz identification](Screenshots/musicbrainz.png)
 
@@ -65,7 +65,7 @@ The converter with a live destination preview:
 
 ![Converter](Screenshots/converter.png)
 
-Rename/move with naming expressions and conflict preview:
+Naming layouts with a live path preview:
 
 ![Renaming](Screenshots/renaming.png)
 
