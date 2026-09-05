@@ -35,7 +35,9 @@ Library source beside Folders: chosen roots, background incremental indexing,
 paged artist/album browsing and album/track search, unavailable-file retention,
 and manual Refresh scans (ADR-0116). ADR-0117 adds MPD-style library actions
 and drag/drop into local tab contents. Migration 28 joins index metadata/path
-updates to the existing list/cache transaction. Real-file and UI verification is recorded in
+updates to the existing list/cache transaction. ADR-0118 adds track-number
+labels and background album-cover thumbnails.
+Real-file and UI verification is recorded in
 [`docs/local-library.md`](docs/local-library.md). This supersedes the historical
 “no local index for now” scope below; autoplaylists and logical-title indexing
 remain future work.

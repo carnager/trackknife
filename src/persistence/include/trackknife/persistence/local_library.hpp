@@ -44,6 +44,7 @@ struct LibraryEntry {
     std::string album;
     std::size_t tracks{0};
     std::size_t available{0};
+    int track_number{0};
 };
 
 struct LibraryPage {
@@ -80,6 +81,9 @@ class LocalLibrary final {
                                     const core::CancellationToken& cancellation = {}) const;
     core::Result<std::vector<std::string>>
     paths(const LibraryQuery& query, const core::CancellationToken& cancellation = {}) const;
+    core::Result<std::optional<std::string>>
+    artwork_source(const std::string& album_key,
+                   const core::CancellationToken& cancellation = {}) const;
     core::Result<LibraryScanResult> scan(const core::CancellationToken& cancellation,
                                          LibraryScanProgress& progress);
 

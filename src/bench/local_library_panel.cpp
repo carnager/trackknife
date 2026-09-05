@@ -2,10 +2,12 @@
 
 #include "bench/local_library_panel.hpp"
 #include "ui/server_library_tree_view.hpp"
+#include "uicommon/local_artwork.hpp"
 #include "uicommon/local_files_mime_data.hpp"
 
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QHBoxLayout>
@@ -15,6 +17,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QStandardItemModel>
 #include <QStyle>
 #include <QTimer>
@@ -88,7 +91,23 @@ std::vector<persistence::LibraryEntry> selectedEntries(QModelIndexList indexes) 
 
 class LibraryModel final : public QStandardItemModel {
   public:
-    explicit LibraryModel(LocalLibraryPanel* panel) : QStandardItemModel(panel), panel_(panel) {}
+    LibraryModel(LocalLibraryPanel* panel, std::function<QIcon(const QByteArray&)> artwork)
+        : QStandardItemModel(panel), panel_(panel), artwork_(std::move(artwork)) {}
+    QVariant data(const QModelIndex& index, int role = Qt::DisplayRole) const override {
+        if (role == Qt::DecorationRole) {
+            const auto value = QStandardItemModel::data(index, entry_role);
+            if (value.isValid()) {
+                const auto entry = value.value<persistence::LibraryEntry>();
+                if (entry.kind == persistence::LibraryEntryKind::album) {
+                    const auto cover = artwork_(QByteArray::fromStdString(entry.key));
+                    if (!cover.isNull()) {
+                        return cover;
+                    }
+                }
+            }
+        }
+        return QStandardItemModel::data(index, role);
+    }
     QStringList mimeTypes() const override { return {ui::LocalFilesMimeData::mimeType()}; }
     Qt::DropActions supportedDragActions() const override { return Qt::CopyAction; }
     QMimeData* mimeData(const QModelIndexList& indexes) const override {
@@ -107,6 +126,7 @@ class LibraryModel final : public QStandardItemModel {
 
   private:
     QPointer<LocalLibraryPanel> panel_;
+    std::function<QIcon(const QByteArray&)> artwork_;
 };
 
 } // namespace
@@ -115,6 +135,7 @@ LocalLibraryPanel::LocalLibraryPanel(std::filesystem::path database_path, QWidge
     : QWidget(parent), database_path_(std::move(database_path)) {
     setObjectName(QStringLiteral("bench-local-library"));
     pool_.setMaxThreadCount(2);
+    artwork_pool_.setMaxThreadCount(1);
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(4, 4, 4, 4);
     layout->setSpacing(4);
@@ -179,7 +200,10 @@ LocalLibraryPanel::LocalLibraryPanel(std::filesystem::path database_path, QWidge
         }));
     tree_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tree_->setContextMenuPolicy(Qt::CustomContextMenu);
-    model_ = new LibraryModel(this);
+    model_ = new LibraryModel(this, [this](const QByteArray& key) {
+        const auto* icon = artwork_cache_.object(key);
+        return icon ? *icon : QIcon{};
+    });
     tree_->setModel(model_);
     layout->addWidget(tree_, 1);
     connect(tree_, &QTreeView::expanded, this, [this](const QModelIndex& index) {
@@ -257,6 +281,7 @@ LocalLibraryPanel::LocalLibraryPanel(std::filesystem::path database_path, QWidge
                                  ? tr("Library up to date. 1 file updated.")
                                  : tr("Library up to date. %1 files updated.").arg(updated));
         }
+        invalidateArtwork();
         reloadTree();
         loadRoots();
     });
@@ -267,8 +292,34 @@ LocalLibraryPanel::LocalLibraryPanel(std::filesystem::path database_path, QWidge
     change_timer_->setSingleShot(true);
     change_timer_->setInterval(250);
     connect(change_timer_, &QTimer::timeout, this, [this] {
+        invalidateArtwork();
         reloadTree();
         loadRoots();
+    });
+    artwork_timer_ = new QTimer(this);
+    artwork_timer_->setSingleShot(true);
+    artwork_timer_->setInterval(0);
+    connect(artwork_timer_, &QTimer::timeout, this, &LocalLibraryPanel::updateArtwork);
+    tree_->viewport()->installEventFilter(this);
+    connect(tree_->verticalScrollBar(), &QScrollBar::valueChanged, artwork_timer_,
+            qOverload<>(&QTimer::start));
+    connect(tree_, &QTreeView::expanded, artwork_timer_, qOverload<>(&QTimer::start));
+    connect(tree_, &QTreeView::collapsed, artwork_timer_, qOverload<>(&QTimer::start));
+    connect(model_, &QAbstractItemModel::rowsInserted, artwork_timer_, qOverload<>(&QTimer::start));
+    connect(&artwork_watcher_, &QFutureWatcherBase::finished, this, [this] {
+        artwork_running_ = false;
+        if (stopped_) {
+            return;
+        }
+        if (artwork_job_generation_ == artwork_generation_ &&
+            !artwork_cancellation_.is_cancellation_requested()) {
+            const auto image = artwork_watcher_.result();
+            artwork_cache_.insert(
+                artwork_key_,
+                new QIcon(image.isNull() ? QIcon{} : QIcon{QPixmap::fromImage(image)}));
+            tree_->viewport()->update();
+        }
+        artwork_timer_->start();
     });
     reloadTree();
     loadRoots();
@@ -284,11 +335,14 @@ void LocalLibraryPanel::stop() {
     lifetime_cancellation_.request_cancellation();
     view_cancellation_.request_cancellation();
     scan_cancellation_.request_cancellation();
+    artwork_cancellation_.request_cancellation();
+    artwork_timer_->stop();
     search_timer_->stop();
     poll_timer_->stop();
     change_timer_->stop();
     tasks_.clear();
     pool_.waitForDone();
+    artwork_pool_.waitForDone();
 }
 
 void LocalLibraryPanel::enqueue(Task task) {
@@ -325,6 +379,7 @@ void LocalLibraryPanel::pump() {
 
 void LocalLibraryPanel::reloadTree() {
     ++generation_;
+    artwork_cancellation_.request_cancellation();
     view_cancellation_.request_cancellation();
     view_cancellation_ = core::CancellationSource{};
     std::erase_if(tasks_, [](const Task& task) { return task.view_query; });
@@ -759,6 +814,83 @@ void LocalLibraryPanel::startScan() {
             }
             return outcome;
         }));
+}
+
+bool LocalLibraryPanel::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == tree_->viewport() && artwork_timer_ && !stopped_) {
+        if (event->type() == QEvent::Show || event->type() == QEvent::Resize) {
+            artwork_timer_->start();
+        } else if (event->type() == QEvent::Hide) {
+            artwork_timer_->stop();
+            artwork_cancellation_.request_cancellation();
+        }
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+QModelIndexList LocalLibraryPanel::visibleAlbums() const {
+    QModelIndexList albums;
+    auto index = tree_->indexAt(QPoint{tree_->viewport()->width() / 2, 0});
+    for (int visited = 0; index.isValid() && visited < 128;
+         ++visited, index = tree_->indexBelow(index)) {
+        if (tree_->visualRect(index).top() >= tree_->viewport()->height()) {
+            break;
+        }
+        if (index.data(entry_role).isValid()) {
+            const auto entry = index.data(entry_role).value<persistence::LibraryEntry>();
+            if (entry.kind == persistence::LibraryEntryKind::album && entry.available > 0U) {
+                albums.push_back(index);
+            }
+        }
+    }
+    return albums;
+}
+
+void LocalLibraryPanel::invalidateArtwork() {
+    ++artwork_generation_;
+    artwork_cancellation_.request_cancellation();
+    artwork_cache_.clear();
+    tree_->viewport()->update();
+}
+
+void LocalLibraryPanel::updateArtwork() {
+    if (stopped_ || !tree_->isVisible()) {
+        return;
+    }
+    const auto albums = visibleAlbums();
+    if (artwork_running_) {
+        if (std::ranges::none_of(albums, [this](const QModelIndex& index) {
+                return QByteArray::fromStdString(
+                           index.data(entry_role).value<persistence::LibraryEntry>().key) ==
+                       artwork_key_;
+            })) {
+            artwork_cancellation_.request_cancellation();
+        }
+        return;
+    }
+    for (const auto& index : albums) {
+        const auto key = QByteArray::fromStdString(
+            index.data(entry_role).value<persistence::LibraryEntry>().key);
+        if (artwork_cache_.contains(key)) {
+            continue;
+        }
+        artwork_key_ = key;
+        artwork_job_generation_ = artwork_generation_;
+        artwork_cancellation_ = core::CancellationSource{};
+        artwork_running_ = true;
+        artwork_watcher_.setFuture(
+            QtConcurrent::run(&artwork_pool_, [path = database_path_, key,
+                                               cancellation = artwork_cancellation_.token()] {
+                auto library = persistence::LocalLibrary::open(path);
+                if (!library || cancellation.is_cancellation_requested()) {
+                    return QImage{};
+                }
+                const auto source = library->artwork_source(key.toStdString(), cancellation);
+                return source && source->has_value() ? ui::loadLocalArtwork(**source, cancellation)
+                                                     : QImage{};
+            }));
+        return;
+    }
 }
 
 void LocalLibraryPanel::updateProgress() {

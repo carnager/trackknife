@@ -3,11 +3,11 @@
 #include "bench/bench_main_window.hpp"
 
 #include "bench/bench_main_window_helpers.hpp"
-#include "trackknife/formats/artwork.hpp"
 #include "trackknife/formats/cue_sheet.hpp"
 #include "trackknife/formats/probe.hpp"
 #include "trackknife/metadata/flac_mapping.hpp"
 #include "trackknife/metadata/local_reader.hpp"
+#include "uicommon/local_artwork.hpp"
 #include "uicommon/local_folder_tree_model.hpp"
 
 #include <QFileDialog>
@@ -24,7 +24,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
 #include <limits>
 #include <span>
 #include <string_view>
@@ -288,9 +287,6 @@ subsong_rows(const formats::MediaProbe& probe, const metadata::MetadataDocument&
     return rows;
 }
 
-constexpr int artwork_cache_extent = 128;
-constexpr std::uintmax_t artwork_file_limit = 16U * 1024U * 1024U;
-
 // Folder expansion only ingests plausible audio and external cue sheets;
 // explicitly opened files always pass regardless (core discovery contract).
 // The probe/resolver still gates everything this list lets through.
@@ -363,67 +359,6 @@ cue_row(const formats::ResolvedCueSheet& sheet, const formats::ResolvedCueTrack&
     project_display_metadata(row);
     row.probed = true;
     return row;
-}
-
-// Folder fallback for albums without an attached picture: the first regular
-// file in the track's directory whose lowercased name is a conventional
-// cover image.
-[[nodiscard]] std::vector<unsigned char> folder_artwork_bytes(const std::string& raw_path) {
-    const auto slash = raw_path.find_last_of('/');
-    if (slash == std::string::npos) {
-        return {};
-    }
-    const std::filesystem::path directory{raw_path.substr(0, slash)};
-    static constexpr std::array names{"cover.jpg",  "cover.jpeg",  "cover.png",
-                                      "folder.jpg", "folder.jpeg", "folder.png",
-                                      "front.jpg",  "front.jpeg",  "front.png"};
-    std::error_code error;
-    std::filesystem::directory_iterator iterator{
-        directory, std::filesystem::directory_options::skip_permission_denied, error};
-    const std::filesystem::directory_iterator end;
-    if (error) {
-        return {};
-    }
-    for (; iterator != end; iterator.increment(error)) {
-        if (error) {
-            return {};
-        }
-        if (!iterator->is_regular_file(error) || error) {
-            error.clear();
-            continue;
-        }
-        const auto name = lowercased_ascii(iterator->path().filename().native());
-        if (std::ranges::find(names, name) == names.end()) {
-            continue;
-        }
-        const auto size = iterator->file_size(error);
-        if (error || size == 0U || size > artwork_file_limit) {
-            return {};
-        }
-        std::ifstream input{iterator->path(), std::ios::binary};
-        std::vector<unsigned char> bytes(static_cast<std::size_t>(size));
-        input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size));
-        if (!input.good() && !input.eof()) {
-            return {};
-        }
-        return bytes;
-    }
-    return {};
-}
-
-[[nodiscard]] QImage decoded_artwork(const std::vector<unsigned char>& bytes) {
-    if (bytes.empty()) {
-        return {};
-    }
-    auto image = QImage::fromData(bytes.data(), static_cast<int>(bytes.size()));
-    if (image.isNull()) {
-        return {};
-    }
-    if (image.width() > artwork_cache_extent || image.height() > artwork_cache_extent) {
-        image = image.scaled(artwork_cache_extent, artwork_cache_extent, Qt::KeepAspectRatio,
-                             Qt::SmoothTransformation);
-    }
-    return image;
 }
 
 } // namespace
@@ -574,21 +509,14 @@ void BenchMainWindow::pumpArtworkQueue() {
             &BenchMainWindow::finishArtworkLoad, Qt::SingleShotConnection);
     artwork_outcome_ =
         std::make_shared<ArtworkOutcome>(ArtworkOutcome{.key = std::move(job.key), .image = {}});
-    artwork_watcher_.setFuture(QtConcurrent::run([raw_path = std::move(job.raw_path),
-                                                  outcome = artwork_outcome_,
-                                                  cancellation = probe_cancellation_.token()] {
-        if (!cancellation.is_cancellation_requested()) {
-            if (auto embedded = formats::load_embedded_artwork(raw_path, cancellation); embedded) {
-                outcome->image = decoded_artwork(*embedded);
-            }
-            if (outcome->image.isNull() && !cancellation.is_cancellation_requested()) {
-                outcome->image = decoded_artwork(folder_artwork_bytes(raw_path));
-            }
-        }
+    artwork_watcher_.setFuture(
+        QtConcurrent::run([raw_path = std::move(job.raw_path), outcome = artwork_outcome_,
+                           cancellation = probe_cancellation_.token()] {
+            outcome->image = ui::loadLocalArtwork(raw_path, cancellation);
 #if defined(TRACKKNIFE_THREAD_SANITIZER)
-        __tsan_release(outcome.get());
+            __tsan_release(outcome.get());
 #endif
-    }));
+        }));
 }
 
 void BenchMainWindow::finishArtworkLoad() {

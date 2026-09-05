@@ -6,9 +6,11 @@
 #include "trackknife/persistence/list_repository.hpp"
 #include "trackknife/persistence/local_library.hpp"
 #include "ui/server_library_tree_view.hpp"
+#include "uicommon/local_artwork.hpp"
 #include "uicommon/local_files_mime_data.hpp"
 #include "uicommon/queue_table_view.hpp"
 
+#include <QBuffer>
 #include <QComboBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -29,6 +31,7 @@
 
 #include <sqlite3.h>
 #include <taglib/flacfile.h>
+#include <taglib/flacpicture.h>
 #include <taglib/tpropertymap.h>
 
 #include <filesystem>
@@ -39,7 +42,8 @@ namespace {
 
 std::string fixture(const std::filesystem::path& root, const std::string& name,
                     const std::string& title = "First song",
-                    const std::string& album = "Test album") {
+                    const std::string& album = "Test album",
+                    const std::string& track_number = "3") {
     std::filesystem::create_directories(root);
     QFile encoded{QStringLiteral(TRACKKNIFE_AUDIO_FIXTURE_DIR "/tagged-tone-flac.b64")};
     if (!encoded.open(QIODevice::ReadOnly)) {
@@ -57,6 +61,11 @@ std::string fixture(const std::filesystem::path& root, const std::string& name,
     properties.replace("ALBUM", TagLib::String{album, TagLib::String::UTF8});
     properties.replace("ARTIST", TagLib::String{"Björk", TagLib::String::UTF8});
     properties.replace("ALBUMARTIST", TagLib::String{"Björk", TagLib::String::UTF8});
+    if (track_number.empty()) {
+        properties.erase("TRACKNUMBER");
+    } else {
+        properties.replace("TRACKNUMBER", TagLib::String{track_number, TagLib::String::UTF8});
+    }
     file.setProperties(properties);
     if (!file.save()) {
         return {};
@@ -120,6 +129,8 @@ class LocalLibraryTest final : public QObject {
     void scansOnlyOnRefresh();
     void localViewBrowsesSearchesAndOpensFiles();
     void dragResolvesUnloadedPagesAndRawPaths();
+    void trackNumbersAppearInTreeAndSearch();
+    void albumCoversLoadAndRefresh();
 };
 
 void LocalLibraryTest::rootsRetainOfflineMusicAndRawPaths() {
@@ -638,6 +649,127 @@ void LocalLibraryTest::dragResolvesUnloadedPagesAndRawPaths() {
     menu->close();
     std::filesystem::rename(base / "offline", root);
     std::filesystem::remove(std::filesystem::path{raw});
+}
+
+void LocalLibraryTest::trackNumbersAppearInTreeAndSearch() {
+    QTemporaryDir temporary;
+    const std::filesystem::path base{temporary.path().toStdString()};
+    const auto root = base / "music";
+    const auto first = fixture(root, "first.flac", "First song", "Test album", "3/12");
+    const auto last = fixture(root, "last.flac", "Last song", "Test album", "12");
+    const auto unknown = fixture(root, "unknown.flac", "Unnumbered", "Test album", "");
+    auto library = persistence::LocalLibrary::open(base / "state.sqlite");
+    QVERIFY(library && library->add_root(root.native()));
+    persistence::LibraryScanProgress progress;
+    QVERIFY(library->scan({}, progress));
+    auto query = tracks();
+    query.raw_path = first;
+    auto page = library->query(query);
+    QVERIFY(page && page->entries.size() == 1U);
+    QCOMPARE(page->entries.front().track_number, 3);
+    QCOMPARE(page->entries.front().label, std::string{"03. First song"});
+    query.raw_path = last;
+    QCOMPARE(library->query(query)->entries.front().label, std::string{"12. Last song"});
+    query.raw_path = unknown;
+    QCOMPARE(library->query(query)->entries.front().label, std::string{"Unnumbered"});
+    QCOMPARE(library->query(tracks("First"))->entries.front().label,
+             std::string{"Björk — 03. First song"});
+    QCOMPARE(library->query(tracks("Unnumbered"))->entries.front().label,
+             std::string{"Björk — Unnumbered"});
+}
+
+void LocalLibraryTest::albumCoversLoadAndRefresh() {
+    QTemporaryDir temporary;
+    const std::filesystem::path base{temporary.path().toStdString()};
+    const auto root = base / "music";
+    const auto source = fixture(root, "raw-\xff.flac");
+    QVERIFY(!source.empty());
+    QImage cover{512, 256, QImage::Format_RGB32};
+    cover.fill(Qt::blue);
+    QByteArray bytes;
+    QBuffer buffer{&bytes};
+    QVERIFY(buffer.open(QIODevice::WriteOnly));
+    QVERIFY(cover.save(&buffer, "PNG"));
+    {
+        TagLib::FLAC::File file{source.c_str()};
+        auto* picture = new TagLib::FLAC::Picture;
+        picture->setType(TagLib::FLAC::Picture::FrontCover);
+        picture->setMimeType("image/png");
+        picture->setWidth(cover.width());
+        picture->setHeight(cover.height());
+        picture->setColorDepth(24);
+        picture->setData(
+            TagLib::ByteVector{bytes.constData(), static_cast<unsigned int>(bytes.size())});
+        file.addPicture(picture);
+        QVERIFY(file.save());
+    }
+    const auto folder_cover = QString::fromStdString((root / "cover.png").native());
+    cover.fill(Qt::red);
+    QVERIFY(cover.save(folder_cover));
+    auto library = persistence::LocalLibrary::open(base / "state.sqlite");
+    QVERIFY(library && library->add_root(root.native()));
+    persistence::LibraryScanProgress progress;
+    QVERIFY(library->scan({}, progress));
+    persistence::LibraryQuery albums;
+    albums.kind = persistence::LibraryEntryKind::album;
+    const auto album_key = library->query(albums)->entries.front().key;
+    const auto representative = library->artwork_source(album_key);
+    QVERIFY(representative && representative->has_value());
+    QCOMPARE(**representative, source);
+    LocalLibraryPanel panel{base / "state.sqlite"};
+    panel.resize(420, 400);
+    auto* tree = panel.findChild<QTreeView*>();
+    auto* search = panel.findChild<QLineEdit*>();
+    search->setText(QStringLiteral("Test album"));
+    panel.show();
+    const auto album = [&] { return tree->model()->index(0, 0, tree->model()->index(0, 0)); };
+    const auto image = [&] {
+        return album().data(Qt::DecorationRole).value<QIcon>().pixmap(128, 128).toImage();
+    };
+    const auto color = [&] {
+        const auto loaded = image();
+        return loaded.isNull() ? QColor{}
+                               : loaded.pixelColor(loaded.width() / 2, loaded.height() / 2);
+    };
+    QTRY_COMPARE(color(), QColor{Qt::blue});
+    QCOMPARE(image().size(), QSize(128, 64));
+    QVERIFY(!panel.property("scanning").toBool());
+    {
+        TagLib::FLAC::File file{source.c_str()};
+        file.removePictures();
+        QVERIFY(file.save());
+    }
+    // Operation notifications invalidate thumbnails without a library scan.
+    panel.refreshLibrary();
+    QTRY_COMPARE(color(), QColor{Qt::red});
+    QVERIFY(!panel.property("scanning").toBool());
+    cover.fill(Qt::green);
+    QVERIFY(cover.save(folder_cover));
+    QCOMPARE(color(), QColor{Qt::red});
+    panel.findChild<QToolButton*>(QStringLiteral("local-library-scan"))->click();
+    QTRY_COMPARE(color(), QColor{Qt::green});
+    QTRY_VERIFY(!panel.property("scanning").toBool());
+    panel.hide();
+    cover.fill(Qt::yellow);
+    QVERIFY(cover.save(folder_cover));
+    panel.refreshLibrary();
+    QTest::qWait(300);
+    QVERIFY(color() != QColor{Qt::yellow});
+    panel.show();
+    QTRY_COMPARE(color(), QColor{Qt::yellow});
+    core::CancellationSource cancelled;
+    cancelled.request_cancellation();
+    QVERIFY(ui::loadLocalArtwork(source, cancelled.token()).isNull());
+    // Corrupt and oversized fallback images leave the placeholder intact.
+    {
+        std::ofstream invalid{root / "cover.png", std::ios::binary | std::ios::trunc};
+        invalid << "not an image";
+    }
+    QVERIFY(ui::loadLocalArtwork(source).isNull());
+    std::filesystem::resize_file(root / "cover.png", 17U * 1024U * 1024U);
+    QVERIFY(ui::loadLocalArtwork(source).isNull());
+    panel.stop();
+    QVERIFY(std::filesystem::remove(std::filesystem::path{source}));
 }
 
 } // namespace trackknife::bench

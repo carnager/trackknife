@@ -11,6 +11,8 @@ qt_add_library(
     local_folder_tree_model.cpp
     local_folder_tree_model.hpp
     local_files_mime_data.hpp
+    local_artwork.cpp
+    local_artwork.hpp
     metadata_transformation_interchange.cpp
     metadata_transformation_interchange.hpp
     panel_layout.cpp
@@ -29,7 +31,7 @@ target_link_libraries(
     trackknife_ui_common
     PUBLIC Qt6::Widgets Trackknife::Core Trackknife::Persistence
            trackknife_project_options
-    PRIVATE Qt6::Concurrent trackknife_project_warnings
+    PRIVATE Qt6::Concurrent Trackknife::Formats trackknife_project_warnings
 )
 target_include_directories(trackknife_ui_common PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_compile_features(trackknife_ui_common PUBLIC cxx_std_23)

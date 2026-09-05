@@ -92,6 +92,13 @@ load_embedded_artwork(const std::string& raw_path, const core::CancellationToken
         if (picture.data == nullptr || picture.size <= 0) {
             continue;
         }
+        if (picture.size > 16 * 1024 * 1024) {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::limit_exceeded,
+                .message = "embedded artwork exceeds the 16 MiB thumbnail input limit",
+                .context = {{.key = "path", .value = raw_path}},
+            });
+        }
         return std::vector<unsigned char>{picture.data, picture.data + picture.size};
     }
     return std::unexpected(core::Error{

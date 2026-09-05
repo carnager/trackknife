@@ -23,6 +23,8 @@ ADR-0116 makes filesystem scans explicit: only the Library's Refresh button
 starts a scan; startup and operation notifications display cached index records.
 ADR-0117 adds MPD-style inline/context library actions and local-only drag/drop
 into queue/list contents, resolving complete selections off the UI thread.
+ADR-0118 adds numbered track labels and local album covers through a bounded
+visible-row artwork worker shared with local-list thumbnail reading.
 The following milestone history predates this requested workspace addition.
 
 M5 is closing into M6, implementation is accepted through ADR-0114, and the persistence

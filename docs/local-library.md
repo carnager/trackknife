@@ -26,6 +26,14 @@ using the same controls as the MPD library. Insert next follows the playing row
 in that list, otherwise the selected row or the beginning of an unselected list.
 The MPD queue does not accept local library drops.
 
+Tracks show their tagged numbers, such as **03. Title**; tracks without a number
+keep their title without a numeric prefix. Album rows show embedded covers or
+fall back to sibling `cover`, `folder`, or `front` JPEG/PNG files. Covers load
+one at a time for visible albums and keep the record placeholder when absent.
+No network lookup or library scan is triggered. Press **Refresh** after changing
+folder images outside Trackbench; in-app operation notifications refresh cached
+covers automatically.
+
 Children and search results arrive in pages of 200; **Show more…** loads the
 next page. Opening an artist or album resolves its complete available selection,
 not only its currently visible children. Up to 1,000 entries may be selected;
@@ -49,6 +57,11 @@ files, and verifies the revision again under a short database write transaction.
 Only plausible audio extensions are probed; directory and file symlinks are
 skipped. Scans stop after one million visited entries and report incompleteness.
 Cancellation and incomplete traversal retain previously indexed entries.
+
+A separate artwork worker shares the local-list thumbnail reader, with a
+256-entry cache of 128-pixel thumbnails and missing-image results. Artwork reads
+are cancelled on view changes and bounded to 16 MiB encoded input, 16 million
+source pixels, and 10,000 sibling entries. Images are not stored in SQLite.
 
 A complete scan marks missing files unavailable. An inaccessible root marks
 its cached files unavailable without deleting them; later reconnection restores
@@ -75,6 +88,7 @@ The index catalogs physical audio files. Chapter/subsong expansion still happens
 when opening a source; separate indexed searches of those logical titles and
 external cue-sheet titles are not included. Advanced filters, autoplaylists,
 custom library-tree expressions, and an artwork grid remain future work.
+Album cover thumbnails are available in the current tree and search results.
 
 ## Verification
 
@@ -87,6 +101,11 @@ destination tabs, multi-selection, unloaded pages, and raw filenames.
 Its development checks passed for local-library, queue-table-view,
 server-library-tree-model, and bench-main-window. The library and queue tests
 also passed ASan/UBSan with leak detection; formatting and SPDX checks passed.
+
+ADR-0118's track-number and cover tests passed alongside the development
+workspace and format-probe suites. Local-library and format-probe also passed
+ASan/UBSan with leak detection. Real FLAC files cover embedded/folder artwork,
+raw filenames, aspect ratio, refresh/cancellation, and corrupt/oversized images.
 
 Validated 2026-09-05: all 57 development CTest targets passed. Focused
 ASan/UBSan tests for the library, list repository, and queue view passed;

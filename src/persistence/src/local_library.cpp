@@ -158,6 +158,9 @@ class LibraryLabelContext final : public titleformat::EvaluationContext {
         if (name == "title") {
             return entry_.label;
         }
+        if (name == "tracknumber" && entry_.track_number > 0) {
+            return std::to_string(entry_.track_number);
+        }
         return std::nullopt;
     }
 
@@ -171,8 +174,10 @@ std::string format_label(const LibraryEntry& entry, bool search) {
         .context = titleformat::FormatContextKind::tree_level, .dialect = {}, .parse_options = {}};
     static const auto artist = titleformat::compile("%albumartist%", options);
     static const auto album = titleformat::compile("%album%", options);
-    static const auto track = titleformat::compile("%title%", options);
-    static const auto found_track = titleformat::compile("%artist% — %title%", options);
+    static const auto track =
+        titleformat::compile("$if(%tracknumber%,$num(%tracknumber%,2). ,)%title%", options);
+    static const auto found_track = titleformat::compile(
+        "%artist% — $if(%tracknumber%,$num(%tracknumber%,2). ,)%title%", options);
     const auto& compiled = entry.kind == LibraryEntryKind::artist  ? artist
                            : entry.kind == LibraryEntryKind::album ? album
                            : search                                ? found_track
@@ -431,16 +436,16 @@ core::Result<LibraryPage> LocalLibrary::query(const LibraryQuery& query,
         std::string order;
         switch (query.kind) {
         case LibraryEntryKind::artist:
-            columns = "artist,artist,artist,'',count(*),sum(available)";
+            columns = "artist,artist,artist,'',count(*),sum(available),0";
             order = " GROUP BY artist ORDER BY artist COLLATE NOCASE";
             break;
         case LibraryEntryKind::album:
-            columns = "album_key,min(album),min(artist),min(album),count(*),sum(available)";
+            columns = "album_key,min(album),min(artist),min(album),count(*),sum(available),0";
             order = " GROUP BY album_key ORDER BY min(artist) COLLATE NOCASE,min(date),min(album) "
                     "COLLATE NOCASE,album_key";
             break;
         case LibraryEntryKind::track:
-            columns = "raw_path,title,artist,album,1,available";
+            columns = "raw_path,title,artist,album,1,available,track";
             order = " ORDER BY artist COLLATE NOCASE,album_key,disc,track,title COLLATE "
                     "NOCASE,raw_path";
             break;
@@ -460,7 +465,8 @@ core::Result<LibraryPage> LocalLibrary::query(const LibraryQuery& query,
             page.entries.push_back({query.kind, statement.bytes(0), statement.bytes(1),
                                     statement.bytes(2), statement.bytes(3),
                                     static_cast<std::size_t>(statement.number(4)),
-                                    static_cast<std::size_t>(statement.number(5))});
+                                    static_cast<std::size_t>(statement.number(5)),
+                                    static_cast<int>(statement.number(6))});
             page.entries.back().label = format_label(page.entries.back(), !query.text.empty());
         }
         return page;
@@ -486,6 +492,22 @@ LocalLibrary::paths(const LibraryQuery& query, const core::CancellationToken& ca
             result.push_back(statement.bytes(0));
         }
         return result;
+    });
+}
+
+core::Result<std::optional<std::string>>
+LocalLibrary::artwork_source(const std::string& album_key,
+                             const core::CancellationToken& cancellation) const {
+    return checked([&]() -> std::optional<std::string> {
+        auto* db = implementation_->db;
+        QueryCancellation guard{db, cancellation};
+        Statement source{db, "SELECT raw_path FROM local_library_tracks WHERE album_key=? "
+                             "AND available=1 ORDER BY disc,track,raw_path LIMIT 1"};
+        source.text(1, album_key);
+        if (!source.next()) {
+            return std::nullopt;
+        }
+        return source.bytes(0);
     });
 }
 

@@ -4,7 +4,10 @@
 
 #include "trackknife/persistence/local_library.hpp"
 
+#include <QCache>
 #include <QFutureWatcher>
+#include <QIcon>
+#include <QImage>
 #include <QPersistentModelIndex>
 #include <QPointer>
 #include <QSet>
@@ -43,6 +46,9 @@ class LocalLibraryPanel final : public QWidget {
   signals:
     void actionRequested(std::vector<persistence::LibraryEntry> entries, LocalLibraryAction action);
 
+  protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
   private:
     struct Outcome {
         persistence::LibraryPage page;
@@ -72,11 +78,22 @@ class LocalLibraryPanel final : public QWidget {
     void loadRoots();
     void startScan();
     void updateProgress();
+    void updateArtwork();
+    void invalidateArtwork();
+    [[nodiscard]] QModelIndexList visibleAlbums() const;
 
     std::filesystem::path database_path_;
     QThreadPool pool_;
     QFutureWatcher<Outcome> query_watcher_;
     QFutureWatcher<ScanOutcome> scan_watcher_;
+    QThreadPool artwork_pool_;
+    QFutureWatcher<QImage> artwork_watcher_;
+    core::CancellationSource artwork_cancellation_;
+    QCache<QByteArray, QIcon> artwork_cache_{256};
+    QByteArray artwork_key_;
+    std::size_t artwork_generation_{0};
+    std::size_t artwork_job_generation_{0};
+    bool artwork_running_{false};
     std::deque<Task> tasks_;
     std::function<void(Outcome)> completion_;
     core::CancellationSource lifetime_cancellation_;
@@ -91,6 +108,7 @@ class LocalLibraryPanel final : public QWidget {
     QTimer* search_timer_{nullptr};
     QTimer* poll_timer_{nullptr};
     QTimer* change_timer_{nullptr};
+    QTimer* artwork_timer_{nullptr};
     QPointer<QDialog> folders_dialog_;
     QListWidget* roots_list_{nullptr};
     QLabel* roots_error_{nullptr};
