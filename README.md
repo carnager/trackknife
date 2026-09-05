@@ -10,6 +10,8 @@ through the protocol, and nothing mutates the other side implicitly.
 It exists because foobar2000 runs under Wine and Cantata is dead. The goal is
 to replace both with something native that takes file safety seriously.
 
+![MPD queue with grouped albums and the server library](Screenshots/queue.png)
+
 ## What it does
 
 MPD side:
@@ -48,6 +50,24 @@ Formats without that proof are read-only until they get one.
 Network filesystems are treated as first-class: publication and conversion
 degrade cleanly on NFS, sshfs, and FAT (no `RENAME_NOREPLACE`, no xattrs, no
 `chown`) instead of failing, and report what could not be preserved.
+
+## Screenshots
+
+The tag editor over a multi-file selection, with staged drafts:
+
+![Tag editor](Screenshots/tagger.png)
+
+MusicBrainz identification with per-track match scores:
+
+![MusicBrainz identification](Screenshots/musicbrainz.png)
+
+The converter with a live destination preview:
+
+![Converter](Screenshots/converter.png)
+
+Rename/move with naming expressions and conflict preview:
+
+![Renaming](Screenshots/renaming.png)
 
 ## Scripting
 
