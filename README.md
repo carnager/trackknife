@@ -1,106 +1,78 @@
 # Trackknife
 
-Trackknife is a music player and collection editor for Linux, built with Qt 6.
-You can use it to listen through MPD or play local files, edit tags, look up
-releases on MusicBrainz, scan ReplayGain, convert formats, and organize folders.
-MPD and local files have separate tabs, each with its own playback controls
-and tools.
-
-The inspiration comes from foobar2000's audio tools and Cantata's MPD client.
-The aim is to bring the things that made both useful into one native Linux
-application. The name is a nod to foobar2000, often called a Swiss Army knife
-for audio files.
+Trackknife is a Linux music player, MPD client, and tag editor built with Qt 6.
+It's inspired by foobar2000 and Cantata. The name is a nod to foobar2000's
+reputation as a Swiss Army knife for audio files.
 
 ![MPD queue with grouped albums and the server library](Screenshots/queue.png)
 
 ## What it does
 
-With MPD, you can:
+- MPD and Melody: library browsing, album and track search, queue editing,
+  playlists, cover art, and output controls.
+- Local playback: gapless audio through PipeWire, cue sheets and subsongs,
+  folder browsing, and tabs saved between sessions.
+- Optional local library: browse artists and albums, search albums and tracks,
+  and keep browsing cached tags when a drive is disconnected.
+- Bulk tagging, MusicBrainz lookup, AcoustID fingerprinting, and cover downloads.
+- Track and album ReplayGain scanning with true peak measurement.
+- Parallel conversion to FLAC, Opus, MP3, and Vorbis, with resampling and dither.
+- Rename and move files using naming patterns, with a preview before applying.
 
-- Browse your server's library, alphabetically or with the newest
-  additions first (requires MPD 0.24's `Added` field).
-- Search for albums and individual tracks, and add either straight to the
-  queue from the results.
-- Edit the queue, set track priorities, change playback and ReplayGain modes,
-  toggle individual outputs, and view cover art.
-- Open tracks or albums in a local tab for tagging or conversion, then ask
-  MPD to rescan the affected folder. This requires access to the files and a
-  music-root mapping in settings.
+Tag writing supports FLAC, WavPack, MP3 (ID3v2), Ogg Vorbis, and Opus.
+Writes are checked for unchanged audio and correct tags; other formats are
+read-only.
 
-For local files, there's:
+## Getting started
 
-- An optional music library: choose your folders, browse by artist and album,
-  or search for albums and tracks. It updates in the background and remembers
-  your collection when a drive is disconnected. Direct folder browsing still
-  works without setting up a library.
-- Gapless playback through PipeWire, tabs that survive restarts, and a folder
-  browser with bookmarks. Cue sheet tracks and subsongs appear as individual
-  tracks.
-- A tag editor for working on many files at once. Changes are highlighted and
-  can be undone before saving, including edits made by automatic scripts.
-- MusicBrainz lookups, AcoustID fingerprinting, and artwork downloads from the
-  Cover Art Archive.
-- Track and album ReplayGain scanning using EBU R128, with true peak
-  measurement and album grouping by release, tag, or expression.
-- Parallel conversion with FLAC, Opus, MP3, and Vorbis presets, plus presets
-  you can save yourself. Options include resampling and 16/24-bit output with
-  dither. Tags are copied to the output and checked after conversion.
-- Renaming and moving based on naming expressions, with a path preview and
-  a journal for recovery if the operation is interrupted.
+Open files or folders to play locally. For an indexed collection, select
+**Local Queue**, switch the sidebar from **Folders** to **Library**, then use
+**Folders…** to add your music. Scanning runs in the background.
+See [local library](docs/local-library.md) for details.
 
-Tag editing currently supports FLAC, WavPack, MP3 (ID3v2), Ogg Vorbis, and Opus.
-After writing, Trackknife checks that the audio bytes are unchanged and rereads
-the tags to check them against your edits. Other formats are read-only until
-their tag writers pass the same checks.
-
-File operations and conversion also work on NFS, sshfs, and FAT. When a
-filesystem cannot preserve attributes such as ownership or extended
-attributes, Trackknife reports what was left out.
+For MPD or Melody, use **File → Connect to MPD…** and enter the server's host
+and port (usually `6600`). MPD and local files have separate queues and playback.
+See [Melody setup](docs/melody.md) for server configuration, remote speakers,
+and access to server files for tagging.
 
 ## Screenshots
 
-Searching the MPD library for albums and tracks:
+Album and track search:
 
 ![MPD search results with albums and individual tracks](Screenshots/search.png)
 
-Editing tags across several files, with pending changes highlighted:
+Bulk tagging:
 
 ![Tag editor](Screenshots/tagger.png)
 
-Choosing a release on MusicBrainz:
+MusicBrainz lookup:
 
 ![MusicBrainz identification](Screenshots/musicbrainz.png)
 
-Previewing output paths before conversion:
+Conversion:
 
 ![Converter](Screenshots/converter.png)
 
-Setting up a naming pattern and checking the resulting paths:
+Renaming:
 
 ![Renaming](Screenshots/renaming.png)
 
 ## Scripting
 
-You can customize filenames, conversion paths, library trees, ReplayGain
-grouping, and tag transformations with `tkfmt-1`. It's Trackknife's own
-formatting language, inspired by foobar2000's title formatting. For example,
-this pattern sorts files into artist and album folders:
+Naming patterns and tag transformations use Trackknife's own language,
+`tkfmt-1`. For example, to organize files by artist and album:
 
 ```text
 %albumartist%/%album%/$num(%tracknumber%,2) - %title%
 ```
 
-See the [language guide](docs/tkfmt.md) for syntax and examples, or the
-[specification](docs/title-formatting.md) for the full language rules.
+See the [language guide](docs/tkfmt.md) for examples. Foobar2000 and Picard
+scripts aren't directly compatible.
 
 ## Status
 
-Trackknife is still in development, with no versioned releases yet. Expect
-rough edges and changes between builds. The local database is upgraded
-automatically when its format changes.
-
-See [MILESTONES.md](MILESTONES.md) for development progress and
-[docs/adr/](docs/adr/) for the reasoning behind design decisions.
+Still in development; no versioned releases yet. Expect rough edges.
+See [MILESTONES.md](MILESTONES.md) for progress.
 
 ## Building
 
@@ -123,8 +95,7 @@ cd packaging/arch && makepkg -si
 ```
 
 To run tests during the package build, use `TRACKKNIFE_CHECK=1 makepkg`.
-For development, the `dev`, `asan`, `tsan`, and `tidy` presets all support the
-full test suite. To build and test with `dev`:
+Development builds and tests:
 
 ```sh
 cmake --preset dev && cmake --build build/dev

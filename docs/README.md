@@ -7,6 +7,12 @@ standalone **Trackknife** MPD client was retired in ADR-0071.
 
 The ordered delivery plan is [`../MILESTONES.md`](../MILESTONES.md).
 
+## User guides
+
+- [Melody setup](melody.md) — configure the server, connect Trackknife, and add speakers.
+- [Local library](local-library.md#using-the-library) — add folders and search your collection.
+- [Formatting and scripts](tkfmt.md) — naming patterns and tag transformations.
+
 ## Current continuation point
 
 ADR-0115 adds the optional [local music library](local-library.md), with
