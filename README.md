@@ -1,94 +1,97 @@
 # Trackknife
 
-Trackknife is a Qt 6 music workstation for Linux. It is one window with two
-sides: an MPD client for the daemon that plays your library, and a local-file
-workspace for the work your library needs — tagging, MusicBrainz lookups,
-ReplayGain, format conversion, and file organization. The two sides share the
-same views and never blur: local operations act on files, MPD operations go
-through the protocol, and nothing mutates the other side implicitly.
+Trackknife is a music player and collection editor for Linux, built with Qt 6.
+You can use it to listen through MPD or play local files, edit tags, look up
+releases on MusicBrainz, scan ReplayGain, convert formats, and organize folders.
+MPD and local files have separate tabs, each with its own playback controls
+and tools.
 
-It exists because foobar2000 runs under Wine and Cantata is dead. The goal is
-to replace both with something native that takes file safety seriously.
+The inspiration comes from foobar2000's audio tools and Cantata's MPD client.
+The aim is to bring the things that made both useful into one native Linux
+application. The name is a nod to foobar2000, often called a Swiss Army knife
+for audio files.
 
 ![MPD queue with grouped albums and the server library](Screenshots/queue.png)
 
 ## What it does
 
-MPD side:
+With MPD, you can:
 
-- Queue and server library browsing, with the library sortable alphabetically
-  or by most recently added music (MPD 0.24 `Added`).
-- Search, queue editing, priorities, repeat/random/single/consume, ReplayGain
-  mode, independent output toggles, cover art.
-- "Go to artist/album" from any queue row into the library tree.
-- A configurable music-root mapping: right-click tracks or albums, load them
-  as local files in a new tab, tag or convert them there, then ask MPD to
-  rescan exactly the folder you touched.
+- Browse and search your server's library, alphabetically or with the newest
+  additions first (requires MPD 0.24's `Added` field).
+- Edit the queue, set track priorities, change playback and ReplayGain modes,
+  toggle individual outputs, and view cover art.
+- Jump from a queued track to its artist or album in the library tree.
+- Open tracks or albums in a local tab for tagging or conversion, then ask
+  MPD to rescan the affected folder. This requires access to the files and a
+  music-root mapping in settings.
 
-Local side:
+For local files, there's:
 
-- Persistent list tabs, a filesystem tree with bookmarks, gapless playback
-  through PipeWire, cue sheets and subsongs as first-class logical tracks.
-- A multi-file tag editor with colored drafts, undo, and automatic
-  transformation scripts that stage visibly before anything is written.
-- MusicBrainz identification with AcoustID fingerprinting and Cover Art
-  Archive fetching.
-- ReplayGain scanning (EBU R128, track and album gain, true peak) with
-  album grouping by release, tag, or expression.
-- A parallel converter: FLAC, Opus, MP3, and Vorbis presets plus your own
-  saved ones, optional resampling and 16/24-bit output with dither, tags
-  carried into the output and verified by rereading the result.
-- Rename/move publication driven by naming expressions, with journaling and
-  crash recovery.
+- Gapless playback through PipeWire, tabs that survive restarts, and a folder
+  browser with bookmarks. Cue sheet tracks and subsongs appear as individual
+  tracks.
+- A tag editor for working on many files at once. Changes are highlighted and
+  can be undone before saving, including edits made by automatic scripts.
+- MusicBrainz lookups, AcoustID fingerprinting, and artwork downloads from the
+  Cover Art Archive.
+- Track and album ReplayGain scanning using EBU R128, with true peak
+  measurement and album grouping by release, tag, or expression.
+- Parallel conversion with FLAC, Opus, MP3, and Vorbis presets, plus presets
+  you can save yourself. Options include resampling and 16/24-bit output with
+  dither. Tags are copied to the output and checked after conversion.
+- Renaming and moving based on naming expressions, with a path preview and
+  a journal for recovery if the operation is interrupted.
 
-Tag writing is deliberately conservative. Writers exist only for formats where
-the result can be proven: after every write the audio bytes are compared
-against the original and the tags are reread and compared against the plan.
-Currently that covers FLAC, WavPack, MP3 (ID3v2), Ogg Vorbis, and Opus.
-Formats without that proof are read-only until they get one.
+Tag editing currently supports FLAC, WavPack, MP3 (ID3v2), Ogg Vorbis, and Opus.
+After writing, Trackknife checks that the audio bytes are unchanged and rereads
+the tags to check them against your edits. Other formats are read-only until
+their tag writers pass the same checks.
 
-Network filesystems are treated as first-class: publication and conversion
-degrade cleanly on NFS, sshfs, and FAT (no `RENAME_NOREPLACE`, no xattrs, no
-`chown`) instead of failing, and report what could not be preserved.
+File operations and conversion also work on NFS, sshfs, and FAT. When a
+filesystem cannot preserve attributes such as ownership or extended
+attributes, Trackknife reports what was left out.
 
 ## Screenshots
 
-The tag editor over a multi-file selection, with staged drafts:
+Editing tags across several files, with pending changes highlighted:
 
 ![Tag editor](Screenshots/tagger.png)
 
-MusicBrainz identification, one row per release version:
+Choosing a release on MusicBrainz:
 
 ![MusicBrainz identification](Screenshots/musicbrainz.png)
 
-The converter with a live destination preview:
+Previewing output paths before conversion:
 
 ![Converter](Screenshots/converter.png)
 
-Naming layouts with a live path preview:
+Setting up a naming pattern and checking the resulting paths:
 
 ![Renaming](Screenshots/renaming.png)
 
 ## Scripting
 
-Naming layouts, conversion paths, library tree levels, ReplayGain grouping,
-and metadata transformations all use `tkfmt-1`, a small deterministic
-formatting language in the spirit of foobar2000's title formatting:
+You can customize filenames, conversion paths, library trees, ReplayGain
+grouping, and tag transformations with `tkfmt-1`. It's Trackknife's own
+formatting language, inspired by foobar2000's title formatting. For example,
+this pattern sorts files into artist and album folders:
 
 ```text
 %albumartist%/%album%/$num(%tracknumber%,2) - %title%
 ```
 
-See [docs/tkfmt.md](docs/tkfmt.md) for the language reference and
-[docs/title-formatting.md](docs/title-formatting.md) for the formal contract.
+See the [language guide](docs/tkfmt.md) for syntax and examples, or the
+[specification](docs/title-formatting.md) for the full language rules.
 
 ## Status
 
-Pre-release. There are no versioned releases yet; the schema migrates
-automatically and every change lands with tests, but expect rough edges and
-an opinionated feature set. Development is documented in
-[MILESTONES.md](MILESTONES.md) and the decision records under
-[docs/adr/](docs/adr/).
+Trackknife is still in development, with no versioned releases yet. Expect
+rough edges and changes between builds. The local database is upgraded
+automatically when its format changes.
+
+See [MILESTONES.md](MILESTONES.md) for development progress and
+[docs/adr/](docs/adr/) for the reasoning behind design decisions.
 
 ## Building
 
@@ -103,16 +106,16 @@ cmake --build build/release
 ./build/release/src/bench/trackknife
 ```
 
-On Arch, `packaging/arch/` contains a PKGBUILD that builds from the
-repository head:
+On Arch Linux, you can build and install the latest repository version with
+the included PKGBUILD:
 
 ```sh
 cd packaging/arch && makepkg -si
 ```
 
-Tests are opt-in for the package build (`TRACKKNIFE_CHECK=1 makepkg`). For
-development, four configure presets exist — `dev`, `asan`, `tsan`, and
-`tidy` — and all of them are expected to pass the full suite:
+To run tests during the package build, use `TRACKKNIFE_CHECK=1 makepkg`.
+For development, the `dev`, `asan`, `tsan`, and `tidy` presets all support the
+full test suite. To build and test with `dev`:
 
 ```sh
 cmake --preset dev && cmake --build build/dev
