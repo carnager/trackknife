@@ -32,6 +32,7 @@ class LocalLibraryPanel final : public QWidget {
     explicit LocalLibraryPanel(std::filesystem::path database_path, QWidget* parent = nullptr);
     ~LocalLibraryPanel() override;
     void addRoot(std::string raw_path);
+    // Reload committed index records; filesystem scans require the Refresh button.
     void refreshLibrary();
     void stop();
 
@@ -81,7 +82,6 @@ class LocalLibraryPanel final : public QWidget {
     QLabel* status_{nullptr};
     QToolButton* scan_button_{nullptr};
     QTimer* search_timer_{nullptr};
-    QTimer* refresh_timer_{nullptr};
     QTimer* poll_timer_{nullptr};
     QTimer* change_timer_{nullptr};
     QPointer<QDialog> folders_dialog_;
@@ -93,7 +93,6 @@ class LocalLibraryPanel final : public QWidget {
     QString previous_search_;
     bool querying_{false};
     bool scanning_{false};
-    bool rescan_pending_{false};
     bool stopped_{false};
 };
 

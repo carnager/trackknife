@@ -63,7 +63,7 @@ LocalLibraryPanel::LocalLibraryPanel(std::filesystem::path database_path, QWidge
     connect(scan_button_, &QToolButton::clicked, this, [this] {
         if (scanning_) {
             scan_cancellation_.request_cancellation();
-            rescan_pending_ = false;
+            change_timer_->stop();
             status_->setText(tr("Stopping scan…"));
         } else {
             startScan();
@@ -122,7 +122,7 @@ LocalLibraryPanel::LocalLibraryPanel(std::filesystem::path database_path, QWidge
         menu->addAction(tr("Open in local queue"), this, [this, target] { activate(target); });
         menu->popup(tree_->viewport()->mapToGlobal(position));
     });
-    status_ = new QLabel(tr("Choose Folders… to add your music collection."), this);
+    status_ = new QLabel(tr("Press Refresh to scan your music folders."), this);
     status_->setObjectName(QStringLiteral("local-library-status"));
     status_->setWordWrap(true);
     layout->addWidget(status_);
@@ -169,35 +169,19 @@ LocalLibraryPanel::LocalLibraryPanel(std::filesystem::path database_path, QWidge
         }
         reloadTree();
         loadRoots();
-        if (std::exchange(rescan_pending_, false)) {
-            startScan();
-        }
     });
     poll_timer_ = new QTimer(this);
     poll_timer_->setInterval(200);
     connect(poll_timer_, &QTimer::timeout, this, &LocalLibraryPanel::updateProgress);
-    refresh_timer_ = new QTimer(this);
-    refresh_timer_->setInterval(30'000);
-    connect(refresh_timer_, &QTimer::timeout, this, [this] {
-        if (!scanning_) {
-            startScan();
-        }
-    });
-    refresh_timer_->start();
     change_timer_ = new QTimer(this);
     change_timer_->setSingleShot(true);
     change_timer_->setInterval(250);
     connect(change_timer_, &QTimer::timeout, this, [this] {
         reloadTree();
-        if (scanning_) {
-            rescan_pending_ = true;
-        } else {
-            startScan();
-        }
+        loadRoots();
     });
     reloadTree();
     loadRoots();
-    startScan();
 }
 
 LocalLibraryPanel::~LocalLibraryPanel() { stop(); }
@@ -211,7 +195,6 @@ void LocalLibraryPanel::stop() {
     view_cancellation_.request_cancellation();
     scan_cancellation_.request_cancellation();
     search_timer_->stop();
-    refresh_timer_->stop();
     poll_timer_->stop();
     change_timer_->stop();
     tasks_.clear();
@@ -434,6 +417,7 @@ void LocalLibraryPanel::addRoot(std::string raw_path) {
              },
              [this](Outcome outcome) {
                  if (outcome.error.isEmpty()) {
+                     status_->setText(tr("Folder added. Press Refresh to scan for music."));
                      loadRoots();
                      refreshLibrary();
                  } else {
@@ -540,16 +524,18 @@ void LocalLibraryPanel::loadRoots() {
                      roots_list_->clear();
                  }
                  for (const auto& root : outcome.roots) {
-                     if (!root.available) {
+                     const auto unavailable = !root.available && !root.error.empty();
+                     if (unavailable) {
                          ++offline;
                      }
                      if (!folders_dialog_) {
                          continue;
                      }
-                     auto* item = new QListWidgetItem(
-                         pathLabel(root.raw_path) +
-                             (root.available ? QString{} : tr(" — unavailable")),
-                         roots_list_);
+                     auto* item = new QListWidgetItem(pathLabel(root.raw_path) +
+                                                          (root.available ? QString{}
+                                                           : unavailable  ? tr(" — unavailable")
+                                                                          : tr(" — not scanned")),
+                                                      roots_list_);
                      item->setData(Qt::UserRole, QByteArray::fromStdString(root.raw_path));
                      item->setToolTip(text(root.error));
                  }

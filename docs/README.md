@@ -19,6 +19,8 @@ ADR-0115 adds the optional [local music library](local-library.md), with
 migration 28, a Qt-free index/query service, and a bounded background Library
 panel beside Folders. Physical-file browsing/search and offline retention are
 implemented; logical-title indexing and autoplaylists remain future work.
+ADR-0116 makes filesystem scans explicit: only the Library's Refresh button
+starts a scan; startup and operation notifications display cached index records.
 The following milestone history predates this requested workspace addition.
 
 M5 is closing into M6, implementation is accepted through ADR-0114, and the persistence

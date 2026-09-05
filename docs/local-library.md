@@ -1,6 +1,7 @@
 # Local music library
 
-**Trackknife decision (ADR-0115):** local collection browsing is optional.
+**Trackknife decision (ADRs 0115–0116):** local collection browsing is optional,
+and filesystem scanning is manual.
 The Library source in local context indexes folders chosen by the user. The
 Folders source remains available without an import or scan. MPD retains its
 own library and search.
@@ -8,8 +9,8 @@ own library and search.
 ## Using the library
 
 1. Select a local queue or list, then choose **Library** in the source selector.
-2. Open **Folders…**, add one or more music folders, and let the background
-   scan run. The footer shows progress; **Stop** cancels the scan.
+2. Open **Folders…**, add one or more music folders, then press **Refresh** to
+   scan them in the background. The footer shows progress; **Stop** cancels the scan.
 3. Expand an artist to browse albums, and an album to browse files. Enter or
    the context-menu action opens the selection in an ordinary local queue.
 4. Type in the search field to see separate **Albums** and **Tracks** results.
@@ -41,14 +42,17 @@ Cancellation and incomplete traversal retain previously indexed entries.
 
 A complete scan marks missing files unavailable. An inaccessible root marks
 its cached files unavailable without deleting them; later reconnection restores
-them. Refresh runs on startup, every 30 seconds while open, on **Refresh**, and
-after in-app metadata/file operations and conversion. Only changed files need
-metadata probing. Periodic refresh preserves expanded and selected entries.
+them after an explicit refresh. Scans run only when you press **Refresh**;
+startup displays cached entries, and adding folders or completing operations
+does not start a scan. External changes, newly converted files, and reconnected
+folders appear after the next Refresh. Only changed files need metadata probing.
+Refreshing the view preserves expanded and selected entries.
 
 Metadata and relocation commits update matching index entries in the same
 transaction as persisted list/cache changes. A move between indexed roots
 changes ownership; a move outside all roots removes the index entry. Failed
 transactions and idempotent recovery follow the existing operation journal.
+These committed changes reload the displayed index without scanning files.
 
 MusicBrainz release IDs identify albums when present. Otherwise album artist,
 album title, and parent directory identify an album. Tree labels are evaluated

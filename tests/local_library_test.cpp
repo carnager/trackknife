@@ -15,6 +15,7 @@
 #include <QTabWidget>
 #include <QTableView>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QToolButton>
 #include <QTreeView>
 #include <QtTest>
@@ -73,6 +74,8 @@ class LocalLibraryTest final : public QObject {
     void albumIdentityKeepsEditionsSeparate();
     void metadataAndMovesFollowTheListTransaction();
     void migrationRoundTrip();
+    void scansOnlyOnRefresh_data();
+    void scansOnlyOnRefresh();
     void localViewBrowsesSearchesAndOpensFiles();
 };
 
@@ -298,6 +301,75 @@ void LocalLibraryTest::migrationRoundTrip() {
     QVERIFY(library->query(tracks())->entries.empty());
 }
 
+void LocalLibraryTest::scansOnlyOnRefresh_data() {
+    QTest::addColumn<bool>("cancel");
+    QTest::newRow("completed") << false;
+    QTest::newRow("cancelled-with-pending-changes") << true;
+}
+
+void LocalLibraryTest::scansOnlyOnRefresh() {
+    QFETCH(bool, cancel);
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const std::filesystem::path base{temporary.path().toStdString()};
+    const auto root = base / "music";
+    QVERIFY(!fixture(root, "01.flac").empty());
+    const auto database = base / "state.sqlite";
+    auto library = persistence::LocalLibrary::open(database);
+    QVERIFY(library && library->add_root(root.native()));
+
+    LocalLibraryPanel panel{database};
+    auto* button = panel.findChild<QToolButton*>(QStringLiteral("local-library-scan"));
+    QVERIFY(button);
+    QVERIFY(!panel.property("scanning").toBool());
+    // Accelerate any timers so an accidental periodic scanner is exercised.
+    for (auto* timer : panel.findChildren<QTimer*>()) {
+        timer->setInterval(10);
+    }
+    panel.refreshLibrary();
+    QTest::qWait(100);
+    QVERIFY(!panel.property("scanning").toBool());
+    QVERIFY(library->paths(tracks())->empty());
+
+    // Hold a manual scan at the database boundary to exercise cancellation
+    // and view refreshes arriving during a slow scan.
+    sqlite3* db = nullptr;
+    QCOMPARE(sqlite3_open(database.c_str(), &db), SQLITE_OK);
+    const std::unique_ptr<sqlite3, decltype(&sqlite3_close)> lock{db, sqlite3_close};
+    QCOMPARE(sqlite3_exec(db, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr), SQLITE_OK);
+    button->click();
+    QVERIFY(panel.property("scanning").toBool());
+    panel.refreshLibrary();
+    QTest::qWait(100);
+    QVERIFY(panel.property("scanning").toBool());
+    if (cancel) {
+        panel.refreshLibrary();
+        button->click();
+    }
+    QCOMPARE(sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr), SQLITE_OK);
+    QTRY_VERIFY(!panel.property("scanning").toBool());
+    if (cancel) {
+        QVERIFY(panel.findChild<QLabel*>(QStringLiteral("local-library-status"))
+                    ->text()
+                    .contains(QStringLiteral("Scan stopped")));
+    } else {
+        QCOMPARE(library->paths(tracks())->size(), 1U);
+    }
+
+    const auto indexed = library->paths(tracks())->size();
+    QVERIFY(!fixture(root, "02.flac").empty());
+    panel.refreshLibrary();
+    QTest::qWait(100);
+    QVERIFY(!panel.property("scanning").toBool());
+    QCOMPARE(library->paths(tracks())->size(), indexed);
+
+    button->click();
+    QVERIFY(panel.property("scanning").toBool());
+    QTRY_VERIFY(!panel.property("scanning").toBool());
+    QCOMPARE(library->paths(tracks())->size(), 2U);
+    panel.stop();
+}
+
 void LocalLibraryTest::localViewBrowsesSearchesAndOpensFiles() {
     QTemporaryDir temporary;
     const auto old_data = qgetenv("XDG_DATA_HOME");
@@ -325,6 +397,10 @@ void LocalLibraryTest::localViewBrowsesSearchesAndOpensFiles() {
         selector->setCurrentIndex(1);
         QCOMPARE(sources->currentWidget(), panel);
         panel->addRoot(root.native());
+        QTRY_COMPARE(panel->findChild<QLabel*>(QStringLiteral("local-library-status"))->text(),
+                     QStringLiteral("Folder added. Press Refresh to scan for music."));
+        QVERIFY(!panel->property("scanning").toBool());
+        panel->findChild<QToolButton*>(QStringLiteral("local-library-scan"))->click();
         QTRY_VERIFY(tree->model()->index(0, 0).data().toString().contains(QStringLiteral("Björk")));
         const auto artist = tree->model()->index(0, 0);
         tree->expand(artist);
