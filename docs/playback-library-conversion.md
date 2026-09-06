@@ -257,6 +257,19 @@ with fresh metadata/path reconciliation for removed occurrences. Add/replace,
 cross-tab, and automatic structural changes clear affected history in this slice.
 The resulting list persists, but undo history does not survive restart.
 
+ADR-0127 adds whole-list **Sort list**, **Reverse list**, and **Remove duplicate
+entries** in Edit and local track menus. Sorting has title, artist/album/track,
+album/track, number, and path presets, plus an inline custom `tkfmt-1` expression
+and ascending/descending choice. It compares digit sequences numerically (2
+before 10), ignores simple Unicode case differences, and preserves equal-key
+order. Duplicate removal keeps the first exact raw-path/logical-reference/
+decoder-selection/sample-range occurrence; distinct logical tracks stay separate.
+Each command is cancellable during preparation and creates one named undo step.
+Sort/reverse retain the selected and playing occurrences; duplicate removal uses
+the ordinary removal behavior for a removed playing occurrence. Changes persist
+through the existing workspace save. These commands never mutate files.
+
+
 ADR-0125 adds find within the active local list or MPD queue through Ctrl+F,
 Next/Previous, and F3/Shift+F3. Literal case-insensitive matching covers cached
 title, artist, album, album artist, date, track number, and escaped local paths

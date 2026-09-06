@@ -122,6 +122,9 @@ class LocalLibraryTest final : public QObject {
   private slots:
     void rootsRetainOfflineMusicAndRawPaths();
     void incrementalScanSearchAndPaging();
+    void deletedSubfoldersArePrunedOnlyAfterCompleteScans();
+    void missingFilesOnAnotherDeviceAreRetained();
+    void deletionCleanupPagesWithoutChangingWorkingLists();
     void albumIdentityKeepsEditionsSeparate();
     void metadataAndMovesFollowTheListTransaction();
     void migrationRoundTrip();
@@ -212,7 +215,7 @@ void LocalLibraryTest::incrementalScanSearchAndPaging() {
     persistence::LibraryScanProgress missing;
     QVERIFY(library->scan({}, missing));
     QCOMPARE(library->paths(tracks())->size(), 1U);
-    QCOMPARE(library->query(tracks())->entries.size(), 2U);
+    QCOMPARE(library->query(tracks())->entries.size(), 1U);
     QCOMPARE(fixture(root, "01.flac", "Changed title"), first);
     persistence::LibraryScanProgress changed;
     QVERIFY(library->scan({}, changed));
@@ -222,6 +225,133 @@ void LocalLibraryTest::incrementalScanSearchAndPaging() {
     persistence::LibraryScanProgress symlink;
     QVERIFY(library->scan({}, symlink));
     QCOMPARE(library->paths(tracks())->size(), 1U);
+}
+
+void LocalLibraryTest::deletedSubfoldersArePrunedOnlyAfterCompleteScans() {
+    QTemporaryDir temporary;
+    const std::filesystem::path base{temporary.path().toStdString()};
+    const auto root = base / "music";
+    const auto removed = fixture(root / "removed", "01.flac", "Deleted", "Deleted album");
+    const auto retained = fixture(root / "retained", "01.flac", "Kept", "Kept album");
+    QVERIFY(!removed.empty() && !retained.empty());
+    auto library = persistence::LocalLibrary::open(base / "state.sqlite");
+    QVERIFY(library && library->add_root(root.native()));
+    persistence::LibraryScanProgress initial;
+    QVERIFY(library->scan({}, initial));
+    QCOMPARE(library->query(tracks())->entries.size(), 2U);
+    std::filesystem::remove_all(root / "removed");
+    // A failed probe makes the traversal incomplete: retain unseen entries.
+    {
+        std::ofstream corrupt{root / "broken.flac"};
+        corrupt << "not audio";
+    }
+    persistence::LibraryScanProgress partial;
+    const auto incomplete = library->scan({}, partial);
+    QVERIFY(incomplete && incomplete->incomplete);
+    QCOMPARE(library->query(tracks())->entries.size(), 2U);
+    std::filesystem::remove(root / "broken.flac");
+    core::CancellationSource cancel;
+    cancel.request_cancellation();
+    persistence::LibraryScanProgress stopped;
+    QVERIFY(library->scan(cancel.token(), stopped)->cancelled);
+    QCOMPARE(library->query(tracks())->entries.size(), 2U);
+    persistence::LibraryScanProgress complete;
+    const auto scanned = library->scan({}, complete);
+    QVERIFY(scanned && !scanned->incomplete);
+    QVERIFY(library->query(tracks("Deleted"))->entries.empty());
+    QCOMPARE(library->paths(tracks())->front(), retained);
+    persistence::LibraryQuery albums;
+    albums.kind = persistence::LibraryEntryKind::album;
+    QCOMPARE(library->query(albums)->entries.size(), 1U);
+    // Offline roots retain their cached entries and recover on reconnection.
+    std::filesystem::rename(root, base / "offline");
+    persistence::LibraryScanProgress offline;
+    QVERIFY(library->scan({}, offline));
+    QCOMPARE(library->query(tracks())->entries.front().available, 0U);
+    std::filesystem::rename(base / "offline", root);
+    persistence::LibraryScanProgress online;
+    QVERIFY(library->scan({}, online));
+    QCOMPARE(library->paths(tracks())->front(), retained);
+    // Removing the last album also removes empty artist/album groups.
+    std::filesystem::remove_all(root / "retained");
+    persistence::LibraryScanProgress empty;
+    QVERIFY(library->scan({}, empty));
+    QVERIFY(library->query(tracks())->entries.empty());
+    QVERIFY(library->query(albums)->entries.empty());
+    QVERIFY(library->query({})->entries.empty());
+    QVERIFY(std::filesystem::is_directory(root));
+}
+
+void LocalLibraryTest::missingFilesOnAnotherDeviceAreRetained() {
+    QTemporaryDir temporary;
+    const std::filesystem::path base{temporary.path().toStdString()};
+    const auto root = base / "music";
+    const auto source = fixture(root / "album", "01.flac");
+    auto library = persistence::LocalLibrary::open(base / "state.sqlite");
+    QVERIFY(library && library->add_root(root.native()));
+    persistence::LibraryScanProgress initial;
+    QVERIFY(library->scan({}, initial));
+    // Model the device evidence left by an offline mount, without requiring
+    // privileged mount operations. The existing mountpoint stays accessible.
+    sqlite3* db = nullptr;
+    QCOMPARE(sqlite3_open((base / "state.sqlite").c_str(), &db), SQLITE_OK);
+    QCOMPARE(sqlite3_exec(db,
+                          "UPDATE local_library_tracks SET revision="
+                          "'18446744073709551615' || substr(revision,instr(revision,':'))",
+                          nullptr, nullptr, nullptr),
+             SQLITE_OK);
+    sqlite3_close(db);
+    std::filesystem::rename(root / "album", base / "offline-album");
+    persistence::LibraryScanProgress missing;
+    QVERIFY(library->scan({}, missing));
+    QCOMPARE(library->query(tracks())->entries.size(), 1U);
+    QCOMPARE(library->query(tracks())->entries.front().available, 0U);
+    QVERIFY(library->paths(tracks())->empty());
+    // Returning files are revalidated and restore availability.
+    std::filesystem::rename(base / "offline-album", root / "album");
+    persistence::LibraryScanProgress returned;
+    QVERIFY(library->scan({}, returned));
+    QCOMPARE(library->paths(tracks())->front(), source);
+}
+
+void LocalLibraryTest::deletionCleanupPagesWithoutChangingWorkingLists() {
+    QTemporaryDir temporary;
+    const std::filesystem::path base{temporary.path().toStdString()};
+    const auto root = base / "music";
+    const auto source = fixture(root, "raw-\xff.flac");
+    QVERIFY(!source.empty());
+    for (int row = 0; row < 205; ++row) {
+        std::filesystem::copy_file(std::filesystem::path{source},
+                                   root / (std::to_string(row) + ".flac"));
+    }
+    auto repository = persistence::ListRepository::open(base / "state.sqlite");
+    QVERIFY(repository);
+    persistence::ListDocument list{.id = core::StableId::random(),
+                                   .kind = persistence::ListKind::scratch,
+                                   .name = "Local Queue",
+                                   .pinned = false,
+                                   .dirty = false,
+                                   .items = {}};
+    persistence::ListItem item;
+    item.source = persistence::ListSource::local;
+    item.source_reference = source;
+    list.items = {item, item};
+    QVERIFY(repository->replace_all(std::vector{list}));
+    const auto saved = repository->load_all();
+    QVERIFY(saved);
+    auto library = persistence::LocalLibrary::open(base / "state.sqlite");
+    QVERIFY(library && library->add_root(root.native()));
+    persistence::LibraryScanProgress initial;
+    QVERIFY(library->scan({}, initial));
+    QCOMPARE(library->paths(tracks())->size(), 206U);
+    // Keep the same root directory, as on a mounted collection with all albums deleted.
+    for (const auto& entry : std::filesystem::directory_iterator{root}) {
+        std::filesystem::remove(entry.path());
+    }
+    persistence::LibraryScanProgress clean;
+    QVERIFY(library->scan({}, clean));
+    QVERIFY(library->query(tracks())->entries.empty());
+    QCOMPARE(repository->load_all(), saved);
 }
 
 void LocalLibraryTest::albumIdentityKeepsEditionsSeparate() {
@@ -757,6 +887,19 @@ void LocalLibraryTest::albumCoversLoadAndRefresh() {
     QVERIFY(color() != QColor{Qt::yellow});
     panel.show();
     QTRY_COMPARE(color(), QColor{Qt::yellow});
+    QCOMPARE(search->text(), QStringLiteral("Test album"));
+    search->clear();
+    QTRY_VERIFY(tree->model()->index(0, 0).data().toString().contains(QStringLiteral("Björk")));
+    tree->expand(tree->model()->index(0, 0));
+    QTRY_COMPARE(color(), QColor{Qt::yellow});
+    cover.fill(Qt::cyan);
+    QVERIFY(cover.save(folder_cover));
+    panel.findChild<QToolButton*>(QStringLiteral("local-library-scan"))->click();
+    QTRY_COMPARE(color(), QColor{Qt::cyan});
+    search->setText(QStringLiteral("Test album"));
+    QTRY_COMPARE(tree->model()->index(0, 0).data().toString(), QStringLiteral("Albums"));
+    QTRY_COMPARE(color(), QColor{Qt::cyan});
+    QVERIFY(!panel.property("scanning").toBool());
     core::CancellationSource cancelled;
     cancelled.request_cancellation();
     QVERIFY(ui::loadLocalArtwork(source, cancelled.token()).isNull());

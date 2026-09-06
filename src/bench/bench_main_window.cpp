@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "bench/bench_main_window.hpp"
+#include "bench/local_list_edit_bar.hpp"
 
 #include "bench/local_library_panel.hpp"
 #include "bench/metadata_properties_dialog.hpp"
@@ -30,6 +31,9 @@ extern "C" void __tsan_acquire(void* address);
 namespace trackknife::bench {
 
 void BenchMainWindow::stopBackgroundWork() {
+    if (list_edit_bar_ != nullptr) {
+        list_edit_bar_->cancel();
+    }
     if (local_library_ != nullptr) {
         local_library_->stop();
     }

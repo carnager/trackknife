@@ -533,6 +533,9 @@ void BenchMainWindow::buildMpdWorkspace() {
                     return image;
                 }));
             });
+    // Browse reloads invalidate artwork in the preserved search results too.
+    connect(server_library_model_, &QAbstractItemModel::modelReset, mpd_search_model_,
+            &quick::MpdSearchResultModel::refreshArtwork);
     connect(mpd_controller_, &quick::MpdProbeController::serverDatabaseChanged,
             server_library_model_, &ui::ServerLibraryTreeModel::reload);
     connect(server_library_model_, &ui::ServerLibraryTreeModel::browseError, this,

@@ -60,6 +60,7 @@ class MpdSearchResultModel final : public QAbstractTableModel {
 
   public slots:
     void acceptArtwork(quint64 token, const QImage& image);
+    void refreshArtwork();
 
   signals:
     void artworkRequested(quint64 token, const QString& uri);

@@ -19,6 +19,8 @@ qt_add_library(
     convert_dialog.hpp
     local_list_model.cpp
     local_list_model.hpp
+    local_list_edit_bar.cpp
+    local_list_edit_bar.hpp
     track_list_find_bar.cpp
     track_list_find_bar.hpp
     local_library_panel.cpp
@@ -54,7 +56,7 @@ add_library(Trackknife::BenchUi ALIAS trackknife_bench_ui)
 
 target_link_libraries(
     trackknife_bench_ui
-    PUBLIC Qt6::Widgets Trackknife::Core Trackknife::UiCommon Trackknife::Persistence
+    PUBLIC Trackknife::Lists Qt6::Widgets Trackknife::Core Trackknife::UiCommon Trackknife::Persistence
            Trackknife::Convert Trackknife::Formats Trackknife::Loudness Trackknife::Metadata Trackknife::MusicBrainz
            Trackknife::Operations Trackknife::Audio
            trackknife_project_options

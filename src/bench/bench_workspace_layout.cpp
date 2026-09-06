@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "bench/bench_main_window.hpp"
+#include "bench/local_list_edit_bar.hpp"
 #include "bench/settings_dialog.hpp"
 #include "bench/track_list_find_bar.hpp"
 
@@ -301,6 +302,51 @@ void BenchMainWindow::buildWorkspace() {
     redo_list_action_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
     redo_list_action_->setEnabled(false);
     connect(redo_list_action_, &QAction::triggered, this, [this] { replayListEdit(false); });
+    edit_menu->addSeparator();
+    list_edit_bar_ = new LocalListEditBar(this);
+    addToolBar(Qt::BottomToolBarArea, list_edit_bar_);
+    list_edit_bar_->hide();
+    connect(list_edit_bar_, &LocalListEditBar::edited, this, [this](LocalListModel* model) {
+        for (const auto& tab : list_tabs_)
+            if (tab->model == model) {
+                markTabDirty(*tab);
+                syncArtwork(*tab);
+                break;
+            }
+        refreshSelectionStatus();
+    });
+    sort_list_menu_ = edit_menu->addMenu(tr("Sort list"));
+    sort_list_menu_->setObjectName(QStringLiteral("bench-sort-list-menu"));
+    const auto preset = [this](const QString& name, const char* object, const char* expression) {
+        auto* action = sort_list_menu_->addAction(name);
+        action->setObjectName(QString::fromLatin1(object));
+        connect(action, &QAction::triggered, this, [this, expression] {
+            list_edit_bar_->start({.kind = lists::EditKind::sort, .expression = expression});
+        });
+    };
+    preset(tr("Title"), "action-sort-list-title", "%title%");
+    preset(tr("Artist / album / track"), "action-sort-list-artist",
+           "$if2(%albumartist%,%artist%)|%album%|%discnumber%|%tracknumber%|%title%");
+    preset(tr("Album / track"), "action-sort-list-album",
+           "%album%|%discnumber%|%tracknumber%|%title%");
+    preset(tr("Track number"), "action-sort-list-track", "%discnumber%|%tracknumber%");
+    preset(tr("Path"), "action-sort-list-path", "$info(path)");
+    sort_list_menu_->addSeparator();
+    auto* custom = sort_list_menu_->addAction(tr("Custom expression…"));
+    custom->setObjectName(QStringLiteral("action-sort-list-custom"));
+    connect(custom, &QAction::triggered, list_edit_bar_, &LocalListEditBar::openSort);
+    reverse_list_action_ = edit_menu->addAction(tr("Reverse list"));
+    reverse_list_action_->setObjectName(QStringLiteral("action-reverse-list"));
+    connect(reverse_list_action_, &QAction::triggered, this, [this] {
+        list_edit_bar_->start({.kind = lists::EditKind::reverse, .expression = {}});
+    });
+    deduplicate_list_action_ = edit_menu->addAction(tr("Remove duplicate entries"));
+    deduplicate_list_action_->setObjectName(QStringLiteral("action-deduplicate-list"));
+    deduplicate_list_action_->setToolTip(
+        tr("Keep the first occurrence of each exact local source and logical track"));
+    connect(deduplicate_list_action_, &QAction::triggered, this, [this] {
+        list_edit_bar_->start({.kind = lists::EditKind::remove_duplicates, .expression = {}});
+    });
     edit_menu->addSeparator();
     play_selected_action_ = new QAction(QStringLiteral("Play"), this);
     play_selected_action_->setObjectName(QStringLiteral("action-play-selected-track"));

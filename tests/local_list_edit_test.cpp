@@ -1,0 +1,220 @@
+// SPDX-License-Identifier: GPL-3.0-only
+#include "bench/local_list_edit_bar.hpp"
+#include "bench/local_list_model.hpp"
+#include "trackknife/lists/edit_plan.hpp"
+
+#include <QLabel>
+#include <QLineEdit>
+#include <QMainWindow>
+#include <QTableView>
+#include <QTimer>
+#include <QtTest>
+
+namespace trackknife::bench {
+namespace {
+LocalTrackRow row(std::string title, std::string path = "/missing/audio.flac") {
+    LocalTrackRow result;
+    result.raw_path = std::move(path);
+    result.title = std::move(title);
+    result.probed = true;
+    return result;
+}
+lists::Entry entry(std::string title, std::string number = {}) {
+    lists::Entry result;
+    result.raw_path = "/raw-\xff.flac";
+    result.display[0] = std::move(title);
+    result.display[5] = std::move(number);
+    return result;
+}
+struct Workspace {
+    QMainWindow window;
+    LocalListModel model;
+    QTableView* view{new QTableView(&window)};
+    LocalListEditBar* bar{new LocalListEditBar(&window)};
+    explicit Workspace(std::vector<LocalTrackRow> rows) {
+        model.replaceRows(std::move(rows));
+        view->setModel(&model);
+        view->setSelectionBehavior(QAbstractItemView::SelectRows);
+        window.setCentralWidget(view);
+        window.addToolBar(Qt::BottomToolBarArea, bar);
+        bar->setView(view);
+        window.show();
+    }
+};
+} // namespace
+class LocalListEditTest final : public QObject {
+    Q_OBJECT
+  private slots:
+    void stableNumericUnicodeAndCustomSorting();
+    void duplicateIdentityRetainsLogicalSources();
+    void invalidAndCancelledPlansDoNotMutate();
+    void editsPreserveOccurrencesAndUndo();
+    void asynchronousCancellationAndStaleSnapshots();
+    void limitsRejectIncompleteEdits();
+};
+void LocalListEditTest::stableNumericUnicodeAndCustomSorting() {
+    std::vector entries{entry("Éclair", "10/12"), entry("éclair", "2/12"), entry("Apple", "1")};
+    auto plan = lists::plan_edit(entries, {.kind = lists::EditKind::sort, .expression = "%TITLE%"});
+    QVERIFY(plan);
+    QCOMPARE(plan->positions, (std::vector<int>{2, 0, 1}));
+    plan = lists::plan_edit(
+        entries, {.kind = lists::EditKind::sort, .expression = "%title%", .descending = true});
+    QVERIFY(plan);
+    QCOMPARE(plan->positions, (std::vector<int>{0, 1, 2}));
+    plan =
+        lists::plan_edit(entries, {.kind = lists::EditKind::sort, .expression = "%tracknumber%"});
+    QVERIFY(plan);
+    QCOMPARE(plan->positions, (std::vector<int>{2, 1, 0}));
+    entries[0].metadata.fields.push_back({.canonical_name = "genre",
+                                          .native_name = "GENRE",
+                                          .values = {"Jazz", "Blues"},
+                                          .qualifier = {},
+                                          .provenance = metadata::FieldProvenance::embedded});
+    plan = lists::plan_edit(entries,
+                            {.kind = lists::EditKind::sort, .expression = "$getmulti(genre,1)"});
+    QVERIFY(plan);
+    QCOMPARE(plan->positions, (std::vector<int>{1, 2, 0}));
+    plan = lists::plan_edit(entries, {.kind = lists::EditKind::sort, .expression = "$info(PATH)"});
+    QVERIFY(plan); // Raw non-UTF-8 paths are escaped, never decoded or resolved.
+    QCOMPARE(plan->positions, (std::vector<int>{0, 1, 2}));
+    entries = {entry("Track 02"), entry("track 2"), entry("Track 100000000000000000000000000000")};
+    plan = lists::plan_edit(
+        entries, {.kind = lists::EditKind::sort, .expression = "%title%", .descending = true});
+    QVERIFY(plan);
+    QCOMPARE(plan->positions, (std::vector<int>{2, 0, 1}));
+}
+void LocalListEditTest::duplicateIdentityRetainsLogicalSources() {
+    const auto original = entry("First");
+    std::vector<lists::Entry> entries{original, original};
+    entries.back().display[0] = "Different cached title";
+    auto chapter = original;
+    chapter.segment = formats::SampleRange{.start_sample = 0, .end_sample = 48000};
+    entries.push_back(chapter);
+    entries.push_back(chapter);
+    chapter.segment->start_sample = 48000;
+    entries.push_back(chapter);
+    auto subsong = original;
+    subsong.selection.subsong_index = 0;
+    entries.push_back(subsong);
+    subsong.selection.subsong_index = 1;
+    entries.push_back(subsong);
+    auto stream = original;
+    stream.selection.stream_index = 0;
+    entries.push_back(stream);
+    auto logical = original;
+    logical.logical_reference = "cue:01";
+    entries.push_back(logical);
+    logical.logical_reference = "cue:02";
+    entries.push_back(logical);
+    const auto plan =
+        lists::plan_edit(entries, {.kind = lists::EditKind::remove_duplicates, .expression = {}});
+    QVERIFY(plan && plan->removal);
+    QCOMPARE(plan->positions, (std::vector<int>{1, 3}));
+}
+void LocalListEditTest::invalidAndCancelledPlansDoNotMutate() {
+    const std::vector entries{entry("B"), entry("A")};
+    const auto invalid =
+        lists::plan_edit(entries, {.kind = lists::EditKind::sort, .expression = "$unknown()"});
+    QVERIFY(!invalid);
+    core::CancellationSource cancellation;
+    cancellation.request_cancellation();
+    for (auto kind :
+         {lists::EditKind::sort, lists::EditKind::reverse, lists::EditKind::remove_duplicates}) {
+        const auto stopped = lists::plan_edit(entries, {.kind = kind, .expression = "%title%"},
+                                              cancellation.token());
+        QVERIFY(!stopped);
+        QCOMPARE(stopped.error().code, core::ErrorCode::cancelled);
+    }
+}
+void LocalListEditTest::editsPreserveOccurrencesAndUndo() {
+    Workspace workspace{
+        {row("C", "/c.flac"), row("A", "/a.flac"), row("B", "/b.flac"), row("copy", "/a.flac")}};
+    auto& model = workspace.model;
+    const auto original = model.rows();
+    model.setCurrentPath("/b.flac", 2);
+    workspace.view->selectRow(2);
+    const QPersistentModelIndex playing{model.index(2, 0)};
+    QSignalSpy resets{&model, &QAbstractItemModel::modelReset};
+    QSignalSpy edits{workspace.bar, &LocalListEditBar::edited};
+    workspace.bar->start({.kind = lists::EditKind::sort, .expression = "%title%"});
+    QTRY_COMPARE(edits.size(), 1);
+    QCOMPARE(model.rows()[0].title, std::string{"A"});
+    QCOMPARE(playing.row(), 1);
+    QCOMPARE(workspace.view->selectionModel()->selectedRows().front().row(), 1);
+    QCOMPARE(model.undoLabel(), QStringLiteral("Sort list"));
+    QVERIFY(model.undo());
+    QCOMPARE(model.rows(), original);
+    QCOMPARE(playing.row(), 2);
+    QVERIFY(model.redo());
+    workspace.bar->start({.kind = lists::EditKind::reverse, .expression = {}});
+    QTRY_COMPARE(edits.size(), 2);
+    QCOMPARE(model.undoLabel(), QStringLiteral("Reverse list"));
+    QVERIFY(model.undo());
+    workspace.bar->start({.kind = lists::EditKind::remove_duplicates, .expression = {}});
+    QTRY_COMPARE(edits.size(), 3);
+    QCOMPARE(model.rowCount(), 3);
+    QCOMPARE(model.rows().front().title, std::string{"A"});
+    QCOMPARE(model.undoLabel(), QStringLiteral("Remove duplicate entries"));
+    QVERIFY(model.undo());
+    QCOMPARE(model.rowCount(), 4);
+    QVERIFY(model.redo());
+    QCOMPARE(model.rowCount(), 3);
+    QVERIFY(playing.isValid());
+    QCOMPARE(resets.size(), 0);
+    // No-op ordering does not replace the undo label or erase redo history.
+    QVERIFY(model.undo());
+    const auto label = model.redoLabel();
+    QVERIFY(!model.applyPermutation({0, 1, 2, 3}, QStringLiteral("No-op")));
+    QCOMPARE(model.redoLabel(), label);
+    QVERIFY(!model.applyPermutation({0, 1, 1, 3}, QStringLiteral("Invalid")));
+    QCOMPARE(model.redoLabel(), label);
+}
+void LocalListEditTest::asynchronousCancellationAndStaleSnapshots() {
+    std::vector<LocalTrackRow> rows;
+    for (int i = 0; i < 10'000; ++i)
+        rows.push_back(row(std::to_string(10'000 - i), "/" + std::to_string(i)));
+    Workspace workspace{rows};
+    QSignalSpy edits{workspace.bar, &LocalListEditBar::edited};
+    bool yielded = false;
+    workspace.bar->start({.kind = lists::EditKind::sort, .expression = "%title%"});
+    QTimer::singleShot(0, &workspace.window, [&] {
+        yielded = true;
+        workspace.bar->cancel();
+    });
+    QTRY_VERIFY(yielded);
+    QVERIFY(!workspace.bar->busy());
+    QCOMPARE(workspace.model.rows(), rows);
+    workspace.bar->start({.kind = lists::EditKind::reverse, .expression = {}});
+    workspace.model.reorderRows({0}, 2);
+    QVERIFY(!workspace.bar->busy());
+    QCOMPARE(workspace.bar->findChild<QLabel*>()->text(),
+             QStringLiteral("List changed — run the command again"));
+    workspace.bar->start({.kind = lists::EditKind::reverse, .expression = {}});
+    auto changed = rows[4];
+    changed.title = "Updated during capture";
+    QVERIFY(workspace.model.applyMetadata(changed.raw_path, 4, changed));
+    QVERIFY(!workspace.bar->busy());
+    workspace.bar->start({.kind = lists::EditKind::reverse, .expression = {}});
+    workspace.bar->setView(nullptr);
+    QVERIFY(!workspace.bar->busy());
+    QTest::qWait(50);
+    QCOMPARE(edits.size(), 0);
+    workspace.bar->setView(workspace.view);
+    workspace.bar->start({.kind = lists::EditKind::reverse, .expression = {}});
+    QTRY_COMPARE(edits.size(), 1);
+    QVERIFY(workspace.model.undo());
+    // Artwork/current-row notifications must not cancel a pending ordering.
+    workspace.bar->start({.kind = lists::EditKind::sort, .expression = "%title%"});
+    workspace.model.setCurrentPath(rows[2].raw_path, 2);
+    QTRY_COMPARE(edits.size(), 2);
+}
+void LocalListEditTest::limitsRejectIncompleteEdits() {
+    Workspace workspace{{row(std::string(70U * 1024U, 'x')), row("A")}};
+    workspace.bar->start({.kind = lists::EditKind::sort, .expression = "%title%"});
+    QTRY_VERIFY(!workspace.bar->busy());
+    QVERIFY(!workspace.model.canUndo());
+    QVERIFY(workspace.bar->findChild<QLabel*>()->text().contains(QStringLiteral("limit")));
+}
+} // namespace trackknife::bench
+QTEST_MAIN(trackknife::bench::LocalListEditTest)
+#include "local_list_edit_test.moc"

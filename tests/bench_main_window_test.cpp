@@ -2,6 +2,7 @@
 
 #include "bench/bench_main_window.hpp"
 #include "bench/convert_dialog.hpp"
+#include "bench/local_list_edit_bar.hpp"
 #include "bench/local_list_model.hpp"
 #include "bench/metadata_grid_model.hpp"
 #include "bench/metadata_properties_dialog.hpp"
@@ -170,6 +171,7 @@ class BenchMainWindowTest final : public QObject {
     void unifiesMpdAndLocalAuthoritiesInOneWorkspace();
     void mpdSearchProjectsControllerResults();
     void mpdSearchResolvesCompleteAlbums();
+    void mpdSearchCoversFollowLibraryRefresh();
     void mpdQueueAndLibraryMenusExposeServerActions();
     void mpdGoToArtistAlbumNavigatesLibrary();
     void playbackBufferProfilesPersistAndExposeDiagnostics();
@@ -208,6 +210,7 @@ class BenchMainWindowTest final : public QObject {
     void localListUndoRestoresOccurrencesAndFreshMetadata();
     void localListHistoryBranchesAndBounds();
     void localListUndoActionsRespectAuthorityAndTextEditing();
+    void localListOrderingActionsRespectAuthorityAndPersist();
     void trackListFindActionsFollowActiveTab();
     void noncontiguousLocalReorderPreservesOccurrences();
     void persistsPinnedDuplicatedAndDirtyTabs();
@@ -668,6 +671,50 @@ void BenchMainWindowTest::mpdSearchProjectsControllerResults() {
                                       Q_ARG(QString, QStringLiteral("Different")),
                                       Q_ARG(bool, true)));
     QCOMPARE(result_model->rowCount(), 0);
+}
+
+void BenchMainWindowTest::mpdSearchCoversFollowLibraryRefresh() {
+    BenchMainWindow window;
+    window.show();
+    auto* controller = window.findChild<quick::MpdProbeController*>();
+    auto* model = window.findChild<quick::MpdSearchResultModel*>();
+    auto* field = window.findChild<QLineEdit*>(QStringLiteral("bench-mpd-search"));
+    auto* tree = window.findChild<QTreeView*>(QStringLiteral("bench-mpd-search-results"));
+    QVERIFY(controller && model && field && tree);
+    field->setText(QStringLiteral("Album"));
+    QTest::qWait(250);
+    mpd::Track track;
+    track.uri = "album/01.flac";
+    track.metadata = mpd::Metadata{{{"Artist", "Artist"}, {"Album", "Album"}}};
+    QSignalSpy requests{model, &quick::MpdSearchResultModel::artworkRequested};
+    model->replaceTracks({track});
+    QVERIFY(!requests.empty());
+    const auto old_token = requests.last().at(0).toULongLong();
+    QImage old_cover{32, 32, QImage::Format_RGB32};
+    old_cover.fill(Qt::red);
+    model->acceptArtwork(old_token, old_cover);
+    const QPersistentModelIndex album{tree->model()->index(0, 0, tree->model()->index(0, 0))};
+    const auto color = [&] {
+        const auto image = album.data(Qt::DecorationRole).value<QIcon>().pixmap(32, 32).toImage();
+        return image.isNull() ? QColor{} : image.pixelColor(16, 16);
+    };
+    QCOMPARE(color(), QColor{Qt::red});
+    const auto previous_requests = requests.size();
+    QVERIFY(QMetaObject::invokeMethod(controller, "serverDatabaseChanged", Qt::DirectConnection));
+    QTRY_VERIFY(requests.size() > previous_requests);
+    QVERIFY(album.isValid());
+    QCOMPARE(field->text(), QStringLiteral("Album"));
+    const auto fresh_token = requests.last().at(0).toULongLong();
+    QVERIFY(fresh_token != old_token);
+    QImage fresh_cover{32, 32, QImage::Format_RGB32};
+    fresh_cover.fill(Qt::blue);
+    model->acceptArtwork(fresh_token, fresh_cover);
+    QCOMPARE(color(), QColor{Qt::blue});
+    model->acceptArtwork(old_token, old_cover);
+    QCOMPARE(color(), QColor{Qt::blue});
+    // Repeating the same query gets fresh artwork too.
+    model->replaceTracks({track});
+    QVERIFY(requests.last().at(0).toULongLong() != fresh_token);
 }
 
 void BenchMainWindowTest::mpdSearchResolvesCompleteAlbums() {
@@ -5100,6 +5147,79 @@ void BenchMainWindowTest::localListUndoActionsRespectAuthorityAndTextEditing() {
     QVERIFY(tabs->tabText(tabs->indexOf(view)).endsWith(QStringLiteral(" *")));
 }
 
+void BenchMainWindowTest::localListOrderingActionsRespectAuthorityAndPersist() {
+    BenchMainWindow window;
+    window.show();
+    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("bench-tabs"));
+    QTRY_COMPARE(tabs->count(), 2);
+    auto* view = qobject_cast<QTableView*>(tabs->currentWidget());
+    auto* model = qobject_cast<LocalListModel*>(view->model());
+    auto* sort = window.findChild<QAction*>(QStringLiteral("action-sort-list-title"));
+    auto* reverse = window.findChild<QAction*>(QStringLiteral("action-reverse-list"));
+    auto* deduplicate = window.findChild<QAction*>(QStringLiteral("action-deduplicate-list"));
+    auto* sort_menu = window.findChild<QMenu*>(QStringLiteral("bench-sort-list-menu"));
+    auto* bar = window.findChild<LocalListEditBar*>();
+    QVERIFY(model && sort && reverse && deduplicate && sort_menu && bar);
+    QVERIFY(!reverse->isEnabled());
+    LocalTrackRow first;
+    first.raw_path = "/unavailable/b.flac";
+    first.title = "B";
+    first.probed = true;
+    auto second = first;
+    second.raw_path = "/unavailable/a.flac";
+    second.title = "A";
+    model->replaceRows({first, second, second});
+    QVERIFY(reverse->isEnabled());
+    QSignalSpy edits{bar, &LocalListEditBar::edited};
+    sort->trigger();
+    QTRY_COMPARE(edits.size(), 1);
+    QCOMPARE(model->rows().front().title, std::string{"A"});
+    QVERIFY(tabs->tabText(tabs->indexOf(view)).endsWith(QStringLiteral(" *")));
+    reverse->trigger();
+    QTRY_COMPARE(edits.size(), 2);
+    QCOMPARE(model->rows().front().title, std::string{"B"});
+    deduplicate->trigger();
+    QTRY_COMPARE(edits.size(), 3);
+    QCOMPARE(model->rowCount(), 2);
+    window.findChild<QAction*>(QStringLiteral("action-undo-list-edit"))->trigger();
+    QCOMPARE(model->rowCount(), 3);
+    auto* mpd = window.findChild<QTableView*>(QStringLiteral("bench-mpd-queue"));
+    tabs->setCurrentWidget(mpd);
+    QVERIFY(!sort_menu->isEnabled());
+    QVERIFY(!reverse->isEnabled());
+    QVERIFY(!deduplicate->isEnabled());
+    QVERIFY(bar->isHidden());
+    // Even a directly invoked action cannot use a stale local destination.
+    reverse->trigger();
+    QCOMPARE(model->rowCount(), 3);
+    tabs->setCurrentWidget(view);
+    QVERIFY(reverse->isEnabled());
+    // Custom-expression editing retains native text undo, separate from list undo.
+    window.findChild<QAction*>(QStringLiteral("action-sort-list-custom"))->trigger();
+    auto* expression = bar->findChild<QLineEdit*>();
+    expression->setText(QStringLiteral("%title%"));
+    expression->setCursorPosition(static_cast<int>(expression->text().size()));
+    expression->insert(QStringLiteral("x"));
+    QTest::keyClick(expression, Qt::Key_Z, Qt::ControlModifier);
+    QCOMPARE(expression->text(), QStringLiteral("%title%"));
+    QCOMPARE(model->rowCount(), 3);
+    // Closing cancels a pending edit before the durable workspace flush.
+    reverse->trigger();
+    window.close();
+    BenchMainWindow reopened;
+    reopened.show();
+    auto* restored_tabs = reopened.findChild<QTabWidget*>(QStringLiteral("bench-tabs"));
+    QTRY_COMPARE(restored_tabs->count(), 2);
+    auto* restored_view = qobject_cast<QTableView*>(restored_tabs->currentWidget());
+    auto* restored_model = qobject_cast<LocalListModel*>(restored_view->model());
+    QVERIFY(restored_model);
+    QTRY_COMPARE(restored_model->rowCount(), 3);
+    QCOMPARE(restored_model->rows()[0].raw_path, first.raw_path);
+    QCOMPARE(restored_model->rows()[1].raw_path, second.raw_path);
+    QCOMPARE(restored_model->rows()[2].raw_path, second.raw_path);
+    QVERIFY(!restored_model->canUndo());
+}
+
 void BenchMainWindowTest::trackViewLayoutMatchesGroupedQueueAndPersists() {
     QTemporaryDir media;
     QVERIFY(media.isValid());
@@ -6613,6 +6733,11 @@ void BenchMainWindowTest::autoAdvancesOncePerFinishedTrack() {
     QCOMPARE(playing_before_edit.row(), 0);
     QVERIFY(model->redo());
     QVERIFY(model->undo());
+    QVERIFY(current(0));
+    QVERIFY(model->applyPermutation({2, 1, 0}, QStringLiteral("Reverse list")));
+    QCOMPARE(playing_before_edit.row(), 2);
+    QVERIFY(model->undo());
+    QCOMPARE(playing_before_edit.row(), 0);
     QVERIFY(current(0));
 
     // Editing another album must not discard the playing occurrence or the

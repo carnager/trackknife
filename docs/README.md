@@ -17,8 +17,8 @@ the 2026-09-06 source review, with open implementation checklists.
 
 ## Current continuation point
 
-Last reconciled: 2026-09-06 against source baseline `9e9fdd8`, ADRs through
-0125, and persistence schema **28**.
+Last reconciled: 2026-09-06 against source baseline `d08b6b5`, ADRs through
+0127, and persistence schema **28**.
 
 Use the [feature matrix](feature-matrix.md) for current capability status and
 [roadmap](roadmap.md) for prioritized open work. M5 remains the active
@@ -36,6 +36,7 @@ Current implemented workflows include:
 - Authority-bound MPD/local playback, queue operations, persistent local lists,
   shared track layouts, local playback modes, and conventional ReplayGain.
   Local removal/reorder undo is available through per-tab session history.
+  Whole-list sort/reverse and duplicate removal also use named undo/redo.
   Ctrl+F finds cached text in local lists and the MPD queue; F3/Shift+F3 navigate
   matches.
 - MPD library browse/search with covers and queue actions. Local Library offers

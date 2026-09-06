@@ -109,6 +109,11 @@ uses two bounded workers so queries can run alongside scanning. Metadata and
 relocation transactions call its index-refresh helper before committing list
 and cache state. See [local-library.md](local-library.md).
 
+ADR-0126 adds bounded cleanup of confirmed missing index records after complete
+manual scans, guarded by filesystem-device evidence, source revisions, and root
+scan tokens. It also propagates MPD browse resets to retained search artwork,
+invalidating old request tokens while preserving search rows and query text.
+
 ## Suggested modules
 
 ### `model`
@@ -144,6 +149,14 @@ substring matching operate on cached metadata/path snapshots; generation checks
 reject results invalidated by edits, server queue refreshes, selection changes, or
 authority switches. Find selects existing occurrences and owns no list, playback,
 or persisted state.
+
+### `lists`
+
+ADR-0127 introduces a Qt-free planner for stable natural ordering over `tkfmt-1`
+keys, reverse permutations, and exact logical-source duplicate removal. One UI
+worker consumes bounded detached snapshots; list or authority changes invalidate
+pending results. The model applies current plans through its existing history
+and persistent-index remapping, and the workspace saves the resulting order.
 
 ### `titleformat`
 

@@ -117,7 +117,7 @@ void LocalListModel::appendRows(std::vector<LocalTrackRow> rows, const int inser
     refreshCurrentRow();
 }
 
-void LocalListModel::removeRowIndexes(std::vector<int> rows, const bool remember) {
+void LocalListModel::removeRowIndexes(std::vector<int> rows, const bool remember, QString label) {
     rows = normalized_rows(std::move(rows), static_cast<int>(rows_.size()));
     if (rows.empty())
         return;
@@ -125,6 +125,7 @@ void LocalListModel::removeRowIndexes(std::vector<int> rows, const bool remember
         clearHistory();
     Edit edit;
     edit.removal = true;
+    edit.label = std::move(label);
     edit.positions = rows;
     removePositions(rows, remember ? &edit.detached : nullptr);
     refreshCurrentRow();
@@ -197,6 +198,28 @@ void LocalListModel::reorderRows(std::vector<int> rows, const int insertion_row)
     rememberEdit(std::move(edit));
 }
 
+bool LocalListModel::applyPermutation(const std::vector<int>& order, QString label) {
+    if (order.size() != rows_.size())
+        return false;
+    Edit edit;
+    edit.label = std::move(label);
+    edit.order.assign(order.size(), -1);
+    bool changed = false;
+    for (std::size_t row = 0; row < order.size(); ++row) {
+        const auto source = order[row];
+        if (source < 0 || source >= rowCount() ||
+            edit.order[static_cast<std::size_t>(source)] != -1)
+            return false;
+        edit.order[static_cast<std::size_t>(source)] = static_cast<int>(row);
+        changed = changed || source != static_cast<int>(row);
+    }
+    if (!changed)
+        return false;
+    applyOrder(order);
+    rememberEdit(std::move(edit));
+    return true;
+}
+
 void LocalListModel::applyOrder(const std::vector<int>& order) {
     emit layoutAboutToBeChanged();
     const auto previous = persistentIndexList();
@@ -220,11 +243,15 @@ void LocalListModel::applyOrder(const std::vector<int>& order) {
 }
 
 QString LocalListModel::undoLabel() const {
+    if (canUndo() && !history_[history_cursor_ - 1].label.isEmpty())
+        return history_[history_cursor_ - 1].label;
     return canUndo() ? (history_[history_cursor_ - 1].removal ? tr("Remove tracks")
                                                               : tr("Reorder tracks"))
                      : QString{};
 }
 QString LocalListModel::redoLabel() const {
+    if (canRedo() && !history_[history_cursor_].label.isEmpty())
+        return history_[history_cursor_].label;
     return canRedo()
                ? (history_[history_cursor_].removal ? tr("Remove tracks") : tr("Reorder tracks"))
                : QString{};
@@ -246,6 +273,7 @@ void LocalListModel::rememberEdit(Edit edit) {
 void LocalListModel::trimHistory() {
     const auto bytes = [](const Edit& edit) {
         std::size_t size = sizeof(Edit) +
+                           static_cast<std::size_t>(edit.label.size()) * sizeof(QChar) +
                            (edit.positions.capacity() + edit.order.capacity()) * sizeof(int) +
                            edit.detached.capacity() * sizeof(LocalTrackRow);
         for (const auto& row : edit.detached) {

@@ -81,7 +81,8 @@ class LocalListModel final : public QAbstractTableModel {
     void replaceRows(std::vector<LocalTrackRow> rows);
     void appendPaths(std::vector<std::string> raw_paths, int insertion_row = -1);
     void appendRows(std::vector<LocalTrackRow> rows, int insertion_row = -1);
-    void removeRowIndexes(std::vector<int> rows, bool remember = true);
+    void removeRowIndexes(std::vector<int> rows, bool remember = true, QString label = {});
+    bool applyPermutation(const std::vector<int>& order, QString label);
     [[nodiscard]] bool canUndo() const noexcept { return history_cursor_ > 0; }
     [[nodiscard]] bool canRedo() const noexcept { return history_cursor_ < history_.size(); }
     [[nodiscard]] QString undoLabel() const;
@@ -143,6 +144,7 @@ class LocalListModel final : public QAbstractTableModel {
   private:
     struct Edit {
         bool removal{false};
+        QString label;
         std::vector<int> positions;
         std::vector<LocalTrackRow> detached;
         // Current row order -> previous row order; inverted after each replay.

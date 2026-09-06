@@ -2,6 +2,7 @@
 
 #include "bench/bench_main_window.hpp"
 #include "bench/local_library_panel.hpp"
+#include "bench/local_list_edit_bar.hpp"
 #include "bench/settings_dialog.hpp"
 #include "bench/track_list_find_bar.hpp"
 #include "uicommon/local_files_mime_data.hpp"
@@ -394,6 +395,12 @@ BenchMainWindow::ListTab* BenchMainWindow::addListTab(persistence::ListDocument 
                 view->selectionModel()->setCurrentIndex(model->index(rows.front(), 0),
                                                         QItemSelectionModel::NoUpdate);
         });
+    connect(model, &QAbstractItemModel::rowsInserted, this,
+            &BenchMainWindow::refreshListHistoryActions);
+    connect(model, &QAbstractItemModel::rowsRemoved, this,
+            &BenchMainWindow::refreshListHistoryActions);
+    connect(model, &QAbstractItemModel::modelReset, this,
+            &BenchMainWindow::refreshListHistoryActions);
     view->addAction(undo_list_action_);
     view->addAction(redo_list_action_);
     connect(model, &LocalListModel::historyChanged, this,
@@ -727,6 +734,8 @@ void BenchMainWindow::refreshTabActions() {
     refreshListHistoryActions();
     const auto* tab = currentListTab();
     const bool available = tab != nullptr;
+    if (list_edit_bar_)
+        list_edit_bar_->setView(available ? tab->view : nullptr);
     if (list_find_bar_ != nullptr) {
         auto* find_view = available ? tab->view : isMpdContext() ? mpd_queue_view_ : nullptr;
         list_find_bar_->setView(find_view);
@@ -1010,6 +1019,10 @@ void BenchMainWindow::showTrackContextMenu(QTableView* view, const QPoint& posit
     track_context_menu_->addAction(remove_selected_action_);
     refreshListHistoryActions();
     track_context_menu_->addSeparator();
+    track_context_menu_->addMenu(sort_list_menu_);
+    track_context_menu_->addAction(reverse_list_action_);
+    track_context_menu_->addAction(deduplicate_list_action_);
+    track_context_menu_->addSeparator();
     track_context_menu_->addAction(undo_list_action_);
     track_context_menu_->addAction(redo_list_action_);
     track_context_menu_->popup(view->viewport()->mapToGlobal(position));
@@ -1058,6 +1071,12 @@ void BenchMainWindow::refreshListHistoryActions() {
         return;
     const auto* tab = currentListTab();
     const auto* model = tab == nullptr ? nullptr : tab->model;
+    if (sort_list_menu_) {
+        const auto editable = model != nullptr && model->rowCount() > 1;
+        sort_list_menu_->setEnabled(editable);
+        reverse_list_action_->setEnabled(editable);
+        deduplicate_list_action_->setEnabled(editable);
+    }
     undo_list_action_->setEnabled(model != nullptr && model->canUndo());
     redo_list_action_->setEnabled(model != nullptr && model->canRedo());
     undo_list_action_->setText(model != nullptr && model->canUndo()

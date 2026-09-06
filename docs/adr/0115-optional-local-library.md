@@ -29,6 +29,9 @@ Cancellation preserves completed work. A partial or failed traversal never
 declares unseen files missing. Missing roots and files retain cached metadata
 and become unavailable. A successful later scan restores availability.
 
+ADR-0126 supersedes unconditional missing-file retention: complete manual scans
+remove confirmed deleted entries, while offline and uncertain paths stay cached.
+
 The following scan-trigger policy is superseded by ADR-0116's manual Refresh.
 Refresh runs on startup, on request, after local preparation/conversion, and
 every 30 seconds while the application is open. Polling avoids reliance on

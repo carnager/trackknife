@@ -63,9 +63,13 @@ A separate artwork worker shares the local-list thumbnail reader, with a
 are cancelled on view changes and bounded to 16 MiB encoded input, 16 million
 source pixels, and 10,000 sibling entries. Images are not stored in SQLite.
 
-A complete scan marks missing files unavailable. An inaccessible root marks
-its cached files unavailable without deleting them; later reconnection restores
-them after an explicit refresh. Scans run only when you press **Refresh**;
+A complete scan removes confirmed missing files from the index, so deleted
+albums disappear even inside an online network mount (ADR-0126). Cleanup requires
+an absent path and an existing parent directory on the recorded filesystem;
+uncertain paths and changed-device mountpoints retain unavailable entries.
+An inaccessible root marks its cached files unavailable without deleting them;
+later reconnection restores them after an explicit refresh. Scans run only when
+you press **Refresh**;
 startup displays cached entries, and adding folders or completing operations
 does not start a scan. External changes, newly converted files, and reconnected
 folders appear after the next Refresh. Only changed files need metadata probing.
@@ -90,7 +94,16 @@ external cue-sheet titles are not included. Advanced filters, autoplaylists,
 custom library-tree expressions, and an artwork grid remain future work.
 Album cover thumbnails are available in the current tree and search results.
 
+Device checks protect against an unmounted volume exposing a mountpoint on a
+different filesystem; they cannot distinguish same-device bind-mount substitutions.
+
 ## Verification
+
+ADR-0126 adds deletion cleanup, offline/changed-device retention, incomplete and
+cancelled scan protection, multi-page/raw-path cleanup, unchanged working lists,
+and cover refresh across browse/search transitions. All 58 development CTest
+targets and the build/formatting checks passed on 2026-09-06. Changed-device
+coverage simulates cached mount evidence without privileged mount operations.
 
 `local-library` tests use real FLAC fixtures for background indexing and query
 behavior, raw filenames, incremental refresh, offline/reconnection handling,

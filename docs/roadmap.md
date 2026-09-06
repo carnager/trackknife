@@ -1,6 +1,6 @@
 # Trackbench feature roadmap
 
-Last reconciled: 2026-09-06 against source baseline `9e9fdd8`.
+Last reconciled: 2026-09-06 against source baseline `d08b6b5`.
 
 **Proposal:** Prioritized open work, saved at the user's request. The
 [feature matrix](feature-matrix.md) records what currently exists;
@@ -26,6 +26,22 @@ ranges, including subset rescans. Logical-track measurements remain visible
 drafts; whole-file embedded writes are blocked until an appropriate storage
 target exists. See [ReplayGain](#5-universal-replaygain-support).
 
+User-reported library issues (2026-09-06), addressed in ADR-0126:
+
+- [x] Remove confirmed deleted subfolders after a complete explicit Refresh,
+  including within an accessible network mount. Incomplete/cancelled scans and
+  unavailable mounts retain cached entries; changed-device evidence prevents an
+  empty mountpoint from being treated as a deletion. Cleanup leaves files and
+  working lists intact.
+- [x] Refresh search artwork with library browsing. The reproduced MPD defect
+  left search thumbnails unchanged when database events reset the browse tree.
+  Search now invalidates those images and obsolete requests while retaining its
+  query and rows. Local real-file regressions also verify embedded/folder cover
+  refresh and browse/search transitions without search-triggered scans.
+
+References: [library refresh decision](adr/0126-library-deletion-and-search-artwork-refresh.md),
+[local library](local-library.md).
+
 ## 1. Queue and playlist editing
 
 **Proposal:** Make working lists easy to manage and portable between players.
@@ -35,7 +51,8 @@ target exists. See [ReplayGain](#5-universal-replaygain-support).
   history remain follow-up work.
 - [x] Find within the current local list or MPD queue: cached-text matching,
   next/previous, wraparound, and cancellable bounded traversal (ADR-0125).
-- [ ] Local list sorting, reversing, and removal of duplicate entries.
+- [x] Local list sorting with presets/custom `tkfmt-1` expressions, reversing,
+  and keep-first duplicate removal, each with undo/redo (ADR-0127).
 - [ ] M3U8 import/export, with relative-path resolution and clear handling of
   references that portable playlists cannot represent.
 - [ ] Expose the complete MPD stored-playlist browse/open/edit/save workflow

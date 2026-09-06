@@ -1,0 +1,31 @@
+{
+  "schema_version": 2,
+  "dialect": { "name": "tkfmt", "version": 1 },
+  "cases": [
+    {
+      "id": "list-sort.artist-album-track",
+      "host": "sort",
+      "source": "$if2(%albumartist%,%artist%)|%album%|%discnumber%|%tracknumber%|%title%",
+      "fields": { "artist": "Björk", "album": "Debut", "discnumber": "1", "tracknumber": "3/12", "title": "Venus" },
+      "expected": "Björk|Debut|1|3/12|Venus",
+      "rationale": "The shipped sort preset explicitly falls back to artist and preserves raw number/total tags; numeric comparison is a list-order policy outside the language."
+    },
+    {
+      "id": "list-sort.repeated-metadata",
+      "host": "sort",
+      "source": "$getmulti(genre,1)",
+      "fields": { "genre": ["Jazz", "Blues"] },
+      "expected": "Blues",
+      "rationale": "Custom list sorting uses tkfmt-1's explicit ordered metadata access."
+    },
+    {
+      "id": "list-sort.escaped-path",
+      "host": "sort",
+      "source": "$info(path)",
+      "fields": {},
+      "information": { "path": "/music/raw-\\xff.flac" },
+      "expected": "/music/raw-\\xff.flac",
+      "rationale": "The host supplies an already escaped lossless path; the expression performs no filesystem lookup or reinterpretation."
+    }
+  ]
+}

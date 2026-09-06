@@ -216,6 +216,11 @@ The search uses the existing bounded server service and queue actions. Album
 expansion fetches the complete release asynchronously. Multi-selection actions
 and drops deduplicate overlapping albums/tracks and retain MPD authority.
 
+ADR-0126 propagates browse-model resets, including database/update notifications
+and reconnect reloads, to retained search artwork. Search requests fresh covers
+and rejects obsolete artwork responses while preserving its query and result
+rows.
+
 Initial browsing is server-backed:
 
 - artist/album/folder navigation through `list`, `lsinfo`, `find`, and related

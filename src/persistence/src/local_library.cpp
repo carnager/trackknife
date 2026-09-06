@@ -11,9 +11,11 @@
 #include "trackknife/titleformat/evaluator.hpp"
 
 #include <sqlite3.h>
+#include <sys/stat.h>
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <charconv>
 #include <functional>
 #include <sstream>
@@ -202,6 +204,84 @@ std::string revision_key(const core::LocalSourceRevision& revision) {
            std::to_string(revision.size) + ':' +
            std::to_string(revision.modification_time_seconds) + ':' +
            std::to_string(revision.modification_time_nanoseconds);
+}
+
+// A successful walk alone is insufficient: an unmounted volume can leave an
+// accessible empty mountpoint. Require an absent path and a surviving directory
+// on the file's previously observed device; uncertainty retains the cache.
+bool confirmed_missing(const std::string& raw_path, const std::string& revision,
+                       const std::string& root) {
+    std::uint64_t device = 0;
+    const auto separator = revision.find(':');
+    if (separator == std::string::npos) {
+        return false;
+    }
+    const auto parsed = std::from_chars(revision.data(), revision.data() + separator, device);
+    if (parsed.ec != std::errc{} || parsed.ptr != revision.data() + separator) {
+        return false;
+    }
+    struct stat state{};
+    if (::lstat(raw_path.c_str(), &state) == 0 || errno != ENOENT) {
+        return false;
+    }
+    auto parent = std::filesystem::path{raw_path}.parent_path();
+    while (!parent.empty()) {
+        if (::lstat(parent.c_str(), &state) == 0) {
+            return S_ISDIR(state.st_mode) && static_cast<std::uint64_t>(state.st_dev) == device;
+        }
+        if (errno != ENOENT || parent == std::filesystem::path{root} ||
+            parent == parent.parent_path()) {
+            return false;
+        }
+        parent = parent.parent_path();
+    }
+    return false;
+}
+
+void prune_missing(sqlite3* db, const std::string& root, const std::string& generation,
+                   const core::CancellationToken& cancellation) {
+    std::string after;
+    while (!cancellation.is_cancellation_requested()) {
+        std::vector<std::pair<std::string, std::string>> candidates;
+        {
+            // Use the schema-28 raw-path primary-key index for keyset paging;
+            // the root/seen index would repeatedly sort all missing entries.
+            Statement page{db, "SELECT raw_path,revision FROM local_library_tracks "
+                               "INDEXED BY sqlite_autoindex_local_library_tracks_1 WHERE "
+                               "root=? AND seen<>? AND raw_path>? ORDER BY raw_path LIMIT 200"};
+            page.blob(1, root);
+            page.text(2, generation);
+            page.blob(3, after);
+            while (page.next()) {
+                candidates.emplace_back(page.bytes(0), page.bytes(1));
+            }
+        }
+        if (candidates.empty()) {
+            return;
+        }
+        after = candidates.back().first;
+        // Filesystem checks run outside the write transaction and in bounded pages.
+        std::erase_if(candidates, [&](const auto& entry) {
+            return cancellation.is_cancellation_requested() ||
+                   !confirmed_missing(entry.first, entry.second, root);
+        });
+        if (cancellation.is_cancellation_requested()) {
+            return;
+        }
+        Transaction transaction{db};
+        for (const auto& [path, revision] : candidates) {
+            Statement remove{db, "DELETE FROM local_library_tracks WHERE raw_path=? AND root=? "
+                                 "AND revision=? AND seen<>? AND EXISTS(SELECT 1 FROM "
+                                 "local_library_roots WHERE raw_path=root AND scan_token=?)"};
+            remove.blob(1, path);
+            remove.blob(2, root);
+            remove.text(3, revision);
+            remove.text(4, generation);
+            remove.text(5, generation);
+            remove.next();
+        }
+        transaction.commit();
+    }
 }
 
 struct Tags {
@@ -662,7 +742,7 @@ core::Result<LibraryScanResult> LocalLibrary::scan(const core::CancellationToken
                 }
                 transaction.commit();
             }
-            if (error) {
+            if (error || cancellation.is_cancellation_requested()) {
                 complete = false;
             }
             result.incomplete = result.incomplete || !complete;
@@ -684,6 +764,9 @@ core::Result<LibraryScanResult> LocalLibrary::scan(const core::CancellationToken
                 missing.next();
             }
             transaction.commit();
+            if (complete) {
+                prune_missing(db, root.raw_path, generation, cancellation);
+            }
         }
         result.cancelled = result.cancelled || cancellation.is_cancellation_requested();
         return result;

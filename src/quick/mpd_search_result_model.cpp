@@ -398,6 +398,21 @@ void MpdSearchResultModel::setArtworkEnabled(const bool enabled) {
     }
 }
 
+void MpdSearchResultModel::refreshArtwork() {
+    artwork_request_in_flight_ = false;
+    artwork_requests_this_generation_ = 0;
+    for (auto& row : rows_) {
+        row.artwork = {};
+        row.artwork_requested = false;
+        row.artwork_token = 0;
+    }
+    if (!rows_.empty()) {
+        emit dataChanged(index(0, 0), index(rowCount() - 1, column_count - 1),
+                         {Qt::DecorationRole});
+    }
+    requestNextArtwork();
+}
+
 void MpdSearchResultModel::acceptArtwork(const quint64 token, const QImage& image) {
     for (int row_number = 0; row_number < rowCount(); ++row_number) {
         auto& row = rows_[static_cast<std::size_t>(row_number)];

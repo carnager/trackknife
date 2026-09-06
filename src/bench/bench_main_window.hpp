@@ -73,6 +73,7 @@ class MusicBrainzFetchService;
 class LocalLibraryPanel;
 class MpdLibrarySearchModel;
 class TrackListFindBar;
+class LocalListEditBar;
 
 // Trackknife main window: composed Folders/Track Lists panels, configurable
 // local working-list views, and one transport over the serialized playback worker
@@ -331,6 +332,10 @@ class BenchMainWindow final : public QMainWindow {
     QAction* undo_list_action_{nullptr};
     QAction* redo_list_action_{nullptr};
     TrackListFindBar* list_find_bar_{nullptr};
+    LocalListEditBar* list_edit_bar_{nullptr};
+    QMenu* sort_list_menu_{nullptr};
+    QAction* reverse_list_action_{nullptr};
+    QAction* deduplicate_list_action_{nullptr};
     QAction* find_list_action_{nullptr};
     QAction* find_next_action_{nullptr};
     QAction* find_previous_action_{nullptr};
