@@ -146,7 +146,12 @@ device output, and underrun diagnostics. A dedicated Qt-free playback worker
 serializes source replacement, bounded decoder production, transport, seek,
 PipeWire transitions, drain, and cancellation while publishing immutable
 snapshots. The real-time callback performs no blocking I/O, allocation, SQL, or
-UI work. Named and exact duration profiles configure future ring allocations
+UI work. ADR-0119 adds typed decoder ReplayGain values and a coalesced worker policy
+that scales each source’s floating-point PCM before the ring, with exact Off
+bypass and known-peak clipping prevention. A Qt-free lazy shuffle traversal
+feeds the shell’s occurrence-anchored local Repeat/Random/Single/Consume
+progression; these controls and preferences remain independent of MPD.
+Named and exact duration profiles configure future ring allocations
 without resizing live RT state. A persistent registry/default-metadata monitor
 publishes device generations to the same worker; explicit-target loss pauses
 without fallback and reconnects in place when the target returns. Trackbench's

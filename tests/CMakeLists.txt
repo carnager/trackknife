@@ -259,7 +259,7 @@ add_test(NAME cue-sheet COMMAND trackknife_cue_sheet_tests)
 add_executable(trackknife_local_playback_tests local_playback_test.cpp)
 target_link_libraries(
     trackknife_local_playback_tests
-    PRIVATE Trackknife::Audio Threads::Threads trackknife_project_options
+    PRIVATE Trackknife::Audio Threads::Threads PkgConfig::TAGLIB trackknife_project_options
             trackknife_project_warnings
 )
 add_test(

@@ -29,6 +29,7 @@
 #include <QToolButton>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -326,6 +327,8 @@ void BenchMainWindow::buildTransport() {
     playback_menu->addAction(next_action_);
     playback_menu->addSeparator();
 
+    buildLocalPlaybackControls(playback_menu);
+
     buffer_menu_ = playback_menu->addMenu(QStringLiteral("Playback buffer"));
     buffer_menu_->setObjectName(QStringLiteral("bench-buffer-menu"));
     buffer_group_ = new QActionGroup(buffer_menu_);
@@ -530,6 +533,249 @@ void BenchMainWindow::rebuildDeviceMenu() {
     });
 }
 
+void BenchMainWindow::buildLocalPlaybackControls(QMenu* playback_menu) {
+    const QSettings settings;
+    local_repeat_ = settings.value(QStringLiteral("playback/local-repeat"), false).toBool();
+    local_random_ = settings.value(QStringLiteral("playback/local-random"), false).toBool();
+    local_single_ =
+        std::clamp(settings.value(QStringLiteral("playback/local-single"), 0).toInt(), 0, 2);
+    local_consume_ =
+        std::clamp(settings.value(QStringLiteral("playback/local-consume"), 0).toInt(), 0, 2);
+    local_replaygain_ =
+        settings.value(QStringLiteral("playback/local-replaygain"), QStringLiteral("off"))
+            .toString();
+    if (local_replaygain_ != QStringLiteral("track") &&
+        local_replaygain_ != QStringLiteral("album") &&
+        local_replaygain_ != QStringLiteral("auto")) {
+        local_replaygain_ = QStringLiteral("off");
+    }
+    const auto add_mode = [&](const QString& id, const QString& label, const QString& icon) {
+        auto* action = new QAction(label, this);
+        action->setObjectName(QStringLiteral("action-local-%1").arg(id));
+        action->setCheckable(true);
+        auto* button = new QToolButton(statusBar());
+        button->setObjectName(QStringLiteral("bench-local-%1").arg(id));
+        button->setAutoRaise(true);
+        if (!icon.isEmpty()) {
+            action->setIcon(
+                QIcon::fromTheme(icon, style()->standardIcon(QStyle::SP_BrowserReload)));
+            button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        } else {
+            button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        }
+        button->setDefaultAction(action);
+        statusBar()->addPermanentWidget(button);
+        local_mode_buttons_.push_back(button);
+        playback_menu->addAction(action);
+        return action;
+    };
+    local_repeat_action_ = add_mode(QStringLiteral("repeat"), QStringLiteral("Repeat"),
+                                    QStringLiteral("media-playlist-repeat"));
+    local_random_action_ = add_mode(QStringLiteral("random"), QStringLiteral("Random"),
+                                    QStringLiteral("media-playlist-shuffle"));
+    local_single_action_ = add_mode(QStringLiteral("single"), QStringLiteral("Single"), {});
+    local_consume_action_ = add_mode(QStringLiteral("consume"), QStringLiteral("Consume"), {});
+    connect(local_repeat_action_, &QAction::triggered, this, [this](bool on) {
+        if (isMpdContext()) {
+            return;
+        }
+        local_repeat_ = on;
+        applyLocalPlaybackModes();
+    });
+    connect(local_random_action_, &QAction::triggered, this, [this](bool on) {
+        if (isMpdContext()) {
+            return;
+        }
+        local_random_ = on;
+        resetPlaybackOrder();
+        applyLocalPlaybackModes();
+    });
+    connect(local_single_action_, &QAction::triggered, this, [this] {
+        if (isMpdContext()) {
+            return;
+        }
+        local_single_ = (local_single_ + 1) % 3;
+        applyLocalPlaybackModes();
+    });
+    connect(local_consume_action_, &QAction::triggered, this, [this] {
+        if (isMpdContext()) {
+            return;
+        }
+        local_consume_ = (local_consume_ + 1) % 3;
+        applyLocalPlaybackModes();
+    });
+    local_replaygain_button_ = new QToolButton(statusBar());
+    local_replaygain_button_->setObjectName(QStringLiteral("bench-local-replaygain"));
+    local_replaygain_button_->setAccessibleName(QStringLiteral("Local ReplayGain mode"));
+    local_replaygain_button_->setIcon(QIcon::fromTheme(
+        QStringLiteral("view-media-equalizer"), style()->standardIcon(QStyle::SP_MediaVolume)));
+    local_replaygain_button_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    local_replaygain_button_->setAutoRaise(true);
+    local_replaygain_button_->setPopupMode(QToolButton::InstantPopup);
+    auto* menu = new QMenu(QStringLiteral("Local ReplayGain"), local_replaygain_button_);
+    menu->setObjectName(QStringLiteral("bench-local-replaygain-menu"));
+    local_replaygain_group_ = new QActionGroup(menu);
+    local_replaygain_group_->setExclusive(true);
+    const std::array modes{
+        std::pair{QStringLiteral("Off"), QStringLiteral("off")},
+        std::pair{QStringLiteral("Track"), QStringLiteral("track")},
+        std::pair{QStringLiteral("Album"), QStringLiteral("album")},
+        std::pair{QStringLiteral("Automatic"), QStringLiteral("auto")},
+    };
+    for (const auto& [label, value] : modes) {
+        auto* action = menu->addAction(label);
+        action->setObjectName(QStringLiteral("action-local-replaygain-%1").arg(value));
+        action->setCheckable(true);
+        action->setData(value);
+        local_replaygain_group_->addAction(action);
+        connect(action, &QAction::triggered, this, [this, value] {
+            if (isMpdContext()) {
+                return;
+            }
+            local_replaygain_ = value;
+            applyLocalPlaybackModes();
+        });
+    }
+    local_replaygain_button_->setMenu(menu);
+    statusBar()->addPermanentWidget(local_replaygain_button_);
+    playback_menu->addMenu(menu);
+    playback_menu->addSeparator();
+    applyLocalPlaybackModes();
+}
+
+void BenchMainWindow::saveLocalPlaybackModes() {
+    QSettings settings;
+    settings.setValue(QStringLiteral("playback/local-repeat"), local_repeat_);
+    settings.setValue(QStringLiteral("playback/local-random"), local_random_);
+    settings.setValue(QStringLiteral("playback/local-single"), local_single_);
+    settings.setValue(QStringLiteral("playback/local-consume"), local_consume_);
+    settings.setValue(QStringLiteral("playback/local-replaygain"), local_replaygain_);
+}
+
+void BenchMainWindow::applyLocalPlaybackModes() {
+    saveLocalPlaybackModes();
+    last_requested_next_.reset();
+    if (player_ != nullptr) {
+        static_cast<void>(player_->clear_gapless_next());
+        auto mode = audio::ReplayGainMode::off;
+        if (local_replaygain_ == QStringLiteral("track") ||
+            (local_replaygain_ == QStringLiteral("auto") && local_random_)) {
+            mode = audio::ReplayGainMode::track;
+        } else if (local_replaygain_ == QStringLiteral("album") ||
+                   local_replaygain_ == QStringLiteral("auto")) {
+            mode = audio::ReplayGainMode::album;
+        }
+        static_cast<void>(player_->set_replay_gain_mode(mode));
+    }
+    refreshLocalPlaybackControls();
+}
+
+void BenchMainWindow::refreshLocalPlaybackControls() {
+    if (local_repeat_action_ == nullptr) {
+        return;
+    }
+    const auto visible = !isMpdContext();
+    for (auto* button : local_mode_buttons_) {
+        button->setVisible(visible);
+        button->defaultAction()->setVisible(visible);
+        button->defaultAction()->setEnabled(visible && player_ != nullptr);
+    }
+    local_repeat_action_->setChecked(local_repeat_);
+    local_random_action_->setChecked(local_random_);
+    local_repeat_action_->setToolTip(
+        QStringLiteral("Repeat: %1")
+            .arg(local_repeat_ ? QStringLiteral("On") : QStringLiteral("Off")));
+    local_random_action_->setToolTip(
+        QStringLiteral("Random: %1")
+            .arg(local_random_ ? QStringLiteral("On") : QStringLiteral("Off")));
+    const auto cycle = [](QAction* action, const int mode, const QString& name,
+                          const QString& symbol, const QString& help) {
+        const auto state = mode == 0   ? QStringLiteral("Off")
+                           : mode == 1 ? QStringLiteral("On")
+                                       : QStringLiteral("One-shot");
+        action->setChecked(mode != 0);
+        action->setIconText(mode == 2 ? symbol + QStringLiteral("×") : symbol);
+        action->setText(QStringLiteral("%1: %2").arg(name, state));
+        action->setToolTip(QStringLiteral("%1: %2\n%3").arg(name, state, help));
+    };
+    cycle(local_single_action_, local_single_, QStringLiteral("Single"), QStringLiteral("1"),
+          QStringLiteral("Stop after this track; with Repeat, repeat this track. Click to cycle "
+                         "Off / On / One-shot."));
+    cycle(local_consume_action_, local_consume_, QStringLiteral("Consume"), QStringLiteral("C"),
+          QStringLiteral("Remove finished or skipped entries from the local list. Files stay on "
+                         "disk. Click to cycle Off / On / One-shot."));
+    local_replaygain_button_->setVisible(visible);
+    local_replaygain_button_->setEnabled(visible && player_ != nullptr);
+    local_replaygain_button_->menu()->menuAction()->setVisible(visible);
+    for (auto* action : local_replaygain_group_->actions()) {
+        action->setEnabled(visible && player_ != nullptr);
+        action->setChecked(action->data().toString() == local_replaygain_);
+        if (action->isChecked()) {
+            local_replaygain_button_->setText(QStringLiteral("RG: %1").arg(action->text()));
+        }
+    }
+    local_replaygain_button_->setToolTip(
+        QStringLiteral(
+            "Local ReplayGain: %1\nAutomatic: track gain with Random, album gain otherwise.\nUses "
+            "embedded gain with peak-based clipping prevention when a matching peak is "
+            "present.\nChanges apply as buffered audio drains; missing gain plays unchanged.")
+            .arg(local_replaygain_button_->text().mid(4)));
+}
+
+void BenchMainWindow::resetPlaybackOrder() {
+    auto* tab = tabForDocument(playback_document_id_);
+    playback_row_ = playback_index_.isValid() ? playback_index_.row() : -1;
+    playback_order_.reset(tab != nullptr ? tab->model->rowCount() : 0, playback_row_,
+                          local_random_);
+    last_requested_next_.reset();
+    if (player_ != nullptr) {
+        static_cast<void>(player_->clear_gapless_next());
+    }
+}
+
+void BenchMainWindow::consumePlaybackRow(ListTab& tab, const QPersistentModelIndex& index) {
+    if (local_consume_ == 0 || !index.isValid() || index.model() != tab.model) {
+        return;
+    }
+    consuming_row_ = true;
+    tab.model->removeRowIndexes({index.row()});
+    consuming_row_ = false;
+    playback_row_ = playback_index_.isValid() ? playback_index_.row() : -1;
+    playback_order_.reset(tab.model->rowCount(), playback_row_, local_random_);
+    if (!playback_index_.isValid()) {
+        tab.model->setCurrentSource({}, -1);
+    }
+    markTabDirty(tab);
+    if (local_consume_ == 2) {
+        local_consume_ = 0;
+        saveLocalPlaybackModes();
+        refreshLocalPlaybackControls();
+    }
+}
+
+void BenchMainWindow::adoptPlaybackRow(ListTab& tab, const int row, const LocalTrackSource& source,
+                                       const bool consume, const int direction) {
+    const auto previous = playback_index_;
+    playback_index_ = tab.model->index(row, 0);
+    playback_row_ = row;
+    playback_source_ = source;
+    playback_order_.advance(row, direction);
+    if (consume && previous != playback_index_) {
+        consumePlaybackRow(tab, previous);
+    }
+    tab.model->setCurrentSource(source, playback_row_);
+}
+
+std::optional<std::pair<int, LocalTrackSource>> BenchMainWindow::automaticPlaybackRow() {
+    if (local_single_ != 0) {
+        if (local_repeat_ && local_consume_ == 0 && playback_index_.isValid()) {
+            return std::make_pair(playback_index_.row(), playback_source_);
+        }
+        return std::nullopt;
+    }
+    return adjacentPlaybackRow(1);
+}
+
 void BenchMainWindow::playRow(ListTab& tab, const int row) {
     if (player_ == nullptr) {
         return;
@@ -550,8 +796,12 @@ void BenchMainWindow::playRow(ListTab& tab, const int row) {
         }
     }
     playback_document_id_ = id;
+    playback_index_ = tab.model->index(row, 0);
     playback_row_ = row;
     playback_source_ = source;
+    resetPlaybackOrder();
+    queued_playback_index_ = QPersistentModelIndex{};
+    requested_playback_index_ = QPersistentModelIndex{};
     // A load was just dispatched; block auto-advance until the player state
     // leaves "ended" so the previous track's end cannot skip this one.
     advance_pending_ = true;
@@ -565,15 +815,14 @@ BenchMainWindow::adjacentPlaybackRow(const int direction) {
     if (tab == nullptr || playback_source_.raw_path.empty()) {
         return std::nullopt;
     }
-    const auto row = tab->model->rowOfSource(playback_source_, playback_row_);
-    if (row < 0) {
+    if (!playback_index_.isValid()) {
         return std::nullopt;
     }
-    const auto adjacent = row + direction;
-    if (adjacent < 0 || adjacent >= tab->model->rowCount()) {
+    const auto adjacent = playback_order_.adjacent(direction, local_repeat_);
+    if (!adjacent || (local_consume_ != 0 && *adjacent == playback_index_.row())) {
         return std::nullopt;
     }
-    return std::make_pair(adjacent, tab->model->source(adjacent));
+    return std::make_pair(*adjacent, tab->model->source(*adjacent));
 }
 
 void BenchMainWindow::playAdjacent(const int direction) {
@@ -583,11 +832,11 @@ void BenchMainWindow::playAdjacent(const int direction) {
         return;
     }
     if (auto result = load_and_play(*player_, next->second); result) {
-        playback_row_ = next->first;
-        playback_source_ = next->second;
+        adoptPlaybackRow(*tab, next->first, next->second, true, direction);
         advance_pending_ = true;
         last_requested_next_.reset();
-        tab->model->setCurrentSource(next->second, next->first);
+        queued_playback_index_ = QPersistentModelIndex{};
+        requested_playback_index_ = QPersistentModelIndex{};
     } else {
         statusBar()->showMessage(
             QStringLiteral("Playback failed: %1").arg(displayText(result.error().message)), 5'000);
@@ -626,11 +875,11 @@ void BenchMainWindow::seekToMs(const qint64 position_ms) {
 }
 
 void BenchMainWindow::refreshTransport() {
-    if (isMpdContext()) {
-        refreshMpdTransport();
-        return;
-    }
     if (player_ == nullptr) {
+        if (isMpdContext()) {
+            refreshMpdTransport();
+            return;
+        }
         for (auto* action : {previous_action_, play_pause_action_, stop_action_, next_action_}) {
             action->setEnabled(false);
         }
@@ -643,6 +892,14 @@ void BenchMainWindow::refreshTransport() {
     // Observable for offscreen tests and diagnostics.
     setProperty("trackknife-player-state", static_cast<int>(snapshot.state));
 
+    const auto queued_source = queued_source_from_snapshot(snapshot);
+    if (requested_playback_index_.isValid() && queued_source) {
+        if (const auto* tab = tabForDocument(playback_document_id_);
+            tab != nullptr &&
+            tab->model->source(requested_playback_index_.row()) == *queued_source) {
+            queued_playback_index_ = requested_playback_index_;
+        }
+    }
     // A consumed gapless takeover moves the anchors and highlight without any
     // load; the engine already plays the next row.
     if (snapshot.chain_transitions != last_chain_transitions_) {
@@ -651,14 +908,33 @@ void BenchMainWindow::refreshTransport() {
         if (auto* tab = tabForDocument(playback_document_id_);
             tab != nullptr && !snapshot.raw_path.empty()) {
             const auto transitioned_source = source_from_snapshot(snapshot);
-            const auto row = tab->model->rowOfSource(transitioned_source, playback_row_ + 1);
+            const auto row =
+                queued_playback_index_.isValid() &&
+                        tab->model->source(queued_playback_index_.row()) == transitioned_source
+                    ? queued_playback_index_.row()
+                : requested_playback_index_.isValid() &&
+                        tab->model->source(requested_playback_index_.row()) == transitioned_source
+                    ? requested_playback_index_.row()
+                    : -1;
             if (row >= 0) {
-                playback_row_ = row;
+                adoptPlaybackRow(*tab, row, transitioned_source, true);
+            } else {
+                playback_index_ = QPersistentModelIndex{};
                 playback_source_ = transitioned_source;
-                tab->model->setCurrentSource(transitioned_source, row);
+                resetPlaybackOrder();
+                tab->model->setCurrentSource({}, -1);
+            }
+            queued_playback_index_ = QPersistentModelIndex{};
+            requested_playback_index_ = QPersistentModelIndex{};
+            if (local_single_ == 2) {
+                local_single_ = 0;
+                saveLocalPlaybackModes();
+                refreshLocalPlaybackControls();
             }
         }
     }
+    setProperty("trackknife-player-replaygain", static_cast<int>(snapshot.replay_gain_mode));
+    setProperty("trackknife-player-row", playback_row_);
     setProperty("trackknife-player-position", static_cast<qlonglong>(snapshot.position_sample));
     setProperty("trackknife-player-buffered", static_cast<qlonglong>(snapshot.buffered_frames));
     setProperty("trackknife-player-buffer-capacity-ms",
@@ -681,22 +957,35 @@ void BenchMainWindow::refreshTransport() {
                 snapshot.default_output_target ? displayText(*snapshot.default_output_target)
                                                : QString{});
 
-    // List progression (ADR-0023): a finished track advances once to the next
-    // row of its originating list; the end of the list stays "Ended".
+    // Local progression (ADR-0119) applies once per finished occurrence,
+    // independently of which authority is currently visible.
     if (snapshot.state == audio::LocalAuditionState::ended) {
         // The guard stays set until the worker actually leaves "ended";
         // resetting it on dispatch would re-fire every timer tick while the
         // next source is still loading and race through the list.
         if (!advance_pending_) {
             advance_pending_ = true;
-            if (const auto next = adjacentPlaybackRow(1)) {
-                if (auto result = load_and_play(*player_, next->second); result) {
-                    playback_row_ = next->first;
-                    playback_source_ = next->second;
-                    if (auto* tab = tabForDocument(playback_document_id_); tab != nullptr) {
-                        tab->model->setCurrentSource(next->second, next->first);
+            const auto next = automaticPlaybackRow();
+            if (auto* tab = tabForDocument(playback_document_id_); tab != nullptr) {
+                if (next) {
+                    if (auto result = load_and_play(*player_, next->second); result) {
+                        adoptPlaybackRow(*tab, next->first, next->second, true);
+                        last_requested_next_.reset();
+                        queued_playback_index_ = QPersistentModelIndex{};
+                        requested_playback_index_ = QPersistentModelIndex{};
+                    } else {
+                        statusBar()->showMessage(QStringLiteral("Playback failed: %1")
+                                                     .arg(displayText(result.error().message)),
+                                                 5'000);
                     }
+                } else {
+                    consumePlaybackRow(*tab, playback_index_);
                 }
+            }
+            if (local_single_ == 2) {
+                local_single_ = 0;
+                saveLocalPlaybackModes();
+                refreshLocalPlaybackControls();
             }
         }
     } else if (snapshot.state == audio::LocalAuditionState::empty) {
@@ -704,6 +993,9 @@ void BenchMainWindow::refreshTransport() {
             if (auto* tab = tabForDocument(playback_document_id_); tab != nullptr) {
                 tab->model->setCurrentSource({}, -1);
             }
+            playback_index_ = QPersistentModelIndex{};
+            queued_playback_index_ = QPersistentModelIndex{};
+            requested_playback_index_ = QPersistentModelIndex{};
             playback_document_id_.clear();
             playback_row_ = -1;
             playback_source_ = {};
@@ -761,8 +1053,9 @@ void BenchMainWindow::refreshTransport() {
     // fallback below covers rejected continuations.
     if (snapshot.format.has_value() && snapshot.state != audio::LocalAuditionState::failed &&
         snapshot.state != audio::LocalAuditionState::empty &&
-        snapshot.state != audio::LocalAuditionState::loading) {
-        const auto next = adjacentPlaybackRow(1);
+        snapshot.state != audio::LocalAuditionState::loading &&
+        snapshot.state != audio::LocalAuditionState::ended && !advance_pending_) {
+        const auto next = automaticPlaybackRow();
         const auto desired = next ? std::optional{next->second} : std::nullopt;
         const auto desired_marker = desired.value_or(LocalTrackSource{});
         const auto queued = queued_source_from_snapshot(snapshot);
@@ -773,13 +1066,21 @@ void BenchMainWindow::refreshTransport() {
             if (!desired) {
                 static_cast<void>(player_->clear_gapless_next());
             } else {
-                static_cast<void>(queue_gapless(*player_, *desired));
+                if (auto result = queue_gapless(*player_, *desired); result) {
+                    if (auto* tab = tabForDocument(playback_document_id_); tab != nullptr) {
+                        requested_playback_index_ = tab->model->index(next->first, 0);
+                    }
+                }
             }
             last_requested_next_ = desired_marker;
             next_request_timer_.start();
         }
     }
 
+    if (isMpdContext()) {
+        refreshMpdTransport();
+        return;
+    }
     const bool active = playerActive(snapshot.state);
     const bool source_ready = snapshot.format.has_value() &&
                               snapshot.state != audio::LocalAuditionState::loading &&

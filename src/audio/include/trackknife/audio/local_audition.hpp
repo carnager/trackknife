@@ -50,6 +50,7 @@ playback_buffer_preset_config(PlaybackBufferPreset preset) noexcept;
 
 struct LocalAuditionConfig {
     PlaybackBufferDurationConfig buffer;
+    ReplayGainMode replay_gain_mode{ReplayGainMode::off};
     PipeWireOutputConfig output;
     std::chrono::milliseconds producer_period{5};
     std::size_t command_capacity{64U};
@@ -81,6 +82,7 @@ struct LocalAuditionSnapshot {
     // A differing active value means the configured value applies on the
     // next ordinary source load.
     std::optional<PlaybackBufferDurationConfig> active_buffer;
+    ReplayGainMode replay_gain_mode{ReplayGainMode::off};
     int volume_percent{100};
     std::optional<std::string> output_target;
     std::optional<std::string> default_output_target;
@@ -163,6 +165,7 @@ class LocalAuditionService final {
     // Perceptual volume in percent [0, 100]; mapped cubically onto PipeWire's
     // linear stream mixer and reapplied when a new source connects.
     [[nodiscard]] core::Result<void> set_volume_percent(int percent);
+    [[nodiscard]] core::Result<void> set_replay_gain_mode(ReplayGainMode mode);
     // Selects the decoded-PCM ring policy for the next source load. If a
     // source is active, its immutable ring remains attached and any prepared
     // gapless continuation is dropped so the new policy takes effect at the

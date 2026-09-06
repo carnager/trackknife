@@ -16,6 +16,13 @@
 
 namespace trackknife::audio {
 
+enum class ReplayGainMode { off, track, album };
+
+// Album falls back to track; absent gain is unity. A matching known peak
+// limits amplification to full scale. Off is a sample-exact bypass.
+[[nodiscard]] float replay_gain_multiplier(const formats::ReplayGainInfo& info,
+                                           ReplayGainMode mode) noexcept;
+
 enum class LocalPlaybackState {
     stopped,
     buffering,
@@ -93,6 +100,9 @@ class LocalPlayback final {
 
     [[nodiscard]] core::Result<void> play();
     void pause() noexcept;
+    // Producer-thread policy: affects newly decoded PCM, including continuations.
+    // Already buffered PCM is unchanged.
+    void set_replay_gain_mode(ReplayGainMode mode) noexcept;
 
     // Queues a source to continue seamlessly in the same ring the moment the
     // active source's decode ends. The queued source must match the active

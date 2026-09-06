@@ -417,3 +417,24 @@ All long operations report structured errors containing operation, track/source,
 stage, backend, recoverability, and technical detail. Summaries group recurring
 causes but retain individual rows. Logs are exportable with private paths
 redacted on request.
+
+## Local playback options
+
+Local tabs show Repeat, Random, Single (`1`), Consume (`C`), and ReplayGain in
+the status bar, also available through Playback. These settings are remembered
+separately from MPD. Repeat loops the list; Random visits each entry once per
+cycle, and Previous retraces the current shuffle cycle.
+
+Single and Consume cycle Off → On → One-shot (`×`). Single stops after the
+current track, or repeats it when Repeat is on. Consume removes played entries
+from the list and leaves the files on disk; combined with Single, it removes
+one entry and stops. One-shot switches itself off after one completion or
+removal. Local playback keeps progressing in its original list while another
+tab is visible.
+
+ReplayGain offers Off, Track, Album, and Automatic. Automatic uses Track with
+Random enabled and Album otherwise. Album falls back to Track when album gain
+is missing. Missing gain plays unchanged. Available matching peak metadata
+reduces gain to prevent sample clipping; without a peak this protection is not
+known. Settings take effect as buffered audio drains. See
+[ADR-0119](adr/0119-local-playback-modes-and-replaygain.md) for boundary behavior.

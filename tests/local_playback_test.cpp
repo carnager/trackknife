@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "trackknife/audio/local_playback.hpp"
+#include "trackknife/audio/playback_order.hpp"
 #include "trackknife/core/cancellation.hpp"
 #include "trackknife/core/error.hpp"
 #include "trackknife/core/stable_id.hpp"
+#include <set>
+#include <taglib/flacfile.h>
+#include <taglib/tpropertymap.h>
 
 #include <algorithm>
 #include <array>
@@ -534,6 +538,192 @@ void chainsSelectedCodecSubsongs(const std::filesystem::path& fixture_directory,
                               [](const float sample) { return std::abs(sample) > 0.0001F; }));
 }
 
+void playbackOrderVisitsOccurrencesAndWraps() {
+    using trackknife::audio::PlaybackOrder;
+    PlaybackOrder order{1234U};
+    order.reset(4, 0, false);
+    CHECK(!order.adjacent(-1, false));
+    CHECK(order.adjacent(-1, true) == 3);
+    CHECK(order.adjacent(1, false) == 1);
+    order.advance(3);
+    CHECK(!order.adjacent(1, false));
+    CHECK(order.adjacent(1, true) == 0);
+    for (const auto count : {1, 2, 3, 1000}) {
+        order.reset(count, count / 2, true);
+        std::set<int> visited{count / 2};
+        int current = count / 2;
+        for (int i = 1; i < count; ++i) {
+            const auto next = order.adjacent(1, false);
+            CHECK(next.has_value());
+            if (!next) {
+                break;
+            }
+            CHECK(order.adjacent(1, false) == next);
+            CHECK(*next >= 0 && *next < count);
+            CHECK(visited.insert(*next).second);
+            order.advance(*next);
+            CHECK(order.adjacent(-1, false) == current);
+            order.advance(current, -1);
+            CHECK(order.adjacent(1, false) == next);
+            order.advance(*next);
+            current = *next;
+        }
+        CHECK(visited.size() == static_cast<std::size_t>(count));
+        CHECK(!order.adjacent(1, false));
+        const auto wrapped = order.adjacent(1, true);
+        CHECK(wrapped.has_value());
+        CHECK(!order.adjacent(1, false));
+        CHECK(count == 1 || *wrapped != current);
+        if (count > 1) {
+            CHECK(order.adjacent(-1, false).has_value());
+            order.advance(*wrapped);
+            visited = {*wrapped};
+            while (const auto next = order.adjacent(1, false)) {
+                CHECK(visited.insert(*next).second);
+                order.advance(*next);
+                if (visited.size() > static_cast<std::size_t>(count)) {
+                    break;
+                }
+            }
+            CHECK(visited.size() == static_cast<std::size_t>(count));
+        }
+    }
+    order.reset(0, -1, true);
+    CHECK(!order.adjacent(1, true));
+    // Large lists do not need an eager shuffle or row-sized allocation.
+    order.reset(1'000'000, 700'000, true);
+    CHECK(order.adjacent(1, false).has_value());
+}
+
+void replayGainUsesRealTagsAndChangesAtGaplessBoundary(const std::filesystem::path& fixtures,
+                                                       const std::filesystem::path& root) {
+    using namespace trackknife;
+    const auto bytes = decode_base64_file(fixtures / "tagged-tone-flac.b64");
+    CHECK(bytes.has_value());
+    if (!bytes) {
+        return;
+    }
+    const auto first = root / "gain-\xff.flac";
+    const auto second = root / "album.flac";
+    const auto write = [&](const std::filesystem::path& path, const char* track_gain,
+                           const char* album_gain) {
+        {
+            std::ofstream file{path, std::ios::binary};
+            file.write(reinterpret_cast<const char*>(bytes->data()),
+                       static_cast<std::streamsize>(bytes->size()));
+        }
+        TagLib::FLAC::File file{path.c_str()};
+        auto tags = file.properties();
+        tags.replace("REPLAYGAIN_TRACK_GAIN", TagLib::String{track_gain});
+        tags.replace("REPLAYGAIN_TRACK_PEAK", TagLib::String{"0.75"});
+        tags.replace("REPLAYGAIN_ALBUM_GAIN", TagLib::String{album_gain});
+        tags.replace("REPLAYGAIN_ALBUM_PEAK", TagLib::String{"0.8"});
+        file.setProperties(tags);
+        CHECK(file.save());
+    };
+    write(first, " -6.00 dB ", "-12.00 dB");
+    write(second, "+3.0 dB", "+6.00 dB");
+    auto decoder = formats::AudioDecoder::open(first.native());
+    CHECK(decoder.has_value());
+    if (!decoder) {
+        return;
+    }
+    CHECK(decoder->replay_gain().track_gain_db == -6.0);
+    CHECK(decoder->replay_gain().album_gain_db == -12.0);
+    std::vector<float> original;
+    while (true) {
+        const auto chunk = decoder->next_chunk();
+        CHECK(chunk.has_value());
+        if (!chunk || !*chunk) {
+            break;
+        }
+        original.insert(original.end(), (*chunk)->interleaved_samples.begin(),
+                        (*chunk)->interleaved_samples.end());
+    }
+    CHECK(!original.empty());
+    const auto channels = decoder->output_format().channels;
+    for (const auto mode :
+         {audio::ReplayGainMode::off, audio::ReplayGainMode::track, audio::ReplayGainMode::album}) {
+        auto playback =
+            audio::LocalPlayback::open(first.native(), audio::PlaybackBufferConfig{256U, 128U});
+        CHECK(playback.has_value());
+        if (!playback) {
+            continue;
+        }
+        playback->set_replay_gain_mode(mode);
+        CHECK(playback->queue_next(second.native()).has_value());
+        CHECK(playback->play().has_value());
+        std::vector<float> actual;
+        std::vector<float> block(128U * static_cast<std::size_t>(channels));
+        for (int guard = 0;
+             guard < 10000 && playback->snapshot().state != audio::LocalPlaybackState::ended;
+             ++guard) {
+            CHECK(playback->fill_buffer().has_value());
+            const auto frames = playback->render(block);
+            actual.insert(actual.end(), block.begin(),
+                          block.begin() + static_cast<std::ptrdiff_t>(
+                                              frames * static_cast<std::size_t>(channels)));
+        }
+        CHECK(actual.size() == original.size() * 2U);
+        if (actual.size() != original.size() * 2U) {
+            continue;
+        }
+        const float first_gain =
+            mode == audio::ReplayGainMode::off
+                ? 1.0F
+                : static_cast<float>(std::pow(
+                      10.0, mode == audio::ReplayGainMode::track ? -6.0 / 20.0 : -12.0 / 20.0));
+        const float second_gain = mode == audio::ReplayGainMode::off     ? 1.0F
+                                  : mode == audio::ReplayGainMode::track ? 1.0F / 0.75F
+                                                                         : 1.25F;
+        for (std::size_t i = 0U; i < original.size(); ++i) {
+            CHECK(std::abs(actual[i] - original[i] * first_gain) < 0.000001F);
+            CHECK(std::abs(actual[i + original.size()] - original[i] * second_gain) < 0.000001F);
+        }
+        if (mode == audio::ReplayGainMode::off) {
+            CHECK(std::equal(original.begin(), original.end(), actual.begin()));
+        }
+    }
+    // Switching a running source's policy affects fresh PCM after seek,
+    // and returning to Off restores exact bypass without a new source load.
+    auto changed =
+        audio::LocalPlayback::open(first.native(), audio::PlaybackBufferConfig{256U, 128U});
+    CHECK(changed.has_value());
+    if (changed) {
+        std::vector<float> block(128U * static_cast<std::size_t>(channels));
+        for (const auto mode : {audio::ReplayGainMode::track, audio::ReplayGainMode::off}) {
+            changed->set_replay_gain_mode(mode);
+            CHECK(changed->seek_to_sample(0).has_value());
+            CHECK(changed->play().has_value());
+            CHECK(changed->fill_buffer().has_value());
+            CHECK(changed->render(block) == 128U);
+            const auto gain = mode == audio::ReplayGainMode::off
+                                  ? 1.0F
+                                  : static_cast<float>(std::pow(10.0, -6.0 / 20.0));
+            for (std::size_t i = 0U; i < block.size(); ++i) {
+                CHECK(block[i] == original[i] * gain);
+            }
+        }
+    }
+    formats::ReplayGainInfo info;
+    CHECK(audio::replay_gain_multiplier(info, audio::ReplayGainMode::track) == 1.0F);
+    info.track_gain_db = 6.0;
+    CHECK(audio::replay_gain_multiplier(info, audio::ReplayGainMode::track) > 1.9F);
+    info.track_gain_db = -6.0;
+    CHECK(audio::replay_gain_multiplier(info, audio::ReplayGainMode::album) ==
+          audio::replay_gain_multiplier(info, audio::ReplayGainMode::track));
+    info.track_gain_db = std::numeric_limits<double>::quiet_NaN();
+    CHECK(audio::replay_gain_multiplier(info, audio::ReplayGainMode::track) == 1.0F);
+    for (const auto* invalid : {"nan", "inf", "10000 dB", "-inf", "3junk", "3 dB garbage"}) {
+        write(first, invalid, "-12 dB");
+        auto bad = formats::AudioDecoder::open(first.native());
+        CHECK(bad.has_value());
+        if (bad) {
+            CHECK(!bad->replay_gain().track_gain_db);
+        }
+    }
+}
+
 } // namespace
 
 int main(const int argc, char** argv) {
@@ -550,6 +740,7 @@ int main(const int argc, char** argv) {
     const auto other_rate = root / "other-rate.wav";
     write_wave(other_rate, 2'048U, 0, 44'100U);
 
+    playbackOrderVisitsOccurrencesAndWraps();
     transportIsBufferedAndSampleAccurate(path);
     boundedSegmentDrainsAndRestarts(path);
     validatesConfigurationAndPropagatesCancellation(path);
@@ -558,6 +749,7 @@ int main(const int argc, char** argv) {
     chainsSegmentsOfOnePhysicalSource(path);
     if (argc == 2) {
         chainsSelectedCodecSubsongs(argv[1], root);
+        replayGainUsesRealTagsAndChangesAtGaplessBoundary(argv[1], root);
     }
 
     std::filesystem::remove_all(root, error);

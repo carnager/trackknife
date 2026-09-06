@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -168,9 +169,29 @@ frame_buffer_config(const PlaybackBufferDurationConfig config, const int sample_
 
 } // namespace
 
+float replay_gain_multiplier(const formats::ReplayGainInfo& info,
+                             const ReplayGainMode mode) noexcept {
+    if (mode == ReplayGainMode::off) {
+        return 1.0F;
+    }
+    const bool album = mode == ReplayGainMode::album && info.album_gain_db.has_value();
+    const auto gain = album ? info.album_gain_db : info.track_gain_db;
+    const auto peak = album ? info.album_peak : info.track_peak;
+    if (!gain || !std::isfinite(*gain) || *gain < -60.0 || *gain > 60.0) {
+        return 1.0F;
+    }
+    auto multiplier = std::pow(10.0, *gain / 20.0);
+    if (peak && std::isfinite(*peak) && *peak > 0.0) {
+        multiplier = std::min(multiplier, 1.0 / *peak);
+    }
+    return static_cast<float>(multiplier);
+}
+
 struct LocalPlayback::Impl {
+    ReplayGainMode replay_gain_mode{ReplayGainMode::off};
     PcmRingBuffer ring;
     formats::AudioDecoder decoder;
+    formats::ReplayGainInfo replay_gain;
     std::size_t pending_frame_offset{0U};
     std::int64_t next_decode_sample{0};
     std::atomic<std::int64_t> position_sample{0};
@@ -195,7 +216,7 @@ struct LocalPlayback::Impl {
     Impl(formats::AudioDecoder source_decoder, const PlaybackBufferConfig buffer_config)
         : ring(buffer_config.capacity_frames,
                static_cast<std::size_t>(source_decoder.output_format().channels)),
-          decoder(std::move(source_decoder)),
+          decoder(std::move(source_decoder)), replay_gain(decoder.replay_gain()),
           next_decode_sample(decoder.sample_range().start_sample),
           position_sample(decoder.sample_range().start_sample), config(buffer_config),
           range(decoder.sample_range()), output(decoder.output_format()) {}
@@ -365,6 +386,10 @@ core::Result<LocalPlayback> LocalPlayback::open_selected_segment(
         });
     }
     return LocalPlayback{std::make_unique<Impl>(std::move(*decoder), *frames)};
+}
+
+void LocalPlayback::set_replay_gain_mode(const ReplayGainMode mode) noexcept {
+    implementation_->replay_gain_mode = mode;
 }
 
 const formats::PcmFormat& LocalPlayback::output_format() const noexcept {
@@ -605,6 +630,7 @@ core::Result<void> LocalPlayback::fill_buffer() {
                 const auto boundary = playback.next_decode_sample;
                 playback.decoder = std::move(*playback.next_decoder);
                 playback.next_decoder.reset();
+                playback.replay_gain = playback.decoder.replay_gain();
                 playback.range = playback.decoder.sample_range();
                 playback.chain_offset = boundary - playback.range.start_sample;
                 playback.chain_boundary.store(boundary, std::memory_order_release);
@@ -629,6 +655,12 @@ core::Result<void> LocalPlayback::fill_buffer() {
         playback.next_decode_sample += chunk_frames;
         playback.pending_samples = std::move((*chunk)->interleaved_samples);
         playback.pending_frame_offset = 0U;
+        const auto gain = replay_gain_multiplier(playback.replay_gain, playback.replay_gain_mode);
+        if (gain != 1.0F) {
+            for (auto& sample : playback.pending_samples) {
+                sample *= gain;
+            }
+        }
     }
 
     auto current = playback.state.load(std::memory_order_acquire);

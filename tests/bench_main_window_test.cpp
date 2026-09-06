@@ -206,6 +206,9 @@ class BenchMainWindowTest final : public QObject {
     void containerChaptersExpandIntoPersistentSegmentRows();
     void codecNativeSubsongsExpandAndPersistDecoderSelections();
     void autoAdvancesOncePerFinishedTrack();
+    void localPlaybackModesPersistAndStayLocal();
+    void localPlaybackModesAdvance_data();
+    void localPlaybackModesAdvance();
 
   private:
     QTemporaryDir settings_directory_;
@@ -5809,6 +5812,159 @@ void BenchMainWindowTest::codecNativeSubsongsExpandAndPersistDecoderSelections()
 // ticks while the next source loads. Each finished track must advance the
 // list exactly one row, and the last row must stay ended without wrapping
 // (ADR-0023).
+void BenchMainWindowTest::localPlaybackModesPersistAndStayLocal() {
+    {
+        BenchMainWindow window;
+        window.show();
+        auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("bench-tabs"));
+        QVERIFY(tabs != nullptr);
+        QTRY_VERIFY(tabs->count() >= 2);
+        tabs->setCurrentIndex(1);
+        auto* repeat = window.findChild<QAction*>(QStringLiteral("action-local-repeat"));
+        auto* random = window.findChild<QAction*>(QStringLiteral("action-local-random"));
+        auto* single = window.findChild<QAction*>(QStringLiteral("action-local-single"));
+        auto* consume = window.findChild<QAction*>(QStringLiteral("action-local-consume"));
+        auto* automatic =
+            window.findChild<QAction*>(QStringLiteral("action-local-replaygain-auto"));
+        auto* rg = window.findChild<QToolButton*>(QStringLiteral("bench-local-replaygain"));
+        QVERIFY(repeat && random && single && consume && automatic && rg);
+        QVERIFY(rg->isVisible());
+        QVERIFY(!repeat->isChecked());
+        repeat->trigger();
+        automatic->trigger();
+        QTRY_COMPARE(window.property("trackknife-player-replaygain").toInt(), 2);
+        random->trigger();
+        QTRY_COMPARE(window.property("trackknife-player-replaygain").toInt(), 1);
+        QCOMPARE(rg->text(), QStringLiteral("RG: Automatic"));
+        single->trigger();
+        single->trigger();
+        QCOMPARE(single->iconText(), QStringLiteral("1×"));
+        consume->trigger();
+        consume->trigger();
+        QCOMPARE(consume->iconText(), QStringLiteral("C×"));
+        tabs->setCurrentIndex(0);
+        QVERIFY(!rg->isVisible());
+        QVERIFY(!repeat->isEnabled());
+        QVERIFY(!automatic->isEnabled());
+        // Local commands remain scoped even when invoked programmatically.
+        random->trigger();
+        QVERIFY(random->isChecked());
+        tabs->setCurrentIndex(1);
+        QVERIFY(rg->isVisible());
+        QVERIFY(repeat->isChecked());
+        QVERIFY(random->isChecked());
+        QVERIFY(automatic->isChecked());
+    }
+    BenchMainWindow restored;
+    restored.show();
+    auto* repeat = restored.findChild<QAction*>(QStringLiteral("action-local-repeat"));
+    auto* random = restored.findChild<QAction*>(QStringLiteral("action-local-random"));
+    auto* single = restored.findChild<QAction*>(QStringLiteral("action-local-single"));
+    auto* consume = restored.findChild<QAction*>(QStringLiteral("action-local-consume"));
+    QVERIFY(repeat && random && single && consume);
+    QVERIFY(repeat->isChecked());
+    QVERIFY(random->isChecked());
+    QCOMPARE(single->iconText(), QStringLiteral("1×"));
+    QCOMPARE(consume->iconText(), QStringLiteral("C×"));
+    QTRY_COMPARE(restored.property("trackknife-player-replaygain").toInt(), 1);
+}
+
+void BenchMainWindowTest::localPlaybackModesAdvance_data() {
+    QTest::addColumn<bool>("repeat");
+    QTest::addColumn<bool>("random");
+    QTest::addColumn<int>("single");
+    QTest::addColumn<int>("consume");
+    QTest::addColumn<int>("expected_count");
+    QTest::addColumn<bool>("ended");
+    QTest::addColumn<int>("track_ms");
+    QTest::newRow("single") << false << false << 1 << 0 << 3 << true << 700;
+    QTest::newRow("single-once") << false << false << 2 << 0 << 3 << true << 700;
+    QTest::newRow("repeat-single") << true << false << 1 << 0 << 3 << false << 700;
+    QTest::newRow("repeat-list") << true << false << 0 << 0 << 3 << false << 700;
+    QTest::newRow("consume-duplicates") << false << false << 0 << 1 << 0 << true << 700;
+    QTest::newRow("consume-once") << false << false << 0 << 2 << 2 << true << 700;
+    QTest::newRow("random-cycle") << false << true << 0 << 0 << 3 << true << 700;
+    QTest::newRow("repeat-consume-single") << true << false << 1 << 1 << 2 << true << 700;
+    QTest::newRow("consume-gapless-duplicates") << false << false << 0 << 1 << 0 << true << 1200;
+    QTest::newRow("repeat-single-gapless") << true << false << 1 << 0 << 3 << false << 1200;
+}
+
+void BenchMainWindowTest::localPlaybackModesAdvance() {
+    QFETCH(bool, repeat);
+    QFETCH(bool, random);
+    QFETCH(int, single);
+    QFETCH(int, consume);
+    QFETCH(int, expected_count);
+    QFETCH(bool, ended);
+    QFETCH(int, track_ms);
+    QTemporaryDir media;
+    QVERIFY(media.isValid());
+    const auto first = media.filePath(QStringLiteral("a.wav"));
+    const auto last = media.filePath(QStringLiteral("b.wav"));
+    write_wave(first, wave_sample_rate * static_cast<std::uint32_t>(track_ms) / 1000U);
+    write_wave(last, wave_sample_rate * static_cast<std::uint32_t>(track_ms) / 1000U);
+    BenchMainWindow window;
+    window.show();
+    window.openLocalPaths({QFile::encodeName(first).toStdString(),
+                           QFile::encodeName(first).toStdString(),
+                           QFile::encodeName(last).toStdString()});
+    QTableView* view = nullptr;
+    const auto find_view = [&] {
+        for (auto* candidate : window.findChildren<QTableView*>()) {
+            if (qobject_cast<LocalListModel*>(candidate->model()) &&
+                candidate->model()->rowCount() == 3) {
+                view = candidate;
+                return true;
+            }
+        }
+        return false;
+    };
+    QTRY_VERIFY(find_view());
+    auto* model = qobject_cast<LocalListModel*>(view->model());
+    const auto trigger = [&](const QString& name, const int count) {
+        auto* action = window.findChild<QAction*>(QStringLiteral("action-local-%1").arg(name));
+        QVERIFY(action != nullptr);
+        for (int i = 0; i < count; ++i) {
+            action->trigger();
+        }
+    };
+    trigger(QStringLiteral("repeat"), repeat ? 1 : 0);
+    trigger(QStringLiteral("random"), random ? 1 : 0);
+    trigger(QStringLiteral("single"), single);
+    trigger(QStringLiteral("consume"), consume);
+    view->selectionModel()->setCurrentIndex(
+        model->index(0, 1), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    QTest::keyClick(view, Qt::Key_Return);
+    QTRY_VERIFY(window.property("trackknife-player-state").toInt() >= 3);
+    if (window.property("trackknife-player-state").toInt() == 8) {
+        QSKIP("live PipeWire playback unavailable");
+    }
+    // Progression must continue while the MPD authority is visible.
+    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("bench-tabs"));
+    QVERIFY(tabs != nullptr);
+    tabs->setCurrentIndex(0);
+    QTest::qWait(track_ms * 3 + 600);
+    QCOMPARE(model->rowCount(), expected_count);
+    if (ended) {
+        QTRY_COMPARE(window.property("trackknife-player-state").toInt(), 7);
+    } else {
+        QVERIFY(window.property("trackknife-player-state").toInt() != 7);
+        QVERIFY(window.property("trackknife-player-state").toInt() != 8);
+    }
+    if (single != 0 && consume == 0) {
+        QVERIFY(model->index(0, 0).data(ui::track_current_role).toBool());
+        QVERIFY(!model->index(1, 0).data(ui::track_current_role).toBool());
+    }
+    if (single == 2) {
+        QVERIFY(!window.findChild<QAction*>(QStringLiteral("action-local-single"))->isChecked());
+    }
+    if (consume == 2) {
+        QVERIFY(!window.findChild<QAction*>(QStringLiteral("action-local-consume"))->isChecked());
+    }
+    QVERIFY(QFile::exists(first));
+    QVERIFY(QFile::exists(last));
+}
+
 void BenchMainWindowTest::autoAdvancesOncePerFinishedTrack() {
     QTemporaryDir media;
     QVERIFY(media.isValid());

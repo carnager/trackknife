@@ -9,6 +9,7 @@ extern "C" {
 #include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/intreadwrite.h>
+#include <libavutil/replaygain.h>
 #include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
 }
@@ -16,10 +17,14 @@ extern "C" {
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <charconv>
+#include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -450,6 +455,86 @@ AudioDecoder::open_selected_segment(std::string raw_path, AudioSourceSelection s
     decoder.implementation_->range = range;
     decoder.implementation_->discard_before_sample = range.start_sample;
     return opened;
+}
+
+ReplayGainInfo AudioDecoder::replay_gain() const noexcept {
+    const auto& decoder = *implementation_;
+    const auto* stream = decoder.format->streams[static_cast<unsigned>(decoder.stream_index)];
+    const auto number = [&](const char* key, const bool gain) -> std::optional<double> {
+        const auto* entry = av_dict_get(stream->metadata, key, nullptr, 0);
+        if (entry == nullptr) {
+            entry = av_dict_get(decoder.format->metadata, key, nullptr, 0);
+        }
+        if (entry == nullptr) {
+            return std::nullopt;
+        }
+        std::string_view value{entry->value};
+        while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) {
+            value.remove_prefix(1);
+        }
+        if (!value.empty() && value.front() == '+') {
+            value.remove_prefix(1);
+        }
+        double result = 0.0;
+        const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);
+        if (parsed.ec != std::errc{} || !std::isfinite(result)) {
+            return std::nullopt;
+        }
+        auto suffix = value.substr(static_cast<std::size_t>(parsed.ptr - value.data()));
+        while (!suffix.empty() && (suffix.front() == ' ' || suffix.front() == '\t')) {
+            suffix.remove_prefix(1);
+        }
+        if (gain &&
+            (suffix.starts_with("dB") || suffix.starts_with("db") || suffix.starts_with("DB"))) {
+            suffix.remove_prefix(2);
+        }
+        while (!suffix.empty() && (suffix.front() == ' ' || suffix.front() == '\t')) {
+            suffix.remove_prefix(1);
+        }
+        if (!suffix.empty() || (gain ? result < -60.0 || result > 60.0 : result <= 0.0)) {
+            return std::nullopt;
+        }
+        return result;
+    };
+    const auto present = [&](const char* key) {
+        return av_dict_get(stream->metadata, key, nullptr, 0) != nullptr ||
+               av_dict_get(decoder.format->metadata, key, nullptr, 0) != nullptr;
+    };
+    ReplayGainInfo result{
+        .track_gain_db = number("REPLAYGAIN_TRACK_GAIN", true),
+        .track_peak = number("REPLAYGAIN_TRACK_PEAK", false),
+        .album_gain_db = number("REPLAYGAIN_ALBUM_GAIN", true),
+        .album_peak = number("REPLAYGAIN_ALBUM_PEAK", false),
+    };
+    // Some demuxers expose native gain solely as coded stream side data.
+    // Opus R128 has a distinct reference policy and is deliberately excluded.
+    const auto* parameters = stream->codecpar;
+    const auto* side = av_packet_side_data_get(
+        parameters->coded_side_data, parameters->nb_coded_side_data, AV_PKT_DATA_REPLAYGAIN);
+    if (parameters->codec_id != AV_CODEC_ID_OPUS && side != nullptr &&
+        side->size >= sizeof(AVReplayGain)) {
+        AVReplayGain gain{};
+        std::memcpy(&gain, side->data, sizeof(gain));
+        const auto fallback_gain = [](std::optional<double>& target, const std::int32_t raw) {
+            const auto db = static_cast<double>(raw) / 100'000.0;
+            if (!target && raw != INT32_MIN && db >= -60.0 && db <= 60.0) {
+                target = db;
+            }
+        };
+        if (!present("REPLAYGAIN_TRACK_GAIN")) {
+            fallback_gain(result.track_gain_db, gain.track_gain);
+        }
+        if (!present("REPLAYGAIN_ALBUM_GAIN")) {
+            fallback_gain(result.album_gain_db, gain.album_gain);
+        }
+        if (!present("REPLAYGAIN_TRACK_PEAK") && gain.track_peak != 0U) {
+            result.track_peak = static_cast<double>(gain.track_peak) / 100'000.0;
+        }
+        if (!present("REPLAYGAIN_ALBUM_PEAK") && gain.album_peak != 0U) {
+            result.album_peak = static_cast<double>(gain.album_peak) / 100'000.0;
+        }
+    }
+    return result;
 }
 
 const PcmFormat& AudioDecoder::output_format() const noexcept { return implementation_->output; }

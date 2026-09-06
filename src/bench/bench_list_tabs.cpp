@@ -388,6 +388,20 @@ BenchMainWindow::ListTab* BenchMainWindow::addListTab(persistence::ListDocument 
     connect(model, &QAbstractItemModel::rowsInserted, this, [this] { refreshSelectionStatus(); });
     connect(model, &QAbstractItemModel::rowsRemoved, this, [this] { refreshSelectionStatus(); });
     connect(model, &QAbstractItemModel::modelReset, this, [this] { refreshSelectionStatus(); });
+    const auto reset_order = [this, model] {
+        if (!consuming_row_ && playback_index_.model() == model) {
+            resetPlaybackOrder();
+        } else if (!consuming_row_) {
+            const auto* playing = tabForDocument(playback_document_id_);
+            if (playing != nullptr && playing->model == model) {
+                resetPlaybackOrder();
+            }
+        }
+    };
+    connect(model, &QAbstractItemModel::rowsInserted, this, reset_order);
+    connect(model, &QAbstractItemModel::rowsRemoved, this, reset_order);
+    connect(model, &QAbstractItemModel::rowsMoved, this, reset_order);
+    connect(model, &QAbstractItemModel::modelReset, this, reset_order);
     view->setProperty("trackknife-hover-row", -1);
     view->setAlternatingRowColors(true);
     view->setShowGrid(false);
@@ -611,6 +625,7 @@ void BenchMainWindow::refreshActiveContext() {
         rebuildDeviceMenu();
     }
     refreshMpdStatusControls();
+    refreshLocalPlaybackControls();
     if (seek_ != nullptr) {
         refreshTransport();
     }

@@ -23,6 +23,7 @@ enum class CommandKind {
     stop,
     seek,
     set_volume,
+    set_replay_gain,
     set_buffer,
     refresh_devices,
     set_target,
@@ -38,6 +39,7 @@ struct Command {
     formats::AudioSourceSelection selection;
     std::optional<formats::SampleRange> segment;
     std::int64_t target_sample{0};
+    ReplayGainMode replay_gain_mode{ReplayGainMode::off};
     int volume_percent{100};
     std::optional<std::string> target;
     PlaybackBufferDurationConfig buffer;
@@ -116,6 +118,7 @@ constexpr auto output_recovery_period = std::chrono::seconds{1};
 struct LocalAuditionService::Impl {
     explicit Impl(LocalAuditionConfig audition_config) : config(std::move(audition_config)) {
         published.configured_buffer = config.buffer;
+        published.replay_gain_mode = config.replay_gain_mode;
         worker = std::jthread{[this](const std::stop_token stop_token) { run(stop_token); }};
     }
 
@@ -148,6 +151,7 @@ struct LocalAuditionService::Impl {
             std::erase_if(commands, [](const Command& pending) {
                 return pending.kind != CommandKind::set_volume &&
                        pending.kind != CommandKind::set_buffer &&
+                       pending.kind != CommandKind::set_replay_gain &&
                        pending.kind != CommandKind::set_target &&
                        pending.kind != CommandKind::relocate_source;
             });
@@ -156,6 +160,7 @@ struct LocalAuditionService::Impl {
                           [](const Command& pending) { return pending.kind == CommandKind::seek; });
         } else if (command.kind == CommandKind::set_volume ||
                    command.kind == CommandKind::set_buffer ||
+                   command.kind == CommandKind::set_replay_gain ||
                    command.kind == CommandKind::refresh_devices ||
                    command.kind == CommandKind::set_target) {
             std::erase_if(commands, [kind = command.kind](const Command& pending) {
@@ -313,6 +318,7 @@ struct LocalAuditionService::Impl {
         }
         next.volume_percent = volume_percent;
         next.configured_buffer = config.buffer;
+        next.replay_gain_mode = config.replay_gain_mode;
         next.active_buffer = active_buffer;
         next.output_target = config.output.target_object;
         next.default_output_target = default_output_target;
@@ -554,6 +560,7 @@ struct LocalAuditionService::Impl {
             return;
         }
         source.emplace(std::move(*opened));
+        source->set_replay_gain_mode(config.replay_gain_mode);
         current_revision = *observed_revision;
         active_buffer = config.buffer;
         const auto opened_snapshot = source->snapshot();
@@ -703,6 +710,11 @@ struct LocalAuditionService::Impl {
             return;
         }
         acknowledge_transitions();
+        if (source->snapshot().chain_boundary_sample) {
+            publish();
+            return;
+        }
+        source->clear_next();
         // A new duration policy needs a newly allocated ring. Keep this
         // boundary non-gapless so the following ordinary load can apply it.
         if (!output_available || (active_buffer && *active_buffer != config.buffer)) {
@@ -820,8 +832,15 @@ struct LocalAuditionService::Impl {
     }
 
     void clear_next_source() {
+        acknowledge_transitions();
         if (source) {
             source->clear_next();
+            // PCM already in the ring cannot be recalled. Keep its source
+            // identity until the consumer crosses the committed boundary.
+            if (source->snapshot().chain_boundary_sample) {
+                publish();
+                return;
+            }
         }
         pending_next_path.clear();
         pending_next_revision.reset();
@@ -990,6 +1009,13 @@ struct LocalAuditionService::Impl {
         case CommandKind::seek:
             seek(command.target_sample);
             break;
+        case CommandKind::set_replay_gain:
+            config.replay_gain_mode = command.replay_gain_mode;
+            if (source) {
+                source->set_replay_gain_mode(config.replay_gain_mode);
+            }
+            publish();
+            break;
         case CommandKind::set_volume:
             set_volume(command.volume_percent);
             break;
@@ -1155,6 +1181,11 @@ LocalAuditionService::create(LocalAuditionConfig config) {
         return std::unexpected(invalid_config(
             "local audition buffer duration and threshold must be positive, ordered, and no "
             "larger than 10 seconds"));
+    }
+    if (config.replay_gain_mode != ReplayGainMode::off &&
+        config.replay_gain_mode != ReplayGainMode::track &&
+        config.replay_gain_mode != ReplayGainMode::album) {
+        return std::unexpected(invalid_config("invalid ReplayGain mode"));
     }
     if (config.output.stream_name.empty()) {
         return std::unexpected(invalid_config("local audition stream name must not be empty"));
@@ -1342,6 +1373,17 @@ core::Result<void> LocalAuditionService::seek_to_sample(const std::int64_t targe
                                             .relocation = {},
                                             .relocated_pending_commands = 0U,
                                             .relocation_completion = {}});
+}
+
+core::Result<void> LocalAuditionService::set_replay_gain_mode(const ReplayGainMode mode) {
+    if (mode != ReplayGainMode::off && mode != ReplayGainMode::track &&
+        mode != ReplayGainMode::album) {
+        return std::unexpected(invalid_config("invalid ReplayGain mode"));
+    }
+    Command command;
+    command.kind = CommandKind::set_replay_gain;
+    command.replay_gain_mode = mode;
+    return implementation_->enqueue(std::move(command));
 }
 
 core::Result<void> LocalAuditionService::set_volume_percent(const int percent) {

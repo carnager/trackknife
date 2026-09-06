@@ -269,6 +269,17 @@ Album mode depends on correct grouping/continuity. Queue jumps, crossfades,
 shuffle, and mixed albums need a deterministic documented rule rather than a
 hidden heuristic.
 
+### Local playback selector
+
+Implemented by ADR-0119: Off / Track / Album / Automatic in local context, with
+Automatic choosing Track under Random and Album otherwise. Album falls back
+to Track; missing/invalid gain is unity. The worker applies fresh embedded
+values per decoded source, including gapless continuations, and limits gain
+using a matching known sample peak. Off preserves PCM exactly. Mode changes
+apply as already buffered audio drains. Sidecar/library-only playback gain,
+Opus R128 normalization, user preamps, and the additional processing modes
+specified above remain future work.
+
 ## Conversion and permanent gain
 
 The converter may:

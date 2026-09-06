@@ -14,6 +14,13 @@
 
 namespace trackknife::formats {
 
+struct ReplayGainInfo {
+    std::optional<double> track_gain_db;
+    std::optional<double> track_peak;
+    std::optional<double> album_gain_db;
+    std::optional<double> album_peak;
+};
+
 struct PcmFormat {
     int sample_rate{0};
     int channels{0};
@@ -69,6 +76,8 @@ class AudioDecoder final {
     open_selected_segment(std::string raw_path, AudioSourceSelection selection, SampleRange range,
                           core::CancellationToken cancellation = {});
 
+    // Fresh container/selected-stream values; does not apply gain to decoded PCM.
+    [[nodiscard]] ReplayGainInfo replay_gain() const noexcept;
     [[nodiscard]] const PcmFormat& output_format() const noexcept;
     [[nodiscard]] std::optional<std::int64_t> duration_samples() const noexcept;
     [[nodiscard]] const SampleRange& sample_range() const noexcept;

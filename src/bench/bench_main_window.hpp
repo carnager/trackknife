@@ -4,6 +4,7 @@
 
 #include "bench/local_list_model.hpp"
 #include "bench/musicbrainz_identify_dialog.hpp"
+#include "trackknife/audio/playback_order.hpp"
 #include "trackknife/core/cancellation.hpp"
 #include "trackknife/core/local_sources.hpp"
 #include "trackknife/operations/file_publication.hpp"
@@ -244,6 +245,15 @@ class BenchMainWindow final : public QMainWindow {
     void pumpArtworkQueue();
     void finishArtworkLoad();
 
+    void buildLocalPlaybackControls(QMenu* playback_menu);
+    void refreshLocalPlaybackControls();
+    void saveLocalPlaybackModes();
+    void applyLocalPlaybackModes();
+    void resetPlaybackOrder();
+    void adoptPlaybackRow(ListTab& tab, int row, const LocalTrackSource& source, bool consume,
+                          int direction = 1);
+    void consumePlaybackRow(ListTab& tab, const QPersistentModelIndex& index);
+    [[nodiscard]] std::optional<std::pair<int, LocalTrackSource>> automaticPlaybackRow();
     void playRow(ListTab& tab, int row);
     void playAdjacent(int direction);
     [[nodiscard]] std::optional<std::pair<int, LocalTrackSource>>
@@ -424,6 +434,23 @@ class BenchMainWindow final : public QMainWindow {
     std::vector<std::string> pending_open_paths_;
     bool lists_restored_{false};
 
+    QAction* local_repeat_action_{nullptr};
+    QAction* local_random_action_{nullptr};
+    QAction* local_single_action_{nullptr};
+    QAction* local_consume_action_{nullptr};
+    std::vector<QToolButton*> local_mode_buttons_;
+    QToolButton* local_replaygain_button_{nullptr};
+    QActionGroup* local_replaygain_group_{nullptr};
+    bool local_repeat_{false};
+    bool local_random_{false};
+    int local_single_{0};
+    int local_consume_{0};
+    QString local_replaygain_{QStringLiteral("off")};
+    audio::PlaybackOrder playback_order_;
+    QPersistentModelIndex playback_index_;
+    QPersistentModelIndex queued_playback_index_;
+    QPersistentModelIndex requested_playback_index_;
+    bool consuming_row_{false};
     QString playback_document_id_;
     int playback_row_{-1};
     LocalTrackSource playback_source_;

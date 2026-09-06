@@ -149,6 +149,7 @@ int main() {
         trackknife::audio::playback_buffer_preset_config(PlaybackBufferPreset::balanced);
     // A following load supersedes transport work, but not a setting queued
     // before it: the source must observe the latest buffer policy.
+    CHECK((*service)->set_replay_gain_mode(trackknife::audio::ReplayGainMode::album).has_value());
     CHECK((*service)->set_buffer_config(balanced_buffer).has_value());
     CHECK((*service)->load_and_play(missing_path).has_value());
     const auto missing = wait_for(**service, [](const auto& snapshot) {
@@ -158,6 +159,8 @@ int main() {
     CHECK(missing.raw_path == missing_path);
     CHECK(missing.error.has_value());
     CHECK(missing.configured_buffer == balanced_buffer);
+    CHECK(missing.replay_gain_mode == trackknife::audio::ReplayGainMode::album);
+    CHECK(!(*service)->set_replay_gain_mode(static_cast<trackknife::audio::ReplayGainMode>(99)));
     const auto responsive_buffer =
         trackknife::audio::playback_buffer_preset_config(PlaybackBufferPreset::responsive);
     CHECK((*service)->set_buffer_config(responsive_buffer).has_value());
@@ -190,6 +193,7 @@ int main() {
                snapshot.state == LocalAuditionState::failed;
     });
     CHECK(active.source_revision.has_value());
+    CHECK(active.replay_gain_mode == trackknife::audio::ReplayGainMode::album);
 
     // File publication re-keys decoder bindings by exact filesystem revision.
     // The already-open descriptor continues without a reload, seek, or output
@@ -504,6 +508,40 @@ int main() {
         return snapshot.state == LocalAuditionState::empty;
     });
     CHECK(cleared.state == LocalAuditionState::empty);
+
+    // A mode change near a gapless boundary cannot recall PCM already in
+    // the ring, but it must preserve that continuation's logical identity.
+    CHECK((*service)->set_buffer_config(responsive_buffer).has_value());
+    constexpr trackknife::formats::SampleRange first_part{.start_sample = 0, .end_sample = 48'000};
+    constexpr trackknife::formats::SampleRange next_part{.start_sample = 48'000,
+                                                         .end_sample = 96'000};
+    CHECK((*service)->load_segment_and_play(path.native(), first_part).has_value());
+    const auto playing_first = wait_for(**service, [](const auto& snapshot) {
+        return snapshot.state == LocalAuditionState::playing ||
+               snapshot.state == LocalAuditionState::failed;
+    });
+    CHECK(playing_first.state == LocalAuditionState::playing);
+    CHECK((*service)->queue_gapless_next_segment(path.native(), next_part).has_value());
+    const auto approaching = wait_for(**service, [](const auto& snapshot) {
+        return snapshot.position_sample >= 42'000 || snapshot.state == LocalAuditionState::failed;
+    });
+    CHECK(approaching.next_segment == next_part);
+    CHECK((*service)->clear_gapless_next().has_value());
+    CHECK((*service)->queue_gapless_next_segment(path.native(), first_part).has_value());
+    // A following setting gives an observable acknowledgement that both
+    // queue commands above have run on the serialized worker.
+    CHECK((*service)->set_replay_gain_mode(trackknife::audio::ReplayGainMode::track).has_value());
+    const auto after_change = wait_for(**service, [](const auto& snapshot) {
+        return snapshot.replay_gain_mode == trackknife::audio::ReplayGainMode::track;
+    });
+    CHECK(after_change.next_segment == next_part || after_change.segment == next_part);
+    const auto crossed = wait_for(**service, [next_part](const auto& snapshot) {
+        return snapshot.segment == next_part || snapshot.state == LocalAuditionState::failed;
+    });
+    CHECK(crossed.segment == next_part);
+    CHECK(crossed.raw_path == path.native());
+    CHECK(crossed.chain_transitions == playing_first.chain_transitions + 1U);
+    CHECK((*service)->clear().has_value());
 
     std::filesystem::remove(path);
     return failures == 0 ? 0 : 1;

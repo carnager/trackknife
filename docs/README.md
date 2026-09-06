@@ -25,7 +25,10 @@ ADR-0117 adds MPD-style inline/context library actions and local-only drag/drop
 into queue/list contents, resolving complete selections off the UI thread.
 ADR-0118 adds numbered track labels and local album covers through a bounded
 visible-row artwork worker shared with local-list thumbnail reading.
-The following milestone history predates this requested workspace addition.
+ADR-0119 adds local playback modes and a working ReplayGain selector; see
+[local playback](playback-library-conversion.md#local-playback-options) and
+[ReplayGain](replaygain.md#local-playback-selector).
+The following milestone history predates these requested workspace additions.
 
 M5 is closing into M6, implementation is accepted through ADR-0114, and the persistence
 schema is version 27. In-app MusicBrainz identification is end-to-end: Properties'

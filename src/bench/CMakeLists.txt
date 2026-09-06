@@ -52,9 +52,9 @@ target_link_libraries(
     trackknife_bench_ui
     PUBLIC Qt6::Widgets Trackknife::Core Trackknife::UiCommon Trackknife::Persistence
            Trackknife::Convert Trackknife::Formats Trackknife::Loudness Trackknife::Metadata Trackknife::MusicBrainz
-           Trackknife::Operations
+           Trackknife::Operations Trackknife::Audio
            trackknife_project_options
-    PRIVATE Trackknife::Audio Trackknife::MpdUi Trackknife::Ui Qt6::Concurrent Qt6::Network
+    PRIVATE Trackknife::MpdUi Trackknife::Ui Qt6::Concurrent Qt6::Network
             trackknife_project_warnings
 )
 target_include_directories(trackknife_bench_ui PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
