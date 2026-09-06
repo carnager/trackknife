@@ -81,6 +81,7 @@ class MpdQueueModelTest final : public QObject {
     void projectsHeterogeneousBrowserEntries();
     void exposesOutputCountToQml();
     void groupsLiveSearchAlbumsAndTracks();
+    void acceptsOneCharacterSearchAndReportsDisconnectedAlbums();
 };
 
 void MpdQueueModelTest::projectsOrderedMetadataAndQueueIdentity() {
@@ -323,6 +324,23 @@ void MpdQueueModelTest::exposesOutputCountToQml() {
     QVERIFY(playlist_remove_method >= 0);
     QVERIFY(playlist_move_method >= 0);
     QCOMPARE(controller.metaObject()->property(property_index).read(&controller).toInt(), 0);
+}
+
+void MpdQueueModelTest::acceptsOneCharacterSearchAndReportsDisconnectedAlbums() {
+    MpdProbeController controller;
+    QSignalSpy finished{&controller, &MpdProbeController::searchFinished};
+    controller.searchLibrary(QStringLiteral(" X "));
+    QCOMPARE(finished.size(), 1);
+    QCOMPARE(finished.front().front().toString(), QStringLiteral("X"));
+    QVERIFY(!finished.front()[1].toBool());
+    controller.searchLibrary(QStringLiteral(" "));
+    QCOMPARE(finished.size(), 1);
+    QVERIFY(controller.lastSearchQuery().isEmpty());
+    QSignalSpy albums{&controller, &MpdProbeController::searchAlbumLoaded};
+    controller.loadSearchAlbum(42, {});
+    QCOMPARE(albums.size(), 1);
+    QCOMPARE(albums.front().front().toULongLong(), 42ULL);
+    QVERIFY(!albums.front()[2].toString().isEmpty());
 }
 
 void MpdQueueModelTest::groupsLiveSearchAlbumsAndTracks() {

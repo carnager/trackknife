@@ -1,6 +1,6 @@
 # ADR-0120: MPD search in the library panel
 
-- Status: accepted
+- Status: accepted; result presentation and keyboard behavior superseded by ADR-0122
 - Date: 2026-09-06
 - Owners: Trackknife project
 

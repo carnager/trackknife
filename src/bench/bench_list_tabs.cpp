@@ -586,18 +586,17 @@ void BenchMainWindow::refreshActiveContext() {
     const auto context_changed = property("trackknife-active-authority").toString() != authority;
     setProperty("trackknife-active-authority", authority);
     if (source_stack_ != nullptr) {
-        auto* source =
-            mpd ? (mpd_search_field_ != nullptr && !mpd_search_field_->text().trimmed().isEmpty()
-                       ? mpd_search_surface_
-                       : static_cast<QWidget*>(server_library_view_))
-            : local_source_selector_ != nullptr && local_source_selector_->currentIndex() == 1 &&
-                    local_library_ != nullptr
-                ? static_cast<QWidget*>(local_library_)
-                : static_cast<QWidget*>(folder_view_);
+        auto* source = mpd ? mpd_library_panel_
+                       : local_source_selector_ != nullptr &&
+                               local_source_selector_->currentIndex() == 1 &&
+                               local_library_ != nullptr
+                           ? static_cast<QWidget*>(local_library_)
+                           : static_cast<QWidget*>(folder_view_);
         if (source != nullptr) {
             source_stack_->setCurrentWidget(source);
         }
     }
+    updateMpdSearchPresentation();
     if (source_heading_ != nullptr) {
         source_heading_->setText(mpd ? QStringLiteral("MPD Library") : QStringLiteral("Folders"));
         source_heading_->setVisible(mpd);

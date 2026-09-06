@@ -560,7 +560,7 @@ void MpdProbeController::setQueuePriority(const QVariantList& rows, const int pr
 
 void MpdProbeController::searchLibrary(const QString& query) {
     const auto normalized = query.trimmed();
-    if (normalized.size() < 2) {
+    if (normalized.isEmpty()) {
         if (session_ && pending_library_query_) {
             session_->cancel_pending(*pending_library_query_);
         }
@@ -570,7 +570,7 @@ void MpdProbeController::searchLibrary(const QString& query) {
         pending_search_append_ = false;
         search_has_more_ = false;
         library_model_.replaceTracks({});
-        library_status_ = QStringLiteral("Type at least two characters to search");
+        library_status_ = QStringLiteral("Search albums and tracks");
         emit stateChanged();
         return;
     }
@@ -706,6 +706,14 @@ void MpdProbeController::addAlbum(mpd::AlbumFilter album, const QueueAddMode mod
     pending_album_adds_.insert(command_id, mode);
     pending_commands_.insert(command_id);
     emit stateChanged();
+}
+
+void MpdProbeController::loadSearchAlbum(const quint64 token, const mpd::AlbumFilter& album) {
+    if (!session_ || !connected_) {
+        emit searchAlbumLoaded(token, {}, QStringLiteral("Not connected"));
+        return;
+    }
+    pending_search_albums_.insert(session_->find_album(album), token);
 }
 
 void MpdProbeController::browseDirectory(const QString& uri) {
@@ -1608,6 +1616,19 @@ void MpdProbeController::applyCommandResult(const std::uint64_t token,
         return;
     }
     if (result.kind == mpd::SessionCommandKind::database_album) {
+        if (pending_search_albums_.contains(result.id)) {
+            const auto request_token = pending_search_albums_.take(result.id);
+            if (result.error) {
+                emit searchAlbumLoaded(request_token, {}, from_utf8(result.error->message));
+            } else if (const auto* tracks = std::get_if<std::vector<mpd::Track>>(&result.payload)) {
+                emit searchAlbumLoaded(request_token, *tracks, {});
+            } else {
+                emit searchAlbumLoaded(request_token, {},
+                                       QStringLiteral("Album returned an invalid response"));
+            }
+            return;
+        }
+
         if (!pending_album_adds_.contains(result.id)) {
             emit stateChanged();
             return;
@@ -1832,6 +1853,10 @@ void MpdProbeController::clearSessionState() {
     queue_model_.setCurrentSongId(std::nullopt);
     pending_commands_.clear();
     pending_album_adds_.clear();
+    const auto pending_albums = std::exchange(pending_search_albums_, {});
+    for (const auto token : pending_albums) {
+        emit searchAlbumLoaded(token, {}, QStringLiteral("Disconnected"));
+    }
     pending_library_query_.reset();
     pending_library_query_text_.clear();
     last_library_query_.clear();
@@ -1856,7 +1881,7 @@ void MpdProbeController::clearSessionState() {
     browser_model_.replaceEntries({});
     browser_playlist_model_.replaceTracks({});
     output_model_.replaceOutputs({});
-    library_status_ = QStringLiteral("Type at least two characters to search");
+    library_status_ = QStringLiteral("Search albums and tracks");
     browser_status_ = QStringLiteral("No folder loaded");
     browser_path_.clear();
     pending_browser_path_.clear();

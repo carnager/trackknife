@@ -5,6 +5,7 @@
 #include "bench/local_list_model.hpp"
 #include "bench/metadata_grid_model.hpp"
 #include "bench/metadata_properties_dialog.hpp"
+#include "bench/mpd_library_search_model.hpp"
 #include "bench/settings_dialog.hpp"
 #include "quick/mpd_probe_controller.hpp"
 #include "quick/mpd_queue_model.hpp"
@@ -165,6 +166,7 @@ class BenchMainWindowTest final : public QObject {
     void transportUsesStackedNowPlayingAndCompactDeviceButton();
     void unifiesMpdAndLocalAuthoritiesInOneWorkspace();
     void mpdSearchProjectsControllerResults();
+    void mpdSearchResolvesCompleteAlbums();
     void mpdQueueAndLibraryMenusExposeServerActions();
     void mpdGoToArtistAlbumNavigatesLibrary();
     void playbackBufferProfilesPersistAndExposeDiagnostics();
@@ -408,8 +410,8 @@ void BenchMainWindowTest::unifiesMpdAndLocalAuthoritiesInOneWorkspace() {
     QVERIFY(qobject_cast<ui::QueueItemDelegate*>(mpd_queue->itemDelegate()) != nullptr);
     QVERIFY(qobject_cast<ui::QueueItemDelegate*>(local_queue->itemDelegate()) != nullptr);
     QVERIFY(tabs->cornerWidget(Qt::TopRightCorner) == nullptr);
-    QCOMPARE(search->parentWidget(),
-             window.findChild<QWidget*>(QStringLiteral("bench-panel-folders")));
+    QVERIFY(
+        window.findChild<QWidget*>(QStringLiteral("bench-panel-folders"))->isAncestorOf(search));
     QVERIFY(!search->isVisible());
     QVERIFY(!repeat->isVisible());
     QVERIFY(!random->isVisible());
@@ -443,7 +445,7 @@ void BenchMainWindowTest::unifiesMpdAndLocalAuthoritiesInOneWorkspace() {
     QVERIFY(tabs->cornerWidget(Qt::TopRightCorner) == nullptr);
     auto* sources = window.findChild<QWidget*>(QStringLiteral("bench-panel-folders"));
     QVERIFY(sources != nullptr);
-    QCOMPARE(search->parentWidget(), sources);
+    QVERIFY(sources->isAncestorOf(search));
     QVERIFY(search->geometry().right() < sources->width());
     QCOMPARE(tabs->tabBar()->maximumWidth(), QWIDGETSIZE_MAX);
 
@@ -474,7 +476,7 @@ void BenchMainWindowTest::mpdSearchProjectsControllerResults() {
     auto* mpd_queue = window.findChild<QTableView*>(QStringLiteral("bench-mpd-queue"));
     auto* field = window.findChild<QLineEdit*>(QStringLiteral("bench-mpd-search"));
     auto* surface = window.findChild<QWidget*>(QStringLiteral("bench-mpd-search-surface"));
-    auto* results = window.findChild<QTableView*>(QStringLiteral("bench-mpd-search-results"));
+    auto* results = window.findChild<QTreeView*>(QStringLiteral("bench-mpd-search-results"));
     auto* result_model = window.findChild<quick::MpdSearchResultModel*>();
     auto* controller = window.findChild<quick::MpdProbeController*>();
     QVERIFY(tabs != nullptr);
@@ -509,15 +511,25 @@ void BenchMainWindowTest::mpdSearchProjectsControllerResults() {
         .priority = std::nullopt,
         .unknown_structural_pairs = {},
     }});
-    field->setText(QStringLiteral("Search"));
+    field->setText(QStringLiteral("S"));
     QTest::qWait(220);
     QVERIFY(QMetaObject::invokeMethod(controller, "searchFinished", Qt::DirectConnection,
-                                      Q_ARG(QString, QStringLiteral("Search")), Q_ARG(bool, true)));
+                                      Q_ARG(QString, QStringLiteral("S")), Q_ARG(bool, true)));
     QTRY_VERIFY(result_model->firstResultRow() >= 0);
+    QSignalSpy notifications{controller, &quick::MpdProbeController::notificationRequested};
+    QTest::keyClick(field, Qt::Key_Return);
+    QCOMPARE(notifications.size(), 0);
     const auto first = result_model->firstResultRow();
     QCOMPARE(result_model->index(first, 1).data().toString(), QStringLiteral("Search Result"));
     QCOMPARE(result_model->index(first, 4).data(Qt::ToolTipRole).toString(),
              QStringLiteral("Append to queue (Enter)"));
+
+    auto* tree_model = qobject_cast<MpdLibrarySearchModel*>(results->model());
+    QVERIFY(tree_model);
+    QCOMPARE(tree_model->index(0, 0).data().toString(), QStringLiteral("Albums"));
+    QCOMPARE(tree_model->index(1, 0).data().toString(), QStringLiteral("Tracks"));
+    QCOMPARE(tree_model->index(0, 0, tree_model->index(1, 0)).data().toString(),
+             QStringLiteral("Search Artist — 01. Search Result"));
 
     QSignalSpy artwork_requests{result_model, &quick::MpdSearchResultModel::artworkRequested};
     result_model->replaceTracks({mpd::Track{
@@ -542,19 +554,28 @@ void BenchMainWindowTest::mpdSearchProjectsControllerResults() {
     QTRY_VERIFY(!artwork_requests.isEmpty());
     const auto album_row = result_model->firstResultRow();
     QVERIFY(album_row >= 0);
-    QImage cover{8, 8, QImage::Format_ARGB32_Premultiplied};
+    QImage cover{160, 160, QImage::Format_ARGB32_Premultiplied};
     cover.fill(Qt::blue);
     result_model->acceptArtwork(artwork_requests.front().front().toULongLong(), cover);
     QVERIFY(!result_model->index(album_row, 0).data(Qt::DecorationRole).value<QImage>().isNull());
-    QCOMPARE(results->iconSize(), QSize(24, 24));
-    QCOMPARE(results->rowHeight(album_row), 30);
-    QVERIFY(!results->wordWrap());
-    QCOMPARE(results->textElideMode(), Qt::ElideRight);
+    auto* local_tree = window.findChild<QTreeView*>(QStringLiteral("local-library-tree"));
+    QVERIFY(local_tree);
+    QVERIFY(dynamic_cast<ui::ServerLibraryTreeView*>(results));
+    QVERIFY(dynamic_cast<ui::ServerLibraryTreeDelegate*>(results->itemDelegate()));
+    QCOMPARE(results->selectionMode(), local_tree->selectionMode());
+    QCOMPARE(results->indentation(), local_tree->indentation());
+    QCOMPARE(results->frameShape(), local_tree->frameShape());
+    QCOMPARE(results->dragDropMode(), local_tree->dragDropMode());
+    QCOMPARE(results->expandsOnDoubleClick(), local_tree->expandsOnDoubleClick());
+    const auto album = tree_model->index(0, 0, tree_model->index(0, 0));
+    QCOMPARE(album.data().toString(), QStringLiteral("Cover Album"));
+    QCOMPARE(album.data(MpdLibrarySearchModel::ArtistRole).toString(),
+             QStringLiteral("Cover Artist"));
 
     QTest::keyClick(&window, Qt::Key_L, Qt::ControlModifier);
     QTRY_VERIFY(surface->isVisible());
     results->viewport()->repaint();
-    const auto album_cell = results->visualRect(result_model->index(album_row, 0));
+    const auto album_cell = results->visualRect(album);
     QVERIFY(!album_cell.isEmpty());
     const auto album_render = results->viewport()->grab(album_cell).toImage();
     auto blue_left = album_render.width();
@@ -578,25 +599,32 @@ void BenchMainWindowTest::mpdSearchProjectsControllerResults() {
     QVERIFY(painted_cover_width <= album_render.height());
     QVERIFY(painted_cover_height <= album_render.height());
     QVERIFY(std::abs(painted_cover_width - painted_cover_height) <= 1);
-    results->setCurrentIndex(result_model->index(album_row, 0));
+    if (qEnvironmentVariableIsSet("TRACKKNIFE_SEARCH_SCREENSHOT")) {
+        surface->parentWidget()->parentWidget()->grab().save(
+            qEnvironmentVariable("TRACKKNIFE_SEARCH_SCREENSHOT"));
+    }
+    QCOMPARE(album_cell.height(), 42);
+    QCOMPARE(painted_cover_width, 28);
+    results->setCurrentIndex(album);
     results->setFocus();
-    QTRY_VERIFY(surface->isVisible());
-    QTest::keyClick(results, Qt::Key_Right);
-    QCOMPARE(results->currentIndex().column(),
-             quick::MpdSearchResultModel::first_action_column + 1);
+    QVERIFY(!results->isExpanded(album));
+    QTest::keyClick(results, Qt::Key_Return);
+    QVERIFY(results->isExpanded(album));
+    QCOMPARE(results->currentIndex(), album);
     QTest::keyClick(results, Qt::Key_Left);
-    QCOMPARE(results->currentIndex().column(), quick::MpdSearchResultModel::first_action_column);
-    QTest::keyClick(results, Qt::Key_Left);
-    QCOMPARE(results->currentIndex().column(), quick::MpdSearchResultModel::first_action_column);
+    QVERIFY(!results->isExpanded(album));
     QTest::keyClick(results, Qt::Key_Right);
-    QCOMPARE(results->currentIndex().column(),
-             quick::MpdSearchResultModel::first_action_column + 1);
-    QTest::keyClick(results, Qt::Key_Right);
-    QCOMPARE(results->currentIndex().column(),
-             quick::MpdSearchResultModel::first_action_column + 2);
-    QTest::keyClick(results, Qt::Key_Right);
-    QCOMPARE(results->currentIndex().column(),
-             quick::MpdSearchResultModel::first_action_column + 2);
+    QVERIFY(results->isExpanded(album));
+    const auto track = tree_model->index(0, 0, tree_model->index(1, 0));
+    results->selectionModel()->select(track,
+                                      QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    QCOMPARE(results->selectionModel()->selectedRows().size(), 2);
+    tree_model->setMore(true);
+    QVERIFY(tree_model->index(1, 0, tree_model->index(1, 0))
+                .data(MpdLibrarySearchModel::MoreRole)
+                .toBool());
+    tree_model->setMore(false);
+    QCOMPARE(tree_model->rowCount(tree_model->index(1, 0)), 1);
     mpd_queue->setFocus();
     QTRY_VERIFY(surface->isVisible());
     auto* sources = window.findChild<QWidget*>(QStringLiteral("bench-panel-folders"));
@@ -605,38 +633,93 @@ void BenchMainWindowTest::mpdSearchProjectsControllerResults() {
     QVERIFY(sources && tree && stack);
     QVERIFY(sources->isAncestorOf(field));
     QVERIFY(sources->isAncestorOf(surface));
-    QCOMPARE(stack->currentWidget(), surface);
+    QVERIFY(stack->currentWidget()->isAncestorOf(surface));
     QVERIFY(!tree->isVisible());
-    QCOMPARE(result_model->index(album_row, 0).data().toString(),
-             QStringLiteral("Cover Artist — Cover Album"));
-    QVERIFY(results->isColumnHidden(1));
-    QVERIFY(results->isColumnHidden(2));
-    QVERIFY(results->isColumnHidden(3));
-    QCOMPARE(results->horizontalScrollBar()->maximum(), 0);
     const auto retained_count = result_model->rowCount();
     tabs->setCurrentIndex(1);
     QVERIFY(!field->isVisible());
     QVERIFY(!surface->isVisible());
     tabs->setCurrentWidget(mpd_queue);
     QVERIFY(surface->isVisible());
-    QCOMPARE(field->text(), QStringLiteral("Search"));
+    QCOMPARE(field->text(), QStringLiteral("S"));
     QCOMPARE(result_model->rowCount(), retained_count);
     // Query edits remove stale actionable results immediately. A late reply
     // for the old query must not replace the new search or the browse tree.
     field->setText(QStringLiteral("Different"));
     QCOMPARE(result_model->rowCount(), 0);
     QVERIFY(QMetaObject::invokeMethod(controller, "searchFinished", Qt::DirectConnection,
-                                      Q_ARG(QString, QStringLiteral("Search")), Q_ARG(bool, true)));
+                                      Q_ARG(QString, QStringLiteral("S")), Q_ARG(bool, true)));
     QCOMPARE(result_model->rowCount(), 0);
-    QTest::keyClick(results, Qt::Key_Escape);
+    field->clear();
     QVERIFY(field->text().isEmpty());
-    QCOMPARE(stack->currentWidget(), tree);
+    QVERIFY(stack->currentWidget()->isAncestorOf(tree));
     QVERIFY(!surface->isVisible());
     QVERIFY(tree->isVisible());
     QVERIFY(QMetaObject::invokeMethod(controller, "searchFinished", Qt::DirectConnection,
                                       Q_ARG(QString, QStringLiteral("Different")),
                                       Q_ARG(bool, true)));
     QCOMPARE(result_model->rowCount(), 0);
+}
+
+void BenchMainWindowTest::mpdSearchResolvesCompleteAlbums() {
+    quick::MpdSearchResultModel source;
+    MpdLibrarySearchModel tree{&source};
+    mpd::Track first{};
+    first.uri = "album/01.flac";
+    first.metadata = mpd::Metadata{
+        {{"AlbumArtist", "Artist"}, {"Album", "Album"}, {"Title", "First"}, {"Track", "1"}}};
+    auto second = first;
+    second.uri = "album/02.flac";
+    second.metadata = mpd::Metadata{
+        {{"AlbumArtist", "Artist"}, {"Album", "Album"}, {"Title", "Second"}, {"Track", "2/2"}}};
+    source.replaceTracks({second}); // The search matched only one track of this release.
+    QSignalSpy requests{&tree, &MpdLibrarySearchModel::albumRequested};
+    const auto album = tree.index(0, 0, tree.index(0, 0));
+    const auto matching_track = tree.index(0, 0, tree.index(1, 0));
+    QStringList resolved;
+    QString error;
+    int completions = 0;
+    tree.resolve({matching_track, album}, [&](QStringList uris, QString problem) {
+        resolved = std::move(uris);
+        error = std::move(problem);
+        ++completions;
+    });
+    QCOMPARE(completions, 0);
+    QCOMPARE(requests.size(), 1);
+    tree.loadAlbum(album); // Expansion joins the existing complete-release request.
+    QCOMPARE(requests.size(), 1);
+    tree.acceptAlbum(requests.front().front().toULongLong(), {second, first}, {});
+    QCOMPARE(completions, 1);
+    QVERIFY(error.isEmpty());
+    QCOMPARE(resolved, QStringList({"album/01.flac", "album/02.flac"}));
+    QCOMPARE(tree.rowCount(album), 2);
+    QCOMPARE(tree.index(1, 0, album).data().toString(), QStringLiteral("02. Second"));
+    QCOMPARE(album.data().toString(), QStringLiteral("Album (2)"));
+    tree.resolve({album, tree.index(0, 0, album), matching_track},
+                 [&](QStringList uris, QString problem) {
+                     resolved = std::move(uris);
+                     error = std::move(problem);
+                     ++completions;
+                 });
+    QCOMPARE(completions, 2);
+    QCOMPARE(resolved.size(), 2);
+    QCOMPARE(requests.size(), 1);
+
+    source.replaceTracks({second});
+    tree.resolve({tree.index(0, 0, tree.index(0, 0))}, [&](QStringList uris, QString problem) {
+        resolved = std::move(uris);
+        error = std::move(problem);
+        ++completions;
+    });
+    QCOMPARE(requests.size(), 2);
+    const auto stale_token = requests.back().front().toULongLong();
+    source.replaceTracks({});
+    QCOMPARE(completions, 3);
+    QVERIFY(resolved.isEmpty());
+    QVERIFY(!error.isEmpty());
+    tree.acceptAlbum(stale_token, {first, second}, {});
+    QCOMPARE(completions, 3);
+    QCOMPARE(tree.index(0, 0, tree.index(0, 0)).data().toString(), QStringLiteral("No matches"));
 }
 
 void BenchMainWindowTest::mpdQueueAndLibraryMenusExposeServerActions() {

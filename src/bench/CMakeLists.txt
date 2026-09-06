@@ -10,6 +10,8 @@ qt_add_library(
     bench_media_ingest.cpp
     bench_metadata_operations.cpp
     bench_mpd.cpp
+    mpd_library_search_model.cpp
+    mpd_library_search_model.hpp
     bench_track_views.cpp
     bench_transport.cpp
     bench_workspace_layout.cpp

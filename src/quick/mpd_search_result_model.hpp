@@ -30,6 +30,7 @@ class MpdSearchResultModel final : public QAbstractTableModel {
         ResultKindRole = Qt::UserRole + 1,
         UriListRole,
         ArtworkUriRole,
+        TrackNumberRole,
     };
 
     explicit MpdSearchResultModel(QObject* parent = nullptr);
@@ -79,6 +80,7 @@ class MpdSearchResultModel final : public QAbstractTableModel {
         QImage artwork;
         bool artwork_requested{false};
         quint64 artwork_token{0U};
+        QString track_number{};
     };
 
     void requestNextArtwork();

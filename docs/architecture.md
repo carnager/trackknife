@@ -92,7 +92,11 @@ Local source --> playback: FFmpeg --> gain/DSP --> PipeWire
 
 ADR-0120 places the existing asynchronous MPD search model and queue actions
 in the Sources panel beside the persistent browse tree, using the panel layout
-for geometry rather than an overlay over Track Lists.
+for geometry rather than an overlay over Track Lists. ADR-0122 adds the
+`MpdLibrarySearchModel` tree presentation over the bounded search projection,
+using the same tree view/delegate as local search. Complete-release expansion
+and selection resolution use serial asynchronous controller requests, retain
+persistent indexes, and reject results invalidated by a query change.
 
 MPD is the primary library and live-queue authority for its context. Trackbench
 persists authority-qualified profiles, workspace/list state, presets, jobs, and

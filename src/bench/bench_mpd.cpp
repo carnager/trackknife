@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "bench/bench_main_window.hpp"
+#include "bench/local_library_panel.hpp"
+#include "bench/mpd_library_search_model.hpp"
 #include "bench/settings_dialog.hpp"
+#include <QComboBox>
 
 #include "bench/bench_main_window_helpers.hpp"
 #include "quick/mpd_output_model.hpp"
@@ -59,314 +62,6 @@
 #include <utility>
 
 namespace trackknife::bench {
-namespace {
-
-enum class MpdSearchQueueAction : std::uint8_t { append, next, replace };
-
-class MpdSearchLineEdit final : public QLineEdit {
-  public:
-    explicit MpdSearchLineEdit(QWidget* parent) : QLineEdit(parent) {}
-
-    void setResultFocusCallback(std::function<void()> callback) {
-        result_focus_callback_ = std::move(callback);
-    }
-    void setCloseCallback(std::function<void()> callback) { close_callback_ = std::move(callback); }
-    void setActionCallback(std::function<void(MpdSearchQueueAction)> callback) {
-        action_callback_ = std::move(callback);
-    }
-
-  protected:
-    void keyPressEvent(QKeyEvent* event) override {
-        if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) &&
-            event->modifiers() == Qt::ControlModifier && action_callback_) {
-            action_callback_(MpdSearchQueueAction::replace);
-            event->accept();
-            return;
-        }
-        if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) &&
-            event->modifiers() == Qt::NoModifier && action_callback_) {
-            action_callback_(MpdSearchQueueAction::append);
-            event->accept();
-            return;
-        }
-        if (event->key() == Qt::Key_Down && result_focus_callback_) {
-            result_focus_callback_();
-            event->accept();
-            return;
-        }
-        if (event->key() == Qt::Key_Escape && close_callback_) {
-            close_callback_();
-            event->accept();
-            return;
-        }
-        QLineEdit::keyPressEvent(event);
-    }
-
-  private:
-    std::function<void()> result_focus_callback_;
-    std::function<void()> close_callback_;
-    std::function<void(MpdSearchQueueAction)> action_callback_;
-};
-
-class MpdSearchTableView final : public QTableView {
-  public:
-    explicit MpdSearchTableView(QWidget* parent) : QTableView(parent) {}
-
-    void setSearchField(QLineEdit* field) { search_field_ = field; }
-    void setCloseCallback(std::function<void()> callback) { close_callback_ = std::move(callback); }
-    void setActionCallback(std::function<void(int, MpdSearchQueueAction)> callback) {
-        action_callback_ = std::move(callback);
-    }
-
-    void focusFirstResult() {
-        const auto* results = qobject_cast<const quick::MpdSearchResultModel*>(model());
-        const auto row = results != nullptr ? results->firstResultRow() : -1;
-        if (row < 0) {
-            return;
-        }
-        selectionModel()->setCurrentIndex(model()->index(row, 0),
-                                          QItemSelectionModel::ClearAndSelect |
-                                              QItemSelectionModel::Rows);
-        setFocus();
-        scrollTo(currentIndex());
-    }
-
-    void activateDefault(const MpdSearchQueueAction action) {
-        const auto* results = qobject_cast<const quick::MpdSearchResultModel*>(model());
-        auto row = currentIndex().row();
-        if (results == nullptr || !currentIndex().isValid() ||
-            results->kindAt(row) == quick::MpdSearchResultModel::ResultKind::section) {
-            row = results != nullptr ? results->firstResultRow() : -1;
-        }
-        if (row >= 0 && action_callback_) {
-            action_callback_(row, action);
-        }
-    }
-
-  protected:
-    void keyPressEvent(QKeyEvent* event) override {
-        if (event->key() == Qt::Key_Escape) {
-            if (close_callback_) {
-                close_callback_();
-            }
-            event->accept();
-            return;
-        }
-        if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) &&
-            event->modifiers() == Qt::ControlModifier) {
-            activateDefault(MpdSearchQueueAction::replace);
-            event->accept();
-            return;
-        }
-        if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) &&
-            event->modifiers() == Qt::NoModifier) {
-            activateDefault(actionForColumn(currentIndex().column()));
-            event->accept();
-            return;
-        }
-        if (event->modifiers() == Qt::NoModifier &&
-            (event->key() == Qt::Key_Backspace || isSearchText(event->text()))) {
-            forwardToSearch(event);
-            return;
-        }
-        if (event->key() == Qt::Key_Down || event->key() == Qt::Key_Up) {
-            moveVertically(event->key() == Qt::Key_Down ? 1 : -1);
-            event->accept();
-            return;
-        }
-        if (event->key() == Qt::Key_Right && currentIndex().isValid()) {
-            const auto current_action =
-                currentIndex().column() < quick::MpdSearchResultModel::first_action_column
-                    ? quick::MpdSearchResultModel::first_action_column
-                    : currentIndex().column();
-            const auto next_action =
-                std::min(current_action + 1, quick::MpdSearchResultModel::column_count - 1);
-            setCurrentIndex(currentIndex().siblingAtColumn(next_action));
-            event->accept();
-            return;
-        }
-        if (event->key() == Qt::Key_Left && currentIndex().isValid()) {
-            const auto current_action =
-                std::max(currentIndex().column(), quick::MpdSearchResultModel::first_action_column);
-            const auto previous_action =
-                std::max(current_action - 1, quick::MpdSearchResultModel::first_action_column);
-            setCurrentIndex(currentIndex().siblingAtColumn(previous_action));
-            event->accept();
-            return;
-        }
-        QTableView::keyPressEvent(event);
-    }
-
-  private:
-    [[nodiscard]] static bool isSearchText(const QString& text) {
-        return !text.isEmpty() &&
-               std::ranges::all_of(text, [](const QChar character) { return character.isPrint(); });
-    }
-
-    [[nodiscard]] static MpdSearchQueueAction actionForColumn(const int column) {
-        if (column == quick::MpdSearchResultModel::first_action_column + 1) {
-            return MpdSearchQueueAction::next;
-        }
-        if (column == quick::MpdSearchResultModel::first_action_column + 2) {
-            return MpdSearchQueueAction::replace;
-        }
-        return MpdSearchQueueAction::append;
-    }
-
-    void forwardToSearch(QKeyEvent* event) {
-        if (search_field_ == nullptr) {
-            return;
-        }
-        const auto cursor = static_cast<int>(
-            std::min<qsizetype>(search_field_->text().size(), std::numeric_limits<int>::max()));
-        const auto repeat_count = static_cast<quint16>(
-            std::clamp(event->count(), 0, static_cast<int>(std::numeric_limits<quint16>::max())));
-        if (!search_field_->hasSelectedText()) {
-            search_field_->setCursorPosition(cursor);
-        }
-        search_field_->setFocus();
-        QKeyEvent forwarded{event->type(), event->key(),          event->modifiers(),
-                            event->text(), event->isAutoRepeat(), repeat_count};
-        QApplication::sendEvent(search_field_, &forwarded);
-        event->accept();
-    }
-
-    void moveVertically(const int direction) {
-        const auto* results = qobject_cast<const quick::MpdSearchResultModel*>(model());
-        if (results == nullptr) {
-            return;
-        }
-        const auto row = results->nextResultRow(currentIndex().row(), direction);
-        if (row >= 0) {
-            const auto column = currentIndex().column() >= 0 ? currentIndex().column() : 0;
-            setCurrentIndex(model()->index(row, column));
-            scrollTo(currentIndex());
-        } else if (direction < 0 && search_field_ != nullptr) {
-            search_field_->setFocus();
-        }
-    }
-
-    QLineEdit* search_field_{nullptr};
-    std::function<void()> close_callback_;
-    std::function<void(int, MpdSearchQueueAction)> action_callback_;
-};
-
-class MpdSearchAlbumDelegate final : public QStyledItemDelegate {
-  public:
-    explicit MpdSearchAlbumDelegate(QObject* parent) : QStyledItemDelegate(parent) {}
-
-    void paint(QPainter* painter, const QStyleOptionViewItem& option,
-               const QModelIndex& index) const override {
-        const auto kind = static_cast<quick::MpdSearchResultModel::ResultKind>(
-            index.data(quick::MpdSearchResultModel::ResultKindRole).toInt());
-        if (kind != quick::MpdSearchResultModel::ResultKind::album) {
-            QStyledItemDelegate::paint(painter, option, index);
-            return;
-        }
-
-        auto item = option;
-        initStyleOption(&item, index);
-        const auto text = item.text;
-        item.text.clear();
-        item.icon = {};
-        item.features &= ~QStyleOptionViewItem::HasDecoration;
-        const auto* widget = item.widget;
-        auto* item_style = widget != nullptr ? widget->style() : QApplication::style();
-        item_style->drawControl(QStyle::CE_ItemViewItem, &item, painter, widget);
-
-        constexpr int cover_extent = 24;
-        constexpr int horizontal_padding = 3;
-        const auto cover_rect =
-            QRect{item.rect.left() + horizontal_padding, item.rect.center().y() - cover_extent / 2,
-                  cover_extent, cover_extent};
-        const auto decoration = index.data(Qt::DecorationRole);
-        if (decoration.canConvert<QImage>()) {
-            const auto image = decoration.value<QImage>();
-            if (!image.isNull()) {
-                const auto scaled =
-                    image.scaled(cover_rect.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
-                painter->drawImage(
-                    QStyle::alignedRect(item.direction, Qt::AlignCenter, scaled.size(), cover_rect),
-                    scaled);
-            }
-        } else if (decoration.canConvert<QIcon>()) {
-            decoration.value<QIcon>().paint(painter, cover_rect, Qt::AlignCenter);
-        }
-
-        const auto text_rect =
-            item.rect.adjusted(cover_extent + horizontal_padding * 2, 0, -horizontal_padding, 0);
-        const auto foreground = item.palette.color(item.state.testFlag(QStyle::State_Selected)
-                                                       ? QPalette::HighlightedText
-                                                       : QPalette::Text);
-        painter->save();
-        painter->setFont(item.font);
-        painter->setPen(foreground);
-        painter->drawText(
-            text_rect, Qt::AlignLeft | Qt::AlignVCenter,
-            QFontMetrics{item.font}.elidedText(text, Qt::ElideRight, text_rect.width()));
-        painter->restore();
-    }
-};
-
-class MpdSearchActionDelegate final : public QStyledItemDelegate {
-  public:
-    MpdSearchActionDelegate(QIcon icon, QObject* parent)
-        : QStyledItemDelegate(parent), icon_(std::move(icon)),
-          view_(qobject_cast<QTableView*>(parent)) {}
-
-    void paint(QPainter* painter, const QStyleOptionViewItem& option,
-               const QModelIndex& index) const override {
-        auto item = option;
-        initStyleOption(&item, index);
-        item.text.clear();
-        item.icon = {};
-        item.features &= ~QStyleOptionViewItem::HasDecoration;
-        item.state &= ~QStyle::State_HasFocus;
-        const auto* widget = item.widget;
-        auto* item_style = widget != nullptr ? widget->style() : QApplication::style();
-        item_style->drawControl(QStyle::CE_ItemViewItem, &item, painter, widget);
-        const auto icon_rect =
-            QStyle::alignedRect(item.direction, Qt::AlignCenter, QSize{12, 12}, item.rect);
-        auto active = false;
-        if (view_ != nullptr && view_->hasFocus()) {
-            const auto current = view_->currentIndex();
-            const auto active_column =
-                current.column() >= quick::MpdSearchResultModel::first_action_column
-                    ? current.column()
-                    : quick::MpdSearchResultModel::first_action_column;
-            active = current.row() == index.row() && active_column == index.column();
-        }
-        if (active) {
-            const auto focus_rect =
-                QStyle::alignedRect(item.direction, Qt::AlignCenter, QSize{18, 18}, item.rect)
-                    .adjusted(0, 0, -1, -1);
-            auto marker = item.palette.color(item.state.testFlag(QStyle::State_Selected)
-                                                 ? QPalette::HighlightedText
-                                                 : QPalette::Highlight);
-            auto fill = marker;
-            fill.setAlpha(36);
-            painter->save();
-            painter->setRenderHint(QPainter::Antialiasing);
-            painter->setBrush(fill);
-            painter->setPen(QPen(marker, 1.0));
-            painter->drawRoundedRect(focus_rect, 3.0, 3.0);
-            painter->restore();
-        }
-        const auto mode =
-            item.state.testFlag(QStyle::State_Enabled) ? QIcon::Normal : QIcon::Disabled;
-        painter->save();
-        painter->setOpacity(active ? 1.0 : 0.72);
-        icon_.paint(painter, icon_rect, Qt::AlignCenter, mode);
-        painter->restore();
-    }
-
-  private:
-    QIcon icon_;
-    QTableView* view_{nullptr};
-};
-
-} // namespace
-
 void BenchMainWindow::buildMpdStatusControls() {
     auto* separator = new QFrame(statusBar());
     mpd_status_separator_ = separator;
@@ -599,7 +294,7 @@ void BenchMainWindow::refreshMpdStatusControls() {
     if (mpd_search_field_ != nullptr) {
         mpd_search_field_->setVisible(visible);
         mpd_search_field_->setEnabled(connected || !mpd_search_field_->text().isEmpty());
-        if (visible && connected && mpd_search_field_->text().trimmed().size() >= 2 &&
+        if (visible && connected && !mpd_search_field_->text().trimmed().isEmpty() &&
             mpd_search_field_->text().trimmed() != mpd_controller_->lastSearchQuery() &&
             !mpd_search_timer_->isActive()) {
             mpd_search_timer_->start();
@@ -607,14 +302,13 @@ void BenchMainWindow::refreshMpdStatusControls() {
         mpd_search_field_->setToolTip(connected ? QStringLiteral("Search the MPD server library")
                                                 : QStringLiteral("Connect to search MPD"));
     }
-    if (mpd_search_more_button_ != nullptr) {
+    if (mpd_search_tree_model_ != nullptr) {
         const auto query = mpd_search_field_->text().trimmed();
-        const auto more =
-            mpd_controller_->hasMoreSearchResults() && query == mpd_controller_->lastSearchQuery();
-        mpd_search_more_button_->setVisible(more);
-        mpd_search_more_button_->setEnabled(more && command_ready);
-        if (mpd_search_surface_->isVisible() && query.size() >= 2 &&
-            query == mpd_controller_->lastSearchQuery() && !mpd_search_timer_->isActive()) {
+        mpd_search_tree_model_->setMore(connected && mpd_controller_->hasMoreSearchResults() &&
+                                        query == mpd_controller_->lastSearchQuery() &&
+                                        !mpd_search_timer_->isActive());
+        if (!query.isEmpty() && query == mpd_controller_->lastSearchQuery() &&
+            !mpd_search_timer_->isActive()) {
             mpd_search_status_->setText(mpd_controller_->libraryStatus());
         }
     }
@@ -675,6 +369,14 @@ void BenchMainWindow::buildMpdWorkspace() {
         });
     view->setExternalDropCallback([this](QAbstractItemView* source, const QVariantList&,
                                          const int insertion_row, const Qt::DropAction) {
+        if (source == mpd_search_view_ && source->selectionModel() != nullptr) {
+            const auto indexes = source->selectionModel()->selectedRows(0);
+            const auto entry = std::ranges::find_if(indexes, MpdLibrarySearchModel::actionable);
+            if (entry == indexes.end())
+                return false;
+            activateMpdSearchResult(*entry, 0, insertion_row);
+            return true;
+        }
         if (source != server_library_view_ || source->selectionModel() == nullptr) {
             return false;
         }
@@ -1057,183 +759,175 @@ void BenchMainWindow::showMpdLibraryContextMenu(const QPoint& position) {
 }
 
 void BenchMainWindow::buildMpdSearch() {
-    auto* field = new MpdSearchLineEdit(folders_panel_);
+    mpd_library_panel_ = new QWidget(source_stack_);
+    mpd_library_panel_->setObjectName(QStringLiteral("bench-mpd-library-panel"));
+    source_stack_->addWidget(mpd_library_panel_);
+    auto* panel_layout = new QVBoxLayout(mpd_library_panel_);
+    panel_layout->setContentsMargins(4, 4, 4, 4);
+    panel_layout->setSpacing(4);
+    auto* field = new QLineEdit(mpd_library_panel_);
     mpd_search_field_ = field;
     field->setObjectName(QStringLiteral("bench-mpd-search"));
     field->setAccessibleName(QStringLiteral("Search MPD library"));
     field->setClearButtonEnabled(true);
     field->setPlaceholderText(QStringLiteral("Search albums and tracks"));
-    field->setMinimumWidth(0);
-    field->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    auto* search_row = new QHBoxLayout;
-    search_row->setContentsMargins(6, 6, 6, 6);
-    search_row->addWidget(field);
-    qobject_cast<QVBoxLayout*>(folders_panel_->layout())->insertLayout(1, search_row);
-
-    auto* surface = new QWidget(source_stack_);
+    panel_layout->addWidget(field);
+    auto* tools = new QHBoxLayout;
+    tools->addWidget(library_order_az_);
+    tools->addWidget(library_order_latest_);
+    tools->addStretch();
+    panel_layout->addLayout(tools);
+    mpd_library_stack_ = new QStackedWidget(mpd_library_panel_);
+    source_stack_->removeWidget(server_library_view_);
+    mpd_library_stack_->addWidget(server_library_view_);
+    panel_layout->addWidget(mpd_library_stack_, 1);
+    auto* surface = new QWidget(mpd_library_stack_);
     surface->setObjectName(QStringLiteral("bench-mpd-search-surface"));
-    source_stack_->addWidget(surface);
+    mpd_library_stack_->addWidget(surface);
     mpd_search_surface_ = surface;
     auto* layout = new QVBoxLayout(surface);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
+    layout->setSpacing(4);
 
     mpd_search_model_ = new quick::MpdSearchResultModel(surface);
-    mpd_search_model_->setCompact(true);
-    // The controller answers unsupported/disconnected requests with an empty
-    // result, so keeping this enabled also guarantees that a later reconnect
-    // cannot leave the search model permanently stuck on placeholders.
     mpd_search_model_->setArtworkEnabled(true);
     mpd_search_model_->setAlbumPlaceholder(QIcon::fromTheme(
         QStringLiteral("media-optical-audio"), style()->standardIcon(QStyle::SP_FileIcon)));
-    auto* results = new MpdSearchTableView(surface);
+    mpd_search_tree_model_ = new MpdLibrarySearchModel(mpd_search_model_, surface);
+    auto* results = new ui::ServerLibraryTreeView(surface);
     mpd_search_view_ = results;
     results->setObjectName(QStringLiteral("bench-mpd-search-results"));
     results->setAccessibleName(QStringLiteral("MPD library search results"));
-    results->setAccessibleDescription(QStringLiteral(
-        "Use Up and Down for results, Left and Right for queue actions, Enter to activate, "
-        "Control Enter to replace the queue, and Escape to clear search and browse the library."));
-    results->setModel(mpd_search_model_);
-    results->setSearchField(field);
-    results->setSelectionBehavior(QAbstractItemView::SelectRows);
-    results->setSelectionMode(QAbstractItemView::SingleSelection);
+    results->setModel(mpd_search_tree_model_);
+    results->setHeaderHidden(true);
+    results->setUniformRowHeights(false);
+    results->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    results->setDragEnabled(true);
+    results->setDragDropMode(QAbstractItemView::DragOnly);
+    results->setDefaultDropAction(Qt::CopyAction);
+    results->setExpandsOnDoubleClick(false);
+    results->setIndentation(18);
     results->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    results->setAlternatingRowColors(false);
-    results->setShowGrid(false);
-    results->setWordWrap(false);
-    results->setTextElideMode(Qt::ElideRight);
-    results->setMouseTracking(true);
-    results->setIconSize(QSize{24, 24});
-    results->verticalHeader()->hide();
-    results->verticalHeader()->setDefaultSectionSize(30);
-    results->verticalHeader()->setMinimumSectionSize(30);
-    results->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
-    results->horizontalHeader()->hide();
-    results->setFrameShape(QFrame::NoFrame);
-    results->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    results->horizontalHeader()->setMinimumSectionSize(18);
-    results->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    for (int column = 1; column < quick::MpdSearchResultModel::first_action_column; ++column) {
-        results->hideColumn(column);
-    }
-    for (int column = quick::MpdSearchResultModel::first_action_column;
-         column < quick::MpdSearchResultModel::column_count; ++column) {
-        results->horizontalHeader()->setSectionResizeMode(column, QHeaderView::Fixed);
-        results->horizontalHeader()->resizeSection(column, 28);
-    }
-    auto* album_delegate = new MpdSearchAlbumDelegate(results);
-    album_delegate->setObjectName(QStringLiteral("bench-mpd-search-album-delegate"));
-    results->setItemDelegateForColumn(0, album_delegate);
-    results->setItemDelegateForColumn(
-        4,
-        new MpdSearchActionDelegate(QIcon::fromTheme(QStringLiteral("list-add"),
-                                                     style()->standardIcon(QStyle::SP_ArrowRight)),
-                                    results));
-    results->setItemDelegateForColumn(
-        5, new MpdSearchActionDelegate(
-               QIcon::fromTheme(QStringLiteral("go-next"),
-                                style()->standardIcon(QStyle::SP_ArrowForward)),
-               results));
-    results->setItemDelegateForColumn(
-        6,
-        new MpdSearchActionDelegate(QIcon::fromTheme(QStringLiteral("media-playback-start"),
-                                                     style()->standardIcon(QStyle::SP_MediaPlay)),
-                                    results));
+    results->setActionsAvailable(
+        [](const QModelIndex& index) { return MpdLibrarySearchModel::actionable(index); });
+    results->setActionCallback([this](const QModelIndex& index, const int action) {
+        activateMpdSearchResult(index, action);
+    });
+    results->setItemDelegate(new ui::ServerLibraryTreeDelegate(
+        results,
+        {QIcon::fromTheme(QStringLiteral("list-add"),
+                          style()->standardIcon(QStyle::SP_DialogOpenButton)),
+         QIcon::fromTheme(QStringLiteral("go-next"), style()->standardIcon(QStyle::SP_ArrowRight)),
+         QIcon::fromTheme(QStringLiteral("media-playback-start"),
+                          style()->standardIcon(QStyle::SP_MediaPlay))},
+        [](const QModelIndex& index) {
+            using Kind = quick::MpdSearchResultModel::ResultKind;
+            const auto kind = index.data(MpdLibrarySearchModel::KindRole);
+            const auto album = kind.isValid() && kind.toInt() == static_cast<int>(Kind::album);
+            return ui::ServerLibraryTreeDelegate::Presentation{
+                .track = kind.isValid() && kind.toInt() == static_cast<int>(Kind::track),
+                .album = album,
+                .root = !index.parent().isValid(),
+                .secondary =
+                    album ? index.data(MpdLibrarySearchModel::ArtistRole).toString() : QString{}};
+        }));
     layout->addWidget(results, 1);
-
-    auto* footer = new QWidget(surface);
-    auto* footer_layout = new QVBoxLayout(footer);
-    footer_layout->setContentsMargins(6, 2, 4, 2);
-    footer_layout->setSpacing(6);
-    mpd_search_status_ =
-        new QLabel(QStringLiteral("Type at least two characters to search"), footer);
+    mpd_search_status_ = new QLabel(surface);
     mpd_search_status_->setObjectName(QStringLiteral("bench-mpd-search-status"));
-    mpd_search_status_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     mpd_search_status_->setWordWrap(true);
-    footer_layout->addWidget(mpd_search_status_, 1);
-    mpd_search_more_button_ = new QToolButton(footer);
-    mpd_search_more_button_->setObjectName(QStringLiteral("bench-mpd-search-more"));
-    mpd_search_more_button_->setText(QStringLiteral("More results"));
-    mpd_search_more_button_->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    mpd_search_more_button_->setAutoRaise(true);
-    mpd_search_more_button_->hide();
-    footer_layout->addWidget(mpd_search_more_button_);
-    layout->addWidget(footer);
-
+    layout->addWidget(mpd_search_status_);
+    connect(mpd_search_tree_model_, &MpdLibrarySearchModel::rebuilt, results, [this, results] {
+        for (int row = 0; row < mpd_search_tree_model_->rowCount(); ++row) {
+            results->expand(mpd_search_tree_model_->index(row, 0));
+        }
+    });
+    connect(results, &QTreeView::expanded, mpd_search_tree_model_,
+            &MpdLibrarySearchModel::loadAlbum);
+    connect(mpd_search_tree_model_, &MpdLibrarySearchModel::albumRequested, mpd_controller_,
+            &quick::MpdProbeController::loadSearchAlbum);
+    connect(mpd_controller_, &quick::MpdProbeController::searchAlbumLoaded, mpd_search_tree_model_,
+            &MpdLibrarySearchModel::acceptAlbum);
+    connect(mpd_search_tree_model_, &MpdLibrarySearchModel::problem, this,
+            [this](const QString& error) { statusBar()->showMessage(error, 5'000); });
+    connect(results, &QTreeView::activated, this, [this](const QModelIndex& index) {
+        if (index.data(MpdLibrarySearchModel::MoreRole).toBool()) {
+            mpd_controller_->continueSearch();
+        } else if (MpdLibrarySearchModel::actionable(index) &&
+                   index.data(MpdLibrarySearchModel::KindRole).toInt() ==
+                       static_cast<int>(quick::MpdSearchResultModel::ResultKind::track)) {
+            activateMpdSearchResult(index, 0);
+        }
+    });
+    results->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(results, &QTreeView::customContextMenuRequested, this,
+            [this, results](const QPoint& point) {
+                const QPersistentModelIndex index{results->indexAt(point)};
+                if (!index.isValid())
+                    return;
+                if (!results->selectionModel()->isSelected(index))
+                    results->setCurrentIndex(index);
+                QMenu menu(results);
+                if (MpdLibrarySearchModel::actionable(index)) {
+                    const QStringList labels{tr("Append to live queue"),
+                                             tr("Insert next in live queue"),
+                                             tr("Replace queue and play")};
+                    for (int action = 0; action < labels.size(); ++action) {
+                        menu.addAction(labels[action], this, [this, index, action] {
+                            activateMpdSearchResult(index, action);
+                        });
+                    }
+                }
+                if (mpd_search_tree_model_->hasChildren(index)) {
+                    menu.addAction(results->isExpanded(index) ? tr("Collapse") : tr("Expand"),
+                                   results, [results, index] {
+                                       results->setExpanded(index, !results->isExpanded(index));
+                                   });
+                }
+                if (!menu.isEmpty())
+                    menu.exec(results->viewport()->mapToGlobal(point));
+            });
     mpd_search_timer_ = new QTimer(this);
     mpd_search_timer_->setSingleShot(true);
-    mpd_search_timer_->setInterval(180);
+    mpd_search_timer_->setInterval(200);
     connect(field, &QLineEdit::textChanged, this, [this] {
         mpd_search_timer_->stop();
         mpd_search_model_->replaceTracks({});
-        syncMpdSearchView();
-        mpd_search_more_button_->hide();
-        const auto query = mpd_search_field_->text().trimmed();
-        mpd_search_status_->setText(query.size() < 2
-                                        ? QStringLiteral("Type at least two characters to search")
-                                        : QStringLiteral("Searching…"));
+        mpd_search_status_->setText(tr("Searching…"));
         updateMpdSearchPresentation();
-        if (isMpdContext()) {
+        if (isMpdContext())
             mpd_search_timer_->start();
-        }
     });
     connect(mpd_search_timer_, &QTimer::timeout, this, &BenchMainWindow::previewMpdSearch);
-    connect(mpd_search_more_button_, &QToolButton::clicked, mpd_controller_,
-            &quick::MpdProbeController::continueSearch);
-    connect(results, &QTableView::clicked, this, [this](const QModelIndex& index) {
-        if (index.column() >= quick::MpdSearchResultModel::first_action_column) {
-            activateMpdSearchResult(
-                index.row(), index.column() - quick::MpdSearchResultModel::first_action_column);
-        }
-    });
-    connect(results, &QTableView::doubleClicked, this, [this](const QModelIndex& index) {
-        if (index.column() < quick::MpdSearchResultModel::first_action_column) {
-            activateMpdSearchResult(index.row(), 0);
-        }
-    });
-    results->setActionCallback([this](const int row, const MpdSearchQueueAction action) {
-        activateMpdSearchResult(row, static_cast<int>(action));
-    });
-    results->setCloseCallback([this] { closeMpdSearch(); });
-    field->setResultFocusCallback([results] { results->focusFirstResult(); });
-    field->setCloseCallback([this] { closeMpdSearch(); });
-    field->setActionCallback(
-        [results](const MpdSearchQueueAction action) { results->activateDefault(action); });
     connect(mpd_search_model_, &quick::MpdSearchResultModel::artworkRequested, mpd_controller_,
             &quick::MpdProbeController::loadServerLibraryArtwork);
-
     auto* focus_search = new QShortcut(QKeySequence(QStringLiteral("Ctrl+L")), this);
     connect(focus_search, &QShortcut::activated, this, [this] {
+        QLineEdit* target_field = mpd_search_field_;
         if (!isMpdContext()) {
-            tabs_->setCurrentWidget(mpd_queue_view_);
+            if (local_library_ == nullptr || local_source_selector_ == nullptr)
+                return;
+            local_source_selector_->setCurrentIndex(1);
+            target_field =
+                local_library_->findChild<QLineEdit*>(QStringLiteral("local-library-search"));
         }
-        updateMpdSearchPresentation();
-        mpd_search_field_->setFocus();
-        mpd_search_field_->selectAll();
+        if (target_field == nullptr)
+            return;
+        target_field->setFocus();
+        target_field->selectAll();
     });
 }
 
 void BenchMainWindow::previewMpdSearch() {
-    if (!isMpdContext() || mpd_search_field_ == nullptr) {
+    if (!isMpdContext() || mpd_search_field_ == nullptr)
         return;
-    }
-    const auto query = mpd_search_field_->text().trimmed();
-    if (query.size() < 2) {
-        mpd_search_model_->replaceTracks({});
-        syncMpdSearchView();
-    }
-    mpd_controller_->searchLibrary(query);
-    mpd_search_status_->setText(query.size() < 2
-                                    ? QStringLiteral("Type at least two characters to search")
-                                    : mpd_controller_->libraryStatus());
-    mpd_search_more_button_->hide();
+    mpd_controller_->searchLibrary(mpd_search_field_->text().trimmed());
+    mpd_search_status_->setText(mpd_controller_->libraryStatus());
 }
 
 void BenchMainWindow::finishMpdSearch(const QString& query, const bool success) {
     if (mpd_search_field_ == nullptr || query != mpd_search_field_->text().trimmed() ||
-        query.size() < 2) {
+        query.isEmpty())
         return;
-    }
     if (success) {
         std::vector<mpd::Track> tracks;
         if (const auto* source =
@@ -1245,72 +939,46 @@ void BenchMainWindow::finishMpdSearch(const QString& query, const bool success) 
     } else {
         mpd_search_model_->replaceTracks({});
     }
-    syncMpdSearchView();
     mpd_search_status_->setText(success ? mpd_controller_->libraryStatus()
-                                        : QStringLiteral("Search did not complete"));
-    const auto more = success && mpd_controller_->hasMoreSearchResults() &&
-                      query == mpd_controller_->lastSearchQuery();
-    mpd_search_more_button_->setVisible(more);
-    mpd_search_more_button_->setEnabled(more && !mpd_controller_->commandBusy());
+                                        : tr("Search did not complete"));
+    mpd_search_tree_model_->setMore(success && mpd_controller_->hasMoreSearchResults() &&
+                                    query == mpd_controller_->lastSearchQuery());
 }
 
-void BenchMainWindow::syncMpdSearchView() {
-    mpd_search_view_->clearSpans();
-    for (const auto row : mpd_search_model_->sectionRows()) {
-        mpd_search_view_->setSpan(row, 0, 1, quick::MpdSearchResultModel::column_count);
-    }
-    const auto current = mpd_search_view_->currentIndex();
-    if (!current.isValid() || mpd_search_model_->kindAt(current.row()) ==
-                                  quick::MpdSearchResultModel::ResultKind::section) {
-        const auto first = mpd_search_model_->firstResultRow();
-        if (first >= 0) {
-            mpd_search_view_->setCurrentIndex(mpd_search_model_->index(first, 0));
-        }
-    }
-}
-
-void BenchMainWindow::activateMpdSearchResult(const int row, const int action) {
-    if (!isMpdContext() || mpd_search_timer_->isActive() || mpd_search_model_ == nullptr ||
-        row < 0 ||
-        mpd_search_model_->kindAt(row) == quick::MpdSearchResultModel::ResultKind::section) {
+void BenchMainWindow::activateMpdSearchResult(const QModelIndex& index, const int action,
+                                              const int insertion_row) {
+    if (!isMpdContext() || mpd_search_timer_->isActive() ||
+        !MpdLibrarySearchModel::actionable(index))
         return;
-    }
-    const auto requested = static_cast<MpdSearchQueueAction>(action);
-    if (const auto album = mpd_search_model_->albumAt(row)) {
-        const auto mode = requested == MpdSearchQueueAction::append ? quick::QueueAddMode::append
-                          : requested == MpdSearchQueueAction::next ? quick::QueueAddMode::next
-                                                                    : quick::QueueAddMode::replace;
-        mpd_controller_->addAlbum(*album, mode);
-        return;
-    }
-    const auto uris = mpd_search_model_->urisAt(row);
-    if (uris.isEmpty()) {
-        return;
-    }
-    if (requested == MpdSearchQueueAction::append) {
-        mpd_controller_->addUris(uris, false);
-    } else if (requested == MpdSearchQueueAction::next) {
-        mpd_controller_->addUris(uris, true);
-    } else {
-        mpd_controller_->replaceQueueWithUris(uris);
-    }
-}
-
-void BenchMainWindow::closeMpdSearch() {
-    if (mpd_search_field_ == nullptr) {
-        return;
-    }
-    mpd_search_field_->clear();
-    if (isMpdContext()) {
-        server_library_view_->setFocus(Qt::ShortcutFocusReason);
-    }
+    if (!mpd_search_view_->selectionModel()->isSelected(index))
+        mpd_search_view_->setCurrentIndex(index);
+    const auto profile = mpd_controller_->profileId();
+    mpd_search_tree_model_->resolve(
+        mpd_search_view_->selectionModel()->selectedRows(0),
+        [this, profile, action, insertion_row](const QStringList& uris, const QString& error) {
+            if (!error.isEmpty()) {
+                statusBar()->showMessage(error, 5'000);
+                return;
+            }
+            if (uris.isEmpty() || profile != mpd_controller_->profileId() || !isMpdContext())
+                return;
+            if (insertion_row >= 0)
+                mpd_controller_->addUrisAt(uris, insertion_row);
+            else if (action == 0)
+                mpd_controller_->addUris(uris, false);
+            else if (action == 1)
+                mpd_controller_->addUris(uris, true);
+            else
+                mpd_controller_->replaceQueueWithUris(uris);
+        });
 }
 
 void BenchMainWindow::updateMpdSearchPresentation() {
-    if (isMpdContext()) {
-        source_stack_->setCurrentWidget(mpd_search_field_->text().trimmed().isEmpty()
-                                            ? static_cast<QWidget*>(server_library_view_)
-                                            : mpd_search_surface_);
+    if (isMpdContext() && mpd_library_stack_ != nullptr) {
+        source_stack_->setCurrentWidget(mpd_library_panel_);
+        mpd_library_stack_->setCurrentWidget(mpd_search_field_->text().trimmed().isEmpty()
+                                                 ? static_cast<QWidget*>(server_library_view_)
+                                                 : mpd_search_surface_);
     }
 }
 

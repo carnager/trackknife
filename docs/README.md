@@ -18,7 +18,7 @@ the 2026-09-06 source review, with open implementation checklists.
 ## Current continuation point
 
 Last reconciled: 2026-09-06 against source baseline `ffede58`, ADRs through
-0121, and persistence schema **28**.
+0122, and persistence schema **28**.
 
 Use the [feature matrix](feature-matrix.md) for current capability status and
 [roadmap](roadmap.md) for prioritized open work. M5 remains the active

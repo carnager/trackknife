@@ -58,27 +58,22 @@ The initial workspace is intentionally conventional:
   of the browse tree; clearing it restores that tree. Search never replaces the
   active queue/list tab. Committed `Shift+Enter` search-result tabs existed only
   in the retired standalone shell (ADR-0071) and remain follow-up work.
-- Live search presents release-aware album groups and individual tracks in one
-  compact sidebar list combining artist and result title. Every result occupies one fixed-height line with
-  ellipsized text; album rows contain a small aspect-preserving square cover
-  placeholder followed by bounded, serial asynchronous artwork loading.
-  Append, add-next, and replace-queue actions appear at the end of every result
-  row. They work by mouse, by moving focus to an action and pressing Enter, or
-  directly with Enter for the default append and
-  `Ctrl+Enter` for replace. Append is selected by default; one Right movement
-  advances to add-next and the next to replace, and the active keyboard action
-  has an explicit focus marker.
-  Printable typing or Backspace while results have focus resumes editing at the
-  end of the query. `Down` moves from the query into results, `Up` returns from
-  the first result, and `Escape` clears the search and focuses the restored
-  library tree. Clicking elsewhere leaves results visible. Switching to local
-  context hides MPD search and preserves its query/results until returning.
-  `Ctrl+L` focuses the library search. Full result context is in the tooltip.
+- Per ADR-0122, MPD and local live search share an expandable **Albums / Tracks**
+  tree, library row renderer, spacing, artwork size, and extended selection.
+  Album titles have an artist subtitle; track titles include their track number.
+  Queue actions appear on the hovered or focused row and act on the selection.
+  Right-click exposes append, insert-next, replace-and-play, and expansion actions.
+  Enter/click expands a branch; Enter/double-click on a track appends the selection.
+  Left/Right use normal tree navigation. Return in the query field does not enqueue.
+  Both searches accept any nonempty query with a 200 ms debounce, and clearing
+  the field restores browsing. MPD continuation appears as a Show more… tree row.
+  Clicking elsewhere leaves results visible. Switching authority preserves each
+  library's query. `Ctrl+L` focuses the active authority's library search.
 - Album search results sort chronologically by release year, with undated
   releases last and deterministic date/artist/title fallbacks. Track results
   use a stable release-friendly order: album-artist sort name (falling back
   through album artist to track artist), album, numeric disc, numeric track,
-  then title. Credited names remain unchanged for display. Activating an album
+  then title. Credited names remain unchanged for display. Expanding or queueing an album
   resolves its complete release identity with an exact asynchronous MPD lookup;
   the partial set of tracks that happened to match the text query is never used
   as the album contents.

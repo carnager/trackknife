@@ -71,6 +71,7 @@ namespace trackknife::bench {
 struct MetadataOperationJobOutcome;
 class MusicBrainzFetchService;
 class LocalLibraryPanel;
+class MpdLibrarySearchModel;
 
 // Trackknife main window: composed Folders/Track Lists panels, configurable
 // local working-list views, and one transport over the serialized playback worker
@@ -131,10 +132,8 @@ class BenchMainWindow final : public QMainWindow {
     [[nodiscard]] bool isMpdContext() const;
     void previewMpdSearch();
     void finishMpdSearch(const QString& query, bool success);
-    void syncMpdSearchView();
-    void closeMpdSearch();
     void updateMpdSearchPresentation();
-    void activateMpdSearchResult(int row, int action);
+    void activateMpdSearchResult(const QModelIndex& index, int action, int insertion_row = -1);
     void refreshMpdStatusControls();
     void activateMpdLibraryAction(const QModelIndex& index, int action);
     void completePendingMpdLibraryAction();
@@ -276,11 +275,13 @@ class BenchMainWindow final : public QMainWindow {
     ui::ServerLibraryTreeView* server_library_view_{nullptr};
     QTableView* mpd_queue_view_{nullptr};
     QLineEdit* mpd_search_field_{nullptr};
+    QWidget* mpd_library_panel_{nullptr};
+    QStackedWidget* mpd_library_stack_{nullptr};
     QWidget* mpd_search_surface_{nullptr};
     quick::MpdSearchResultModel* mpd_search_model_{nullptr};
-    QTableView* mpd_search_view_{nullptr};
+    MpdLibrarySearchModel* mpd_search_tree_model_{nullptr};
+    QTreeView* mpd_search_view_{nullptr};
     QLabel* mpd_search_status_{nullptr};
-    QToolButton* mpd_search_more_button_{nullptr};
     QTimer* mpd_search_timer_{nullptr};
     ui::TrackViewLayout mpd_view_layout_;
     QByteArray preserved_mpd_view_layout_;

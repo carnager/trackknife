@@ -115,6 +115,9 @@ QVariant MpdSearchResultModel::data(const QModelIndex& index, const int role) co
     if (role == ResultKindRole) {
         return static_cast<int>(row.kind);
     }
+    if (role == TrackNumberRole) {
+        return row.track_number;
+    }
     if (role == UriListRole) {
         return row.uris;
     }
@@ -356,6 +359,7 @@ void MpdSearchResultModel::replace(std::optional<std::vector<mpd::AlbumSummary>>
                 .artwork = {},
                 .artwork_requested = false,
                 .artwork_token = 0U,
+                .track_number = metadata_first(track, "Track"),
             });
         }
     }

@@ -163,6 +163,7 @@ class MpdProbeController final : public QObject {
     Q_INVOKABLE void addUrisAt(const QStringList& uris, int position);
     Q_INVOKABLE void replaceQueueWithUris(const QStringList& uris);
     void addAlbum(mpd::AlbumFilter album, QueueAddMode mode);
+    void loadSearchAlbum(quint64 token, const mpd::AlbumFilter& album);
     Q_INVOKABLE void browseDirectory(const QString& uri);
     Q_INVOKABLE void browseTag(const QString& tag);
     Q_INVOKABLE void loadServerLibraryRoot(quint64 token, const QString& preferred_tag);
@@ -198,6 +199,8 @@ class MpdProbeController final : public QObject {
     void stateChanged();
     void notificationRequested(const QString& message);
     void searchFinished(const QString& query, bool success);
+    void searchAlbumLoaded(quint64 token, const std::vector<mpd::Track>& tracks,
+                           const QString& error);
     void storedPlaylistLoaded(const QString& name);
     void storedPlaylistRenamed(const QString& from, const QString& to);
     void storedPlaylistDeleted(const QString& name);
@@ -263,6 +266,7 @@ class MpdProbeController final : public QObject {
     std::optional<std::uint32_t> current_song_id_;
     std::optional<std::uint64_t> pending_library_query_;
     QHash<quint64, QueueAddMode> pending_album_adds_;
+    QHash<quint64, quint64> pending_search_albums_;
     QString pending_library_query_text_;
     QString last_library_query_;
     bool pending_search_append_{false};
@@ -297,7 +301,7 @@ class MpdProbeController final : public QObject {
     MpdBrowserModel browser_model_;
     MpdQueueModel browser_playlist_model_;
     MpdOutputModel output_model_;
-    QString library_status_{QStringLiteral("Type at least two characters to search")};
+    QString library_status_{QStringLiteral("Search albums and tracks")};
     QString browser_status_{QStringLiteral("No folder loaded")};
     QString browser_path_;
     QString pending_browser_path_;
