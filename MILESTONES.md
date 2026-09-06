@@ -19,14 +19,21 @@ retired once Trackbench reached parity (ADR-0071).
 | M3 | Complete | Polished Qt MPD workspace — the basic MPD client is finished |
 | M4 | Complete | Application split and Trackbench's playback workspace |
 | M5 | Active | Fast local tag workspace and safe file operations |
-| M6 | Planned | MusicBrainz identification and metadata providers |
-| M7 | Planned | Universal parallel ReplayGain workflow |
+| M6 | Implementation landed | MusicBrainz identification, AcoustID, and metadata providers |
+| M7 | In progress | Measurement and local gain implemented; universal storage/coverage remains |
 | M8 | In progress | Parallel converter, resampler, and organized output |
 | M9 | Planned | Melody output endpoint for the MPD client |
 | M10 | Planned | Hardening, packaging, and first public releases |
 
-Only one milestone is normally active. Preparatory work is allowed when it
-removes a real dependency, but moving on never disguises a failed gate.
+M5 remains the active acceptance gate. Implementation status is separate from
+formal milestone closure: M6 features have landed and M7–M8 are in progress,
+without asserting that every exit criterion has been revalidated.
+
+The [feature matrix](docs/feature-matrix.md) is the current capability inventory;
+the [roadmap](docs/roadmap.md) prioritizes open work. The dated progress entries
+below retain implementation history. Older references to two executables,
+missing local indexing, or pending features may be superseded by later ADRs;
+they must not be read as current workspace status.
 
 ### Requested workspace addition — optional local library (ADR-0115)
 

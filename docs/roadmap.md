@@ -1,0 +1,193 @@
+# Trackbench feature roadmap
+
+Last reconciled: 2026-09-06 against source baseline `ffede58`.
+
+**Proposal:** Prioritized open work, saved at the user's request. The
+[feature matrix](feature-matrix.md) records what currently exists;
+[MILESTONES.md](../MILESTONES.md) retains capability gates and historical
+implementation evidence. M5 remains the active acceptance gate. This roadmap
+neither reopens completed implementations nor claims new milestone completion.
+
+Playlist usability, complete album conversion, and library organization are
+the main priorities. The eight areas below retain the review's suggested
+order; correctness issues in an affected workflow come before feature expansion.
+All checkboxes describe open work. Detailed product decisions need ADRs,
+regressions, and a feature-matrix update before completion is recorded.
+
+## Correctness prerequisite
+
+- [ ] Reproduce the Properties ReplayGain scan's handling of CUE/chapter ranges
+  and subsong selections, then preserve that identity through scan requests.
+
+**Needs verification:** The core supports logical sources, but the reviewed
+Properties code supplies empty `selection` and `range` values. This is a
+source-review finding, not a reproduced measurement test. It blocks a claim
+of universal logical-track scanning; see [ReplayGain](#5-universal-replaygain-support).
+
+## 1. Queue and playlist editing
+
+**Proposal:** Make working lists easy to manage and portable between players.
+
+- [ ] Undo/redo for local list removal and rearrangement.
+- [ ] Find within the current list.
+- [ ] Local list sorting, reversing, and removal of duplicate entries.
+- [ ] M3U8 import/export, with relative-path resolution and clear handling of
+  references that portable playlists cannot represent.
+- [ ] Expose the complete MPD stored-playlist browse/open/edit/save workflow
+  in the current workspace; the protocol backend already supports it.
+- [ ] Restore separately committed MPD search-result tabs where useful; the
+  current library-integrated live search remains available.
+
+Keep local list changes distinct from server-owned playlist mutations.
+Removing duplicate list entries must not delete files.
+
+References: [working lists and interchange](playback-library-conversion.md#working-lists-and-stored-playlists),
+[MPD client](mpd-client.md).
+
+## 2. Library filters and saved searches
+
+**Proposal:** Extend artist/album browsing into useful collection views.
+
+- [ ] Structured filters for metadata and technical properties.
+- [ ] Saved searches, followed by query-backed autoplaylists.
+- [ ] Custom library grouping and tree expressions.
+- [ ] Searchable CUE, chapter, and subsong titles in the index.
+
+Example views: Jazz released after 1990, albums missing ReplayGain, and files
+without MusicBrainz identifiers.
+
+**Trackknife decision:** Filters and saved views operate on the cached index.
+Filesystem scanning remains explicit: only pressing **Refresh** starts a scan,
+as required by ADR-0116. Query reevaluation must not trigger filesystem scans.
+
+Reference: [local library and current limits](local-library.md).
+The existing [query-language sketch](query-language.md) requires reconciliation
+with [compatibility.md](compatibility.md#searchquery-syntax) before a dialect is
+chosen; external query-language compatibility is not an accepted requirement.
+
+## 3. Complete album conversion
+
+**Proposal:** A conversion should produce a complete album ready for use.
+
+- [ ] Carry artwork into converted output using qualified format mappings.
+- [ ] Mirror the source folder structure beneath an explicit destination root.
+- [ ] Remove or recalculate stale ReplayGain when processing changes the audio.
+
+The existing converter already supports codec presets, expression-based naming,
+resampling, bit-depth choices, and text metadata transfer. Preserve its
+verification, cancellation, and no-overwrite publication guarantees while
+adding the missing pieces.
+
+References: [converter specification](playback-library-conversion.md#converter),
+[M8](../MILESTONES.md#m8--parallel-converter-resampler-and-organized-output).
+
+## 4. Consistent tagging and artwork across formats
+
+**Proposal:** Prioritize common collection formats before more obscure writers.
+
+- [ ] Qualify text tagging in MP4/M4A containers carrying AAC or ALAC.
+- [ ] Qualify MP3 and M4A artwork management.
+- [ ] Extend artwork management to other supported containers as their
+  preservation behavior is proven.
+
+At the review baseline, qualified text writers cover FLAC, WavPack, MP3,
+Vorbis, and Opus, while artwork editing remains FLAC-only. Playback support
+must remain distinct from write support. Each new writer needs real-file
+round trips proving preservation of audio, unknown metadata, and container data.
+
+Reference: [metadata and artwork](metadata-and-files.md).
+
+## 5. Universal ReplayGain support
+
+**Proposal:** Complete the path from measurement to durable storage and playback.
+
+- [ ] Store results in a sidecar or library record when no safe writable
+  embedded mapping exists, and use those results during local playback.
+- [ ] Define and implement Opus R128 storage and playback handling.
+- [ ] Add playback preamp controls.
+The [correctness prerequisite](#correctness-prerequisite) covers logical-track
+scan propagation. Measurement, grouping, visible draft proposals, and ordinary
+local playback gain modes already exist; this work completes storage and
+coverage rather than implementing a new scanner.
+
+References: [ReplayGain](replaygain.md),
+[Properties scan construction](../src/bench/metadata_properties_dialog.cpp).
+
+## 6. Linux desktop integration
+
+**Proposal:** Make playback convenient while the window is in the background.
+
+- [ ] MPRIS integration.
+- [ ] Media-key control while the application is unfocused.
+- [ ] Optional desktop notifications.
+
+Desktop controls must respect the established MPD/local playback authority
+contract. Notification behavior should be optional and quiet by default.
+
+Reference: [M9](../MILESTONES.md#m9--melody-endpoint-and-advanced-listening-mpd-authority).
+
+## 7. Listening history and album-oriented playback
+
+**Proposal:** Add listening memory and album-oriented discovery.
+
+- [ ] Play counts, last-played timestamps, and ratings.
+- [ ] Restore the last playback position without assuming automatic playback.
+- [ ] Shuffle albums while preserving track order inside each album.
+- [ ] Use listening statistics in views such as unplayed albums.
+
+Statistics should follow stable track identity through file operations.
+Writing them into audio tags requires explicit opt-in. Current Random playback
+is track-oriented; album shuffle is a separate order mode.
+
+Reference: [playback statistics](playback-library-conversion.md#playback-statistics).
+
+## 8. Collection maintenance
+
+**Proposal:** Help users identify collection problems before changing files.
+
+- [ ] User-facing integrity scans with distinct decode and checksum findings.
+- [ ] Duplicate-audio comparison beyond duplicate paths or matching tags.
+- [ ] Missing-file relinking.
+- [ ] Album-completeness checks with explicit evidence and uncertainty.
+
+For example, two differently tagged files containing the same recording should
+be discoverable without implying that they are interchangeable or safe to
+delete. Any resulting filesystem mutation follows the existing preview,
+conflict, commit, and recovery contracts.
+
+Reference: [verification and diagnostics](playback-library-conversion.md#verification-and-diagnostics).
+
+## Existing follow-ups outside the eight priorities
+
+These remain open requirements or proposals from the broader specifications;
+they are not additional immediate commitments.
+
+- Workspace: expose the command palette and configurable shortcuts; add
+  expression-defined track columns/grouping and saved metadata field layouts.
+- Metadata: additional qualified writers, portable/custom filename
+  sanitization, Unicode-normalization policy, and richer matching options.
+- Conversion: downsample-only rate caps, explicit keep-source depth,
+  channel-processing policy, grouped/merge output, and qualified DSP/gain.
+- Infrastructure: shared resource scheduling/retry, secure credential storage,
+  user backup/restore, and representative large-library/network/device testing.
+- Later product work: Melody playback endpoint, DSP graph, release hardening
+  and packaging. Plugins, CD ripping, radio, and remote import remain deferred.
+
+## Scope and maintenance
+
+For album preparation, emphasize cover-preserving conversion and consistent
+artwork support. For daily listening, emphasize queue undo/find/sort and
+playlist support. Keep filesystem scans manual and MPD/local authorities
+separate throughout.
+
+The 2026-09-06 reconciliation replaces stale current-status summaries in the
+feature matrix and documentation index. MusicBrainz, AcoustID, grouped
+numbering, conventional local ReplayGain, and the baseline converter are
+already implemented; their remaining gaps are listed above. The committed-
+operation history/undo UI was intentionally removed in ADR-0084 and is not a
+missing implementation promised by this roadmap. Draft undo is implemented;
+local list-edit undo is proposed here.
+
+Maintain current capability status in the feature matrix and implementation
+priority here. Older dated milestone entries and ADRs remain historical
+records; a retired shell's functionality is not evidence of a current UI.
