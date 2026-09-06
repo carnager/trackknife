@@ -251,6 +251,7 @@ void BenchMainWindow::buildWorkspace() {
     auto* open_folder = file_menu->addAction(QStringLiteral("Open folder…"));
     open_folder->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+O")));
     connect(open_folder, &QAction::triggered, this, &BenchMainWindow::openFolderDialog);
+    buildPlaylistActions(file_menu);
     auto* add_root = file_menu->addAction(QStringLiteral("Bookmark folder…"));
     connect(add_root, &QAction::triggered, this, &BenchMainWindow::addFolderRoot);
     file_menu->addSeparator();

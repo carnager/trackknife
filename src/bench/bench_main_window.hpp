@@ -74,6 +74,7 @@ class LocalLibraryPanel;
 class MpdLibrarySearchModel;
 class TrackListFindBar;
 class LocalListEditBar;
+class PlaylistTransferBar;
 
 // Trackknife main window: composed Folders/Track Lists panels, configurable
 // local working-list views, and one transport over the serialized playback worker
@@ -88,6 +89,7 @@ class BenchMainWindow final : public QMainWindow {
     BenchMainWindow(const BenchMainWindow&) = delete;
     BenchMainWindow& operator=(const BenchMainWindow&) = delete;
 
+    void importM3u8Path(std::string raw_path);
     void openLocalPaths(std::vector<std::string> raw_paths);
     void loadMpdUrisAsLocalFiles(const QStringList& uris);
 
@@ -106,6 +108,9 @@ class BenchMainWindow final : public QMainWindow {
         bool view_layout_persistence_protected{false};
     };
 
+    void buildPlaylistActions(QMenu* file_menu);
+    void importPlaylistDialog();
+    void exportPlaylistDialog();
     void buildWorkspace();
     void buildMpdWorkspace();
     void buildMpdSearch();
@@ -332,6 +337,8 @@ class BenchMainWindow final : public QMainWindow {
     QAction* undo_list_action_{nullptr};
     QAction* redo_list_action_{nullptr};
     TrackListFindBar* list_find_bar_{nullptr};
+    PlaylistTransferBar* playlist_transfer_bar_{nullptr};
+    QAction* export_playlist_action_{nullptr};
     LocalListEditBar* list_edit_bar_{nullptr};
     QMenu* sort_list_menu_{nullptr};
     QAction* reverse_list_action_{nullptr};

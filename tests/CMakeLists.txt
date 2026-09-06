@@ -462,6 +462,12 @@ if(TRACKKNIFE_BUILD_UI)
                 trackknife_project_warnings
     )
     add_test(NAME bench-main-window COMMAND trackknife_bench_main_window_tests)
+    qt_add_executable(trackknife_m3u8_tests m3u8_test.cpp)
+    target_link_libraries(trackknife_m3u8_tests PRIVATE Trackknife::BenchUi Qt6::Test
+        trackknife_project_options trackknife_project_warnings)
+    target_compile_definitions(trackknife_m3u8_tests PRIVATE
+        TRACKKNIFE_AUDIO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio")
+    add_test(NAME m3u8 COMMAND trackknife_m3u8_tests)
     qt_add_executable(trackknife_local_list_edit_tests local_list_edit_test.cpp)
     target_link_libraries(trackknife_local_list_edit_tests PRIVATE Trackknife::BenchUi Qt6::Test
         trackknife_project_options trackknife_project_warnings)
@@ -471,7 +477,7 @@ if(TRACKKNIFE_BUILD_UI)
     target_link_libraries(trackknife_track_list_find_tests PRIVATE Trackknife::BenchUi Trackknife::MpdUi Qt6::Test
         trackknife_project_options trackknife_project_warnings)
     add_test(NAME track-list-find COMMAND trackknife_track_list_find_tests)
-    set_tests_properties(local-list-edit track-list-find PROPERTIES TIMEOUT 30 ENVIRONMENT
+    set_tests_properties(m3u8 local-list-edit track-list-find PROPERTIES TIMEOUT 30 ENVIRONMENT
         "QT_QPA_PLATFORM=offscreen;LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
     set_tests_properties(
         bench-main-window

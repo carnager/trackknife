@@ -1,7 +1,7 @@
 # Feature matrix
 
-Last reconciled: 2026-09-06 against source baseline `d08b6b5` and accepted ADRs
-through ADR-0127. This matrix describes the current primary workspace, not the
+Last reconciled: 2026-09-06 against source baseline `bfc99e3` and accepted ADRs
+through ADR-0128. This matrix describes the current primary workspace, not the
 retired MPD shell. The product is Trackbench; the current executable is named
 `trackknife` (`src/bench`). MPD and local queues retain separate authorities.
 
@@ -29,7 +29,7 @@ An implemented feature does not by itself close a milestone.
 | Local working-list tabs | Implemented | Persistent scratch/named lists, rename, save, pin, duplicate, reorder, dirty-close protection, row removal, and cross-list copy/move and drag/drop. Duplicate occurrences and raw paths survive persistence. |
 | Local list editing tools | Partial | Per-tab removal/reorder undo/redo with shortcuts, menus, bounded session history, and playback-preserving index updates is implemented (ADR-0123). ADR-0127 adds cancellable whole-list natural sorting with tkfmt-1 presets/custom expressions, reversal, and logical-source-aware keep-first duplicate removal, each with named undo/redo. Add/replace/cross-tab history remains open. Tag-draft undo remains separate. See [roadmap 1](roadmap.md#1-queue-and-playlist-editing). |
 | Find within track lists | Implemented | ADR-0125 adds Ctrl+F, next/previous matches, wraparound, progress/cancellation, and Escape to close in local lists and the MPD queue. Searches cached display metadata and local escaped paths/server URIs in bounded worker batches without filtering, changing playback, or sending server commands. Arbitrary metadata/technical-field search remains open. |
-| Portable playlists | Open | M3U8 import/export first; M3U encoding policy and XSPF/PLS are later work. A saved workspace list is not an exported playlist file. |
+| Portable playlists | Partial | ADR-0128 adds cancellable M3U8 import into a new local list and whole-local-list export to a new file. Relative paths, duplicate/offline occurrences, EXTINF labels/durations, and escaped raw filenames are preserved. Logical selections and remote references fail explicitly; existing files are never replaced. M3U encoding policy, XSPF/PLS, and replacement workflows remain open. |
 | MPD stored playlists | Backend only | Discovery, loading, saving, and mutation exist in the MPD session/controller. Browse/open/edit/save tabs are not exposed in the primary workspace; the shell-only tabs were dropped in ADR-0071. |
 | Committed MPD search tabs | Open | Library-integrated live search is implemented; separately committed search-result tabs are not. |
 | Track-view layouts | Partial | Both authorities share grouped side/header artwork, plain/compact presentations, and persisted semantic-column order, visibility, and widths. Arbitrary expression-defined columns/grouping remain open. |

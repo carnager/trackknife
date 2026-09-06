@@ -53,8 +53,9 @@ References: [library refresh decision](adr/0126-library-deletion-and-search-artw
   next/previous, wraparound, and cancellable bounded traversal (ADR-0125).
 - [x] Local list sorting with presets/custom `tkfmt-1` expressions, reversing,
   and keep-first duplicate removal, each with undo/redo (ADR-0127).
-- [ ] M3U8 import/export, with relative-path resolution and clear handling of
-  references that portable playlists cannot represent.
+- [x] Local M3U8 import/export, with relative-path resolution, offline/duplicate
+  retention, and explicit rejection of unrepresentable references (ADR-0128).
+  Export creates a new file; replacement and other playlist formats remain later work.
 - [ ] Expose the complete MPD stored-playlist browse/open/edit/save workflow
   in the current workspace; the protocol backend already supports it.
 - [ ] Restore separately committed MPD search-result tabs where useful; the

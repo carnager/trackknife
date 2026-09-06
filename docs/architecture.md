@@ -158,6 +158,13 @@ worker consumes bounded detached snapshots; list or authority changes invalidate
 pending results. The model applies current plans through its existing history
 and persistent-index remapping, and the workspace saves the resulting order.
 
+ADR-0128 adds strict local M3U8 parsing/serialization and bounded file adapters.
+A single UI-owned worker prepares imported rows and exports detached list
+snapshots. Import publishes a complete named local list; export fsyncs a sibling
+temporary file and atomically hard-links it to a new destination without replacing
+existing files. Logical/remote references fail explicitly rather than losing
+source identity. No database migration or GUI dependency enters `lists`.
+
 ### `titleformat`
 
 The immutable versioned `tkfmt-1` parser/compiler/evaluator, dependency

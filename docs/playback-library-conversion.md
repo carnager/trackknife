@@ -285,6 +285,26 @@ distinguishable.
 
 ### Import/export
 
+**Trackknife decision — implemented M3U8 profile (ADR-0128):** File → Import
+M3U8 playlist creates a new local list from either authority. Relative paths use
+the playlist directory; order, duplicates, and unavailable files survive import
+and workspace restart. UTF-8/BOM, CRLF, plain file paths, local percent-escaped
+file URIs, and EXTINF titles/durations are supported. Embedded tags supply columns
+when readable; missing sources retain cached labels. Import does not expand
+chapters, subsongs, or nested playlists. Remote URIs, HLS, malformed input, and
+unsupported extended directives reject the entire import with a line diagnostic.
+
+File → Export list as M3U8 exports the selected local list's whole-file references,
+titles and durations, with relative paths beneath the output directory. Raw names
+that cannot safely occupy a line use escaped local file URIs. Logical references,
+sample ranges, and explicit stream/subsong selections reject export with a row
+number. Other cached metadata and workspace/query/view state are not stored in
+the portable file. Export creates a **new file** and never replaces an existing
+destination. Both commands offer progress and cancellation, with no partial list
+or playlist publication. See ADR-0128 for limits and the publication commit point.
+
+Remaining format direction:
+
 - M3U8 is the minimum portable format; resolve relative paths against the file.
 - M3U may require explicit encoding detection/selection.
 - XSPF/PLS are useful later interoperable formats.

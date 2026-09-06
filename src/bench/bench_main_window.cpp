@@ -2,6 +2,7 @@
 
 #include "bench/bench_main_window.hpp"
 #include "bench/local_list_edit_bar.hpp"
+#include "bench/playlist_transfer_bar.hpp"
 
 #include "bench/local_library_panel.hpp"
 #include "bench/metadata_properties_dialog.hpp"
@@ -31,6 +32,8 @@ extern "C" void __tsan_acquire(void* address);
 namespace trackknife::bench {
 
 void BenchMainWindow::stopBackgroundWork() {
+    if (playlist_transfer_bar_)
+        playlist_transfer_bar_->stop();
     if (list_edit_bar_ != nullptr) {
         list_edit_bar_->cancel();
     }

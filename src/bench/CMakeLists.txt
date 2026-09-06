@@ -8,6 +8,9 @@ qt_add_library(
     bench_main_window_helpers.hpp
     bench_list_tabs.cpp
     bench_media_ingest.cpp
+    bench_playlists.cpp
+    playlist_transfer_bar.cpp
+    playlist_transfer_bar.hpp
     bench_metadata_operations.cpp
     bench_mpd.cpp
     mpd_library_search_model.cpp

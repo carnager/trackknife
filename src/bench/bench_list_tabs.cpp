@@ -734,6 +734,8 @@ void BenchMainWindow::refreshTabActions() {
     refreshListHistoryActions();
     const auto* tab = currentListTab();
     const bool available = tab != nullptr;
+    if (export_playlist_action_)
+        export_playlist_action_->setEnabled(available);
     if (list_edit_bar_)
         list_edit_bar_->setView(available ? tab->view : nullptr);
     if (list_find_bar_ != nullptr) {

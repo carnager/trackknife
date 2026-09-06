@@ -7,6 +7,7 @@
 #include "bench/metadata_grid_model.hpp"
 #include "bench/metadata_properties_dialog.hpp"
 #include "bench/mpd_library_search_model.hpp"
+#include "bench/playlist_transfer_bar.hpp"
 #include "bench/settings_dialog.hpp"
 #include "bench/track_list_find_bar.hpp"
 #include "quick/mpd_probe_controller.hpp"
@@ -211,6 +212,7 @@ class BenchMainWindowTest final : public QObject {
     void localListHistoryBranchesAndBounds();
     void localListUndoActionsRespectAuthorityAndTextEditing();
     void localListOrderingActionsRespectAuthorityAndPersist();
+    void portablePlaylistImportsPreserveAuthorityAndPersist();
     void trackListFindActionsFollowActiveTab();
     void noncontiguousLocalReorderPreservesOccurrences();
     void persistsPinnedDuplicatedAndDirtyTabs();
@@ -5218,6 +5220,66 @@ void BenchMainWindowTest::localListOrderingActionsRespectAuthorityAndPersist() {
     QCOMPARE(restored_model->rows()[1].raw_path, second.raw_path);
     QCOMPARE(restored_model->rows()[2].raw_path, second.raw_path);
     QVERIFY(!restored_model->canUndo());
+}
+
+void BenchMainWindowTest::portablePlaylistImportsPreserveAuthorityAndPersist() {
+    QTemporaryDir media;
+    QVERIFY(media.isValid());
+    const auto playlist = media.filePath(QStringLiteral("Offline mix.m3u8"));
+    QFile file{playlist};
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    const QByteArray contents{"#EXTM3U\n#EXTINF:12.345,Offline title\ngone.flac\ngone.flac\n"};
+    QCOMPARE(file.write(contents), contents.size());
+    file.close();
+    {
+        BenchMainWindow window;
+        window.show();
+        auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("bench-tabs"));
+        QTRY_COMPARE(tabs->count(), 2);
+        auto* local_view = qobject_cast<QTableView*>(tabs->currentWidget());
+        auto* local_model = qobject_cast<LocalListModel*>(local_view->model());
+        QVERIFY(local_model);
+        auto* import_action = window.findChild<QAction*>(QStringLiteral("action-import-m3u8"));
+        auto* export_action = window.findChild<QAction*>(QStringLiteral("action-export-m3u8"));
+        auto* mpd = window.findChild<QTableView*>(QStringLiteral("bench-mpd-queue"));
+        tabs->setCurrentWidget(mpd);
+        QVERIFY(import_action->isEnabled());
+        QVERIFY(!export_action->isEnabled());
+        const auto mpd_count = mpd->model()->rowCount();
+        auto* bar = window.findChild<PlaylistTransferBar*>();
+        QSignalSpy completed{bar, &PlaylistTransferBar::completed};
+        window.importM3u8Path(QFile::encodeName(playlist).toStdString());
+        QTRY_COMPARE(completed.size(), 1);
+        QVERIFY(completed[0][0].toBool());
+        QCOMPARE(tabs->count(), 3);
+        QVERIFY(export_action->isEnabled());
+        QCOMPARE(local_model->rowCount(), 0);
+        QCOMPARE(mpd->model()->rowCount(), mpd_count);
+        auto* imported_view = qobject_cast<QTableView*>(tabs->currentWidget());
+        auto* imported_model = qobject_cast<LocalListModel*>(imported_view->model());
+        QVERIFY(imported_model);
+        QCOMPARE(imported_model->rowCount(), 2);
+        QCOMPARE(imported_model->rows()[0].title, std::string{"Offline title"});
+        QCOMPARE(imported_model->rows()[0].raw_path, imported_model->rows()[1].raw_path);
+        window.close();
+    }
+    BenchMainWindow reopened;
+    reopened.show();
+    auto* tabs = reopened.findChild<QTabWidget*>(QStringLiteral("bench-tabs"));
+    QTRY_COMPARE(tabs->count(), 3);
+    LocalListModel* restored = nullptr;
+    for (int i = 0; i < tabs->count(); ++i) {
+        if (tabs->tabText(i) == QStringLiteral("Offline mix")) {
+            auto* view = qobject_cast<QTableView*>(tabs->widget(i));
+            restored = view ? qobject_cast<LocalListModel*>(view->model()) : nullptr;
+        }
+    }
+    QVERIFY(restored);
+    QCOMPARE(restored->rowCount(), 2);
+    QCOMPARE(restored->rows()[0].title, std::string{"Offline title"});
+    QCOMPARE(restored->rows()[0].duration_ms, std::optional<std::int64_t>{12345});
+    QCOMPARE(restored->rows()[0].raw_path, restored->rows()[1].raw_path);
+    QVERIFY(restored->rows()[0].probed);
 }
 
 void BenchMainWindowTest::trackViewLayoutMatchesGroupedQueueAndPersists() {

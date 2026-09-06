@@ -17,8 +17,8 @@ the 2026-09-06 source review, with open implementation checklists.
 
 ## Current continuation point
 
-Last reconciled: 2026-09-06 against source baseline `d08b6b5`, ADRs through
-0127, and persistence schema **28**.
+Last reconciled: 2026-09-06 against source baseline `bfc99e3`, ADRs through
+0128, and persistence schema **28**.
 
 Use the [feature matrix](feature-matrix.md) for current capability status and
 [roadmap](roadmap.md) for prioritized open work. M5 remains the active
@@ -38,7 +38,8 @@ Current implemented workflows include:
   Local removal/reorder undo is available through per-tab session history.
   Whole-list sort/reverse and duplicate removal also use named undo/redo.
   Ctrl+F finds cached text in local lists and the MPD queue; F3/Shift+F3 navigate
-  matches.
+  matches. M3U8 import creates local lists with relative and unavailable file
+  references; export writes whole-file lists to new M3U8 files (ADR-0128).
 - MPD library browse/search with covers and queue actions. Local Library offers
   indexed browse/search, track numbers, covers, and drag/drop. Filesystem scans
   run **only on Refresh**; in-app metadata/path commits update cached records.
@@ -52,7 +53,7 @@ Current implemented workflows include:
   FLAC/Opus/MP3/Vorbis targets with naming presets, resampling, bit-depth options,
   text transfer, output verification, and limited-filesystem fallbacks.
 
-Immediate gaps include richer list editing and portable playlists, MPD stored-
+Immediate gaps include broader list history and playlist interchange, MPD stored-
 playlist UI, advanced library views, conversion artwork/stale-loudness handling,
 additional format writers, and complete ReplayGain storage/coverage. The
 Properties-to-scanner logical-source path is regression-tested (ADR-0124);
