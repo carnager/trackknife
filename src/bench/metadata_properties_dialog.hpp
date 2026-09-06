@@ -5,6 +5,7 @@
 #include "bench/metadata_artwork_section.hpp"
 #include "bench/musicbrainz_identify_dialog.hpp"
 #include "bench/preparation_feedback_dialog.hpp"
+#include "trackknife/formats/decoder.hpp"
 #include "trackknife/metadata/transformation.hpp"
 #include "trackknife/metadata/write_plan.hpp"
 #include "trackknife/operations/file_publication_apply.hpp"
@@ -53,9 +54,15 @@ namespace trackknife::bench {
 
 class MetadataGridModel;
 class MetadataAggregateModel;
+struct MetadataPropertiesAudioSource {
+    formats::AudioSourceSelection selection;
+    std::optional<formats::SampleRange> range;
+};
+
 struct MetadataPropertiesSource {
     metadata::StagedMetadataSource source;
     QString track_label;
+    MetadataPropertiesAudioSource audio{};
 };
 
 using MetadataPropertiesSourceReader =
@@ -266,6 +273,9 @@ class MetadataPropertiesDialog final : public QDialog {
     std::vector<persistence::SavedOutputLayoutProfile> output_layout_catalog_;
     std::vector<persistence::SavedDestinationProfile> destination_catalog_;
     std::vector<metadata::StagedMetadataSource> sources_;
+    // Filled only during bounded capture; scan workers share a const view.
+    std::shared_ptr<std::vector<MetadataPropertiesAudioSource>> audio_sources_{
+        std::make_shared<std::vector<MetadataPropertiesAudioSource>>()};
     std::vector<std::string> preferred_fields_;
     std::vector<std::string> recent_field_names_;
     QStringList track_labels_;

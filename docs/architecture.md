@@ -132,7 +132,18 @@ stored playlists, scratch lists, and saved lists over remote references; in
 Trackbench it hosts local working lists over raw paths. Owns dirty state,
 persistence, cross-tab operations, duplicate occurrences, snapshot
 provenance, and supported action capabilities. The model is distinct from Qt
-tab widgets.
+tab widgets. ADR-0123 adds bounded removal/reorder history to the local list
+presentation model: detached occurrence snapshots and inverse permutations,
+with persistent-index remapping and verified commit refresh of retained rows.
+History replay uses normal dirty-list persistence and remains separate from
+file-operation journals and MPD mutations.
+
+ADR-0125 adds find in local lists and the MPD queue as one presentation controller
+with a bounded worker and detached text batches. Core Unicode mappings and literal
+substring matching operate on cached metadata/path snapshots; generation checks
+reject results invalidated by edits, server queue refreshes, selection changes, or
+authority switches. Find selects existing occurrences and owns no list, playback,
+or persisted state.
 
 ### `titleformat`
 
@@ -224,6 +235,11 @@ tags but remains a typed record with algorithm/provenance.
 libebur128 accumulators, album reducers, sample/true peak, grouping, scan plans,
 and typed results. It consumes FFmpeg-decoded PCM independently of tag
 writability.
+
+ADR-0124 retains immutable stream/subsong/range inputs beside Properties
+metadata rows and carries them into logical-source scans. A Qt-free staged
+source flag prevents the physical metadata planner from publishing logical
+ReplayGain/R128 values as whole-file tags; durable logical storage remains open.
 
 ### `convert`
 

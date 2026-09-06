@@ -81,7 +81,14 @@ class LocalListModel final : public QAbstractTableModel {
     void replaceRows(std::vector<LocalTrackRow> rows);
     void appendPaths(std::vector<std::string> raw_paths, int insertion_row = -1);
     void appendRows(std::vector<LocalTrackRow> rows, int insertion_row = -1);
-    void removeRowIndexes(std::vector<int> rows);
+    void removeRowIndexes(std::vector<int> rows, bool remember = true);
+    [[nodiscard]] bool canUndo() const noexcept { return history_cursor_ > 0; }
+    [[nodiscard]] bool canRedo() const noexcept { return history_cursor_ < history_.size(); }
+    [[nodiscard]] QString undoLabel() const;
+    [[nodiscard]] QString redoLabel() const;
+    bool undo();
+    bool redo();
+    void clearHistory();
     // Moves the given rows (ascending, deduplicated) as one block to
     // insertion_row, preserving their relative order.
     void reorderRows(std::vector<int> rows, int insertion_row);
@@ -128,7 +135,27 @@ class LocalListModel final : public QAbstractTableModel {
     [[nodiscard]] Qt::ItemFlags flags(const QModelIndex& index) const override;
     [[nodiscard]] Qt::DropActions supportedDropActions() const override;
 
+  signals:
+    void historyChanged();
+    void historyRowsRestored(const QList<int>& rows);
+    void historyDiscarded(const QString& reason);
+
   private:
+    struct Edit {
+        bool removal{false};
+        std::vector<int> positions;
+        std::vector<LocalTrackRow> detached;
+        // Current row order -> previous row order; inverted after each replay.
+        std::vector<int> order;
+    };
+    void rememberEdit(Edit edit);
+    void trimHistory();
+    void replayEdit(Edit& edit, bool undo);
+    void removePositions(const std::vector<int>& positions, std::vector<LocalTrackRow>* detached);
+    void applyOrder(const std::vector<int>& order);
+    [[nodiscard]] std::vector<LocalTrackRow*> retainedRows();
+    std::vector<Edit> history_;
+    std::size_t history_cursor_{0};
     void refreshCurrentRow();
     void emitRowChanged(int row);
     void emitCurrentRowChanged(int row);

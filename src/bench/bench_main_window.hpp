@@ -72,6 +72,7 @@ struct MetadataOperationJobOutcome;
 class MusicBrainzFetchService;
 class LocalLibraryPanel;
 class MpdLibrarySearchModel;
+class TrackListFindBar;
 
 // Trackknife main window: composed Folders/Track Lists panels, configurable
 // local working-list views, and one transport over the serialized playback worker
@@ -149,6 +150,8 @@ class BenchMainWindow final : public QMainWindow {
                       bool move, int insertion_row);
     void refreshTabChrome(ListTab& tab);
     void refreshTabActions();
+    void refreshListHistoryActions();
+    void replayListEdit(bool undo);
     void markTabDirty(ListTab& tab);
     void closeTabAt(int index);
     void closeCurrentTab();
@@ -325,6 +328,12 @@ class BenchMainWindow final : public QMainWindow {
     QToolButton* library_order_az_{nullptr};
     QToolButton* library_order_latest_{nullptr};
     QAction* remove_selected_action_{nullptr};
+    QAction* undo_list_action_{nullptr};
+    QAction* redo_list_action_{nullptr};
+    TrackListFindBar* list_find_bar_{nullptr};
+    QAction* find_list_action_{nullptr};
+    QAction* find_next_action_{nullptr};
+    QAction* find_previous_action_{nullptr};
     QAction* folder_add_to_list_action_{nullptr};
     QAction* folder_toggle_expanded_action_{nullptr};
     QAction* layout_edit_action_{nullptr};

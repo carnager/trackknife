@@ -1271,6 +1271,15 @@ quickly and correctly.
   expressions over effective canonical values with empty results staying
   track-only. Namespaced keys never collide across modes.
 
+### Correctness follow-up (2026-09-06)
+
+- ADR-0124 fixes Properties discarding CUE/chapter sample ranges and tracker
+  subsong selections. Real-file workspace regressions reproduced all three
+  incorrect-gain cases and now compare track/album results with direct scans,
+  including subset rescans after undo. The physical write planner blocks
+  logical-source loudness from becoming whole-file tags. Durable logical
+  storage remains open; this does not close M7 or change the active M5 gate.
+
 ## M8 — Parallel converter, resampler, and organized output
 
 ### Objective

@@ -299,6 +299,22 @@ must update dependent tags consistently.
 
 ## Result and review UI
 
+### Implemented logical-source scan boundary (ADR-0124)
+
+Properties preserves each local row's explicit stream/subsong selection and
+optional sample range through scan construction, including rescanning a subset
+after undo. Real-file CUE, Matroska chapter, and tracker-subsong regressions
+verify track gain, sample peak, and album reduction against direct scans.
+Results remain visible drafts regardless of embedded write capability.
+
+**Trackknife decision:** Conventional ReplayGain and R128 gain fields on a
+logical source cannot pass the ordinary whole-file metadata write plan. Apply
+reports an unsupported logical/non-embedded storage target even for one selected
+segment or an existing embedded field. Durable logical-track storage and its
+playback use remain open; this is measurement support, not a storage claim.
+
+### Complete result surface requirements
+
 Show one row per logical track with path/subsong, group, measured loudness,
 suggested gain, sample peak, optional true peak, status, target persistence, and
 warnings. Album values appear once per group but remain attributable to all

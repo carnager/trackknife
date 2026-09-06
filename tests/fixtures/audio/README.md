@@ -4,6 +4,45 @@ These Base64 files materialize real encoded audio containers during the formats
 test. They are text-encoded only so repository tooling can review and reproduce
 the exact binary inputs; the test never invokes an `ffmpeg` subprocess.
 
+## Logical ReplayGain chapter fixture
+
+`loudness-chapters-mka.b64` contains two one-second mono chapters at 48 kHz,
+with a 997 Hz sine at amplitudes 0.8 and 0.2. This repository-generated audio
+distinguishes a chapter scan from an accidental whole-file scan. Offscreen
+Properties tests ingest the actual chapters and compare track gains, sample
+peaks, and album gain against direct logical-source scans. No runtime FFmpeg
+subprocess is used by the tests.
+
+It was generated using FFmpeg n9.0.1 in two steps: encode the floating-point
+signal as FLAC in Matroska, then quantize to 16-bit FLAC to keep the fixture
+small. The chapter metadata input was:
+
+```text
+;FFMETADATA1
+album=Logical Gain Album
+[CHAPTER]
+TIMEBASE=1/1000
+START=0
+END=1000
+title=Loud
+[CHAPTER]
+TIMEBASE=1/1000
+START=1000
+END=2000
+title=Quiet
+```
+
+```sh
+ffmpeg -f lavfi \
+  -i 'aevalsrc=0.8*sin(2*PI*997*t)*if(lt(t\,1)\,1\,0.25):s=48000:d=2' \
+  -i chapters.txt -map_metadata 1 -map_chapters 1 -c:a flac -bitexact source.mka
+ffmpeg -i source.mka -map_metadata 0 -map_chapters 0 \
+  -c:a flac -sample_fmt s16 -bitexact output.mka
+```
+
+The 44,668-byte binary SHA-256 is
+`ccd40900b62cb0d51ab2822b7fd606cd57e72cf6b69b47aa899764ecec17eeec`.
+
 ## Gapless tone set
 
 The source is exactly 4,800 mono samples (100 ms) of a 997 Hz sine at 48 kHz.

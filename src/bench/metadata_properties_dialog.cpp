@@ -685,6 +685,7 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
         return;
     }
     sources_.reserve(requested_item_count_);
+    audio_sources_->reserve(requested_item_count_);
     track_labels_.reserve(static_cast<qsizetype>(std::min(
         requested_item_count_, static_cast<std::size_t>(std::numeric_limits<qsizetype>::max()))));
     preferred_fields_.reserve(preferred_fields.size());
@@ -815,7 +816,11 @@ void MetadataPropertiesDialog::captureSources() {
     timer.start();
     do {
         if (auto snapshot = source_reader_(capture_index_)) {
+            snapshot->source.logical_track =
+                snapshot->source.logical_track || snapshot->audio.range ||
+                snapshot->audio.selection.stream_index || snapshot->audio.selection.subsong_index;
             sources_.push_back(std::move(snapshot->source));
+            audio_sources_->push_back(std::move(snapshot->audio));
             track_labels_.push_back(std::move(snapshot->track_label));
         }
         ++capture_index_;
@@ -2390,10 +2395,12 @@ void MetadataPropertiesDialog::startReplayGainScan() {
 
     auto selection = grid_model_->sharedSelection();
     auto draft = grid_model_->patches();
+    const std::shared_ptr<const std::vector<MetadataPropertiesAudioSource>> audio_sources{
+        audio_sources_};
     replaygain_watcher_.setFuture(QtConcurrent::run([selection = std::move(selection),
                                                      draft = std::move(draft),
-                                                     items = std::move(items), grouping, completed,
-                                                     cancellation] {
+                                                     items = std::move(items), audio_sources,
+                                                     grouping, completed, cancellation] {
         auto outcome = std::make_shared<ReplayGainScanOutcome>();
         auto documents =
             metadata::materialize_metadata_draft(*selection, draft, items, cancellation);
@@ -2417,8 +2424,8 @@ void MetadataPropertiesDialog::startReplayGainScan() {
             scan_items.push_back(loudness::LoudnessScanItem{
                 .item_index = items[position],
                 .raw_path = selection->source(items[position]).raw_path,
-                .selection = {},
-                .range = {},
+                .selection = (*audio_sources)[items[position]].selection,
+                .range = (*audio_sources)[items[position]].range,
                 .album_key = (*keys)[position],
             });
         }

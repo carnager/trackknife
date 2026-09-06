@@ -1,6 +1,6 @@
 # Maintainer: Rasi <rasmus.steinke@gmail.com>
 pkgname=trackknife-git
-pkgver=r99.ga74e532
+pkgver=r116.g9e9fdd8
 pkgrel=1
 pkgdesc="MPD client and audio workstation: tagging, conversion, ReplayGain (built from HEAD)"
 arch=(x86_64)

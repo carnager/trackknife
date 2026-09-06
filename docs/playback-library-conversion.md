@@ -252,6 +252,19 @@ within, deduplicate, crop selection, sort by title format, reverse, randomize,
 and total duration/size. Local list modifications persist transactionally
 without requiring app shutdown.
 
+ADR-0123 implements bounded session undo/redo for local removal and rearrangement,
+with fresh metadata/path reconciliation for removed occurrences. Add/replace,
+cross-tab, and automatic structural changes clear affected history in this slice.
+The resulting list persists, but undo history does not survive restart.
+
+ADR-0125 adds find within the active local list or MPD queue through Ctrl+F,
+Next/Previous, and F3/Shift+F3. Literal case-insensitive matching covers cached
+title, artist, album, album artist, date, track number, and escaped local paths
+or exact MPD URIs. Matches select existing occurrences without changing list
+order or playback; Escape closes find. Traversal is bounded and cancellable,
+with stale results rejected after edits, server queue refreshes, or tab changes.
+Finding never sends MPD commands.
+
 MPD stored playlists remain server-owned and capability-driven. Loading a stored
 playlist into the live queue is not the same operation as opening it as a
 working tab. The UI makes destructive server changes and local tab changes

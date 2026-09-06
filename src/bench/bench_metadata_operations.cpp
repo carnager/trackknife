@@ -399,8 +399,11 @@ void BenchMainWindow::showMetadataProperties() {
                         .raw_path = row.raw_path,
                         .source_revision = row.source_revision,
                         .baseline = row.metadata,
+                        .logical_track = row.logical_reference.has_value() || row.segment ||
+                                         row.selection.stream_index || row.selection.subsong_index,
                     },
                 .track_label = std::move(label),
+                .audio = {.selection = row.selection, .range = row.segment},
             };
         },
         std::span{default_metadata_fields},

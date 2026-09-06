@@ -333,6 +333,57 @@ void blocksUntouchedExactEmptyFlacValues() {
                                MetadataWritePlanIssueKind::unsupported_field_mapping));
 }
 
+void logicalLoudnessRequiresItsOwnStorageTarget() {
+    using namespace trackknife::metadata;
+    // Even one selected logical row among duplicate occurrences must never
+    // publish track gain as a whole-file tag. Existing embedded fields and
+    // exact-native addresses need the same guard as newly proposed fields.
+    for (const auto logical : {false, true}) {
+        for (const auto existing : {false, true}) {
+            for (const auto exact : {false, true}) {
+                for (const std::string name :
+                     {"REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_TRACK_PEAK", "REPLAYGAIN_ALBUM_GAIN",
+                      "REPLAYGAIN_ALBUM_PEAK", "R128_TRACK_GAIN", "R128_ALBUM_GAIN", "TITLE",
+                      "REPLAYGAIN_NOTES"}) {
+                    auto input = source("/music/album.flac", revision(11U),
+                                        existing ? std::vector{field(name, {"0"})}
+                                                 : std::vector<MetadataField>{});
+                    input.logical_track = logical;
+                    auto selection = StagedMetadataSelection::create({input, input});
+                    CHECK(selection.has_value());
+                    if (!selection) {
+                        continue;
+                    }
+                    const auto gain = exact ? selection->ensure_exact_native_field(name, name)
+                                            : selection->ensure_missing_field(name, name);
+                    CHECK(gain.has_value());
+                    if (!gain) {
+                        continue;
+                    }
+                    StagedMetadataPatchSet patches;
+                    CHECK(patches.replace_values(*selection, 1U, *gain, {"-3.00 dB"}).has_value());
+                    const auto plan = build_metadata_write_plan(
+                        *selection, patches,
+                        [existing, name](const std::string& path,
+                                         const trackknife::core::CancellationToken&) {
+                            return trackknife::core::Result<LocalMetadataRead>{
+                                read(path, revision(11U),
+                                     existing ? std::vector{field(name, {"0"})}
+                                              : std::vector<MetadataField>{})};
+                        });
+                    CHECK(plan.has_value());
+                    const auto blocked = logical && name != "TITLE" && name != "REPLAYGAIN_NOTES";
+                    CHECK(plan && plan->ready() == !blocked);
+                    CHECK(plan &&
+                          has_issue(plan->sources.front(),
+                                    MetadataWritePlanIssueKind::unresolved_non_embedded_target) ==
+                              blocked);
+                }
+            }
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -341,5 +392,6 @@ int main() {
     rejectsInconsistentCapturedRevisionsForOnePath();
     rejectsEmptyInvalidAndCancelledPlanning();
     blocksUntouchedExactEmptyFlacValues();
+    logicalLoudnessRequiresItsOwnStorageTarget();
     return failures == 0 ? 0 : 1;
 }

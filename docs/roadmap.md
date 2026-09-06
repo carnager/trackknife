@@ -1,6 +1,6 @@
 # Trackbench feature roadmap
 
-Last reconciled: 2026-09-06 against source baseline `ffede58`.
+Last reconciled: 2026-09-06 against source baseline `9e9fdd8`.
 
 **Proposal:** Prioritized open work, saved at the user's request. The
 [feature matrix](feature-matrix.md) records what currently exists;
@@ -11,25 +11,30 @@ neither reopens completed implementations nor claims new milestone completion.
 Playlist usability, complete album conversion, and library organization are
 the main priorities. The eight areas below retain the review's suggested
 order; correctness issues in an affected workflow come before feature expansion.
-All checkboxes describe open work. Detailed product decisions need ADRs,
+Checkboxes record open and completed slices. Detailed product decisions need ADRs,
 regressions, and a feature-matrix update before completion is recorded.
 
 ## Correctness prerequisite
 
-- [ ] Reproduce the Properties ReplayGain scan's handling of CUE/chapter ranges
-  and subsong selections, then preserve that identity through scan requests.
+- [x] Reproduce the Properties ReplayGain scan's handling of CUE/chapter ranges
+  and subsong selections, then preserve that identity through scan requests
+  (ADR-0124).
 
-**Needs verification:** The core supports logical sources, but the reviewed
-Properties code supplies empty `selection` and `range` values. This is a
-source-review finding, not a reproduced measurement test. It blocks a claim
-of universal logical-track scanning; see [ReplayGain](#5-universal-replaygain-support).
+Real-file workspace regressions reproduced incorrect gains for all three
+source types. Properties now preserves decoder selections and exact sample
+ranges, including subset rescans. Logical-track measurements remain visible
+drafts; whole-file embedded writes are blocked until an appropriate storage
+target exists. See [ReplayGain](#5-universal-replaygain-support).
 
 ## 1. Queue and playlist editing
 
 **Proposal:** Make working lists easy to manage and portable between players.
 
-- [ ] Undo/redo for local list removal and rearrangement.
-- [ ] Find within the current list.
+- [x] Undo/redo for local list removal and rearrangement (ADR-0123; bounded,
+  per-tab session history). Adding/replacing contents and atomic cross-tab
+  history remain follow-up work.
+- [x] Find within the current local list or MPD queue: cached-text matching,
+  next/previous, wraparound, and cancellable bounded traversal (ADR-0125).
 - [ ] Local list sorting, reversing, and removal of duplicate entries.
 - [ ] M3U8 import/export, with relative-path resolution and clear handling of
   references that portable playlists cannot represent.
@@ -186,7 +191,7 @@ numbering, conventional local ReplayGain, and the baseline converter are
 already implemented; their remaining gaps are listed above. The committed-
 operation history/undo UI was intentionally removed in ADR-0084 and is not a
 missing implementation promised by this roadmap. Draft undo is implemented;
-local list-edit undo is proposed here.
+local removal/reorder undo is implemented in ADR-0123.
 
 Maintain current capability status in the feature matrix and implementation
 priority here. Older dated milestone entries and ADRs remain historical

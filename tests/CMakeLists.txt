@@ -462,6 +462,12 @@ if(TRACKKNIFE_BUILD_UI)
                 trackknife_project_warnings
     )
     add_test(NAME bench-main-window COMMAND trackknife_bench_main_window_tests)
+    qt_add_executable(trackknife_track_list_find_tests track_list_find_test.cpp)
+    target_link_libraries(trackknife_track_list_find_tests PRIVATE Trackknife::BenchUi Trackknife::MpdUi Qt6::Test
+        trackknife_project_options trackknife_project_warnings)
+    add_test(NAME track-list-find COMMAND trackknife_track_list_find_tests)
+    set_tests_properties(track-list-find PROPERTIES TIMEOUT 30 ENVIRONMENT
+        "QT_QPA_PLATFORM=offscreen;LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
     set_tests_properties(
         bench-main-window
         PROPERTIES

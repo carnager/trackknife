@@ -1,7 +1,7 @@
 # Feature matrix
 
-Last reconciled: 2026-09-06 against source baseline `ffede58` and accepted ADRs
-through ADR-0121. This matrix describes the current primary workspace, not the
+Last reconciled: 2026-09-06 against source baseline `9e9fdd8` and accepted ADRs
+through ADR-0125. This matrix describes the current primary workspace, not the
 retired MPD shell. The product is Trackbench; the current executable is named
 `trackknife` (`src/bench`). MPD and local queues retain separate authorities.
 
@@ -27,7 +27,8 @@ An implemented feature does not by itself close a milestone.
 | --- | --- | --- |
 | Unified MPD/local workspace | Implemented | Authority-bound tabs switch transport, sources, outputs, and available commands. Local tagging/filesystem operations cannot target MPD rows. The old standalone MPD shell is removed; no shell/profile migration remains (ADRs 0058, 0071). |
 | Local working-list tabs | Implemented | Persistent scratch/named lists, rename, save, pin, duplicate, reorder, dirty-close protection, row removal, and cross-list copy/move and drag/drop. Duplicate occurrences and raw paths survive persistence. |
-| Local list editing tools | Open | Undo/redo of list edits, find within a list, sort/reverse, and removal of duplicate entries. Tag-draft undo is a separate implemented capability. See [roadmap 1](roadmap.md#1-queue-and-playlist-editing). |
+| Local list editing tools | Partial | Per-tab removal/reorder undo/redo with shortcuts, menus, bounded session history, and playback-preserving index updates is implemented (ADR-0123). Add/replace/cross-tab history, sort/reverse, and deduplication remain open. Tag-draft undo remains separate. See [roadmap 1](roadmap.md#1-queue-and-playlist-editing). |
+| Find within track lists | Implemented | ADR-0125 adds Ctrl+F, next/previous matches, wraparound, progress/cancellation, and Escape to close in local lists and the MPD queue. Searches cached display metadata and local escaped paths/server URIs in bounded worker batches without filtering, changing playback, or sending server commands. Arbitrary metadata/technical-field search remains open. |
 | Portable playlists | Open | M3U8 import/export first; M3U encoding policy and XSPF/PLS are later work. A saved workspace list is not an exported playlist file. |
 | MPD stored playlists | Backend only | Discovery, loading, saving, and mutation exist in the MPD session/controller. Browse/open/edit/save tabs are not exposed in the primary workspace; the shell-only tabs were dropped in ADR-0071. |
 | Committed MPD search tabs | Open | Library-integrated live search is implemented; separately committed search-result tabs are not. |
@@ -77,7 +78,7 @@ and [local playback modes](adr/0119-local-playback-modes-and-replaygain.md).
 | Text metadata writes | Partial | Qualified FLAC, WavPack, MP3, Vorbis, and Opus adapters, with preservation checks and journaled publication. Other containers remain read-only for text mutation; see the format table below. |
 | Artwork management | Partial | Native-FLAC inventory, thumbnails, add/replace/remove/copy, and bounded export. External PNG/JPEG files are donors/export sources; other containers lack qualified artwork mutation. The Properties inventory is bounded to 64 physical sources. |
 | Rename/move and combined preparation | Partial | Reusable naming layouts/destinations, `linux-v1` sanitization, fresh conflict checks, same/cross-filesystem publication, and verified dependent list/cache/library/playback relocation. Combined native-FLAC tag/path publication is qualified. Portable/custom sanitization and Unicode-normalization policies remain open. |
-| Recovery and commit feedback | Implemented | Journals and automatic recovery remain. Unresolved incidents surface once; ordinary Apply uses inline progress and problems-only feedback. The old history/undo window and cross-restart undo retention were removed in ADR-0084. Do not confuse this with draft or proposed list-edit undo. |
+| Recovery and commit feedback | Implemented | Journals and automatic recovery remain. Unresolved incidents surface once; ordinary Apply uses inline progress and problems-only feedback. The old history/undo window and cross-restart undo retention were removed in ADR-0084. Do not confuse this with tag-draft undo or local removal/reorder undo. |
 
 Evidence: [metadata and files](metadata-and-files.md),
 [writer capabilities](../src/metadata/src/local_reader.cpp),
@@ -90,8 +91,8 @@ Evidence: [metadata and files](metadata-and-files.md),
 | Capability | Status | Current behavior and remaining work |
 | --- | --- | --- |
 | Measurement core | Implemented | libebur128 integrated loudness, sample/optional true peak, correct album programme reduction, high-rate native analysis, and bounded parallel decode with source-revision checks (ADRs 0097–0099). |
-| Grouping and Properties scan | Partial | Track, selection-as-album, release-aware, and `tkfmt-1` grouping; progress/cancel, incomplete-album feedback, and visible ReplayGain draft proposals. Logical-source propagation needs verification. |
-| CUE/subsong scan from Properties | Needs verification | The core accepts source selections/ranges, but the current UI constructs empty values. Add a reproducer and carry the logical identity through the UI before claiming universal logical-track scanning. |
+| Grouping and Properties scan | Implemented | Track, selection-as-album, release-aware, and `tkfmt-1` grouping; progress/cancel, incomplete-album feedback, and visible ReplayGain draft proposals. Storage coverage remains separate. |
+| CUE/chapter/subsong scan from Properties | Implemented | ADR-0124 preserves decoder selections and exact sample ranges through capture and subset rescans. Real-file workspace regressions compare gains, peaks, and album gains with direct logical-source scans. Logical-track loudness cannot be written as whole-file tags; durable logical storage remains open. |
 | Embedded storage and fallback | Partial | Conventional ReplayGain values use the ordinary qualified text-write pipeline. Durable sidecar/library loudness fallback and a qualified Opus R128 policy are missing. Scanning must remain independent of tag writability. |
 | Local playback gain | Partial | Off/Track/Album/Automatic, album-to-track fallback, and matching-peak clipping prevention are implemented. Sidecar gain, Opus R128, and preamps remain open (ADR-0119). |
 

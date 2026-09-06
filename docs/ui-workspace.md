@@ -69,6 +69,14 @@ The initial workspace is intentionally conventional:
   the field restores browsing. MPD continuation appears as a Show more… tree row.
   Clicking elsewhere leaves results visible. Switching authority preserves each
   library's query. `Ctrl+L` focuses the active authority's library search.
+- ADR-0125 adds a hidden-by-default native **Find in current list** toolbar for
+  local lists and the MPD queue. `Ctrl+F` opens it; Next/Previous,
+  Enter/Shift+Enter, and F3/Shift+F3
+  select matching occurrences with wraparound. Escape closes it. Search uses
+  cached metadata and escaped local paths or exact server URIs, with bounded
+  background matching and progress. Tab changes close find; Properties disables
+  these track-list commands. Finding never filters rows, changes playback, or
+  sends server commands.
 - Album search results sort chronologically by release year, with undated
   releases last and deterministic date/artist/title fallbacks. Track results
   use a stable release-friendly order: album-artist sort name (falling back
@@ -167,6 +175,14 @@ The default tab strip contains the live queue and one scratch list. Live search
 stays in the library panel and does not occupy a tab. Committed search tabs
 remain follow-up work in the unified workspace. Opening local files creates or
 reuses a local tab without destroying the current work surface.
+
+Per ADR-0123, local lists offer **Undo/Redo** for removal and rearrangement in
+Edit and the row menu. With a local track view focused, use **Ctrl+Z** to undo
+and **Ctrl+Shift+Z** or **Ctrl+Y** to redo. Restored tracks are selected; edits
+persist normally and do not restart playback. Search text and tag drafts retain
+their own undo. History is per tab and session, capped at 100 edits / 64 MiB.
+Adding/replacing contents, cross-tab moves, automatic Consume, and logical-track
+expansion clear affected history in this first slice.
 
 ## Panel and layout system
 

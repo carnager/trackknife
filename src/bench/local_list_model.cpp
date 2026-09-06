@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <iterator>
+#include <numeric>
 #include <string_view>
 #include <utility>
 
@@ -84,6 +85,7 @@ void project_display_metadata(LocalTrackRow& row) {
 LocalListModel::LocalListModel(QObject* parent) : QAbstractTableModel(parent) {}
 
 void LocalListModel::replaceRows(std::vector<LocalTrackRow> rows) {
+    clearHistory();
     beginResetModel();
     rows_ = std::move(rows);
     endResetModel();
@@ -105,6 +107,7 @@ void LocalListModel::appendRows(std::vector<LocalTrackRow> rows, const int inser
     if (rows.empty()) {
         return;
     }
+    clearHistory();
     const auto row_count = static_cast<int>(rows_.size());
     const auto target = insertion_row < 0 || insertion_row > row_count ? row_count : insertion_row;
     beginInsertRows({}, target, target + static_cast<int>(rows.size()) - 1);
@@ -114,14 +117,19 @@ void LocalListModel::appendRows(std::vector<LocalTrackRow> rows, const int inser
     refreshCurrentRow();
 }
 
-void LocalListModel::removeRowIndexes(std::vector<int> rows) {
+void LocalListModel::removeRowIndexes(std::vector<int> rows, const bool remember) {
     rows = normalized_rows(std::move(rows), static_cast<int>(rows_.size()));
-    for (auto it = rows.rbegin(); it != rows.rend(); ++it) {
-        beginRemoveRows({}, *it, *it);
-        rows_.erase(rows_.begin() + *it);
-        endRemoveRows();
-    }
+    if (rows.empty())
+        return;
+    if (!remember)
+        clearHistory();
+    Edit edit;
+    edit.removal = true;
+    edit.positions = rows;
+    removePositions(rows, remember ? &edit.detached : nullptr);
     refreshCurrentRow();
+    if (remember)
+        rememberEdit(std::move(edit));
 }
 
 void LocalListModel::reorderRows(std::vector<int> rows, const int insertion_row) {
@@ -129,6 +137,27 @@ void LocalListModel::reorderRows(std::vector<int> rows, const int insertion_row)
     if (rows.empty()) {
         return;
     }
+    std::vector<int> order;
+    order.reserve(rows_.size());
+    auto target_position =
+        insertion_row < 0 ? rowCount() : std::clamp(insertion_row, 0, rowCount());
+    for (int row = 0; row < rowCount(); ++row) {
+        if (!std::binary_search(rows.begin(), rows.end(), row))
+            order.push_back(row);
+    }
+    const auto preceding =
+        std::lower_bound(rows.begin(), rows.end(), target_position) - rows.begin();
+    target_position -= static_cast<int>(preceding);
+    order.insert(order.begin() + target_position, rows.begin(), rows.end());
+    bool changed = false;
+    Edit edit;
+    edit.order.resize(order.size());
+    for (std::size_t position = 0; position < order.size(); ++position) {
+        edit.order[static_cast<std::size_t>(order[position])] = static_cast<int>(position);
+        changed = changed || order[position] != static_cast<int>(position);
+    }
+    if (!changed)
+        return;
     const auto contiguous =
         std::adjacent_find(rows.begin(), rows.end(), [](const int left, const int right) {
             return right != left + 1;
@@ -157,31 +186,198 @@ void LocalListModel::reorderRows(std::vector<int> rows, const int insertion_row)
         }
         rows_.insert(rows_.begin() + target, std::make_move_iterator(moved.begin()),
                      std::make_move_iterator(moved.end()));
+        if (current_row_ >= 0)
+            current_row_ = edit.order[static_cast<std::size_t>(current_row_)];
         endMoveRows();
         refreshCurrentRow();
+        rememberEdit(std::move(edit));
         return;
     }
-    // The reset boundary must begin before touching rows_. Views retain drag
-    // indexes while the callback runs. Noncontiguous selections cannot be
-    // represented by one move transaction; mutating before the reset begins
-    // lets Qt observe storage and persistent indexes that disagree.
-    beginResetModel();
-    std::vector<LocalTrackRow> moved;
-    moved.reserve(rows.size());
-    auto target = insertion_row < 0 ? static_cast<int>(rows_.size()) : insertion_row;
-    for (auto it = rows.rbegin(); it != rows.rend(); ++it) {
-        moved.push_back(std::move(rows_[static_cast<std::size_t>(*it)]));
-        rows_.erase(rows_.begin() + *it);
-        if (*it < target) {
-            --target;
-        }
+    applyOrder(order);
+    rememberEdit(std::move(edit));
+}
+
+void LocalListModel::applyOrder(const std::vector<int>& order) {
+    emit layoutAboutToBeChanged();
+    const auto previous = persistentIndexList();
+    std::vector<int> destinations(order.size());
+    std::vector<LocalTrackRow> reordered;
+    reordered.reserve(rows_.size());
+    for (std::size_t row = 0; row < order.size(); ++row) {
+        destinations[static_cast<std::size_t>(order[row])] = static_cast<int>(row);
+        reordered.push_back(std::move(rows_[static_cast<std::size_t>(order[row])]));
     }
-    std::ranges::reverse(moved);
-    target = std::clamp(target, 0, static_cast<int>(rows_.size()));
-    rows_.insert(rows_.begin() + target, std::make_move_iterator(moved.begin()),
-                 std::make_move_iterator(moved.end()));
-    endResetModel();
+    rows_ = std::move(reordered);
+    QModelIndexList next;
+    next.reserve(previous.size());
+    for (const auto& old : previous)
+        next.push_back(index(destinations[static_cast<std::size_t>(old.row())], old.column()));
+    changePersistentIndexList(previous, next);
+    if (current_row_ >= 0)
+        current_row_ = destinations[static_cast<std::size_t>(current_row_)];
+    emit layoutChanged();
     refreshCurrentRow();
+}
+
+QString LocalListModel::undoLabel() const {
+    return canUndo() ? (history_[history_cursor_ - 1].removal ? tr("Remove tracks")
+                                                              : tr("Reorder tracks"))
+                     : QString{};
+}
+QString LocalListModel::redoLabel() const {
+    return canRedo()
+               ? (history_[history_cursor_].removal ? tr("Remove tracks") : tr("Reorder tracks"))
+               : QString{};
+}
+void LocalListModel::clearHistory() {
+    if (history_.empty())
+        return;
+    history_.clear();
+    history_cursor_ = 0;
+    emit historyChanged();
+}
+void LocalListModel::rememberEdit(Edit edit) {
+    history_.erase(history_.begin() + static_cast<std::ptrdiff_t>(history_cursor_), history_.end());
+    history_.push_back(std::move(edit));
+    history_cursor_ = history_.size();
+    trimHistory();
+    emit historyChanged();
+}
+void LocalListModel::trimHistory() {
+    const auto bytes = [](const Edit& edit) {
+        std::size_t size = sizeof(Edit) +
+                           (edit.positions.capacity() + edit.order.capacity()) * sizeof(int) +
+                           edit.detached.capacity() * sizeof(LocalTrackRow);
+        for (const auto& row : edit.detached) {
+            for (const auto* value : {&row.raw_path, &row.title, &row.artist, &row.album,
+                                      &row.album_artist, &row.date, &row.track_number})
+                size += value->capacity();
+            if (row.logical_reference)
+                size += row.logical_reference->capacity();
+            size += row.metadata.fields.capacity() * sizeof(metadata::MetadataField);
+            for (const auto& field : row.metadata.fields) {
+                size += field.canonical_name.capacity() + field.native_name.capacity();
+                if (field.qualifier.language)
+                    size += field.qualifier.language->capacity();
+                if (field.qualifier.description)
+                    size += field.qualifier.description->capacity();
+                size += field.values.capacity() * sizeof(std::string);
+                for (const auto& value : field.values)
+                    size += value.capacity();
+            }
+            size += row.metadata.unsupported_native_objects.capacity() *
+                    sizeof(metadata::NativeObjectIdentity);
+            for (const auto& object : row.metadata.unsupported_native_objects)
+                size += object.identity.capacity();
+        }
+        return size;
+    };
+    std::size_t total = 0;
+    for (const auto& edit : history_)
+        total += bytes(edit);
+    bool trimmed = false;
+    while (history_.size() > 100 || total > 64U * 1024U * 1024U) {
+        // A redo-only chain depends on its first entry; discard it as a unit.
+        if (history_cursor_ == 0) {
+            clearHistory();
+            trimmed = true;
+            break;
+        }
+        total -= bytes(history_.front());
+        history_.erase(history_.begin());
+        --history_cursor_;
+        trimmed = true;
+    }
+    if (trimmed) {
+        emit historyChanged();
+        emit historyDiscarded(tr("Older list edits were discarded to keep undo history bounded."));
+    }
+}
+void LocalListModel::removePositions(const std::vector<int>& positions,
+                                     std::vector<LocalTrackRow>* detached) {
+    if (detached != nullptr)
+        detached->resize(positions.size());
+    for (std::size_t end = positions.size(); end > 0;) {
+        auto begin = end - 1;
+        while (begin > 0 && positions[begin - 1] + 1 == positions[begin])
+            --begin;
+        const auto first = positions[begin];
+        const auto last = positions[end - 1];
+        beginRemoveRows({}, first, last);
+        if (detached != nullptr) {
+            std::move(rows_.begin() + first, rows_.begin() + last + 1,
+                      detached->begin() + static_cast<std::ptrdiff_t>(begin));
+        }
+        rows_.erase(rows_.begin() + first, rows_.begin() + last + 1);
+        if (current_row_ > last)
+            current_row_ -= last - first + 1;
+        else if (current_row_ >= first) {
+            current_row_ = -1;
+            current_source_ = {};
+        }
+        endRemoveRows();
+        end = begin;
+    }
+}
+
+void LocalListModel::replayEdit(Edit& edit, const bool undoing) {
+    if (!edit.removal) {
+        std::vector<int> inverse(edit.order.size());
+        for (std::size_t row = 0; row < edit.order.size(); ++row)
+            inverse[static_cast<std::size_t>(edit.order[row])] = static_cast<int>(row);
+        applyOrder(edit.order);
+        edit.order = std::move(inverse);
+    } else if (undoing) {
+        for (std::size_t begin = 0; begin < edit.positions.size();) {
+            auto end = begin + 1;
+            while (end < edit.positions.size() &&
+                   edit.positions[end - 1] + 1 == edit.positions[end])
+                ++end;
+            const auto first = edit.positions[begin];
+            const auto last = edit.positions[end - 1];
+            beginInsertRows({}, first, last);
+            rows_.insert(
+                rows_.begin() + first,
+                std::make_move_iterator(edit.detached.begin() + static_cast<std::ptrdiff_t>(begin)),
+                std::make_move_iterator(edit.detached.begin() + static_cast<std::ptrdiff_t>(end)));
+            if (current_row_ >= first)
+                current_row_ += last - first + 1;
+            endInsertRows();
+            begin = end;
+        }
+        edit.detached.clear();
+        refreshCurrentRow();
+    } else {
+        removePositions(edit.positions, &edit.detached);
+        refreshCurrentRow();
+    }
+}
+
+bool LocalListModel::undo() {
+    if (!canUndo())
+        return false;
+    replayEdit(history_[--history_cursor_], true);
+    if (history_[history_cursor_].removal) {
+        const auto& positions = history_[history_cursor_].positions;
+        emit historyRowsRestored(QList<int>(positions.begin(), positions.end()));
+    }
+    emit historyChanged();
+    return true;
+}
+bool LocalListModel::redo() {
+    if (!canRedo())
+        return false;
+    replayEdit(history_[history_cursor_++], false);
+    trimHistory();
+    emit historyChanged();
+    return true;
+}
+std::vector<LocalTrackRow*> LocalListModel::retainedRows() {
+    std::vector<LocalTrackRow*> retained;
+    for (auto& edit : history_)
+        for (auto& row : edit.detached)
+            retained.push_back(&row);
+    return retained;
 }
 
 bool LocalListModel::applyMetadata(const std::string& raw_path, const int hint_row,
@@ -229,6 +425,7 @@ bool LocalListModel::applyProbeRows(const std::string& raw_path, const int hint_
     rows_[static_cast<std::size_t>(target)] = std::move(rows.front());
     emitRowChanged(target);
     if (rows.size() > 1U) {
+        clearHistory();
         const auto first_inserted = target + 1;
         const auto last_inserted = target + static_cast<int>(rows.size()) - 1;
         beginInsertRows({}, first_inserted, last_inserted);
@@ -245,13 +442,29 @@ LocalListModel::applyCommittedMetadata(const std::string& raw_path,
                                        const metadata::MetadataDocument& document,
                                        const core::LocalSourceRevision& published_revision) {
     const auto matches = [&raw_path](const LocalTrackRow& row) { return row.raw_path == raw_path; };
+    auto retained_rows = retainedRows();
+    if (std::ranges::any_of(retained_rows, [&](const auto* row) {
+            return matches(*row) && row->logical_reference &&
+                   std::ranges::any_of(row->metadata.fields, [](const auto& field) {
+                       return field.provenance == metadata::FieldProvenance::cached_snapshot;
+                   });
+        })) {
+        clearHistory();
+        retained_rows.clear();
+        emit historyDiscarded(
+            tr("List undo was cleared because a removed logical track needs fresh metadata."));
+    }
     const auto affected = static_cast<std::size_t>(std::ranges::count_if(rows_, matches));
-    if (affected == 0U) {
+    if (affected == 0U &&
+        !std::ranges::any_of(retained_rows, [&](const auto* row) { return matches(*row); })) {
         return std::size_t{0U};
     }
-    const auto ambiguous = std::ranges::any_of(rows_, [&](const LocalTrackRow& row) {
-        return matches(row) && row.logical_reference &&
-               std::ranges::any_of(row.metadata.fields, [](const metadata::MetadataField& field) {
+    auto candidates = retained_rows;
+    for (auto& row : rows_)
+        candidates.push_back(&row);
+    const auto ambiguous = std::ranges::any_of(candidates, [&](const LocalTrackRow* row) {
+        return matches(*row) && row->logical_reference &&
+               std::ranges::any_of(row->metadata.fields, [](const metadata::MetadataField& field) {
                    return field.provenance == metadata::FieldProvenance::cached_snapshot;
                });
     });
@@ -263,8 +476,8 @@ LocalListModel::applyCommittedMetadata(const std::string& raw_path,
         });
     }
 
-    for (std::size_t index = 0U; index < rows_.size(); ++index) {
-        auto& row = rows_[index];
+    for (auto* candidate : candidates) {
+        auto& row = *candidate;
         if (!matches(row)) {
             continue;
         }
@@ -280,8 +493,12 @@ LocalListModel::applyCommittedMetadata(const std::string& raw_path,
         row.source_revision = published_revision;
         row.probed = true;
         project_display_metadata(row);
-        emitRowChanged(static_cast<int>(index));
     }
+    for (std::size_t index = 0; index < rows_.size(); ++index) {
+        if (matches(rows_[index]))
+            emitRowChanged(static_cast<int>(index));
+    }
+    trimHistory();
     refreshCurrentRow();
     return affected;
 }
@@ -302,8 +519,19 @@ LocalListModel::applyCommittedRelocation(const std::string& source_raw_path,
     const auto matches_source = [&source_raw_path](const LocalTrackRow& row) {
         return row.raw_path == source_raw_path;
     };
+    auto candidates = retainedRows();
+    if (std::ranges::any_of(candidates, [&](const auto* row) {
+            return matches_source(*row) && row->source_revision != previous_revision;
+        })) {
+        clearHistory();
+        candidates.clear();
+        emit historyDiscarded(
+            tr("List undo was cleared because a removed file's revision changed."));
+    }
+    for (auto& row : rows_)
+        candidates.push_back(&row);
     const auto affected = static_cast<std::size_t>(std::ranges::count_if(rows_, matches_source));
-    if (affected == 0U) {
+    if (!std::ranges::any_of(candidates, [&](const auto* row) { return matches_source(*row); })) {
         return std::size_t{0U};
     }
     if (std::ranges::any_of(rows_, [&target_raw_path](const LocalTrackRow& row) {
@@ -315,8 +543,8 @@ LocalListModel::applyCommittedRelocation(const std::string& source_raw_path,
             .context = {{"target_path", target_raw_path}},
         });
     }
-    if (std::ranges::any_of(rows_, [&](const LocalTrackRow& row) {
-            return matches_source(row) && row.source_revision != previous_revision;
+    if (std::ranges::any_of(candidates, [&](const LocalTrackRow* row) {
+            return matches_source(*row) && row->source_revision != previous_revision;
         })) {
         return std::unexpected(core::Error{
             .code = core::ErrorCode::conflict,
@@ -328,15 +556,22 @@ LocalListModel::applyCommittedRelocation(const std::string& source_raw_path,
     if (current_source_.raw_path == source_raw_path) {
         current_source_.raw_path = target_raw_path;
     }
-    for (std::size_t index = 0U; index < rows_.size(); ++index) {
-        auto& row = rows_[index];
+    std::vector<int> changed_rows;
+    for (int index = 0; index < rowCount(); ++index) {
+        if (matches_source(rows_[static_cast<std::size_t>(index)]))
+            changed_rows.push_back(index);
+    }
+    for (auto* candidate : candidates) {
+        auto& row = *candidate;
         if (!matches_source(row)) {
             continue;
         }
         row.raw_path = target_raw_path;
         row.source_revision = published_revision;
-        emitRowChanged(static_cast<int>(index));
     }
+    for (const auto index : changed_rows)
+        emitRowChanged(index);
+    trimHistory();
     refreshCurrentRow();
     return affected;
 }

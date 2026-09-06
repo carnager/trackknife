@@ -7,12 +7,14 @@
 #include "bench/metadata_properties_dialog.hpp"
 #include "bench/mpd_library_search_model.hpp"
 #include "bench/settings_dialog.hpp"
+#include "bench/track_list_find_bar.hpp"
 #include "quick/mpd_probe_controller.hpp"
 #include "quick/mpd_queue_model.hpp"
 #include "quick/mpd_search_result_model.hpp"
 #include "trackknife/core/unicode.hpp"
 #include "trackknife/formats/decoder.hpp"
 #include "trackknife/formats/probe.hpp"
+#include "trackknife/loudness/scan.hpp"
 #include "trackknife/metadata/flac_writer.hpp"
 #include "trackknife/metadata/local_reader.hpp"
 #include "trackknife/metadata/staged_patch.hpp"
@@ -31,6 +33,7 @@
 #include "uicommon/queue_table_view.hpp"
 #include "uicommon/track_row_roles.hpp"
 
+#include <QAbstractItemModelTester>
 #include <QAction>
 #include <QApplication>
 #include <QBuffer>
@@ -185,6 +188,8 @@ class BenchMainWindowTest final : public QObject {
     void musicBrainzIdentifyStagesChosenVersion();
     void musicBrainzFingerprintScanRanksAndStages();
     void replayGainScanStagesMeasuredGainsAsDrafts();
+    void replayGainScanPreservesLogicalSources_data();
+    void replayGainScanPreservesLogicalSources();
     void convertDialogPlansAndConvertsSelection();
     void settingsControlStartupContextAndMusicRoot();
     void folderBookmarksRevealTreePaths();
@@ -200,7 +205,11 @@ class BenchMainWindowTest final : public QObject {
     void panelLayoutPersistsAndPreservesFutureState();
     void trackViewLayoutMatchesGroupedQueueAndPersists();
     void localReorderPreservesVisibleRowGeometry();
-    void noncontiguousLocalReorderKeepsTheModelResetBoundaryIntact();
+    void localListUndoRestoresOccurrencesAndFreshMetadata();
+    void localListHistoryBranchesAndBounds();
+    void localListUndoActionsRespectAuthorityAndTextEditing();
+    void trackListFindActionsFollowActiveTab();
+    void noncontiguousLocalReorderPreservesOccurrences();
     void persistsPinnedDuplicatedAndDirtyTabs();
     void richMetadataValuesAndIdentitiesSurviveListRestart();
     void metadataPropertiesFileSelectionDrivesIndividualAndBulkEdits();
@@ -3028,9 +3037,10 @@ void BenchMainWindowTest::musicBrainzFingerprintScanRanksAndStages() {
 
 namespace {
 
-void write_sine_wav_fixture(const QString& path, const double amplitude) {
+void write_sine_wav_fixture(const QString& path, const double amplitude,
+                            const std::optional<double> second_amplitude = std::nullopt) {
     constexpr int wav_rate = 44'100;
-    constexpr int frames = wav_rate;
+    const int frames = wav_rate * (second_amplitude ? 2 : 1);
     QFile file{path};
     QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
     QDataStream stream{&file};
@@ -3045,7 +3055,8 @@ void write_sine_wav_fixture(const QString& path, const double amplitude) {
     file.write("data", 4);
     stream << data_bytes;
     for (int frame = 0; frame < frames; ++frame) {
-        const auto value = amplitude * std::sin(2.0 * 3.14159265358979 * 997.0 * frame / wav_rate);
+        const auto level = frame >= wav_rate ? second_amplitude.value_or(amplitude) : amplitude;
+        const auto value = level * std::sin(2.0 * 3.14159265358979 * 997.0 * frame / wav_rate);
         const auto sample = static_cast<qint16>(std::clamp(value, -1.0, 1.0) * 32'767.0);
         stream << sample << sample;
     }
@@ -3477,6 +3488,117 @@ void BenchMainWindowTest::replayGainScanStagesMeasuredGainsAsDrafts() {
     // fields pane keeps projecting the selection instead of going blank.
     QCOMPARE(files->selectionModel()->selectedRows().size(), 2);
     // Closing would rightly demand draft confirmation; tear down directly.
+    delete properties;
+}
+
+void BenchMainWindowTest::replayGainScanPreservesLogicalSources_data() {
+    QTest::addColumn<QString>("kind");
+    QTest::newRow("cue") << QStringLiteral("cue");
+    QTest::newRow("chapter") << QStringLiteral("chapter");
+    QTest::newRow("subsong") << QStringLiteral("subsong");
+}
+
+void BenchMainWindowTest::replayGainScanPreservesLogicalSources() {
+    QFETCH(QString, kind);
+    QTemporaryDir media;
+    QVERIFY(media.isValid());
+    QString input;
+    if (kind == QStringLiteral("cue")) {
+        write_sine_wav_fixture(media.filePath(QStringLiteral("disc.wav")), 0.8, 0.2);
+        input = media.filePath(QStringLiteral("disc.cue"));
+        QFile cue{input};
+        QVERIFY(cue.open(QIODevice::WriteOnly));
+        cue.write("TITLE \"Gain Album\"\nFILE \"disc.wav\" WAVE\n"
+                  "TRACK 01 AUDIO\nTITLE \"Loud\"\nINDEX 01 00:00:00\n"
+                  "TRACK 02 AUDIO\nTITLE \"Quiet\"\nINDEX 01 00:01:00\n");
+    } else {
+        input = media.filePath(kind == QStringLiteral("chapter") ? QStringLiteral("disc.mka")
+                                                                 : QStringLiteral("disc.mod"));
+        QVERIFY(materialize_audio_fixture(kind == QStringLiteral("chapter")
+                                              ? QStringLiteral("loudness-chapters-mka.b64")
+                                              : QStringLiteral("two-subsongs-mod.b64"),
+                                          input));
+    }
+    BenchMainWindow window;
+    window.show();
+    window.openLocalPaths({QFile::encodeName(input).toStdString()});
+    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("bench-tabs"));
+    auto* properties_action = window.findChild<QAction*>(QStringLiteral("action-track-properties"));
+    QVERIFY(tabs != nullptr && properties_action != nullptr);
+    QTRY_COMPARE(tabs->count(), 2);
+    auto* view = qobject_cast<QTableView*>(tabs->currentWidget());
+    QVERIFY(view != nullptr);
+    auto* model = qobject_cast<LocalListModel*>(view->model());
+    QVERIFY(model != nullptr);
+    QTRY_COMPARE_WITH_TIMEOUT(model->rowCount(), 2, 5'000);
+
+    std::vector<loudness::LoudnessScanItem> reference_items;
+    for (const auto& row : model->rows()) {
+        reference_items.push_back({.item_index = reference_items.size(),
+                                   .raw_path = row.raw_path,
+                                   .selection = row.selection,
+                                   .range = row.segment,
+                                   .album_key = "album"});
+    }
+    const auto reference = loudness::scan_loudness(reference_items);
+    QVERIFY(reference.has_value());
+    QCOMPARE(reference->analyzed_track_count(), 2U);
+    QVERIFY(reference->tracks[0].loudness->measurable());
+    QVERIFY(reference->tracks[1].loudness->measurable());
+    // The fixture must distinguish the two logical signals.
+    QVERIFY(std::abs(reference->tracks[0].loudness->track_gain_db() -
+                     reference->tracks[1].loudness->track_gain_db()) > 0.1);
+
+    view->selectAll();
+    QTRY_VERIFY(properties_action->isEnabled());
+    properties_action->trigger();
+    auto* properties = window.findChild<MetadataPropertiesDialog*>();
+    QVERIFY(properties != nullptr);
+    QTableView* files = nullptr;
+    QTRY_VERIFY((files = properties->findChild<QTableView*>(
+                     QStringLiteral("bench-metadata-files"))) != nullptr);
+    auto* grid = qobject_cast<MetadataGridModel*>(files->model());
+    QVERIFY(grid != nullptr);
+    auto* scan = properties->findChild<QPushButton*>(QStringLiteral("bench-replaygain-scan"));
+    auto* grouping = properties->findChild<QComboBox*>(QStringLiteral("bench-replaygain-grouping"));
+    QVERIFY(scan != nullptr && grouping != nullptr);
+    grouping->setCurrentIndex(1);
+    files->selectAll();
+    QTRY_VERIFY(scan->isEnabled());
+    scan->click();
+    QTRY_VERIFY_WITH_TIMEOUT(grid->patches().patch_count() >= 8U, 15'000);
+    const auto gain = grid->fieldColumn(QStringLiteral("REPLAYGAIN_TRACK_GAIN"));
+    const auto peak = grid->fieldColumn(QStringLiteral("REPLAYGAIN_TRACK_PEAK"));
+    const auto album = grid->fieldColumn(QStringLiteral("REPLAYGAIN_ALBUM_GAIN"));
+    QVERIFY(gain && peak && album);
+    for (int row = 0; row < 2; ++row) {
+        const auto values = [&](const int column) {
+            return grid->index(row, column).data(metadata_cell_values_role).toStringList().front();
+        };
+        const auto& expected = *reference->tracks[static_cast<std::size_t>(row)].loudness;
+        QVERIFY(std::abs(values(*gain).chopped(3).toDouble() - expected.track_gain_db()) < 0.011);
+        QVERIFY(std::abs(values(*peak).toDouble() - expected.sample_peak) < 0.000002);
+        QVERIFY(std::abs(values(*album).chopped(3).toDouble() -
+                         *reference->albums.front().album_gain_db()) < 0.011);
+    }
+    QCOMPARE(files->selectionModel()->selectedRows().size(), 2);
+    QVERIFY(grid->selection().source(0U).logical_track);
+    QVERIFY(grid->selection().source(1U).logical_track);
+
+    // A rescan of only the second row must retain its Properties index,
+    // decoder selection, and nonzero range start after draft undo.
+    QVERIFY(grid->undo());
+    QCOMPARE(grid->patches().patch_count(), 0U);
+    files->selectRow(1);
+    grouping->setCurrentIndex(2);
+    QTRY_VERIFY(scan->isEnabled());
+    scan->click();
+    QTRY_COMPARE_WITH_TIMEOUT(grid->patches().patch_count(), 2U, 15'000);
+    QVERIFY(grid->index(0, *gain).data(metadata_cell_values_role).toStringList().isEmpty());
+    const auto second_gain = grid->index(1, *gain).data(metadata_cell_values_role).toStringList();
+    QCOMPARE(second_gain.size(), 1);
+    QVERIFY(std::abs(second_gain.front().chopped(3).toDouble() -
+                     reference->tracks[1].loudness->track_gain_db()) < 0.011);
     delete properties;
 }
 
@@ -4698,7 +4820,7 @@ void BenchMainWindowTest::localReorderPreservesVisibleRowGeometry() {
     }
 }
 
-void BenchMainWindowTest::noncontiguousLocalReorderKeepsTheModelResetBoundaryIntact() {
+void BenchMainWindowTest::noncontiguousLocalReorderPreservesOccurrences() {
     LocalListModel model;
     const auto make_row = [](std::string path) {
         LocalTrackRow result;
@@ -4708,24 +4830,274 @@ void BenchMainWindowTest::noncontiguousLocalReorderKeepsTheModelResetBoundaryInt
     };
     model.replaceRows({make_row("/music/one.flac"), make_row("/music/two.flac"),
                        make_row("/music/three.flac"), make_row("/music/four.flac")});
-    std::vector<std::string> rows_seen_before_reset;
-    connect(&model, &QAbstractItemModel::modelAboutToBeReset, &model, [&] {
+    std::vector<std::string> rows_seen_before_move;
+    connect(&model, &QAbstractItemModel::layoutAboutToBeChanged, &model, [&] {
         for (const auto& row : model.rows()) {
-            rows_seen_before_reset.push_back(row.raw_path);
+            rows_seen_before_move.push_back(row.raw_path);
         }
     });
     QSignalSpy reset{&model, &QAbstractItemModel::modelReset};
+    QAbstractItemModelTester tester{&model, QAbstractItemModelTester::FailureReportingMode::QtTest};
+    const QPersistentModelIndex playing{model.index(2, local_title_column)};
+    model.setCurrentSource(model.source(2), 2);
 
     model.reorderRows({0, 2}, 4);
 
-    QCOMPARE(reset.count(), 1);
-    QCOMPARE(rows_seen_before_reset,
+    QCOMPARE(reset.count(), 0);
+    QCOMPARE(rows_seen_before_move,
              (std::vector<std::string>{"/music/one.flac", "/music/two.flac", "/music/three.flac",
                                        "/music/four.flac"}));
     QCOMPARE(model.rows()[0].raw_path, std::string{"/music/two.flac"});
     QCOMPARE(model.rows()[1].raw_path, std::string{"/music/four.flac"});
     QCOMPARE(model.rows()[2].raw_path, std::string{"/music/one.flac"});
     QCOMPARE(model.rows()[3].raw_path, std::string{"/music/three.flac"});
+    QCOMPARE(playing.row(), 3);
+    QVERIFY(model.index(3, 0).data(ui::track_current_role).toBool());
+    QVERIFY(model.undo());
+    QCOMPARE(playing.row(), 2);
+    QCOMPARE(model.rows()[2].raw_path, std::string{"/music/three.flac"});
+    QVERIFY(model.redo());
+    QCOMPARE(playing.row(), 3);
+    QCOMPARE(reset.count(), 0);
+}
+
+void BenchMainWindowTest::trackListFindActionsFollowActiveTab() {
+    BenchMainWindow window;
+    window.show();
+    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("bench-tabs"));
+    auto* find = window.findChild<QAction*>(QStringLiteral("action-find-in-list"));
+    auto* next = window.findChild<QAction*>(QStringLiteral("action-find-next-in-list"));
+    auto* previous = window.findChild<QAction*>(QStringLiteral("action-find-previous-in-list"));
+    auto* bar = window.findChild<TrackListFindBar*>();
+    QVERIFY(tabs && find && next && previous && bar);
+    QTRY_COMPARE(tabs->count(), 2);
+    auto* view = qobject_cast<QTableView*>(tabs->currentWidget());
+    QVERIFY(view != nullptr);
+    auto* model = qobject_cast<LocalListModel*>(view->model());
+    QVERIFY(model != nullptr);
+    LocalTrackRow row;
+    row.raw_path = "/missing/track.flac";
+    row.title = "Find me";
+    row.probed = true;
+    model->replaceRows({row, row});
+    QTRY_VERIFY(find->isEnabled());
+    QVERIFY(bar->isHidden());
+    view->setFocus();
+    QTest::keyClick(view, Qt::Key_F, Qt::ControlModifier);
+    QTRY_VERIFY(!bar->isHidden());
+    auto* query = bar->findChild<QLineEdit*>(QStringLiteral("bench-list-find-query"));
+    QVERIFY(query != nullptr);
+    QTRY_VERIFY(query->hasFocus());
+    query->setText(QStringLiteral("find me"));
+    QTRY_COMPARE(view->currentIndex().row(), 0);
+    QTest::keyClick(query, Qt::Key_F3);
+    QTRY_COMPARE(view->currentIndex().row(), 1);
+    QTest::keyClick(query, Qt::Key_F3, Qt::ShiftModifier);
+    QTRY_COMPARE(view->currentIndex().row(), 0);
+    view->setFocus();
+    QTest::keyClick(view, Qt::Key_Escape);
+    QTRY_VERIFY(bar->isHidden());
+    find->trigger();
+    QVERIFY(!bar->isHidden());
+
+    auto* mpd = window.findChild<QTableView*>(QStringLiteral("bench-mpd-queue"));
+    QVERIFY(mpd != nullptr);
+    tabs->setCurrentWidget(mpd);
+    QVERIFY(bar->isHidden());
+    QVERIFY(find->isEnabled() && next->isEnabled() && previous->isEnabled());
+    auto* mpd_model = qobject_cast<quick::MpdQueueModel*>(mpd->model());
+    QVERIFY(mpd_model != nullptr);
+    mpd::Track server_track;
+    server_track.queue_id = 41U;
+    server_track.uri = "server/remote.flac";
+    server_track.metadata = mpd::Metadata{{{"Title", "Server song"}}};
+    mpd_model->replaceTracks({server_track});
+    mpd->setFocus();
+    QTest::keyClick(mpd, Qt::Key_F, Qt::ControlModifier);
+    QTRY_VERIFY(query->hasFocus());
+    query->setText(QStringLiteral("server song"));
+    auto* status = bar->findChild<QLabel*>(QStringLiteral("bench-list-find-status"));
+    QVERIFY(status != nullptr);
+    QTRY_COMPARE(status->text(), QStringLiteral("Track 1 of 1"));
+    QCOMPARE(mpd_model->queueIdAt(mpd->currentIndex().row()), std::optional<std::uint32_t>{41U});
+    QCOMPARE(view->currentIndex().row(), 0);
+    tabs->setCurrentWidget(view);
+    QVERIFY(find->isEnabled());
+    QVERIFY(bar->isHidden());
+    QCOMPARE(query->text(), QStringLiteral("server song"));
+
+    view->selectionModel()->select(model->index(0, 0),
+                                   QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    auto* properties_action = window.findChild<QAction*>(QStringLiteral("action-track-properties"));
+    QVERIFY(properties_action != nullptr);
+    QTRY_VERIFY(properties_action->isEnabled());
+    properties_action->trigger();
+    QTRY_VERIFY(qobject_cast<MetadataPropertiesDialog*>(tabs->currentWidget()) != nullptr);
+    QVERIFY(!find->isEnabled() && !next->isEnabled() && !previous->isEnabled());
+    QVERIFY(bar->isHidden());
+}
+
+void BenchMainWindowTest::localListUndoRestoresOccurrencesAndFreshMetadata() {
+    LocalTrackRow whole;
+    whole.raw_path = std::string{"/music/raw-"} + static_cast<char>(0xff) + ".flac";
+    whole.title = "Original";
+    whole.probed = true;
+    const core::LocalSourceRevision before{.device = 1,
+                                           .inode = 2,
+                                           .size = 3,
+                                           .modification_time_seconds = 4,
+                                           .modification_time_nanoseconds = 5};
+    auto published = before;
+    published.inode = 6;
+    auto relocated = published;
+    relocated.inode = 7;
+    whole.source_revision = before;
+    auto logical = whole;
+    logical.logical_reference = "cue-track-2";
+    logical.segment = formats::SampleRange{.start_sample = 44100, .end_sample = 88200};
+    metadata::MetadataField overlay;
+    overlay.canonical_name = "title";
+    overlay.native_name = "TITLE";
+    overlay.values = {"Logical title"};
+    overlay.provenance = metadata::FieldProvenance::sidecar;
+    logical.metadata.fields.push_back(overlay);
+    LocalTrackRow playing = whole;
+    playing.raw_path = "/music/playing.flac";
+    LocalListModel model;
+    model.replaceRows({whole, logical, playing, whole});
+    QAbstractItemModelTester tester{&model, QAbstractItemModelTester::FailureReportingMode::QtTest};
+    const QPersistentModelIndex playback{model.index(2, 0)};
+    model.setCurrentSource(model.source(2), 2);
+    model.removeRowIndexes({3, 1, 0, 1, -1, 99});
+    QCOMPARE(model.rowCount(), 1);
+    QCOMPARE(playback.row(), 0);
+    QVERIFY(model.canUndo());
+    auto embedded = overlay;
+    embedded.values = {"Published title"};
+    embedded.provenance = metadata::FieldProvenance::embedded;
+    metadata::MetadataDocument document;
+    document.fields.push_back(embedded);
+    // All instances of this physical file are detached, but history must still follow commits.
+    const auto metadata_update = model.applyCommittedMetadata(whole.raw_path, document, published);
+    QVERIFY(metadata_update.has_value());
+    QCOMPARE(*metadata_update, 0U);
+    const auto path_update = model.applyCommittedRelocation(whole.raw_path, "/archive/renamed.flac",
+                                                            published, relocated);
+    QVERIFY(path_update.has_value());
+    QCOMPARE(*path_update, 0U);
+    QVERIFY(model.undo());
+    QCOMPARE(model.rowCount(), 4);
+    QCOMPARE(playback.row(), 2);
+    QVERIFY(model.index(2, 0).data(ui::track_current_role).toBool());
+    QCOMPARE(model.rows()[0].raw_path, std::string{"/archive/renamed.flac"});
+    QCOMPARE(model.rows()[0].title, std::string{"Published title"});
+    QCOMPARE(model.rows()[0].source_revision, std::optional{relocated});
+    QCOMPARE(model.rows()[1].title, std::string{"Logical title"});
+    QCOMPARE(model.rows()[1].segment, logical.segment);
+    QCOMPARE(model.rows()[1].logical_reference, logical.logical_reference);
+    QCOMPARE(model.rows()[3], model.rows()[0]);
+    QVERIFY(model.redo());
+    QCOMPARE(model.rowCount(), 1);
+    QCOMPARE(playback.row(), 0);
+    QVERIFY(model.undo());
+    QCOMPARE(model.rows()[0].raw_path, std::string{"/archive/renamed.flac"});
+}
+
+void BenchMainWindowTest::localListHistoryBranchesAndBounds() {
+    LocalTrackRow first;
+    first.raw_path = "/music/a.flac";
+    LocalTrackRow second;
+    second.raw_path = "/music/b.flac";
+    LocalTrackRow third;
+    third.raw_path = "/music/c.flac";
+    LocalListModel model;
+    model.replaceRows({first, second, third});
+    model.removeRowIndexes({1});
+    model.reorderRows({0}, 2);
+    QVERIFY(model.undo());
+    QVERIFY(model.undo());
+    QCOMPARE(model.rows(), (std::vector<LocalTrackRow>{first, second, third}));
+    QVERIFY(model.redo());
+    QCOMPARE(model.rows(), (std::vector<LocalTrackRow>{first, third}));
+    model.reorderRows({0}, 0); // A no-op preserves the redo chain.
+    QVERIFY(model.canRedo());
+    model.removeRowIndexes({0});
+    QVERIFY(!model.canRedo());
+    QVERIFY(model.undo());
+    QCOMPARE(model.rows(), (std::vector<LocalTrackRow>{first, third}));
+    model.appendRows({second}); // Structural operations outside this history start a new baseline.
+    QVERIFY(!model.canUndo());
+    QVERIFY(!model.canRedo());
+    model.removeRowIndexes({0});
+    model.removeRowIndexes({0}, false); // Consume and cross-tab moves do not enter local history.
+    QVERIFY(!model.canUndo());
+    model.replaceRows({first, second});
+    QSignalSpy discarded{&model, &LocalListModel::historyDiscarded};
+    for (int edit = 0; edit < 101; ++edit)
+        model.reorderRows({0}, 2);
+    QCOMPARE(discarded.size(), 1);
+    int undone = 0;
+    while (model.undo())
+        ++undone;
+    QCOMPARE(undone, 100);
+    QCOMPARE(model.rows(), (std::vector<LocalTrackRow>{second, first}));
+    while (model.redo()) {
+    }
+    QCOMPARE(model.rows(), (std::vector<LocalTrackRow>{second, first}));
+}
+
+void BenchMainWindowTest::localListUndoActionsRespectAuthorityAndTextEditing() {
+    BenchMainWindow window;
+    window.show();
+    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("bench-tabs"));
+    QVERIFY(tabs);
+    QTRY_COMPARE(tabs->count(), 2);
+    auto* view = qobject_cast<QTableView*>(tabs->currentWidget());
+    QVERIFY(view);
+    auto* model = qobject_cast<LocalListModel*>(view->model());
+    QVERIFY(model);
+    auto* undo = window.findChild<QAction*>(QStringLiteral("action-undo-list-edit"));
+    auto* redo = window.findChild<QAction*>(QStringLiteral("action-redo-list-edit"));
+    QVERIFY(undo && redo);
+    LocalTrackRow row;
+    row.raw_path = "/unavailable/track.flac";
+    row.probed = true;
+    model->replaceRows({row, row, row});
+    view->setCurrentIndex(model->index(1, 0));
+    view->setFocus();
+    QTest::keyClick(view, Qt::Key_Delete);
+    QCOMPARE(model->rowCount(), 2);
+    QVERIFY(undo->isEnabled());
+    QVERIFY(undo->text().contains(QStringLiteral("Remove tracks")));
+    QTest::keyClick(view, Qt::Key_Z, Qt::ControlModifier);
+    QCOMPARE(model->rowCount(), 3);
+    QCOMPARE(view->selectionModel()->selectedRows().size(), 1);
+    QCOMPARE(view->selectionModel()->selectedRows().front().row(), 1);
+    QTest::keyClick(view, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+    QCOMPARE(model->rowCount(), 2);
+    auto* mpd = window.findChild<QTableView*>(QStringLiteral("bench-mpd-queue"));
+    tabs->setCurrentWidget(mpd);
+    QVERIFY(!undo->isEnabled());
+    QVERIFY(!redo->isEnabled());
+    undo->trigger();
+    QCOMPARE(model->rowCount(), 2);
+    tabs->setCurrentWidget(view);
+    QVERIFY(undo->isEnabled());
+    auto* selector = window.findChild<QComboBox*>(QStringLiteral("bench-local-source-selector"));
+    QVERIFY(selector);
+    selector->setCurrentIndex(1);
+    auto* search = window.findChild<QLineEdit*>(QStringLiteral("local-library-search"));
+    QVERIFY(search);
+    search->setText(QStringLiteral("ab"));
+    search->insert(QStringLiteral("c"));
+    search->setFocus();
+    QTest::keyClick(search, Qt::Key_Z, Qt::ControlModifier);
+    QCOMPARE(search->text(), QStringLiteral("ab"));
+    QCOMPARE(model->rowCount(), 2);
+    view->setFocus();
+    undo->trigger();
+    QCOMPARE(model->rowCount(), 3);
+    QVERIFY(tabs->tabText(tabs->indexOf(view)).endsWith(QStringLiteral(" *")));
 }
 
 void BenchMainWindowTest::trackViewLayoutMatchesGroupedQueueAndPersists() {
@@ -6230,6 +6602,18 @@ void BenchMainWindowTest::autoAdvancesOncePerFinishedTrack() {
     if (!current(0) && !current(1)) {
         QSKIP("live PipeWire playback unavailable");
     }
+
+    // History replay keeps the playing occurrence and the future gapless queue valid.
+    const QPersistentModelIndex playing_before_edit{model->index(0, 0)};
+    model->removeRowIndexes({2});
+    QVERIFY(model->undo());
+    model->reorderRows({0, 2}, 3);
+    QCOMPARE(playing_before_edit.row(), 1);
+    QVERIFY(model->undo());
+    QCOMPARE(playing_before_edit.row(), 0);
+    QVERIFY(model->redo());
+    QVERIFY(model->undo());
+    QVERIFY(current(0));
 
     // Editing another album must not discard the playing occurrence or the
     // already queued successor. Exercise the same publication notification

@@ -3,6 +3,7 @@
 #include "bench/bench_main_window.hpp"
 #include "bench/local_library_panel.hpp"
 #include "bench/settings_dialog.hpp"
+#include "bench/track_list_find_bar.hpp"
 #include "uicommon/local_files_mime_data.hpp"
 
 #include "bench/bench_main_window_helpers.hpp"
@@ -383,6 +384,22 @@ BenchMainWindow::ListTab* BenchMainWindow::addListTab(persistence::ListDocument 
     view->setObjectName(QStringLiteral("bench-list-%1").arg(id.left(8)));
     view->setProperty("bench-document-id", id);
     view->setModel(model);
+    connect(
+        model, &LocalListModel::historyRowsRestored, view, [view, model](const QList<int>& rows) {
+            QItemSelection selection;
+            for (const auto row : rows)
+                selection.select(model->index(row, 0), model->index(row, model->columnCount() - 1));
+            view->selectionModel()->select(selection, QItemSelectionModel::ClearAndSelect);
+            if (!rows.empty())
+                view->selectionModel()->setCurrentIndex(model->index(rows.front(), 0),
+                                                        QItemSelectionModel::NoUpdate);
+        });
+    view->addAction(undo_list_action_);
+    view->addAction(redo_list_action_);
+    connect(model, &LocalListModel::historyChanged, this,
+            &BenchMainWindow::refreshListHistoryActions);
+    connect(model, &LocalListModel::historyDiscarded, this,
+            [this](const QString& reason) { statusBar()->showMessage(reason, 5'000); });
     connect(view->selectionModel(), &QItemSelectionModel::selectionChanged, this,
             [this] { refreshSelectionStatus(); });
     connect(model, &QAbstractItemModel::dataChanged, this, [this] { refreshSelectionStatus(); });
@@ -403,6 +420,7 @@ BenchMainWindow::ListTab* BenchMainWindow::addListTab(persistence::ListDocument 
     connect(model, &QAbstractItemModel::rowsRemoved, this, reset_order);
     connect(model, &QAbstractItemModel::rowsMoved, this, reset_order);
     connect(model, &QAbstractItemModel::modelReset, this, reset_order);
+    connect(model, &QAbstractItemModel::layoutChanged, this, reset_order);
     view->setProperty("trackknife-hover-row", -1);
     view->setAlternatingRowColors(true);
     view->setShowGrid(false);
@@ -673,7 +691,7 @@ bool BenchMainWindow::transferRows(QTableView* source, const QVariantList& rows,
     markTabDirty(*target);
     syncArtwork(*target);
     if (move) {
-        source_tab->model->removeRowIndexes(std::move(source_rows));
+        source_tab->model->removeRowIndexes(std::move(source_rows), false);
         markTabDirty(*source_tab);
     }
     return true;
@@ -706,8 +724,16 @@ void BenchMainWindow::refreshTabChrome(ListTab& tab) {
 }
 
 void BenchMainWindow::refreshTabActions() {
+    refreshListHistoryActions();
     const auto* tab = currentListTab();
     const bool available = tab != nullptr;
+    if (list_find_bar_ != nullptr) {
+        auto* find_view = available ? tab->view : isMpdContext() ? mpd_queue_view_ : nullptr;
+        list_find_bar_->setView(find_view);
+        find_list_action_->setEnabled(find_view != nullptr);
+        find_next_action_->setEnabled(find_view != nullptr);
+        find_previous_action_->setEnabled(find_view != nullptr);
+    }
     for (auto* action :
          {duplicate_tab_action_, pin_tab_action_, save_tab_action_, rename_tab_action_}) {
         if (action != nullptr) {
@@ -760,6 +786,7 @@ void BenchMainWindow::closeTabAt(const int index) {
     }
     tabs_->removeTab(index);
     view->deleteLater();
+    tab->model->deleteLater();
     std::erase_if(list_tabs_,
                   [tab](const std::unique_ptr<ListTab>& owned) { return owned.get() == tab; });
     if (list_tabs_.empty()) {
@@ -981,6 +1008,10 @@ void BenchMainWindow::showTrackContextMenu(QTableView* view, const QPoint& posit
     }
     track_context_menu_->addSeparator();
     track_context_menu_->addAction(remove_selected_action_);
+    refreshListHistoryActions();
+    track_context_menu_->addSeparator();
+    track_context_menu_->addAction(undo_list_action_);
+    track_context_menu_->addAction(redo_list_action_);
     track_context_menu_->popup(view->viewport()->mapToGlobal(position));
 }
 
@@ -1020,6 +1051,34 @@ void BenchMainWindow::playCurrentRow() {
     if (tab != nullptr && tab->view->currentIndex().isValid()) {
         playRow(*tab, tab->view->currentIndex().row());
     }
+}
+
+void BenchMainWindow::refreshListHistoryActions() {
+    if (undo_list_action_ == nullptr || redo_list_action_ == nullptr)
+        return;
+    const auto* tab = currentListTab();
+    const auto* model = tab == nullptr ? nullptr : tab->model;
+    undo_list_action_->setEnabled(model != nullptr && model->canUndo());
+    redo_list_action_->setEnabled(model != nullptr && model->canRedo());
+    undo_list_action_->setText(model != nullptr && model->canUndo()
+                                   ? tr("Undo %1").arg(model->undoLabel())
+                                   : tr("Undo list edit"));
+    redo_list_action_->setText(model != nullptr && model->canRedo()
+                                   ? tr("Redo %1").arg(model->redoLabel())
+                                   : tr("Redo list edit"));
+}
+
+void BenchMainWindow::replayListEdit(const bool undo) {
+    auto* tab = currentListTab();
+    if (tab == nullptr || isMpdContext())
+        return;
+    if (undo ? tab->model->undo() : tab->model->redo()) {
+        markTabDirty(*tab);
+        enqueueUnprobedRows(*tab);
+        syncArtwork(*tab);
+        refreshSelectionStatus();
+    }
+    refreshListHistoryActions();
 }
 
 void BenchMainWindow::removeSelectedRows() {

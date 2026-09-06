@@ -2,6 +2,7 @@
 
 #include "bench/bench_main_window.hpp"
 #include "bench/settings_dialog.hpp"
+#include "bench/track_list_find_bar.hpp"
 
 #include "bench/bench_main_window_helpers.hpp"
 #include "quick/mpd_probe_controller.hpp"
@@ -267,6 +268,40 @@ void BenchMainWindow::buildWorkspace() {
     connect(quit, &QAction::triggered, this, &QWidget::close);
 
     auto* edit_menu = menuBar()->addMenu(QStringLiteral("&Edit"));
+    list_find_bar_ = new TrackListFindBar(this);
+    addToolBar(Qt::BottomToolBarArea, list_find_bar_);
+    list_find_bar_->hide();
+    find_list_action_ = edit_menu->addAction(tr("Find in current list…"));
+    find_list_action_->setObjectName(QStringLiteral("action-find-in-list"));
+    find_list_action_->setShortcut(QKeySequence::Find);
+    find_list_action_->setEnabled(false);
+    connect(find_list_action_, &QAction::triggered, list_find_bar_, &TrackListFindBar::open);
+    find_next_action_ = edit_menu->addAction(tr("Find next in list"));
+    find_next_action_->setObjectName(QStringLiteral("action-find-next-in-list"));
+    find_next_action_->setShortcut(QKeySequence(Qt::Key_F3));
+    find_next_action_->setEnabled(false);
+    connect(find_next_action_, &QAction::triggered, this, [this] { list_find_bar_->findNext(); });
+    find_previous_action_ = edit_menu->addAction(tr("Find previous in list"));
+    find_previous_action_->setObjectName(QStringLiteral("action-find-previous-in-list"));
+    find_previous_action_->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F3));
+    find_previous_action_->setEnabled(false);
+    connect(find_previous_action_, &QAction::triggered, this,
+            [this] { list_find_bar_->findNext(true); });
+    edit_menu->addSeparator();
+    undo_list_action_ = edit_menu->addAction(QStringLiteral("Undo list edit"));
+    undo_list_action_->setObjectName(QStringLiteral("action-undo-list-edit"));
+    undo_list_action_->setShortcut(QKeySequence::Undo);
+    undo_list_action_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    undo_list_action_->setEnabled(false);
+    connect(undo_list_action_, &QAction::triggered, this, [this] { replayListEdit(true); });
+    redo_list_action_ = edit_menu->addAction(QStringLiteral("Redo list edit"));
+    redo_list_action_->setObjectName(QStringLiteral("action-redo-list-edit"));
+    redo_list_action_->setShortcuts(
+        {QKeySequence(QStringLiteral("Ctrl+Shift+Z")), QKeySequence(QStringLiteral("Ctrl+Y"))});
+    redo_list_action_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    redo_list_action_->setEnabled(false);
+    connect(redo_list_action_, &QAction::triggered, this, [this] { replayListEdit(false); });
+    edit_menu->addSeparator();
     play_selected_action_ = new QAction(QStringLiteral("Play"), this);
     play_selected_action_->setObjectName(QStringLiteral("action-play-selected-track"));
     connect(play_selected_action_, &QAction::triggered, this, &BenchMainWindow::playCurrentRow);

@@ -54,6 +54,13 @@ class MpdQueueModel final : public QAbstractTableModel {
     [[nodiscard]] std::optional<std::string> uriAt(int row) const;
     [[nodiscard]] qint64 totalDurationMs() const noexcept;
     [[nodiscard]] std::vector<mpd::Track> tracksSnapshot() const { return tracks_; }
+    // Read-only UI-thread access for bounded presentation snapshots. Callers
+    // must not retain the pointer across model changes or pass it to workers.
+    [[nodiscard]] const mpd::Track* trackAt(int row) const noexcept {
+        return row >= 0 && static_cast<std::size_t>(row) < tracks_.size()
+                   ? &tracks_[static_cast<std::size_t>(row)]
+                   : nullptr;
+    }
 
     void replaceTracks(std::vector<mpd::Track> tracks);
     void setCurrentSongId(std::optional<std::uint32_t> song_id);

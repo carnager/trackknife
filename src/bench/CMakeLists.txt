@@ -19,6 +19,8 @@ qt_add_library(
     convert_dialog.hpp
     local_list_model.cpp
     local_list_model.hpp
+    track_list_find_bar.cpp
+    track_list_find_bar.hpp
     local_library_panel.cpp
     local_library_panel.hpp
     metadata_artwork_section.cpp

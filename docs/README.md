@@ -17,8 +17,8 @@ the 2026-09-06 source review, with open implementation checklists.
 
 ## Current continuation point
 
-Last reconciled: 2026-09-06 against source baseline `ffede58`, ADRs through
-0122, and persistence schema **28**.
+Last reconciled: 2026-09-06 against source baseline `9e9fdd8`, ADRs through
+0125, and persistence schema **28**.
 
 Use the [feature matrix](feature-matrix.md) for current capability status and
 [roadmap](roadmap.md) for prioritized open work. M5 remains the active
@@ -35,6 +35,9 @@ Current implemented workflows include:
 
 - Authority-bound MPD/local playback, queue operations, persistent local lists,
   shared track layouts, local playback modes, and conventional ReplayGain.
+  Local removal/reorder undo is available through per-tab session history.
+  Ctrl+F finds cached text in local lists and the MPD queue; F3/Shift+F3 navigate
+  matches.
 - MPD library browse/search with covers and queue actions. Local Library offers
   indexed browse/search, track numbers, covers, and drag/drop. Filesystem scans
   run **only on Refresh**; in-app metadata/path commits update cached records.
@@ -51,7 +54,8 @@ Current implemented workflows include:
 Immediate gaps include richer list editing and portable playlists, MPD stored-
 playlist UI, advanced library views, conversion artwork/stale-loudness handling,
 additional format writers, and complete ReplayGain storage/coverage. The
-Properties-to-scanner logical-source path needs regression verification.
+Properties-to-scanner logical-source path is regression-tested (ADR-0124);
+logical-track measurements still require a future durable storage target.
 See the roadmap for priorities and the matrix for exact limits.
 
 Feature-specific starting points:

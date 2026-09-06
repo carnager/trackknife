@@ -44,6 +44,15 @@ void add_issue(MetadataWritePlanSource& source, const MetadataWritePlanIssueKind
 [[nodiscard]] bool is_non_embedded(const StagedMetadataSelection& selection,
                                    const MetadataWritePlanIntent& intent,
                                    const std::size_t field_index) {
+    const auto& field = selection.field(field_index);
+    if (selection.source(intent.item_index).logical_track &&
+        (field.canonical_name == "replaygaintrackgain" ||
+         field.canonical_name == "replaygaintrackpeak" ||
+         field.canonical_name == "replaygainalbumgain" ||
+         field.canonical_name == "replaygainalbumpeak" || field.canonical_name == "r128trackgain" ||
+         field.canonical_name == "r128albumgain")) {
+        return true;
+    }
     const auto* cell = selection.cell(intent.item_index, field_index);
     return cell != nullptr && cell->provenance != FieldProvenance::embedded;
 }
@@ -255,7 +264,8 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
                 add_issue(
                     source, MetadataWritePlanIssueKind::unresolved_non_embedded_target,
                     planner_error(core::ErrorCode::unsupported,
-                                  "the effective field is not embedded in the physical source",
+                                  "the field requires a logical-track or non-embedded storage "
+                                  "target that is not yet supported",
                                   source.raw_path),
                     change.field_index, std::move(intent_items));
             }

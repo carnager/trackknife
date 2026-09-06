@@ -738,7 +738,7 @@ void BenchMainWindow::consumePlaybackRow(ListTab& tab, const QPersistentModelInd
         return;
     }
     consuming_row_ = true;
-    tab.model->removeRowIndexes({index.row()});
+    tab.model->removeRowIndexes({index.row()}, false);
     consuming_row_ = false;
     playback_row_ = playback_index_.isValid() ? playback_index_.row() : -1;
     playback_order_.reset(tab.model->rowCount(), playback_row_, local_random_);

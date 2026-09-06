@@ -35,6 +35,9 @@ struct StagedMetadataSource {
     std::string raw_path;
     std::optional<core::LocalSourceRevision> source_revision;
     MetadataDocument baseline;
+    // Segment/subsong/selected-stream measurements cannot become whole-file
+    // loudness tags. Ordinary physical metadata editing remains independent.
+    bool logical_track{false};
 
     friend bool operator==(const StagedMetadataSource&, const StagedMetadataSource&) = default;
 };
