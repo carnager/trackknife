@@ -93,6 +93,13 @@ class StagedMetadataSelection final {
     }
     [[nodiscard]] std::size_t item_revision_count() const noexcept { return item_revision_count_; }
     [[nodiscard]] const StagedMetadataSource& source(std::size_t item_index) const;
+    // Advance all occurrences after a verified text-preserving commit (such
+    // as embedded artwork). Reject a broken revision chain atomically. Copy
+    // a published selection first; text baselines and field addresses stay fixed.
+    [[nodiscard]] core::Result<std::size_t>
+    advance_source_revision(std::string_view raw_path,
+                            const core::LocalSourceRevision& previous_revision,
+                            const core::LocalSourceRevision& published_revision);
     [[nodiscard]] const StagedMetadataField& field(std::size_t field_index) const;
     [[nodiscard]] const StagedMetadataCell* cell(std::size_t item_index,
                                                  std::size_t field_index) const;
@@ -119,6 +126,9 @@ class StagedMetadataSelection final {
     };
 
     std::shared_ptr<const std::vector<Item>> items_{std::make_shared<const std::vector<Item>>()};
+    // Only changed sources are copied; large baseline/cell projections and
+    // already published selection snapshots remain shared and immutable.
+    std::unordered_map<std::size_t, std::shared_ptr<const StagedMetadataSource>> revised_sources_;
     std::vector<StagedMetadataField> fields_;
     std::unordered_map<std::string, std::size_t> field_positions_;
     std::unordered_map<std::string, std::size_t> exact_native_field_positions_;

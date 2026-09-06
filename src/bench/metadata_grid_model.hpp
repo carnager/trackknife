@@ -60,6 +60,10 @@ class MetadataGridModel final : public QAbstractTableModel {
     [[nodiscard]] std::optional<int> fieldColumn(const QString& name) const;
     [[nodiscard]] core::Result<MetadataFieldInsertion> ensureField(const QString& name);
     [[nodiscard]] QString trackLabel(int row) const;
+    [[nodiscard]] core::Result<std::size_t>
+    advanceSourceRevision(const std::string& raw_path,
+                          const core::LocalSourceRevision& previous_revision,
+                          const core::LocalSourceRevision& published_revision);
     [[nodiscard]] const metadata::StagedMetadataPatchSet& patches() const noexcept {
         return patches_;
     }

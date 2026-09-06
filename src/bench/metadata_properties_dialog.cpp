@@ -727,8 +727,28 @@ void MetadataPropertiesDialog::setArtworkMutationServices(
     artwork_plan_applier_factory_ = std::move(applier_factory);
     artwork_apply_observer_ = std::move(observer);
     if (artwork_section_ != nullptr) {
-        artwork_section_->setMutationServices(artwork_plan_applier_factory_,
-                                              artwork_apply_observer_);
+        artwork_section_->setMutationServices(
+            artwork_plan_applier_factory_, [this](const auto& result) { artworkApplied(result); });
+    }
+}
+
+void MetadataPropertiesDialog::artworkApplied(const operations::ArtworkApplyResult& result) {
+    if (grid_model_ != nullptr) {
+        for (const auto& source : result.sources) {
+            if (source.state != operations::ArtworkApplySourceState::committed || !source.commit) {
+                continue;
+            }
+            const auto& commit = *source.commit;
+            const auto revised = grid_model_->advanceSourceRevision(
+                commit.source_raw_path, commit.previous_revision, commit.published_revision);
+            if (!revised) {
+                showStickyStatus(display_utf8(revised.error().message));
+            }
+        }
+        invalidateWritePlan();
+    }
+    if (artwork_apply_observer_) {
+        artwork_apply_observer_(result);
     }
 }
 
@@ -942,7 +962,8 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
     metadata_sections_->setAccessibleName(QStringLiteral("Metadata property sections"));
     metadata_sections_->addTab(fields_pane, QStringLiteral("Fields"));
     artwork_section_ = new MetadataArtworkSection(metadata_sections_);
-    artwork_section_->setMutationServices(artwork_plan_applier_factory_, artwork_apply_observer_);
+    artwork_section_->setMutationServices(artwork_plan_applier_factory_,
+                                          [this](const auto& result) { artworkApplied(result); });
     if (musicbrainz_.fetch) {
         const QPointer self{this};
         artwork_section_->setCoverArtService(ArtworkCoverArtService{

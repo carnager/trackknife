@@ -144,6 +144,14 @@ QVariant MpdSearchResultModel::data(const QModelIndex& index, const int role) co
             return {};
         }
     }
+    if (compact_ && index.column() == 0 && row.kind != ResultKind::section &&
+        (role == Qt::DisplayRole || role == Qt::ToolTipRole || role == Qt::AccessibleTextRole)) {
+        const auto label =
+            row.artist.isEmpty() ? row.result : row.artist + QStringLiteral(" — ") + row.result;
+        return role == Qt::ToolTipRole
+                   ? QStringList{label, row.context, row.detail}.join(QLatin1Char('\n'))
+                   : label;
+    }
     if (role != Qt::DisplayRole) {
         return {};
     }
@@ -359,6 +367,17 @@ void MpdSearchResultModel::replace(std::optional<std::vector<mpd::AlbumSummary>>
     ++artwork_generation_;
     endResetModel();
     requestNextArtwork();
+}
+
+void MpdSearchResultModel::setCompact(const bool compact) {
+    if (compact_ == compact) {
+        return;
+    }
+    compact_ = compact;
+    if (rowCount() > 0) {
+        emit dataChanged(index(0, 0), index(rowCount() - 1, 0),
+                         {Qt::DisplayRole, Qt::ToolTipRole, Qt::AccessibleTextRole});
+    }
 }
 
 void MpdSearchResultModel::setAlbumPlaceholder(QIcon icon) {

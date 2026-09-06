@@ -263,8 +263,8 @@ LocalListModel::applyCommittedMetadata(const std::string& raw_path,
         });
     }
 
-    beginResetModel();
-    for (auto& row : rows_) {
+    for (std::size_t index = 0U; index < rows_.size(); ++index) {
+        auto& row = rows_[index];
         if (!matches(row)) {
             continue;
         }
@@ -280,8 +280,8 @@ LocalListModel::applyCommittedMetadata(const std::string& raw_path,
         row.source_revision = published_revision;
         row.probed = true;
         project_display_metadata(row);
+        emitRowChanged(static_cast<int>(index));
     }
-    endResetModel();
     refreshCurrentRow();
     return affected;
 }
@@ -325,18 +325,18 @@ LocalListModel::applyCommittedRelocation(const std::string& source_raw_path,
         });
     }
 
-    beginResetModel();
-    for (auto& row : rows_) {
+    if (current_source_.raw_path == source_raw_path) {
+        current_source_.raw_path = target_raw_path;
+    }
+    for (std::size_t index = 0U; index < rows_.size(); ++index) {
+        auto& row = rows_[index];
         if (!matches_source(row)) {
             continue;
         }
         row.raw_path = target_raw_path;
         row.source_revision = published_revision;
+        emitRowChanged(static_cast<int>(index));
     }
-    if (current_source_.raw_path == source_raw_path) {
-        current_source_.raw_path = target_raw_path;
-    }
-    endResetModel();
     refreshCurrentRow();
     return affected;
 }

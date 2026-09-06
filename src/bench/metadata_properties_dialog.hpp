@@ -161,6 +161,7 @@ class MetadataPropertiesDialog final : public QDialog {
     void scheduleSelectionProjection();
     void updateSelectionProjection();
     void updateArtworkScope(std::span<const std::size_t> selected_items);
+    void artworkApplied(const operations::ArtworkApplyResult& result);
     [[nodiscard]] core::Result<QString> storeCoverArtImage(const QString& release_id,
                                                            const QByteArray& bytes);
     void updateDraftState(int patch_count, bool can_undo, bool can_redo);

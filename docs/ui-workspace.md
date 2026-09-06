@@ -40,8 +40,8 @@ The initial workspace is intentionally conventional:
 | controls | cover | title / artist — album                          |
 | elapsed   ================= seek =================   volume --      |
 +----------------------+----------------------------------------------+
-| Library tree         | Queue / working-list tabs       Search field |
-| MPD server library   |                                              |
+| Library search       | Queue / working-list tabs                    |
+| Browse / results     |                                              |
 |                      | live MPD queue, scratch lists, and           |
 |                      | search results / server playlists           |
 |                      |                                              |
@@ -53,15 +53,13 @@ The initial workspace is intentionally conventional:
 - Library navigation starts on the left with one default domain: **MPD**
   browses server folders, artists, albums, playlists, and advertised
   dimensions. Local-file navigation and preparation now live in Trackbench
-  (ADR-0025). In Trackbench the search field sits at the right edge of the
-  Track Lists tab strip and is present only while **MPD Queue** is active.
-  Typing opens a transient panel anchored below that field; it overlays the
-  workspace without replacing or switching the active tab. Committed
-  `Shift+Enter` search-result tabs existed only in the retired standalone
-  shell (ADR-0071); reintroducing them in unified Trackbench remains
-  follow-up work.
+  (ADR-0025). Per ADR-0120, MPD search lives above the library content in
+  Sources, matching the local library. A nonempty query shows results in place
+  of the browse tree; clearing it restores that tree. Search never replaces the
+  active queue/list tab. Committed `Shift+Enter` search-result tabs existed only
+  in the retired standalone shell (ADR-0071) and remain follow-up work.
 - Live search presents release-aware album groups and individual tracks in one
-  compact result list. Every result occupies one fixed-height line with
+  compact sidebar list combining artist and result title. Every result occupies one fixed-height line with
   ellipsized text; album rows contain a small aspect-preserving square cover
   placeholder followed by bounded, serial asynchronous artwork loading.
   Append, add-next, and replace-queue actions appear at the end of every result
@@ -72,9 +70,10 @@ The initial workspace is intentionally conventional:
   has an explicit focus marker.
   Printable typing or Backspace while results have focus resumes editing at the
   end of the query. `Down` moves from the query into results, `Up` returns from
-  the first result, and `Escape` closes the panel and focuses the unchanged work
-  surface without discarding the query. Moving focus outside the search field
-  and result surface also dismisses the panel without stealing the new focus.
+  the first result, and `Escape` clears the search and focuses the restored
+  library tree. Clicking elsewhere leaves results visible. Switching to local
+  context hides MPD search and preserves its query/results until returning.
+  `Ctrl+L` focuses the library search. Full result context is in the tooltip.
 - Album search results sort chronologically by release year, with undated
   releases last and deterministic date/artist/title fallbacks. Track results
   use a stable release-friendly order: album-artist sort name (falling back
@@ -170,9 +169,9 @@ experience, not merely a way to switch screens.
   until confirmed.
 
 The default tab strip contains the live queue and one scratch list. Live search
-is transient and does not occupy a tab; submitting it or opening an MPD stored
-playlist creates or reuses an appropriate tab without destroying the current
-work surface. Opening local files does the same in Trackbench.
+stays in the library panel and does not occupy a tab. Committed search tabs
+remain follow-up work in the unified workspace. Opening local files creates or
+reuses a local tab without destroying the current work surface.
 
 ## Panel and layout system
 

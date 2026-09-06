@@ -92,8 +92,6 @@ class BenchMainWindow final : public QMainWindow {
     void closeEvent(QCloseEvent* event) override;
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
-    bool eventFilter(QObject* watched, QEvent* event) override;
-    void resizeEvent(QResizeEvent* event) override;
 
   private:
     struct ListTab {
@@ -134,9 +132,8 @@ class BenchMainWindow final : public QMainWindow {
     void previewMpdSearch();
     void finishMpdSearch(const QString& query, bool success);
     void syncMpdSearchView();
-    void closeMpdSearch(bool restore_queue_focus = true);
-    void positionMpdSearchSurface();
-    void resizeMpdSearchField();
+    void closeMpdSearch();
+    void updateMpdSearchPresentation();
     void activateMpdSearchResult(int row, int action);
     void refreshMpdStatusControls();
     void activateMpdLibraryAction(const QModelIndex& index, int action);

@@ -46,6 +46,8 @@ class MpdSearchResultModel final : public QAbstractTableModel {
     void replaceTracks(std::vector<mpd::Track> tracks);
     void replaceSearchResults(std::vector<mpd::AlbumSummary> albums,
                               std::vector<mpd::Track> tracks);
+    // Sidebar presentation uses one descriptive column plus queue actions.
+    void setCompact(bool compact);
     void setAlbumPlaceholder(QIcon icon);
     void setArtworkEnabled(bool enabled);
     [[nodiscard]] ResultKind kindAt(int row) const;
@@ -81,6 +83,7 @@ class MpdSearchResultModel final : public QAbstractTableModel {
 
     void requestNextArtwork();
     std::vector<Row> rows_;
+    bool compact_{false};
     QIcon album_placeholder_;
     quint64 artwork_generation_{0U};
     bool artwork_enabled_{false};

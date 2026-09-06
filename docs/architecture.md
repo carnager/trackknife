@@ -90,6 +90,10 @@ Local source --> playback: FFmpeg --> gain/DSP --> PipeWire
              \-> tags / MusicBrainz / ReplayGain / organize / convert plans
 ```
 
+ADR-0120 places the existing asynchronous MPD search model and queue actions
+in the Sources panel beside the persistent browse tree, using the panel layout
+for geometry rather than an overlay over Track Lists.
+
 MPD is the primary library and live-queue authority for its context. Trackbench
 persists authority-qualified profiles, workspace/list state, presets, jobs, and
 journals in SQLite. ADR-0115 adds an optional local-library index in that store;
@@ -190,7 +194,11 @@ ADR-0079 routes that plan through the shared unchanged-path metadata executor;
 migration 23 stores only operation kind, ordinal/count/hash evidence, and
 complete-inventory digests needed for recovery. Published artwork rereads feed
 the existing all-occurrence revision/document refresh without making SQLite an
-artwork cache. ADR-0080 exposes exact embedded-row Replace/Remove through fresh
+artwork cache. ADR-0121 advances same-workspace tag-source revisions only
+through verified artwork commits, preserving text baselines, sparse edits, and
+undo history through immutable revised-source snapshots. Local list publication
+uses data-change notifications to retain playback occurrence identity.
+ADR-0080 exposes exact embedded-row Replace/Remove through fresh
 immutable review and a two-worker cancellable Apply job. Its native prepared
 copy changes only the reviewed FLAC picture block and streams every unrelated
 metadata block and compressed audio byte unchanged.

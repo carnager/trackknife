@@ -182,7 +182,34 @@ const StagedMetadataSource& StagedMetadataSelection::source(const std::size_t it
     if (item_index >= items_->size()) {
         throw std::out_of_range{"staged metadata item index is out of range"};
     }
-    return (*items_)[item_index].source;
+    const auto revised = revised_sources_.find(item_index);
+    return revised == revised_sources_.end() ? (*items_)[item_index].source : *revised->second;
+}
+
+core::Result<std::size_t> StagedMetadataSelection::advance_source_revision(
+    const std::string_view raw_path, const core::LocalSourceRevision& previous_revision,
+    const core::LocalSourceRevision& published_revision) {
+    std::vector<std::size_t> matching;
+    for (std::size_t index = 0U; index < item_count(); ++index) {
+        const auto& current = source(index);
+        if (current.raw_path != raw_path) {
+            continue;
+        }
+        if (current.source_revision != previous_revision) {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::conflict,
+                .message = "The artwork commit does not follow the captured tag revision",
+                .context = {{"source_path", std::string{raw_path}}},
+            });
+        }
+        matching.push_back(index);
+    }
+    for (const auto index : matching) {
+        auto revised = std::make_shared<StagedMetadataSource>(source(index));
+        revised->source_revision = published_revision;
+        revised_sources_[index] = std::move(revised);
+    }
+    return matching.size();
 }
 
 const StagedMetadataField& StagedMetadataSelection::field(const std::size_t field_index) const {

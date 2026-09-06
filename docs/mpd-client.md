@@ -208,6 +208,11 @@ canonical server or file metadata.
 
 ## Server library and search
 
+Per ADR-0120, the Sources panel hosts the MPD search field and either the
+browse tree or compact album/track results. Clearing search restores browsing;
+focus changes retain results, and switching authority preserves the query.
+The search uses the existing bounded server service and queue actions.
+
 Initial browsing is server-backed:
 
 - artist/album/folder navigation through `list`, `lsinfo`, `find`, and related

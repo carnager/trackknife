@@ -228,6 +228,58 @@ void selectionConstructionIsExplicitlyBounded() {
     CHECK(too_many_fields.error().code == trackknife::core::ErrorCode::limit_exceeded);
 }
 
+void committedArtworkRevisionsPreserveSnapshotsAndRejectBrokenChains() {
+    using trackknife::metadata::StagedMetadataSelection;
+    using trackknife::metadata::StagedMetadataSource;
+    const trackknife::core::LocalSourceRevision before{.device = 1,
+                                                       .inode = 2,
+                                                       .size = 3,
+                                                       .modification_time_seconds = 4,
+                                                       .modification_time_nanoseconds = 5};
+    auto after = before;
+    ++after.inode;
+    const StagedMetadataSource original{
+        .raw_path = "/music/album.flac",
+        .source_revision = before,
+        .baseline = {.fields = {field("TITLE", {"Original"})}, .unsupported_native_objects = {}}};
+    auto other = original;
+    other.raw_path = "/music/other.flac";
+    const auto captured = StagedMetadataSelection::create({original, other, original});
+    CHECK(captured.has_value());
+    if (!captured) {
+        return;
+    }
+    auto revised = *captured;
+    CHECK(revised.ensure_missing_field("NEW_FIELD", "New field").has_value());
+    const auto advanced = revised.advance_source_revision(original.raw_path, before, after);
+    CHECK(advanced.has_value() && *advanced == 2U);
+    CHECK(revised.source(0).source_revision == after);
+    CHECK(revised.source(2).source_revision == after);
+    CHECK(revised.source(1) == other);
+    CHECK(revised.source(0).baseline == original.baseline);
+    CHECK(captured->source(0) == original);
+    CHECK(captured->source(2) == original);
+    CHECK(revised.exact_native_field_index("NEW_FIELD").has_value());
+    CHECK(revised.item_revision_count() == captured->item_revision_count());
+    auto next = after;
+    ++next.inode;
+    CHECK(!revised.advance_source_revision(original.raw_path, before, next));
+    CHECK(revised.source(0).source_revision == after);
+    CHECK(revised.advance_source_revision(original.raw_path, after, next).has_value());
+    CHECK(revised.source(2).source_revision == next);
+
+    auto stale = original;
+    stale.source_revision = after;
+    auto inconsistent = StagedMetadataSelection::create({original, stale});
+    CHECK(inconsistent.has_value());
+    CHECK(!inconsistent->advance_source_revision(original.raw_path, before, after));
+    CHECK(inconsistent->source(0) == original);
+    CHECK(inconsistent->source(1) == stale);
+    stale.source_revision.reset();
+    auto uncaptured = StagedMetadataSelection::create({stale});
+    CHECK(!uncaptured->advance_source_revision(original.raw_path, before, after));
+}
+
 void fieldSuggestionsAreFuzzyDeterministicAndOpenEnded() {
     using trackknife::metadata::MetadataFieldSuggestionCandidate;
     using trackknife::metadata::MetadataFieldSuggestionKind;
@@ -285,6 +337,7 @@ int main() {
     selectionStatesAreDeterministicAndSparse();
     emptySelectionStillExposesPreferredMissingFields();
     selectionConstructionIsExplicitlyBounded();
+    committedArtworkRevisionsPreserveSnapshotsAndRejectBrokenChains();
     fieldSuggestionsAreFuzzyDeterministicAndOpenEnded();
     return failures == 0 ? 0 : 1;
 }

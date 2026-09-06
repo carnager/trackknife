@@ -67,8 +67,6 @@ void BenchMainWindow::buildWorkspace() {
     tabs_->setDocumentMode(true);
     tabs_->setMovable(true);
     tabs_->setTabsClosable(true);
-    tabs_->installEventFilter(this);
-    tabs_->tabBar()->installEventFilter(this);
     connect(tabs_, &QTabWidget::tabCloseRequested, this, &BenchMainWindow::closeTabAt);
     connect(tabs_, &QTabWidget::currentChanged, this, [this](const int) {
         refreshTabActions();

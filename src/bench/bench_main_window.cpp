@@ -14,7 +14,6 @@
 #include <QMetaObject>
 #include <QMimeData>
 #include <QPointer>
-#include <QResizeEvent>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTimer>
@@ -82,26 +81,6 @@ void BenchMainWindow::closeEvent(QCloseEvent* event) {
     stopBackgroundWork();
     persistNow(true);
     event->accept();
-}
-
-void BenchMainWindow::resizeEvent(QResizeEvent* event) {
-    QMainWindow::resizeEvent(event);
-    resizeMpdSearchField();
-    if (mpd_search_surface_ != nullptr && mpd_search_surface_->isVisible()) {
-        positionMpdSearchSurface();
-    }
-}
-
-bool BenchMainWindow::eventFilter(QObject* watched, QEvent* event) {
-    if ((watched == tabs_ || (tabs_ != nullptr && watched == tabs_->tabBar())) &&
-        event->type() == QEvent::Resize) {
-        resizeMpdSearchField();
-        QMetaObject::invokeMethod(this, [this] { resizeMpdSearchField(); }, Qt::QueuedConnection);
-        if (mpd_search_surface_ != nullptr && mpd_search_surface_->isVisible()) {
-            positionMpdSearchSurface();
-        }
-    }
-    return QMainWindow::eventFilter(watched, event);
 }
 
 void BenchMainWindow::dragEnterEvent(QDragEnterEvent* event) {

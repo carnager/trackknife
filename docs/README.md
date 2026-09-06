@@ -28,6 +28,10 @@ visible-row artwork worker shared with local-list thumbnail reading.
 ADR-0119 adds local playback modes and a working ReplayGain selector; see
 [local playback](playback-library-conversion.md#local-playback-options) and
 [ReplayGain](replaygain.md#local-playback-selector).
+ADR-0120 places MPD search inside the library panel, with persistent compact
+results and clear-to-browse behavior matching local search.
+ADR-0121 preserves playback progression across tagging and pending tag drafts
+across cover embedding in the same Properties workspace.
 The following milestone history predates these requested workspace additions.
 
 M5 is closing into M6, implementation is accepted through ADR-0114, and the persistence

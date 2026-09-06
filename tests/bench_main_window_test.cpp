@@ -57,10 +57,12 @@
 #include <QPointer>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSlider>
 #include <QSpinBox>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QStyleOptionViewItem>
@@ -406,7 +408,8 @@ void BenchMainWindowTest::unifiesMpdAndLocalAuthoritiesInOneWorkspace() {
     QVERIFY(qobject_cast<ui::QueueItemDelegate*>(mpd_queue->itemDelegate()) != nullptr);
     QVERIFY(qobject_cast<ui::QueueItemDelegate*>(local_queue->itemDelegate()) != nullptr);
     QVERIFY(tabs->cornerWidget(Qt::TopRightCorner) == nullptr);
-    QCOMPARE(search->parentWidget(), tabs);
+    QCOMPARE(search->parentWidget(),
+             window.findChild<QWidget*>(QStringLiteral("bench-panel-folders")));
     QVERIFY(!search->isVisible());
     QVERIFY(!repeat->isVisible());
     QVERIFY(!random->isVisible());
@@ -435,28 +438,14 @@ void BenchMainWindowTest::unifiesMpdAndLocalAuthoritiesInOneWorkspace() {
     QCOMPARE(single->text(), QStringLiteral("1"));
     QCOMPARE(consume->text(), QStringLiteral("C"));
     QTest::keyClick(&window, Qt::Key_L, Qt::ControlModifier);
-    QTRY_VERIFY(search_surface->isVisible());
+    QVERIFY(!search_surface->isVisible());
+    QVERIFY(mpd_library->isVisible());
     QVERIFY(tabs->cornerWidget(Qt::TopRightCorner) == nullptr);
-    QCOMPARE(search->parentWidget(), tabs);
-    const auto field_right = search->mapTo(tabs, QPoint{search->width(), 0}).x();
-    QVERIFY2(
-        field_right <= tabs->width(),
-        qPrintable(
-            QStringLiteral("search right %1 exceeds tabs width %2; field geometry %3,%4 %5x%6; "
-                           "parent %7 geometry %8,%9 %10x%11")
-                .arg(field_right)
-                .arg(tabs->width())
-                .arg(search->x())
-                .arg(search->y())
-                .arg(search->width())
-                .arg(search->height())
-                .arg(search->parentWidget() != nullptr
-                         ? search->parentWidget()->metaObject()->className()
-                         : "none")
-                .arg(search->parentWidget() != nullptr ? search->parentWidget()->x() : -1)
-                .arg(search->parentWidget() != nullptr ? search->parentWidget()->y() : -1)
-                .arg(search->parentWidget() != nullptr ? search->parentWidget()->width() : -1)
-                .arg(search->parentWidget() != nullptr ? search->parentWidget()->height() : -1)));
+    auto* sources = window.findChild<QWidget*>(QStringLiteral("bench-panel-folders"));
+    QVERIFY(sources != nullptr);
+    QCOMPARE(search->parentWidget(), sources);
+    QVERIFY(search->geometry().right() < sources->width());
+    QCOMPARE(tabs->tabBar()->maximumWidth(), QWIDGETSIZE_MAX);
 
     plain->trigger();
     copy_layout->trigger();
@@ -521,6 +510,7 @@ void BenchMainWindowTest::mpdSearchProjectsControllerResults() {
         .unknown_structural_pairs = {},
     }});
     field->setText(QStringLiteral("Search"));
+    QTest::qWait(220);
     QVERIFY(QMetaObject::invokeMethod(controller, "searchFinished", Qt::DirectConnection,
                                       Q_ARG(QString, QStringLiteral("Search")), Q_ARG(bool, true)));
     QTRY_VERIFY(result_model->firstResultRow() >= 0);
@@ -588,7 +578,7 @@ void BenchMainWindowTest::mpdSearchProjectsControllerResults() {
     QVERIFY(painted_cover_width <= album_render.height());
     QVERIFY(painted_cover_height <= album_render.height());
     QVERIFY(std::abs(painted_cover_width - painted_cover_height) <= 1);
-    results->setCurrentIndex(result_model->index(album_row, 1));
+    results->setCurrentIndex(result_model->index(album_row, 0));
     results->setFocus();
     QTRY_VERIFY(surface->isVisible());
     QTest::keyClick(results, Qt::Key_Right);
@@ -608,7 +598,45 @@ void BenchMainWindowTest::mpdSearchProjectsControllerResults() {
     QCOMPARE(results->currentIndex().column(),
              quick::MpdSearchResultModel::first_action_column + 2);
     mpd_queue->setFocus();
-    QTRY_VERIFY(!surface->isVisible());
+    QTRY_VERIFY(surface->isVisible());
+    auto* sources = window.findChild<QWidget*>(QStringLiteral("bench-panel-folders"));
+    auto* tree = window.findChild<QTreeView*>(QStringLiteral("bench-mpd-library"));
+    auto* stack = window.findChild<QStackedWidget*>(QStringLiteral("bench-source-stack"));
+    QVERIFY(sources && tree && stack);
+    QVERIFY(sources->isAncestorOf(field));
+    QVERIFY(sources->isAncestorOf(surface));
+    QCOMPARE(stack->currentWidget(), surface);
+    QVERIFY(!tree->isVisible());
+    QCOMPARE(result_model->index(album_row, 0).data().toString(),
+             QStringLiteral("Cover Artist — Cover Album"));
+    QVERIFY(results->isColumnHidden(1));
+    QVERIFY(results->isColumnHidden(2));
+    QVERIFY(results->isColumnHidden(3));
+    QCOMPARE(results->horizontalScrollBar()->maximum(), 0);
+    const auto retained_count = result_model->rowCount();
+    tabs->setCurrentIndex(1);
+    QVERIFY(!field->isVisible());
+    QVERIFY(!surface->isVisible());
+    tabs->setCurrentWidget(mpd_queue);
+    QVERIFY(surface->isVisible());
+    QCOMPARE(field->text(), QStringLiteral("Search"));
+    QCOMPARE(result_model->rowCount(), retained_count);
+    // Query edits remove stale actionable results immediately. A late reply
+    // for the old query must not replace the new search or the browse tree.
+    field->setText(QStringLiteral("Different"));
+    QCOMPARE(result_model->rowCount(), 0);
+    QVERIFY(QMetaObject::invokeMethod(controller, "searchFinished", Qt::DirectConnection,
+                                      Q_ARG(QString, QStringLiteral("Search")), Q_ARG(bool, true)));
+    QCOMPARE(result_model->rowCount(), 0);
+    QTest::keyClick(results, Qt::Key_Escape);
+    QVERIFY(field->text().isEmpty());
+    QCOMPARE(stack->currentWidget(), tree);
+    QVERIFY(!surface->isVisible());
+    QVERIFY(tree->isVisible());
+    QVERIFY(QMetaObject::invokeMethod(controller, "searchFinished", Qt::DirectConnection,
+                                      Q_ARG(QString, QStringLiteral("Different")),
+                                      Q_ARG(bool, true)));
+    QCOMPARE(result_model->rowCount(), 0);
 }
 
 void BenchMainWindowTest::mpdQueueAndLibraryMenusExposeServerActions() {
@@ -1039,6 +1067,10 @@ void BenchMainWindowTest::committedMetadataRefreshesDuplicatesAndPreservesCueOve
 
     LocalListModel model;
     model.replaceRows({whole, cue, unrelated});
+    const QPersistentModelIndex playing{model.index(2, 0)};
+    const QPersistentModelIndex duplicate{model.index(1, 0)};
+    QSignalSpy resets{&model, &QAbstractItemModel::modelReset};
+    QSignalSpy changes{&model, &QAbstractItemModel::dataChanged};
     const metadata::MetadataDocument committed{
         .fields = {field("title", "New", metadata::FieldProvenance::embedded),
                    field("album", "New album", metadata::FieldProvenance::embedded)},
@@ -1059,6 +1091,12 @@ void BenchMainWindowTest::committedMetadataRefreshesDuplicatesAndPreservesCueOve
     QCOMPARE(model.rows()[1].metadata.fields.back().provenance, metadata::FieldProvenance::sidecar);
     QCOMPARE(model.rows()[0].source_revision, std::optional{revision});
     QCOMPARE(model.rows()[2].title, std::string{"Other"});
+    QVERIFY(playing.isValid());
+    QVERIFY(duplicate.isValid());
+    QCOMPARE(playing.row(), 2);
+    QCOMPARE(duplicate.row(), 1);
+    QCOMPARE(resets.count(), 0);
+    QCOMPARE(changes.count(), 2);
 
     model.setCurrentSource(model.source(1), 1);
     const core::LocalSourceRevision relocated_revision{.device = 6,
@@ -1077,6 +1115,9 @@ void BenchMainWindowTest::committedMetadataRefreshesDuplicatesAndPreservesCueOve
     QCOMPARE(model.rows()[1].logical_reference, cue.logical_reference);
     QCOMPARE(model.rows()[2].raw_path, std::string{"/music/other.flac"});
     QVERIFY(model.data(model.index(1, 0), ui::track_current_role).toBool());
+    QVERIFY(playing.isValid());
+    QVERIFY(duplicate.isValid());
+    QCOMPARE(resets.count(), 0);
 
     auto legacy = cue;
     legacy.metadata.fields = {
@@ -3456,13 +3497,6 @@ void BenchMainWindowTest::artworkFetchesCoverArtFromArchiveAndAddsFront() {
     auto read = metadata::read_local_metadata(raw_path);
     QVERIFY(read.has_value());
     const auto release_id = QStringLiteral("2f2ac1b7-1111-4f4f-8f8f-123456789abc");
-    read->document.fields.push_back(metadata::MetadataField{
-        .canonical_name = metadata::canonicalize_field_name("MUSICBRAINZ_ALBUMID"),
-        .native_name = "MUSICBRAINZ_ALBUMID",
-        .values = {release_id.toStdString()},
-        .qualifier = {},
-        .provenance = metadata::FieldProvenance::embedded,
-    });
     const MetadataPropertiesSource source{
         .source =
             metadata::StagedMetadataSource{
@@ -3525,12 +3559,40 @@ void BenchMainWindowTest::artworkFetchesCoverArtFromArchiveAndAddsFront() {
     const auto database_path =
         std::filesystem::path{media.filePath(QStringLiteral("cover.sqlite3")).toStdString()};
     std::optional<operations::ArtworkApplyResult> observed;
+    std::optional<operations::MetadataApplyResult> tags_observed;
     auto* properties = new MetadataPropertiesDialog(
         1U,
         [source](const std::size_t index) -> std::optional<MetadataPropertiesSource> {
             return index == 0U ? std::optional{source} : std::nullopt;
         },
-        {}, {}, {}, {}, {}, {}, {}, nullptr, {}, service);
+        {},
+        [database_path] {
+            return MetadataWritePlanApplier{
+                [database_path](const metadata::MetadataWritePlan& plan,
+                                const operations::MetadataApplyProgressCallback& progress,
+                                const core::CancellationToken& cancellation)
+                    -> core::Result<operations::MetadataApplyResult> {
+                    auto opened = persistence::SqliteMetadataOperationJournal::open(database_path);
+                    if (!opened) {
+                        return std::unexpected(std::move(opened.error()));
+                    }
+                    auto journal = std::move(*opened);
+                    return operations::apply_metadata_write_plan(
+                        plan,
+                        [&journal](const metadata::MetadataWritePlanSource& source_plan,
+                                   const core::CancellationToken& source_cancellation) {
+                            return operations::commit_flac_metadata_source(
+                                source_plan, journal,
+                                [](const operations::MetadataCommitResult&) -> core::Result<void> {
+                                    return {};
+                                },
+                                source_cancellation);
+                        },
+                        progress, cancellation);
+                }};
+        },
+        [&tags_observed](const operations::MetadataApplyResult& result) { tags_observed = result; },
+        {}, {}, {}, {}, nullptr, {}, service);
     properties->setArtworkMutationServices(
         [database_path] {
             return ArtworkWritePlanApplier{
@@ -3564,6 +3626,35 @@ void BenchMainWindowTest::artworkFetchesCoverArtFromArchiveAndAddsFront() {
     QTabWidget* sections = nullptr;
     QTRY_VERIFY((sections = properties->findChild<QTabWidget*>(
                      QStringLiteral("bench-metadata-sections"))) != nullptr);
+    auto* files = properties->findChild<QTableView*>(QStringLiteral("bench-metadata-files"));
+    QVERIFY(files != nullptr);
+    auto* grid = qobject_cast<MetadataGridModel*>(files->model());
+    QVERIFY(grid != nullptr);
+    const auto captured = grid->sharedSelection();
+    // Stage the same provider preview used by Identify, including a new
+    // release ID. The cover must be fetchable before these tags are saved.
+    const metadata::MetadataProposalSet proposals{
+        .provider_name = "MusicBrainz",
+        .provider_detail = "Matched release",
+        .items = {{.item_index = 0U,
+                   .fields = {{.canonical_field =
+                                   metadata::canonicalize_field_name("MUSICBRAINZ_ALBUMID"),
+                               .display_field = "MUSICBRAINZ_ALBUMID",
+                               .values = {release_id.toStdString()},
+                               .confidence = 1.0,
+                               .rationale = "Matched release"},
+                              {.canonical_field = "title",
+                               .display_field = "TITLE",
+                               .values = {"Identified title"},
+                               .confidence = 1.0,
+                               .rationale = "Matched track"}},
+                   .artwork = {}}}};
+    const auto proposal =
+        metadata::metadata_proposal_preview(grid->selection(), grid->patches(), proposals, 0.5);
+    QVERIFY(proposal.has_value());
+    QVERIFY(grid->stageTransformation(*proposal, {QStringLiteral("MusicBrainz")}));
+    const auto draft = grid->patches().patches();
+    files->selectAll();
     sections->setCurrentIndex(1);
     auto* items =
         properties->findChild<QTableView*>(QStringLiteral("bench-metadata-artwork-items"));
@@ -3596,21 +3687,51 @@ void BenchMainWindowTest::artworkFetchesCoverArtFromArchiveAndAddsFront() {
     QCOMPARE(added->mime_type, std::string{"image/png"});
     QCOMPARE(added->provenance, metadata::ArtworkProvenance::embedded);
 
+    QCOMPARE(grid->selection().source(0).source_revision,
+             std::optional{observed->sources.front().commit->published_revision});
+    QCOMPARE(captured->source(0).source_revision, std::optional{read->source_revision});
+    QCOMPARE(grid->patches().patches(), draft);
+    QVERIFY(grid->undo());
+    QCOMPARE(grid->patches().patch_count(), 0U);
+    QVERIFY(grid->redo());
+    QCOMPARE(grid->patches().patches(), draft);
+    const auto title_column = grid->fieldColumn(QStringLiteral("title"));
+    QVERIFY(title_column.has_value());
+    QCOMPARE(grid->index(0, *title_column).data(metadata_cell_staged_source_role).toString(),
+             QStringLiteral("MusicBrainz"));
+    // Selection refreshes must also use the new revision, not put the
+    // Artwork section back on the revision captured when Properties opened.
+    files->clearSelection();
+    files->selectAll();
+    QTRY_VERIFY(fetch->isEnabled());
+    sections->setCurrentIndex(0);
+    auto* apply =
+        properties->findChild<QPushButton*>(QStringLiteral("bench-metadata-apply-changes"));
+    QVERIFY(apply != nullptr);
+    QTRY_VERIFY(apply->isEnabled());
     QPointer guard{properties};
-    properties->close();
+    QTest::mouseClick(apply, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(tags_observed.has_value(), 5'000);
+    QCOMPARE(tags_observed->committed_source_count(), 1U);
     QTRY_VERIFY(guard.isNull());
+    const auto tagged = metadata::read_local_metadata(raw_path);
+    QVERIFY(tagged.has_value());
+    QCOMPARE(tagged->document.effective_values("title"),
+             (std::vector<std::string>{"Identified title"}));
+    QCOMPARE(tagged->document.effective_values("MUSICBRAINZ_ALBUMID"),
+             (std::vector<std::string>{release_id.toStdString()}));
+    const auto tagged_artwork = metadata::read_local_artwork_inventory(raw_path);
+    QVERIFY(tagged_artwork.has_value());
+    QCOMPARE(tagged_artwork->items.size(), inventory->items.size());
+    for (std::size_t index = 0U; index < inventory->items.size(); ++index) {
+        QCOMPARE(tagged_artwork->items[index].content_fingerprint,
+                 inventory->items[index].content_fingerprint);
+    }
 
     // A later session fetching again replaces the existing front cover
     // instead of stacking a second front picture.
     auto second_read = metadata::read_local_metadata(raw_path);
     QVERIFY(second_read.has_value());
-    second_read->document.fields.push_back(metadata::MetadataField{
-        .canonical_name = metadata::canonicalize_field_name("MUSICBRAINZ_ALBUMID"),
-        .native_name = "MUSICBRAINZ_ALBUMID",
-        .values = {release_id.toStdString()},
-        .qualifier = {},
-        .provenance = metadata::FieldProvenance::embedded,
-    });
     const MetadataPropertiesSource second_source{
         .source =
             metadata::StagedMetadataSource{
@@ -6003,6 +6124,12 @@ void BenchMainWindowTest::autoAdvancesOncePerFinishedTrack() {
     }
     auto* model = qobject_cast<LocalListModel*>(view->model());
     QVERIFY(model != nullptr);
+    QTRY_VERIFY_WITH_TIMEOUT(std::ranges::all_of(model->rows(),
+                                                 [](const LocalTrackRow& row) {
+                                                     return row.probed &&
+                                                            row.source_revision.has_value();
+                                                 }),
+                             5'000);
     const auto current = [model](const int row) {
         return model->index(row, 0).data(ui::track_current_role).toBool();
     };
@@ -6020,6 +6147,16 @@ void BenchMainWindowTest::autoAdvancesOncePerFinishedTrack() {
     if (!current(0) && !current(1)) {
         QSKIP("live PipeWire playback unavailable");
     }
+
+    // Editing another album must not discard the playing occurrence or the
+    // already queued successor. Exercise the same publication notification
+    // used by tag and artwork commits while the first track is playing.
+    const auto& tagged = model->rows()[2];
+    QVERIFY(tagged.source_revision.has_value());
+    const auto refreshed =
+        model->applyCommittedMetadata(tagged.raw_path, tagged.metadata, *tagged.source_revision);
+    QVERIFY(refreshed.has_value());
+    QCOMPARE(*refreshed, 1U);
 
     // Each two-second track advances exactly one row, and transitions are
     // gapless: the player never reports "ended" (7) between tracks — that

@@ -8,6 +8,14 @@ work remains structurally limited to local-file rows. Trackbench's MPD Queue
 authority and the compatibility Trackknife shell only read metadata reported by
 the server and cannot reach local file operations.
 
+## Publication while playing or editing
+
+**Trackknife decision (ADR-0121):** Saving tags or artwork updates queue rows
+without losing the playing occurrence or automatic advancement. Embedding
+artwork within Properties advances the pending tag draft's revision through
+that verified commit, preserving MusicBrainz edits and undo/redo. Apply still
+rejects unrelated file changes through fresh revision checks.
+
 ## Metadata is a typed, multi-source model
 
 The core must not reduce tags to `Map<String, String>`. A useful logical model

@@ -363,6 +363,18 @@ core::Result<MetadataFieldInsertion> MetadataGridModel::ensureField(const QStrin
     return MetadataFieldInsertion{.field_index = *added, .inserted = true};
 }
 
+core::Result<std::size_t>
+MetadataGridModel::advanceSourceRevision(const std::string& raw_path,
+                                         const core::LocalSourceRevision& previous_revision,
+                                         const core::LocalSourceRevision& published_revision) {
+    auto revised = std::make_shared<metadata::StagedMetadataSelection>(*selection_);
+    auto result = revised->advance_source_revision(raw_path, previous_revision, published_revision);
+    if (result && *result > 0U) {
+        selection_ = std::move(revised);
+    }
+    return result;
+}
+
 QString MetadataGridModel::trackLabel(const int row) const {
     if (row < 0 || row >= rowCount()) {
         return {};
