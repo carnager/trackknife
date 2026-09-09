@@ -4,7 +4,6 @@
 #include "bench/local_library_panel.hpp"
 #include "bench/mpd_library_search_model.hpp"
 #include "bench/settings_dialog.hpp"
-#include <QComboBox>
 
 #include "bench/bench_main_window_helpers.hpp"
 #include "quick/mpd_output_model.hpp"
@@ -377,6 +376,14 @@ void BenchMainWindow::buildMpdWorkspace() {
             activateMpdSearchResult(*entry, 0, insertion_row);
             return true;
         }
+        if (mpdPlaylistTabForWidget(source) != nullptr) {
+            const auto playlist_uris = selectedMpdViewUris(qobject_cast<QTableView*>(source));
+            if (playlist_uris.isEmpty()) {
+                return false;
+            }
+            mpd_controller_->addUrisAt(playlist_uris, insertion_row);
+            return true;
+        }
         if (source != server_library_view_ || source->selectionModel() == nullptr) {
             return false;
         }
@@ -523,6 +530,9 @@ void BenchMainWindow::buildMpdWorkspace() {
                             server_library_model_->acceptArtwork(token, image);
                             mpd_search_model_->acceptArtwork(token, image);
                             queue_model->acceptArtwork(token, image);
+                            for (const auto& playlist_tab : mpd_playlist_tabs_) {
+                                playlist_tab->model->acceptArtwork(token, image);
+                            }
                         });
                 watcher->setFuture(QtConcurrent::run([bytes] {
                     auto image = QImage::fromData(bytes);
@@ -560,10 +570,20 @@ void BenchMainWindow::buildMpdWorkspace() {
             &BenchMainWindow::finishMpdSearch);
     connect(mpd_controller_, &quick::MpdProbeController::stateChanged, this, [this] {
         const auto connected = mpd_controller_->connected();
-        if (connected && !mpd_was_connected_) {
-            server_library_model_->reload();
-        }
+        // The flag must flip before issuing commands: browseStoredPlaylists()
+        // re-emits stateChanged synchronously and would otherwise re-enter
+        // this connect-transition branch without bound.
+        const auto was_connected = mpd_was_connected_;
         mpd_was_connected_ = connected;
+        if (connected && !was_connected) {
+            server_library_model_->reload();
+            if (mpd_controller_->supportsCommand(QStringLiteral("listplaylists"))) {
+                mpd_controller_->browseStoredPlaylists();
+            }
+        }
+        if (!connected && was_connected) {
+            acceptMpdStoredPlaylistNames({});
+        }
         refreshActiveContext();
         refreshTransport();
         refreshSelectionStatus();
@@ -768,22 +788,33 @@ void BenchMainWindow::buildMpdSearch() {
     auto* panel_layout = new QVBoxLayout(mpd_library_panel_);
     panel_layout->setContentsMargins(4, 4, 4, 4);
     panel_layout->setSpacing(4);
-    auto* field = new QLineEdit(mpd_library_panel_);
+    // The ADR-0130 sidebar tab bar switches these two full-height pages:
+    // the library search/browse surface and the stored-playlist list.
+    mpd_source_pages_ = new QStackedWidget(mpd_library_panel_);
+    mpd_source_pages_->setObjectName(QStringLiteral("bench-mpd-source-pages"));
+    auto* library_page = new QWidget(mpd_source_pages_);
+    auto* library_layout = new QVBoxLayout(library_page);
+    library_layout->setContentsMargins(0, 0, 0, 0);
+    library_layout->setSpacing(4);
+    auto* field = new QLineEdit(library_page);
     mpd_search_field_ = field;
     field->setObjectName(QStringLiteral("bench-mpd-search"));
     field->setAccessibleName(QStringLiteral("Search MPD library"));
     field->setClearButtonEnabled(true);
     field->setPlaceholderText(QStringLiteral("Search albums and tracks"));
-    panel_layout->addWidget(field);
+    library_layout->addWidget(field);
     auto* tools = new QHBoxLayout;
     tools->addWidget(library_order_az_);
     tools->addWidget(library_order_latest_);
     tools->addStretch();
-    panel_layout->addLayout(tools);
-    mpd_library_stack_ = new QStackedWidget(mpd_library_panel_);
+    library_layout->addLayout(tools);
+    mpd_library_stack_ = new QStackedWidget(library_page);
     source_stack_->removeWidget(server_library_view_);
     mpd_library_stack_->addWidget(server_library_view_);
-    panel_layout->addWidget(mpd_library_stack_, 1);
+    library_layout->addWidget(mpd_library_stack_, 1);
+    mpd_source_pages_->addWidget(library_page);
+    panel_layout->addWidget(mpd_source_pages_, 1);
+    buildMpdPlaylists();
     auto* surface = new QWidget(mpd_library_stack_);
     surface->setObjectName(QStringLiteral("bench-mpd-search-surface"));
     mpd_library_stack_->addWidget(surface);
@@ -906,10 +937,14 @@ void BenchMainWindow::buildMpdSearch() {
     auto* focus_search = new QShortcut(QKeySequence(QStringLiteral("Ctrl+L")), this);
     connect(focus_search, &QShortcut::activated, this, [this] {
         QLineEdit* target_field = mpd_search_field_;
-        if (!isMpdContext()) {
-            if (local_library_ == nullptr || local_source_selector_ == nullptr)
+        if (isMpdContext()) {
+            if (mpd_source_tabs_ != nullptr) {
+                mpd_source_tabs_->setCurrentIndex(0);
+            }
+        } else {
+            if (local_library_ == nullptr || local_source_tabs_ == nullptr)
                 return;
-            local_source_selector_->setCurrentIndex(1);
+            local_source_tabs_->setCurrentIndex(1);
             target_field =
                 local_library_->findChild<QLineEdit*>(QStringLiteral("local-library-search"));
         }
@@ -1253,6 +1288,9 @@ void BenchMainWindow::refreshMpdTransport() {
 // album) in the MPD library tree, fetching lazy levels as needed — the
 // in-app navigation Cantata offered.
 void BenchMainWindow::goToMpdLibraryEntry(const QString& artist, const QString& album) {
+    if (mpd_source_tabs_ != nullptr) {
+        mpd_source_tabs_->setCurrentIndex(0);
+    }
     if (mpd_search_field_ != nullptr) {
         mpd_search_field_->clear();
     }

@@ -19,7 +19,6 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QButtonGroup>
-#include <QComboBox>
 #include <QDir>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -92,25 +91,39 @@ void BenchMainWindow::buildWorkspace() {
     auto* folders_layout = new QVBoxLayout(folders_panel_);
     folders_layout->setContentsMargins(0, 0, 0, 0);
     folders_layout->setSpacing(0);
-    source_heading_ = new QLabel(QStringLiteral("Folders"), folders_panel_);
-    source_heading_->setObjectName(QStringLiteral("bench-folders-heading"));
-    source_heading_->setAlignment(Qt::AlignCenter);
-    source_heading_->setContentsMargins(8, 4, 8, 4);
     auto* heading_row = new QHBoxLayout;
     heading_row->setContentsMargins(4, 0, 4, 0);
     heading_row->setSpacing(2);
-    heading_row->addWidget(source_heading_, 1);
-    local_source_selector_ = new QComboBox(folders_panel_);
-    local_source_selector_->setObjectName(QStringLiteral("bench-local-source-selector"));
-    local_source_selector_->setAccessibleName(QStringLiteral("Local music source"));
-    local_source_selector_->addItems({QStringLiteral("Folders"), QStringLiteral("Library")});
-    local_source_selector_->setCurrentIndex(
+    // One-click source switching (ADR-0130): a flat tab bar per authority
+    // replaces the dropdown and static heading.
+    const auto make_source_tabs = [this](const QString& object_name,
+                                         const QString& accessible_name) {
+        auto* bar = new QTabBar(folders_panel_);
+        bar->setObjectName(object_name);
+        bar->setAccessibleName(accessible_name);
+        bar->setExpanding(false);
+        bar->setDrawBase(false);
+        bar->setDocumentMode(true);
+        return bar;
+    };
+    local_source_tabs_ = make_source_tabs(QStringLiteral("bench-local-source-tabs"),
+                                          QStringLiteral("Local music source"));
+    local_source_tabs_->addTab(QStringLiteral("Folders"));
+    local_source_tabs_->addTab(QStringLiteral("Library"));
+    local_source_tabs_->setCurrentIndex(
         QSettings{}.value(QStringLiteral("local-library/view"), 0).toInt() == 1 ? 1 : 0);
-    heading_row->addWidget(local_source_selector_);
-    connect(local_source_selector_, &QComboBox::currentIndexChanged, this, [this](int index) {
+    heading_row->addWidget(local_source_tabs_);
+    connect(local_source_tabs_, &QTabBar::currentChanged, this, [this](int index) {
         QSettings{}.setValue(QStringLiteral("local-library/view"), index);
         refreshActiveContext();
     });
+    mpd_source_tabs_ = make_source_tabs(QStringLiteral("bench-mpd-source-tabs"),
+                                        QStringLiteral("MPD sidebar source"));
+    mpd_source_tabs_->addTab(QStringLiteral("Library"));
+    mpd_source_tabs_->addTab(QStringLiteral("Playlists"));
+    mpd_source_tabs_->setVisible(false);
+    heading_row->addWidget(mpd_source_tabs_);
+    heading_row->addStretch(1);
     const auto make_order_button = [this](const QString& label, const QString& name) {
         auto* button = new QToolButton(folders_panel_);
         button->setText(label);

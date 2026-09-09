@@ -121,6 +121,7 @@ struct Session::Impl {
         ReplayGainMode replay_gain_mode{ReplayGainMode::unknown};
         std::string uri;
         std::string secondary_uri;
+        std::vector<std::string> uris;
         AlbumFilter album;
         std::vector<QueueAddition> additions;
         std::vector<QueueMove> moves;
@@ -392,6 +393,9 @@ struct Session::Impl {
         case SessionCommandKind::stored_playlist_add:
             return without_payload(client.add_to_stored_playlist(command.uri, command.secondary_uri,
                                                                  command.queue_position));
+        case SessionCommandKind::stored_playlist_add_batch:
+            return without_payload(
+                client.add_to_stored_playlist(command.uri, command.uris, command.queue_position));
         case SessionCommandKind::stored_playlist_delete_item:
             return without_payload(
                 client.delete_from_stored_playlist(command.uri, command.object_id));
@@ -459,6 +463,7 @@ struct Session::Impl {
         case SessionCommandKind::stored_playlist:
         case SessionCommandKind::stored_playlist_save:
         case SessionCommandKind::stored_playlist_add:
+        case SessionCommandKind::stored_playlist_add_batch:
         case SessionCommandKind::stored_playlist_delete_item:
         case SessionCommandKind::stored_playlist_delete_batch:
         case SessionCommandKind::stored_playlist_move_item:
@@ -890,6 +895,16 @@ std::uint64_t Session::add_to_stored_playlist(std::string name, std::string uri,
     command.uri = std::move(name);
     command.secondary_uri = std::move(uri);
     command.queue_position = position;
+    return implementation_->enqueue(std::move(command));
+}
+
+std::uint64_t Session::add_to_stored_playlist(std::string name, std::vector<std::string> uris,
+                                              const std::optional<unsigned> first_position) {
+    Impl::PendingCommand command;
+    command.kind = SessionCommandKind::stored_playlist_add_batch;
+    command.uri = std::move(name);
+    command.uris = std::move(uris);
+    command.queue_position = first_position;
     return implementation_->enqueue(std::move(command));
 }
 

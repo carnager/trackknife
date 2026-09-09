@@ -1,6 +1,6 @@
 # Trackbench feature roadmap
 
-Last reconciled: 2026-09-06 against source baseline `d08b6b5`.
+Last reconciled: 2026-09-08 against source baseline `59e6965`.
 
 **Proposal:** Prioritized open work, saved at the user's request. The
 [feature matrix](feature-matrix.md) records what currently exists;
@@ -56,10 +56,14 @@ References: [library refresh decision](adr/0126-library-deletion-and-search-artw
 - [x] Local M3U8 import/export, with relative-path resolution, offline/duplicate
   retention, and explicit rejection of unrepresentable references (ADR-0128).
   Export creates a new file; replacement and other playlist formats remain later work.
-- [ ] Expose the complete MPD stored-playlist browse/open/edit/save workflow
-  in the current workspace; the protocol backend already supports it.
+- [x] Expose the complete MPD stored-playlist browse/open/edit/save workflow
+  in the current workspace (ADR-0129): sidebar list, server-keyed closable
+  tabs, capability-gated server-round-trip edits, and idle-driven refresh.
+  Multi-row reorder and restoring open playlist tabs remain follow-ups.
 - [ ] Restore separately committed MPD search-result tabs where useful; the
   current library-integrated live search remains available.
+- [ ] Extend Find beyond cached display text to arbitrary metadata and
+  technical fields (the ADR-0125 first slice excludes them).
 
 Keep local list changes distinct from server-owned playlist mutations.
 Removing duplicate list entries must not delete files.
@@ -128,6 +132,12 @@ Reference: [metadata and artwork](metadata-and-files.md).
   embedded mapping exists, and use those results during local playback.
 - [ ] Define and implement Opus R128 storage and playback handling.
 - [ ] Add playback preamp controls.
+- [ ] Decide and implement the true-peak policy (standards-compliant true
+  peak alongside the cheap sample peak, with the peak type recorded); this is
+  an open pre-M5–M8 decision in [open-decisions](open-decisions.md).
+- [ ] Complete the result-review surface: export results, retry failures,
+  provenance inspection, embedded-versus-sidecar target switching, and better
+  multi-disc grouping presets.
 The [correctness prerequisite](#correctness-prerequisite) covers logical-track
 scan propagation. Measurement, grouping, visible draft proposals, and ordinary
 local playback gain modes already exist; this work completes storage and
@@ -186,15 +196,27 @@ These remain open requirements or proposals from the broader specifications;
 they are not additional immediate commitments.
 
 - Workspace: expose the command palette and configurable shortcuts; add
-  expression-defined track columns/grouping and saved metadata field layouts.
+  expression-defined track columns/grouping and saved metadata field layouts;
+  add the planned jobs-and-errors (job center), console/diagnostics, queue
+  inspector, and search/filter editor panels.
 - Metadata: additional qualified writers, portable/custom filename
-  sanitization, Unicode-normalization policy, and richer matching options.
+  sanitization, Unicode-normalization policy, and richer matching options;
+  `TOTALTRACKS` totals for numbering (group counters landed in ADR-0104);
+  general metadata sidecars beyond the loudness record; companion-file
+  copy/move with previewed empty-folder cleanup.
+- File-operation undo: cross-filesystem undo, changed-artifact undo, and the
+  artwork undo chain on exchange-less filesystems (ADR-0111 addendum) remain
+  recorded follow-ups without a current surface.
 - Conversion: downsample-only rate caps, explicit keep-source depth,
-  channel-processing policy, grouped/merge output, and qualified DSP/gain.
+  channel-processing policy, grouped/merge output, qualified DSP/gain, and
+  splitting cue tracks into separate files.
 - Infrastructure: shared resource scheduling/retry, secure credential storage,
   user backup/restore, and representative large-library/network/device testing.
 - Later product work: Melody playback endpoint, DSP graph, release hardening
-  and packaging. Plugins, CD ripping, radio, and remote import remain deferred.
+  and packaging. Plugins, CD ripping, radio, remote import, simultaneous
+  multiple MPD server sessions, and the cross-authority conveniences (opening
+  a mapped server item locally, explicit MPD update after publication) remain
+  deferred.
 
 ## Scope and maintenance
 

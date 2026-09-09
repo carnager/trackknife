@@ -229,6 +229,8 @@ class FakeMpdServer final {
             return;
         } else if (command.starts_with("playlistdelete ") && command_list) {
             return;
+        } else if (command.starts_with("playlistadd ") && command_list) {
+            return;
         } else if (command.starts_with("playid ") || command.starts_with("deleteid ") ||
                    command.starts_with("moveid ") || command.starts_with("seekid ") ||
                    command.starts_with("prioid ") || command.starts_with("setvol ") ||
@@ -377,6 +379,17 @@ void client_negotiates_and_preserves_extensions() {
             client.load_stored_playlist_into_queue("Road mix").has_value() &&
             client.add_to_stored_playlist("Road mix", "Artist/Release/03.flac").has_value() &&
             client.add_to_stored_playlist("Road mix", "Artist/Release/04.flac", 1U).has_value() &&
+            client
+                .add_to_stored_playlist(
+                    "Road mix",
+                    std::vector<std::string>{"Artist/Release/05.flac", "Artist/Release/06.flac"})
+                .has_value() &&
+            client
+                .add_to_stored_playlist(
+                    "Road mix",
+                    std::vector<std::string>{"Artist/Release/07.flac", "Artist/Release/08.flac"},
+                    2U)
+                .has_value() &&
             client.delete_from_stored_playlist("Road mix", 1U).has_value() &&
             client.delete_from_stored_playlist("Road mix", std::array{4U, 2U}).has_value() &&
             client.move_in_stored_playlist("Road mix", 0U, 1U).has_value() &&
@@ -385,6 +398,8 @@ void client_negotiates_and_preserves_extensions() {
             client.delete_stored_playlist("Renamed mix").has_value(),
         "stored-playlist mutations must cross the adapter boundary");
     require(!client.save_queue_as_playlist("") && !client.add_to_stored_playlist("Road mix", "") &&
+                !client.add_to_stored_playlist("Road mix", std::vector<std::string>{}) &&
+                !client.add_to_stored_playlist("Road mix", std::vector<std::string>{"ok", ""}) &&
                 !client.delete_from_stored_playlist("Road mix", std::array{1U, 1U}) &&
                 !client.move_in_stored_playlist("Road mix", 1U, 1U) &&
                 !client.rename_stored_playlist("same", "same"),

@@ -11,7 +11,6 @@
 #include "uicommon/queue_table_view.hpp"
 
 #include <QBuffer>
-#include <QComboBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFile>
@@ -21,6 +20,7 @@
 #include <QMessageBox>
 #include <QSettings>
 #include <QStackedWidget>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTableView>
 #include <QTemporaryDir>
@@ -570,8 +570,7 @@ void LocalLibraryTest::localViewBrowsesSearchesAndOpensFiles() {
         window.show();
         QTRY_VERIFY(window.findChild<LocalLibraryPanel*>() != nullptr);
         auto* panel = window.findChild<LocalLibraryPanel*>();
-        auto* selector =
-            window.findChild<QComboBox*>(QStringLiteral("bench-local-source-selector"));
+        auto* selector = window.findChild<QTabBar*>(QStringLiteral("bench-local-source-tabs"));
         auto* tree = panel->findChild<QTreeView*>();
         auto* search = panel->findChild<QLineEdit*>();
         auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("bench-tabs"));

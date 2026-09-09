@@ -2,10 +2,12 @@
 
 ## Application scope
 
-ADR-0115 adds a local source selector with **Folders** and **Library**. Folders
+ADR-0115 adds a local source switch with **Folders** and **Library**. Folders
 keeps direct navigation and bookmarks; Library provides optional indexed
-artist/album browsing and album/track search. MPD context hides the local source
-selector and retains the server library. See [local-library.md](local-library.md).
+artist/album browsing and album/track search. Per ADR-0130 each authority's
+sidebar carries a flat one-click tab bar: **Folders | Library** in local
+context, **Library | Playlists** in MPD context, replacing the earlier
+dropdown. See [local-library.md](local-library.md).
 
 Per ADR-0058 these surfaces share one Trackbench shell while retaining distinct
 authorities. Selecting **MPD Queue** binds the sidebar, transport, and output
@@ -96,7 +98,11 @@ The initial workspace is intentionally conventional:
   name instead of replacing the folder browser. When the server advertises the
   relevant commands, the tab reuses the compact add/remove/reorder controls and
   exposes queue-load, clear, rename, and delete through its list menu; accepted
-  edits reload authoritative server contents.
+  edits reload authoritative server contents. ADR-0129 implements this through
+  a sidebar Playlists page (a full-height list behind the ADR-0130 tab bar)
+  and server-round-trip edits with `stored_playlist`
+  idle refresh; multi-row reorder and restoring open playlist tabs across
+  restart remain follow-ups.
 - The default track presentation is grouped albums with cover art and readable
   track rows.
 - A plain, information-dense columns preset is one action away.

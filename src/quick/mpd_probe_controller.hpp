@@ -181,6 +181,8 @@ class MpdProbeController final : public QObject {
     Q_INVOKABLE void openStoredPlaylist(const QString& name);
     Q_INVOKABLE void saveQueueAsPlaylist(const QString& name);
     Q_INVOKABLE void loadStoredPlaylistIntoQueue(const QString& name);
+    Q_INVOKABLE void addToStoredPlaylist(const QString& name, const QStringList& uris,
+                                         int insertion_row = -1);
     Q_INVOKABLE void removeStoredPlaylistItems(const QString& name, const QVariantList& rows);
     Q_INVOKABLE void moveStoredPlaylistItem(const QString& name, int row, int target_row);
     Q_INVOKABLE void clearStoredPlaylist(const QString& name);
@@ -214,6 +216,7 @@ class MpdProbeController final : public QObject {
     void serverLibraryFilterLoaded(quint64 token, const QStringList& root_values,
                                    const QString& error);
     void serverDatabaseChanged();
+    void storedPlaylistsChanged();
     void storedPlaylistListLoaded(const QStringList& names);
     void artworkLoaded(const QString& uri, const QByteArray& data);
 

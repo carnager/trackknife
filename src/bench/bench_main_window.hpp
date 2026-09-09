@@ -32,7 +32,6 @@
 #include <vector>
 
 class QActionGroup;
-class QComboBox;
 class QDialog;
 class QLabel;
 class QListWidget;
@@ -43,6 +42,7 @@ class QResizeEvent;
 class QSlider;
 class QSplitter;
 class QStackedWidget;
+class QTabBar;
 class QTabWidget;
 class QTableView;
 class QTimer;
@@ -63,6 +63,7 @@ class ServerLibraryTreeView;
 
 namespace trackknife::quick {
 class MpdProbeController;
+class MpdQueueModel;
 class MpdSearchResultModel;
 } // namespace trackknife::quick
 
@@ -108,6 +109,15 @@ class BenchMainWindow final : public QMainWindow {
         bool view_layout_persistence_protected{false};
     };
 
+    // Server-authoritative stored-playlist tab (ADR-0129): keyed by the MPD
+    // playlist name, session-only, refreshed exclusively from server re-reads.
+    struct MpdPlaylistTab {
+        QString name;
+        quick::MpdQueueModel* model{nullptr};
+        QTableView* view{nullptr};
+        ui::TrackViewLayout view_layout;
+    };
+
     void buildPlaylistActions(QMenu* file_menu);
     void importPlaylistDialog();
     void exportPlaylistDialog();
@@ -148,6 +158,25 @@ class BenchMainWindow final : public QMainWindow {
     [[nodiscard]] QVariantList selectedMpdQueueRows() const;
     [[nodiscard]] QStringList selectedMpdQueueUris() const;
     void refreshMpdPriorityMenu();
+
+    void buildMpdPlaylists();
+    [[nodiscard]] MpdPlaylistTab* mpdPlaylistTabForWidget(QWidget* widget) const;
+    [[nodiscard]] MpdPlaylistTab* currentMpdPlaylistTab() const;
+    [[nodiscard]] MpdPlaylistTab* mpdPlaylistTabNamed(const QString& name) const;
+    void openMpdPlaylistTab(const QString& name, bool select);
+    void acceptMpdStoredPlaylistNames(const QStringList& names);
+    void acceptMpdStoredPlaylistContents(const QString& name);
+    void renameMpdPlaylistTab(const QString& from, const QString& to);
+    void closeMpdPlaylistTab(const QString& name);
+    void refreshMpdPlaylistsSoon();
+    void showMpdPlaylistSidebarMenu(const QPoint& position);
+    void showMpdPlaylistTrackMenu(MpdPlaylistTab& tab, const QPoint& position);
+    void addMpdPlaylistActions(QMenu* menu, const QString& name);
+    void promptSaveQueueAsPlaylist();
+    void promptRenameMpdPlaylist(const QString& name);
+    void confirmClearMpdPlaylist(const QString& name);
+    void confirmDeleteMpdPlaylist(const QString& name);
+    [[nodiscard]] QStringList selectedMpdViewUris(QTableView* view) const;
 
     ListTab* addListTab(persistence::ListDocument document, bool select);
     [[nodiscard]] ListTab* currentListTab();
@@ -277,7 +306,9 @@ class BenchMainWindow final : public QMainWindow {
 
     ui::LocalFolderTreeModel* folder_model_{nullptr};
     LocalLibraryPanel* local_library_{nullptr};
-    QComboBox* local_source_selector_{nullptr};
+    QTabBar* local_source_tabs_{nullptr};
+    QTabBar* mpd_source_tabs_{nullptr};
+    QStackedWidget* mpd_source_pages_{nullptr};
     QTreeView* folder_view_{nullptr};
     quick::MpdProbeController* mpd_controller_{nullptr};
     ui::ServerLibraryTreeModel* server_library_model_{nullptr};
@@ -310,6 +341,10 @@ class BenchMainWindow final : public QMainWindow {
     int pending_mpd_library_insertion_row_{-1};
     QTabWidget* tabs_{nullptr};
     std::vector<std::unique_ptr<ListTab>> list_tabs_;
+    std::vector<std::unique_ptr<MpdPlaylistTab>> mpd_playlist_tabs_;
+    QListWidget* mpd_playlists_list_{nullptr};
+    QMenu* mpd_playlists_menu_{nullptr};
+    QTimer* mpd_playlists_refresh_timer_{nullptr};
 
     QAction* previous_action_{nullptr};
     QAction* play_pause_action_{nullptr};
@@ -400,7 +435,6 @@ class BenchMainWindow final : public QMainWindow {
     QVBoxLayout* layout_host_layout_{nullptr};
     QWidget* layout_root_{nullptr};
     QWidget* folders_panel_{nullptr};
-    QLabel* source_heading_{nullptr};
     QListWidget* folder_bookmarks_{nullptr};
     QLabel* folder_bookmarks_heading_{nullptr};
     QMenu* folder_bookmark_menu_{nullptr};

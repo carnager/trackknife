@@ -175,6 +175,7 @@ class BenchMainWindowTest final : public QObject {
     void mpdSearchCoversFollowLibraryRefresh();
     void mpdQueueAndLibraryMenusExposeServerActions();
     void mpdGoToArtistAlbumNavigatesLibrary();
+    void mpdStoredPlaylistTabsFollowServerAuthority();
     void playbackBufferProfilesPersistAndExposeDiagnostics();
     void statusBarSummarizesTrackSelection();
     void committedMetadataRefreshesDuplicatesAndPreservesCueOverlay();
@@ -371,7 +372,8 @@ void BenchMainWindowTest::unifiesMpdAndLocalAuthoritiesInOneWorkspace() {
         window.findChild<QTableView*>(QStringLiteral("bench-mpd-queue")));
     auto* folder_view = window.findChild<QTreeView*>(QStringLiteral("bench-folder-tree"));
     auto* mpd_library = window.findChild<QTreeView*>(QStringLiteral("bench-mpd-library"));
-    auto* heading = window.findChild<QLabel*>(QStringLiteral("bench-folders-heading"));
+    auto* local_source_tabs = window.findChild<QTabBar*>(QStringLiteral("bench-local-source-tabs"));
+    auto* mpd_source_tabs = window.findChild<QTabBar*>(QStringLiteral("bench-mpd-source-tabs"));
     auto* properties = window.findChild<QAction*>(QStringLiteral("action-track-properties"));
     auto* plain = window.findChild<QAction*>(QStringLiteral("action-track-layout-plain"));
     auto* copy_layout = window.findChild<QAction*>(QStringLiteral("action-copy-track-layout"));
@@ -388,7 +390,12 @@ void BenchMainWindowTest::unifiesMpdAndLocalAuthoritiesInOneWorkspace() {
     QVERIFY(mpd_queue != nullptr);
     QVERIFY(folder_view != nullptr);
     QVERIFY(mpd_library != nullptr);
-    QVERIFY(heading != nullptr);
+    QVERIFY(local_source_tabs != nullptr);
+    QVERIFY(mpd_source_tabs != nullptr);
+    QCOMPARE(local_source_tabs->tabText(0), QStringLiteral("Folders"));
+    QCOMPARE(local_source_tabs->tabText(1), QStringLiteral("Library"));
+    QCOMPARE(mpd_source_tabs->tabText(0), QStringLiteral("Library"));
+    QCOMPARE(mpd_source_tabs->tabText(1), QStringLiteral("Playlists"));
     QVERIFY(properties != nullptr);
     QVERIFY(plain != nullptr);
     QVERIFY(copy_layout != nullptr);
@@ -439,7 +446,8 @@ void BenchMainWindowTest::unifiesMpdAndLocalAuthoritiesInOneWorkspace() {
     QVERIFY(mpd_close == nullptr || !mpd_close->isVisible());
     tabs->setCurrentWidget(mpd_queue);
     QTRY_COMPARE(window.property("trackknife-active-authority").toString(), QStringLiteral("mpd"));
-    QCOMPARE(heading->text(), QStringLiteral("MPD Library"));
+    QVERIFY(mpd_source_tabs->isVisible());
+    QVERIFY(!local_source_tabs->isVisible());
     QVERIFY(mpd_library->isVisible());
     QVERIFY(!folder_view->isVisible());
     QVERIFY(!properties->isEnabled());
@@ -469,7 +477,8 @@ void BenchMainWindowTest::unifiesMpdAndLocalAuthoritiesInOneWorkspace() {
     tabs->setCurrentWidget(local_queue);
     QTRY_COMPARE(window.property("trackknife-active-authority").toString(),
                  QStringLiteral("local"));
-    QCOMPARE(heading->text(), QStringLiteral("Folders"));
+    QVERIFY(local_source_tabs->isVisible());
+    QVERIFY(!mpd_source_tabs->isVisible());
     QVERIFY(folder_view->isVisible());
     QVERIFY(!mpd_library->isVisible());
     QVERIFY(buffer_menu->isEnabled());
@@ -1011,6 +1020,94 @@ void BenchMainWindowTest::mpdGoToArtistAlbumNavigatesLibrary() {
     go_to_artist->trigger();
     QTRY_VERIFY(
         window.statusBar()->currentMessage().contains(QStringLiteral("not in the library tree")));
+}
+
+// ADR-0129: the sidebar Playlists list opens one closable tab per server
+// playlist name, contents follow only authoritative re-reads, and edits are
+// server commands — a disconnected controller must leave rows untouched.
+void BenchMainWindowTest::mpdStoredPlaylistTabsFollowServerAuthority() {
+    BenchMainWindow window;
+    window.show();
+    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("bench-tabs"));
+    auto* controller = window.findChild<quick::MpdProbeController*>();
+    auto* playlists = window.findChild<QListWidget*>(QStringLiteral("bench-mpd-playlists"));
+    auto* source_tabs = window.findChild<QTabBar*>(QStringLiteral("bench-mpd-source-tabs"));
+    auto* source_pages =
+        window.findChild<QStackedWidget*>(QStringLiteral("bench-mpd-source-pages"));
+    auto* remove_selected =
+        window.findChild<QAction*>(QStringLiteral("action-remove-selected-tracks"));
+    auto* close_tab = window.findChild<QAction*>(QStringLiteral("action-close-tab"));
+    QVERIFY(tabs != nullptr);
+    QVERIFY(controller != nullptr);
+    QVERIFY(playlists != nullptr);
+    QVERIFY(source_tabs != nullptr);
+    QVERIFY(source_pages != nullptr);
+    QVERIFY(remove_selected != nullptr);
+    QVERIFY(close_tab != nullptr);
+    QTRY_COMPARE(tabs->count(), 2);
+    auto* queue = window.findChild<QTableView*>(QStringLiteral("bench-mpd-queue"));
+    QVERIFY(queue != nullptr);
+    tabs->setCurrentWidget(queue);    // MPD context shows the library panel.
+    QVERIFY(!playlists->isVisible()); // The Library page is the default.
+
+    emit controller->storedPlaylistListLoaded(
+        {QStringLiteral("Quiet mix"), QStringLiteral("Road mix")});
+    QCOMPARE(playlists->count(), 2);
+    // The ADR-0130 sidebar tab bar switches to the full-height Playlists page.
+    source_tabs->setCurrentIndex(1);
+    QTRY_VERIFY(playlists->isVisible());
+    QCOMPARE(source_pages->currentWidget(), playlists);
+
+    // Activating a sidebar entry opens exactly one tab keyed by the name.
+    emit playlists->itemActivated(playlists->item(1));
+    QTRY_COMPARE(tabs->count(), 3);
+    auto* view = window.findChild<QTableView*>(QStringLiteral("bench-mpd-playlist-view"));
+    QVERIFY(view != nullptr);
+    QCOMPARE(view->property("bench-mpd-playlist-name").toString(), QStringLiteral("Road mix"));
+    QCOMPARE(tabs->currentWidget(), view);
+    QCOMPARE(tabs->tabText(tabs->indexOf(view)), QStringLiteral("Road mix"));
+    emit playlists->itemActivated(playlists->item(1));
+    QCOMPARE(tabs->count(), 3); // Reopening refreshes instead of duplicating.
+
+    // Contents arrive only through the authoritative playlist re-read.
+    auto* playlist_model = qobject_cast<quick::MpdQueueModel*>(controller->browserPlaylistModel());
+    QVERIFY(playlist_model != nullptr);
+    playlist_model->replaceTracks({mpd::Track{
+        .uri = "Artist/Release/01.flac",
+        .metadata = mpd::Metadata{{{"Title", "Stored one"}, {"Artist", "Credited Artist"}}},
+        .musicbrainz = {},
+        .queue_id = std::nullopt,
+        .queue_position = std::nullopt,
+        .duration = std::chrono::milliseconds{180'000},
+        .last_modified = std::nullopt,
+        .audio_format = std::nullopt,
+        .priority = std::nullopt,
+        .unknown_structural_pairs = {},
+    }});
+    emit controller->storedPlaylistLoaded(QStringLiteral("Road mix"));
+    QTRY_COMPARE(view->model()->rowCount(), 1);
+
+    // Removal is a server command: disconnected, the rows must stay visible.
+    view->selectionModel()->select(view->model()->index(0, 0),
+                                   QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    remove_selected->trigger();
+    QCOMPARE(view->model()->rowCount(), 1);
+
+    // The playlist tab is an MPD-authority surface and stays closable.
+    QCOMPARE(window.property("trackknife-active-authority").toString(), QStringLiteral("mpd"));
+    QVERIFY(close_tab->isEnabled());
+
+    // Server-side rename retargets the open tab; deletion closes it.
+    emit controller->storedPlaylistRenamed(QStringLiteral("Road mix"),
+                                           QStringLiteral("Highway mix"));
+    QTRY_COMPARE(tabs->tabText(tabs->indexOf(view)), QStringLiteral("Highway mix"));
+    QCOMPARE(view->property("bench-mpd-playlist-name").toString(), QStringLiteral("Highway mix"));
+    emit controller->storedPlaylistDeleted(QStringLiteral("Highway mix"));
+    QTRY_COMPARE(tabs->count(), 2);
+
+    // Disconnect clears the sidebar list.
+    emit controller->storedPlaylistListLoaded({});
+    QCOMPARE(playlists->count(), 0);
 }
 
 void BenchMainWindowTest::playbackBufferProfilesPersistAndExposeDiagnostics() {
@@ -5132,7 +5229,7 @@ void BenchMainWindowTest::localListUndoActionsRespectAuthorityAndTextEditing() {
     QCOMPARE(model->rowCount(), 2);
     tabs->setCurrentWidget(view);
     QVERIFY(undo->isEnabled());
-    auto* selector = window.findChild<QComboBox*>(QStringLiteral("bench-local-source-selector"));
+    auto* selector = window.findChild<QTabBar*>(QStringLiteral("bench-local-source-tabs"));
     QVERIFY(selector);
     selector->setCurrentIndex(1);
     auto* search = window.findChild<QLineEdit*>(QStringLiteral("local-library-search"));

@@ -720,6 +720,54 @@ core::Result<void> Client::add_to_stored_playlist(const std::string_view name,
     return {};
 }
 
+core::Result<void> Client::add_to_stored_playlist(const std::string_view name,
+                                                  const std::span<const std::string> uris,
+                                                  const std::optional<unsigned> first_position) {
+    constexpr std::size_t maximum_batch_size = 4'096U;
+    if (name.empty() || name.contains('\0') || uris.empty() || uris.size() > maximum_batch_size) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invalid_argument,
+            .message = "MPD stored playlist addition requires a valid name and 1 to 4096 URIs",
+            .context = {},
+        });
+    }
+    for (const auto& uri : uris) {
+        if (uri.empty() || uri.contains('\0')) {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::invalid_argument,
+                .message = "MPD stored playlist URIs cannot be empty or contain NUL",
+                .context = {},
+            });
+        }
+    }
+    if (uris.size() == 1U) {
+        return add_to_stored_playlist(name, uris.front(), first_position);
+    }
+
+    const std::string name_text{name};
+    auto* connection = implementation_->connection.get();
+    if (!mpd_command_list_begin(connection, false)) {
+        return std::unexpected(
+            implementation_->take_error("begin stored playlist add command list"));
+    }
+    unsigned position = first_position.value_or(0U);
+    for (const auto& uri : uris) {
+        const auto sent =
+            first_position
+                ? mpd_send_playlist_add_to(connection, name_text.c_str(), uri.c_str(), position++)
+                : mpd_send_playlist_add(connection, name_text.c_str(), uri.c_str());
+        if (!sent) {
+            return std::unexpected(
+                implementation_->take_error("send stored playlist add command list"));
+        }
+    }
+    if (!mpd_command_list_end(connection) || !mpd_response_finish(connection)) {
+        return std::unexpected(
+            implementation_->take_error("finish stored playlist add command list"));
+    }
+    return {};
+}
+
 core::Result<void> Client::delete_from_stored_playlist(const std::string_view name,
                                                        const unsigned position) {
     if (name.empty() || name.contains('\0')) {

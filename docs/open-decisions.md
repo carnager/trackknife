@@ -6,8 +6,8 @@ hosts authority-bound MPD Queue and Local Queue tabs. The active primary tab
 switches the server-library/local-folders sidebar, MPD/PipeWire output selector,
 transport controller, row type, and available commands. The queues never mix,
 and local operations remain unavailable to MPD rows. The former standalone
-Trackknife executable was retired in ADR-0071; committed search and
-stored-playlist tabs remain unmigrated open work.
+Trackknife executable was retired in ADR-0071; stored-playlist tabs were
+migrated in ADR-0129 and committed search tabs remain unmigrated open work.
 
 ## Resolved for M2–M3
 
@@ -116,7 +116,8 @@ native-FLAC writer. ADR-0074 and migration 22 compose it into bounded Apply,
 atomic all-occurrence metadata/path reconciliation, visible/player refresh, and
 published-artifact startup recovery. Cross-filesystem and changed-artifact undo,
 portable/custom sanitization and Unicode normalization,
-grouped numbering, richer match dialects, other exact format writers, artwork
+`TOTALTRACKS` numbering totals (grouped counters landed in ADR-0104),
+richer match dialects, other exact format writers, artwork
 publication/UI, thumbnail presentation, and sidecars remain open M5 decisions and
 capability work. ADR-0068 separately fixes the `tkcapture-1` grammar, bounded
 ambiguity policy, four source kinds, multi-target chain behavior, and schema-20
@@ -148,8 +149,8 @@ Export. Other container writers and configurable export naming remain open.
 
 ## Needed to finish the unified workspace migration
 
-1. Migrate committed search and stored-playlist tabs into Trackbench without
-   weakening MPD/local authority selection.
+1. Migrate committed search tabs into Trackbench without weakening MPD/local
+   authority selection. Stored-playlist tabs were migrated by ADR-0129.
 2. Resolved by ADR-0071: connection profiles stay in the shared SQLite store
    Trackbench owns; no shell migration is needed.
 3. Resolved by ADR-0071: the compatibility shell was removed rather than
@@ -166,8 +167,9 @@ Export. Other container writers and configurable export naming remain open.
    source-root inference UX.
 6. Resolved by ADR-0088: the MusicBrainz client paces one serialized request
    at 1.1 s with an identifying User-Agent and caches responses in the shared
-   SQLite store for 14 days within a 10,000-entry bound. Whether AcoustID
-   fingerprinting earns its dependency remains open (M6).
+   SQLite store for 14 days within a 10,000-entry bound. AcoustID
+   fingerprinting was accepted with an optional `fpcalc` runtime dependency
+   (ADR-0096).
 7. Shipped destination-profile defaults, including whether an accessible MPD
    music root earns a convenience preset.
 

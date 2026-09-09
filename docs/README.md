@@ -28,8 +28,9 @@ feature availability are separate claims.
 
 The primary workspace is Trackbench, currently built as `trackknife` from
 `src/bench`. The separate MPD shell was retired in ADR-0071. Its committed
-search tabs, stored-playlist tabs, and command-discovery UI are not automatically
-available in the current workspace merely because older M3 records describe them.
+search tabs and command-discovery UI are not automatically available in the
+current workspace merely because older M3 records describe them;
+stored-playlist tabs returned in ADR-0129.
 
 Current implemented workflows include:
 
@@ -40,7 +41,9 @@ Current implemented workflows include:
   Ctrl+F finds cached text in local lists and the MPD queue; F3/Shift+F3 navigate
   matches. M3U8 import creates local lists with relative and unavailable file
   references; export writes whole-file lists to new M3U8 files (ADR-0128).
-- MPD library browse/search with covers and queue actions. Local Library offers
+- MPD library browse/search with covers and queue actions, plus stored-playlist
+  browse/open/edit/save in server-keyed tabs with capability-gated server
+  round trips (ADR-0129). Local Library offers
   indexed browse/search, track numbers, covers, and drag/drop. Filesystem scans
   run **only on Refresh**; in-app metadata/path commits update cached records.
 - Properties with multi-value drafts, undo/redo, saved transformations,
@@ -53,9 +56,9 @@ Current implemented workflows include:
   FLAC/Opus/MP3/Vorbis targets with naming presets, resampling, bit-depth options,
   text transfer, output verification, and limited-filesystem fallbacks.
 
-Immediate gaps include broader list history and playlist interchange, MPD stored-
-playlist UI, advanced library views, conversion artwork/stale-loudness handling,
-additional format writers, and complete ReplayGain storage/coverage. The
+Immediate gaps include broader list history and playlist interchange, committed
+MPD search tabs, advanced library views, conversion artwork/stale-loudness
+handling, additional format writers, and complete ReplayGain storage/coverage. The
 Properties-to-scanner logical-source path is regression-tested (ADR-0124);
 logical-track measurements still require a future durable storage target.
 See the roadmap for priorities and the matrix for exact limits.

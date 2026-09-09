@@ -260,15 +260,26 @@ void MpdProbeController::probeProfile(const QString& profile_id, const QString& 
             },
         .idle_received =
             [self, token](const mpd::IdleEvents events) {
-                if (!self || (!events.contains(mpd::IdleEvent::database) &&
-                              !events.contains(mpd::IdleEvent::update))) {
+                if (!self) {
+                    return;
+                }
+                const auto database_changed = events.contains(mpd::IdleEvent::database) ||
+                                              events.contains(mpd::IdleEvent::update);
+                const auto playlists_changed = events.contains(mpd::IdleEvent::stored_playlist);
+                if (!database_changed && !playlists_changed) {
                     return;
                 }
                 QMetaObject::invokeMethod(
                     self.data(),
-                    [self, token] {
-                        if (self && token == self->connection_token_) {
+                    [self, token, database_changed, playlists_changed] {
+                        if (!self || token != self->connection_token_) {
+                            return;
+                        }
+                        if (database_changed) {
                             emit self->serverDatabaseChanged();
+                        }
+                        if (playlists_changed) {
+                            emit self->storedPlaylistsChanged();
                         }
                     },
                     Qt::QueuedConnection);
@@ -985,6 +996,36 @@ void MpdProbeController::loadStoredPlaylistIntoQueue(const QString& name) {
     emit stateChanged();
 }
 
+void MpdProbeController::addToStoredPlaylist(const QString& name, const QStringList& uris,
+                                             const int insertion_row) {
+    if (!session_ || !connected_ || name.isEmpty() || !supportsCommand("playlistadd")) {
+        emit notificationRequested(QStringLiteral("This server cannot edit stored playlists"));
+        return;
+    }
+    std::vector<std::string> unique_uris;
+    unique_uris.reserve(static_cast<std::size_t>(uris.size()));
+    QSet<QString> seen;
+    for (const auto& uri : uris) {
+        if (!uri.isEmpty() && !seen.contains(uri)) {
+            seen.insert(uri);
+            unique_uris.push_back(uri.toUtf8().toStdString());
+        }
+    }
+    if (unique_uris.empty()) {
+        return;
+    }
+    const auto position = insertion_row >= 0
+                              ? std::optional<unsigned>{static_cast<unsigned>(insertion_row)}
+                              : std::nullopt;
+    const auto id = session_->add_to_stored_playlist(name.toUtf8().toStdString(),
+                                                     std::move(unique_uris), position);
+    pending_commands_.insert(id);
+    pending_playlist_mutations_.insert(
+        id, PendingPlaylistMutation{
+                .kind = PlaylistMutationKind::edit, .name = name, .target_name = {}});
+    emit stateChanged();
+}
+
 void MpdProbeController::removeStoredPlaylistItems(const QString& name, const QVariantList& rows) {
     if (!session_ || !connected_ || name.isEmpty() || !supportsCommand("playlistdelete")) {
         emit notificationRequested(QStringLiteral("This server cannot edit stored playlists"));
@@ -1502,7 +1543,7 @@ void MpdProbeController::applyCommandResult(const std::uint64_t token,
                 QStringLiteral("Playlist failed: %1").arg(from_utf8(result.error->message)));
         } else if (const auto* tracks = std::get_if<std::vector<mpd::Track>>(&result.payload)) {
             browser_playlist_model_.replaceTracks(*tracks);
-            browser_showing_playlist_ = false;
+            browser_showing_playlist_ = true;
             browser_status_ = QStringLiteral("%1 · %2 track%3")
                                   .arg(playlist_name)
                                   .arg(tracks->size())

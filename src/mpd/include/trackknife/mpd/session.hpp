@@ -60,6 +60,7 @@ enum class SessionCommandKind {
     stored_playlist_save,
     stored_playlist_load,
     stored_playlist_add,
+    stored_playlist_add_batch,
     stored_playlist_delete_item,
     stored_playlist_delete_batch,
     stored_playlist_move_item,
@@ -144,6 +145,9 @@ class Session final {
     [[nodiscard]] std::uint64_t
     add_to_stored_playlist(std::string name, std::string uri,
                            std::optional<unsigned> position = std::nullopt);
+    [[nodiscard]] std::uint64_t
+    add_to_stored_playlist(std::string name, std::vector<std::string> uris,
+                           std::optional<unsigned> first_position = std::nullopt);
     [[nodiscard]] std::uint64_t delete_from_stored_playlist(std::string name, unsigned position);
     [[nodiscard]] std::uint64_t delete_from_stored_playlist(std::string name,
                                                             std::vector<unsigned> positions);

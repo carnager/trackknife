@@ -22,7 +22,6 @@
 
 #include <QAbstractItemView>
 #include <QAction>
-#include <QComboBox>
 #include <QDir>
 #include <QFile>
 #include <QHeaderView>
@@ -601,8 +600,12 @@ BenchMainWindow::ListTab* BenchMainWindow::currentListTab() {
 }
 
 bool BenchMainWindow::isMpdContext() const {
-    return tabs_ != nullptr && mpd_queue_view_ != nullptr &&
-           tabs_->currentWidget() == mpd_queue_view_;
+    if (tabs_ == nullptr) {
+        return false;
+    }
+    auto* current = tabs_->currentWidget();
+    return (mpd_queue_view_ != nullptr && current == mpd_queue_view_) ||
+           mpdPlaylistTabForWidget(current) != nullptr;
 }
 
 void BenchMainWindow::refreshActiveContext() {
@@ -612,8 +615,7 @@ void BenchMainWindow::refreshActiveContext() {
     setProperty("trackknife-active-authority", authority);
     if (source_stack_ != nullptr) {
         auto* source = mpd ? mpd_library_panel_
-                       : local_source_selector_ != nullptr &&
-                               local_source_selector_->currentIndex() == 1 &&
+                       : local_source_tabs_ != nullptr && local_source_tabs_->currentIndex() == 1 &&
                                local_library_ != nullptr
                            ? static_cast<QWidget*>(local_library_)
                            : static_cast<QWidget*>(folder_view_);
@@ -622,20 +624,19 @@ void BenchMainWindow::refreshActiveContext() {
         }
     }
     updateMpdSearchPresentation();
-    if (source_heading_ != nullptr) {
-        source_heading_->setText(mpd ? QStringLiteral("MPD Library") : QStringLiteral("Folders"));
-        source_heading_->setVisible(mpd);
-        if (local_source_selector_ != nullptr) {
-            local_source_selector_->setVisible(!mpd);
-        }
-        if (library_order_az_ != nullptr && library_order_latest_ != nullptr) {
-            library_order_az_->setVisible(mpd);
-            library_order_latest_->setVisible(mpd);
-        }
+    if (local_source_tabs_ != nullptr) {
+        local_source_tabs_->setVisible(!mpd);
+    }
+    if (mpd_source_tabs_ != nullptr) {
+        mpd_source_tabs_->setVisible(mpd);
+    }
+    if (library_order_az_ != nullptr && library_order_latest_ != nullptr) {
+        library_order_az_->setVisible(mpd);
+        library_order_latest_->setVisible(mpd);
     }
     if (folder_bookmarks_ != nullptr) {
-        const auto folders_visible = !mpd && (local_source_selector_ == nullptr ||
-                                              local_source_selector_->currentIndex() == 0);
+        const auto folders_visible =
+            !mpd && (local_source_tabs_ == nullptr || local_source_tabs_->currentIndex() == 0);
         folder_bookmarks_->setVisible(folders_visible && folder_bookmarks_->count() > 0);
         folder_bookmarks_heading_->setVisible(folders_visible && folder_bookmarks_->count() > 0);
     }
@@ -739,7 +740,11 @@ void BenchMainWindow::refreshTabActions() {
     if (list_edit_bar_)
         list_edit_bar_->setView(available ? tab->view : nullptr);
     if (list_find_bar_ != nullptr) {
-        auto* find_view = available ? tab->view : isMpdContext() ? mpd_queue_view_ : nullptr;
+        auto* playlist_tab = currentMpdPlaylistTab();
+        auto* find_view = available        ? tab->view
+                          : playlist_tab   ? playlist_tab->view
+                          : isMpdContext() ? mpd_queue_view_
+                                           : nullptr;
         list_find_bar_->setView(find_view);
         find_list_action_->setEnabled(find_view != nullptr);
         find_next_action_->setEnabled(find_view != nullptr);
@@ -758,7 +763,8 @@ void BenchMainWindow::refreshTabActions() {
     if (close_tab_action_ != nullptr) {
         const auto properties_tab =
             qobject_cast<MetadataPropertiesDialog*>(tabs_->currentWidget()) != nullptr;
-        close_tab_action_->setEnabled(properties_tab || (available && !tab->document.pinned));
+        close_tab_action_->setEnabled(properties_tab || currentMpdPlaylistTab() != nullptr ||
+                                      (available && !tab->document.pinned));
     }
 }
 
@@ -773,6 +779,10 @@ void BenchMainWindow::closeTabAt(const int index) {
     }
     if (view == mpd_queue_view_) {
         statusBar()->showMessage(QStringLiteral("MPD Queue is a permanent authority tab"), 3'000);
+        return;
+    }
+    if (auto* playlist_tab = mpdPlaylistTabForWidget(view)) {
+        closeMpdPlaylistTab(playlist_tab->name);
         return;
     }
     auto* tab = static_cast<ListTab*>(view->property("bench-tab-pointer").value<void*>());
@@ -921,6 +931,17 @@ void BenchMainWindow::showTabContextMenu(const QPoint& position) {
     }
     tabs_->setCurrentIndex(index);
     refreshTabActions();
+    if (auto* playlist_tab = mpdPlaylistTabForWidget(tabs_->widget(index))) {
+        auto* menu = new QMenu(this);
+        menu->setAttribute(Qt::WA_DeleteOnClose);
+        addMpdPlaylistActions(menu, playlist_tab->name);
+        menu->addSeparator();
+        const auto name = playlist_tab->name;
+        auto* close = menu->addAction(QStringLiteral("Close tab"));
+        connect(close, &QAction::triggered, this, [this, name] { closeMpdPlaylistTab(name); });
+        menu->popup(tabs_->tabBar()->mapToGlobal(position));
+        return;
+    }
     tab_context_menu_->popup(tabs_->tabBar()->mapToGlobal(position));
 }
 
@@ -933,6 +954,10 @@ void BenchMainWindow::showTrackContextMenu(QTableView* view, const QPoint& posit
         return;
     }
     tabs_->setCurrentWidget(view);
+    if (auto* playlist_tab = mpdPlaylistTabForWidget(view)) {
+        showMpdPlaylistTrackMenu(*playlist_tab, position);
+        return;
+    }
 
     const auto* grouped_delegate = qobject_cast<const ui::QueueItemDelegate*>(view->itemDelegate());
     const auto relative_y = position.y() - view->visualRect(target).top();
@@ -990,6 +1015,28 @@ void BenchMainWindow::showTrackContextMenu(QTableView* view, const QPoint& posit
         track_context_menu_->addAction(mpd_crop_selection_action_);
         refreshMpdPriorityMenu();
         track_context_menu_->addMenu(mpd_priority_menu_);
+        track_context_menu_->addSeparator();
+        const auto queue_uris = selectedMpdQueueUris();
+        if (mpd_playlists_list_ != nullptr && mpd_playlists_list_->count() > 0) {
+            auto* playlist_menu = track_context_menu_->addMenu(QStringLiteral("Add to playlist"));
+            playlist_menu->setObjectName(QStringLiteral("bench-mpd-add-to-playlist-menu"));
+            playlist_menu->setEnabled(
+                command_ready && !queue_uris.isEmpty() &&
+                mpd_controller_->supportsCommand(QStringLiteral("playlistadd")));
+            for (int row = 0; row < mpd_playlists_list_->count(); ++row) {
+                const auto playlist_name = mpd_playlists_list_->item(row)->text();
+                auto* add = playlist_menu->addAction(playlist_name);
+                connect(add, &QAction::triggered, this, [this, playlist_name, queue_uris] {
+                    mpd_controller_->addToStoredPlaylist(playlist_name, queue_uris, -1);
+                });
+            }
+        }
+        auto* save_queue =
+            track_context_menu_->addAction(QStringLiteral("Save queue as playlist…"));
+        save_queue->setObjectName(QStringLiteral("action-mpd-save-queue-as-playlist"));
+        save_queue->setEnabled(command_ready &&
+                               mpd_controller_->supportsCommand(QStringLiteral("save")));
+        connect(save_queue, &QAction::triggered, this, &BenchMainWindow::promptSaveQueueAsPlaylist);
         track_context_menu_->popup(view->viewport()->mapToGlobal(position));
         return;
     }
@@ -1056,6 +1103,13 @@ void BenchMainWindow::showFolderContextMenu(const QPoint& position) {
 }
 
 void BenchMainWindow::playCurrentRow() {
+    if (auto* playlist_tab = currentMpdPlaylistTab()) {
+        const auto uris = selectedMpdViewUris(playlist_tab->view);
+        if (!uris.isEmpty()) {
+            mpd_controller_->addUris(uris, false);
+        }
+        return;
+    }
     if (isMpdContext()) {
         if (mpd_queue_view_->currentIndex().isValid()) {
             mpd_controller_->playQueueItem(mpd_queue_view_->currentIndex().row());
@@ -1103,6 +1157,19 @@ void BenchMainWindow::replayListEdit(const bool undo) {
 }
 
 void BenchMainWindow::removeSelectedRows() {
+    if (auto* playlist_tab = currentMpdPlaylistTab()) {
+        if (playlist_tab->view->selectionModel() == nullptr) {
+            return;
+        }
+        QVariantList rows;
+        for (const auto& index : playlist_tab->view->selectionModel()->selectedRows()) {
+            rows.push_back(index.row());
+        }
+        if (!rows.isEmpty()) {
+            mpd_controller_->removeStoredPlaylistItems(playlist_tab->name, rows);
+        }
+        return;
+    }
     if (isMpdContext()) {
         if (mpd_queue_view_->selectionModel() == nullptr) {
             return;

@@ -8,7 +8,8 @@ own library and search.
 
 ## Using the library
 
-1. Select a local queue or list, then choose **Library** in the source selector.
+1. Select a local queue or list, then choose the **Library** sidebar tab
+   (ADR-0130).
 2. Open **Folders…**, add one or more music folders, then press **Refresh** to
    scan them in the background. The footer shows progress; **Stop** cancels the scan.
 3. Click an artist to browse albums, and an album to browse files. Enter toggles

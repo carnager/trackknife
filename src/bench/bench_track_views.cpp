@@ -323,14 +323,19 @@ void BenchMainWindow::refreshSelectionStatus() {
         if (convert_action_ != nullptr) {
             convert_action_->setEnabled(false);
         }
-        if (mpd_queue_view_->selectionModel() == nullptr) {
-            selection_status_->setText(QStringLiteral("MPD Queue"));
+        auto* playlist_tab = currentMpdPlaylistTab();
+        auto* view = playlist_tab != nullptr ? playlist_tab->view : mpd_queue_view_;
+        const auto label =
+            playlist_tab != nullptr ? playlist_tab->name : QStringLiteral("MPD Queue");
+        if (view->selectionModel() == nullptr) {
+            selection_status_->setText(label);
             return;
         }
-        const auto selected = mpd_queue_view_->selectionModel()->selectedRows();
+        const auto selected = view->selectionModel()->selectedRows();
         if (selected.empty()) {
-            selection_status_->setText(
-                QStringLiteral("MPD Queue · %1 tracks").arg(mpd_controller_->queueCount()));
+            const auto count =
+                playlist_tab != nullptr ? view->model()->rowCount() : mpd_controller_->queueCount();
+            selection_status_->setText(QStringLiteral("%1 · %2 tracks").arg(label).arg(count));
             selection_status_->setToolTip(mpd_controller_->status());
             return;
         }
@@ -338,7 +343,8 @@ void BenchMainWindow::refreshSelectionStatus() {
         for (const auto& index : selected) {
             duration_ms += index.data(ui::track_duration_ms_role).toLongLong();
         }
-        const auto summary = QStringLiteral("MPD Queue · %1 selected · %2 total")
+        const auto summary = QStringLiteral("%1 · %2 selected · %3 total")
+                                 .arg(label)
                                  .arg(selected.size())
                                  .arg(formatTime(duration_ms));
         selection_status_->setText(summary);

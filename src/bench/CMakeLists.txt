@@ -13,6 +13,7 @@ qt_add_library(
     playlist_transfer_bar.hpp
     bench_metadata_operations.cpp
     bench_mpd.cpp
+    bench_mpd_playlists.cpp
     mpd_library_search_model.cpp
     mpd_library_search_model.hpp
     bench_track_views.cpp

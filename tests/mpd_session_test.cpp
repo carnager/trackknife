@@ -520,6 +520,8 @@ void session_publishes_initial_and_idle_refreshed_snapshots() {
                             result.kind ==
                                 trackknife::mpd::SessionCommandKind::stored_playlist_add ||
                             result.kind ==
+                                trackknife::mpd::SessionCommandKind::stored_playlist_add_batch ||
+                            result.kind ==
                                 trackknife::mpd::SessionCommandKind::stored_playlist_delete_item ||
                             result.kind ==
                                 trackknife::mpd::SessionCommandKind::stored_playlist_delete_batch ||
@@ -708,6 +710,9 @@ void session_publishes_initial_and_idle_refreshed_snapshots() {
         static_cast<void>(session.save_queue_as_playlist("New mix"));
         static_cast<void>(session.load_stored_playlist_into_queue("Road mix"));
         static_cast<void>(session.add_to_stored_playlist("Road mix", "Slayer/Seasons/01.flac", 1U));
+        static_cast<void>(session.add_to_stored_playlist(
+            "Road mix",
+            std::vector<std::string>{"Slayer/Seasons/02.flac", "Slayer/Seasons/03.flac"}, 2U));
         static_cast<void>(session.delete_from_stored_playlist("Road mix", 1U));
         static_cast<void>(
             session.delete_from_stored_playlist("Road mix", std::vector<unsigned>{4U, 2U}));
@@ -717,8 +722,8 @@ void session_publishes_initial_and_idle_refreshed_snapshots() {
         static_cast<void>(session.delete_stored_playlist("Renamed mix"));
         lock.lock();
         const auto playlists_mutated = changed.wait_for(lock, std::chrono::seconds{2}, [&] {
-            return stored_playlist_mutations_finished == 9U &&
-                   server.storedPlaylistMutationCount() == 10U;
+            return stored_playlist_mutations_finished == 10U &&
+                   server.storedPlaylistMutationCount() == 12U;
         });
         require(playlists_mutated,
                 "stored-playlist mutations must be serialized exactly once on the session worker");
