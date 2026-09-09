@@ -91,6 +91,7 @@ enum class OutputPathPlanIssueKind : std::uint8_t {
     target_parent_not_directory,
     source_target_dependency,
     case_only_change,
+    mirror_source_outside_root,
 };
 
 [[nodiscard]] std::string_view output_path_plan_issue_kind_name(OutputPathPlanIssueKind kind);
@@ -160,10 +161,20 @@ validate_destination_profile(const DestinationProfile& profile,
 // deduplicating per source file.
 struct ConvertedPublicationPolicy {
     std::string target_extension;
+    // Mirror mode (ADR-0132): derive each relative directory from the source
+    // path's location below this normalized absolute root and each basename
+    // from the source filename's stem, byte-exact, instead of evaluating the
+    // layout expressions. Sources outside the root report a blocking
+    // mirror_source_outside_root issue.
+    std::optional<std::string> mirror_source_root_raw_path;
 
     friend bool operator==(const ConvertedPublicationPolicy&,
                            const ConvertedPublicationPolicy&) = default;
 };
+
+// The deepest directory containing every path (byte-wise component
+// comparison); empty when the list is empty or no common directory exists.
+[[nodiscard]] std::string common_source_directory_raw_path(std::span<const std::string> raw_paths);
 
 // Pure planning boundary: callers provide the selected items, final metadata,
 // and an explicit filesystem observation snapshot. The planner performs no I/O

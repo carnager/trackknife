@@ -106,7 +106,7 @@ Evidence: [ReplayGain specification](replaygain.md),
 | Capability | Status | Current behavior and remaining work |
 | --- | --- | --- |
 | Encoder presets | Implemented | Runtime availability checks, built-in FLAC/Opus/MP3/Vorbis presets, and saved user presets constrained to qualified targets (ADRs 0105, 0108). |
-| Naming and destinations | Partial | Explicit destination roots, `tkfmt-1` path preview, saved naming layouts/destinations, and one output per logical track. Source-root mirror and grouped/merge output modes remain open. |
+| Naming and destinations | Partial | Explicit destination roots, `tkfmt-1` path preview, saved naming layouts/destinations, one output per logical track, and a mirror-source-structure mode below the inferred common source root (ADR-0132; editable roots remain open). Grouped/merge output modes remain open. |
 | Signal processing | Partial | Target resampling, 16/24-bit policy where applicable, and dither when quantizing to 16-bit. Downsample-only caps, explicit keep-source depth, channel policy, DSP, and permanent gain application remain open. |
 | Text metadata transfer | Implemented | Mux-time text mappings with exact reread verification for qualified outputs. This does not include proof of interoperable loudness semantics in every container. |
 | Artwork and output loudness | Partial | One resolved cover per source is embedded into every qualified preset and reread byte-exactly before publication (ADR-0131); multi-picture carriage and per-item "no usable artwork" reporting remain open. Removing/rescanning stale loudness after signal changes remains open. |

@@ -100,7 +100,10 @@ chosen; external query-language compatibility is not an accepted requirement.
   (ADR-0131): one resolved cover per source, embedded as FLAC `PICTURE`,
   ID3v2 `APIC`, or `METADATA_BLOCK_PICTURE`, verified byte-exactly before
   publication. Multi-picture carriage remains a follow-up.
-- [ ] Mirror the source folder structure beneath an explicit destination root.
+- [x] Mirror the source folder structure beneath an explicit destination root
+  (ADR-0132): byte-exact mirroring below the sources' inferred deepest common
+  directory, with the planner's sanitization/collision/containment checks
+  unchanged. An editable mirror root remains a follow-up.
 - [ ] Remove or recalculate stale ReplayGain when processing changes the audio.
 
 The existing converter already supports codec presets, expression-based naming,

@@ -3534,6 +3534,22 @@ void BenchMainWindowTest::convertDialogPlansAndConvertsSelection() {
     QCOMPARE(
         probed->audio_streams[static_cast<std::size_t>(*probed->best_audio_stream)].sample_format,
         std::string{"s16"});
+
+    // Mirror mode (ADR-0132) disables the expressions and previews the
+    // source structure below the inferred common root.
+    auto* mirror = dialog->findChild<QCheckBox*>(QStringLiteral("bench-convert-mirror"));
+    auto* directory_field =
+        dialog->findChild<QLineEdit*>(QStringLiteral("bench-convert-directory-expression"));
+    QVERIFY(mirror != nullptr && directory_field != nullptr);
+    QVERIFY(!mirror->isChecked());
+    mirror->setChecked(true);
+    QVERIFY(!directory_field->isEnabled());
+    QTRY_VERIFY(preview->count() >= 3 &&
+                preview->item(0)->text().startsWith(QStringLiteral("Mirroring below")));
+    QCOMPARE(preview->item(1)->text(), QStringLiteral("loud.flac"));
+    QCOMPARE(preview->item(2)->text(), QStringLiteral("quiet.flac"));
+    mirror->setChecked(false);
+    QVERIFY(directory_field->isEnabled());
     delete dialog;
 }
 

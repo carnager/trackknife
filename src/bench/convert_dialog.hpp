@@ -110,6 +110,7 @@ class ConvertDialog final : public QDialog {
     QComboBox* resample_{nullptr};
     QComboBox* bit_depth_{nullptr};
     QCheckBox* embed_artwork_{nullptr};
+    QCheckBox* mirror_structure_{nullptr};
     QSpinBox* parallelism_{nullptr};
     QListWidget* preview_{nullptr};
     QLabel* status_{nullptr};

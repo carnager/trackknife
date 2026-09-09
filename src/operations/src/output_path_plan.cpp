@@ -293,8 +293,39 @@ std::string_view output_path_plan_issue_kind_name(const OutputPathPlanIssueKind 
         return "source target dependency";
     case OutputPathPlanIssueKind::case_only_change:
         return "case-only change";
+    case OutputPathPlanIssueKind::mirror_source_outside_root:
+        return "source outside the mirror root";
     }
     return "output path issue";
+}
+
+std::string common_source_directory_raw_path(const std::span<const std::string> raw_paths) {
+    std::string common;
+    bool first = true;
+    for (const auto& raw_path : raw_paths) {
+        const auto slash = raw_path.rfind('/');
+        if (slash == std::string::npos || raw_path.front() != '/') {
+            return {};
+        }
+        auto directory = slash == 0U ? std::string{"/"} : raw_path.substr(0U, slash);
+        if (first) {
+            common = std::move(directory);
+            first = false;
+            continue;
+        }
+        // Shorten to the longest shared prefix that ends on a component
+        // boundary in both directories.
+        while (!(directory == common ||
+                 (directory.size() > common.size() && directory.starts_with(common) &&
+                  (common == "/" || directory[common.size()] == '/')))) {
+            if (common == "/") {
+                return "/";
+            }
+            const auto parent = common.rfind('/');
+            common = parent == 0U ? std::string{"/"} : common.substr(0U, parent);
+        }
+    }
+    return common;
 }
 
 bool OutputPathPlan::ready() const noexcept {
@@ -366,8 +397,15 @@ plan_output_paths(const std::span<const OutputPathPlanningItem> items,
                   const OutputPathPlanningLimits& limits,
                   const std::optional<ConvertedPublicationPolicy>& converted) {
     std::optional<std::string> target_extension;
+    std::optional<std::string> mirror_root;
     if (converted) {
         target_extension = converted->target_extension;
+        mirror_root = converted->mirror_source_root_raw_path;
+    }
+    if (mirror_root && !is_normal_absolute_path(*mirror_root)) {
+        return std::unexpected(
+            plan_error(core::ErrorCode::invalid_argument,
+                       "mirror planning requires a normalized absolute source root"));
     }
     if (!operations.rename_files && !operations.move_files) {
         return std::unexpected(plan_error(core::ErrorCode::invalid_argument,
@@ -378,8 +416,10 @@ plan_output_paths(const std::span<const OutputPathPlanningItem> items,
             plan_error(core::ErrorCode::invalid_argument,
                        "output path planning requires a bounded non-empty item selection"));
     }
-    if (auto valid = validate_output_layout_profile(layout, limits); !valid) {
-        return std::unexpected(std::move(valid.error()));
+    if (!mirror_root) {
+        if (auto valid = validate_output_layout_profile(layout, limits); !valid) {
+            return std::unexpected(std::move(valid.error()));
+        }
     }
     if (operations.move_files) {
         if (!destination) {
@@ -407,13 +447,21 @@ plan_output_paths(const std::span<const OutputPathPlanningItem> items,
             plan_error(core::ErrorCode::cancelled, "output path planning was cancelled"));
     }
 
-    auto directory_program = compile_expression(layout, layout.relative_directory_expression,
-                                                "output layout directory expression");
-    auto basename_program =
-        compile_expression(layout, layout.basename_expression, "output layout basename expression");
-    if (!directory_program || !basename_program) {
-        return std::unexpected(!directory_program ? std::move(directory_program.error())
-                                                  : std::move(basename_program.error()));
+    // Mirror mode derives paths from the sources; the layout expressions are
+    // neither compiled nor evaluated.
+    std::optional<titleformat::Program> directory_program;
+    std::optional<titleformat::Program> basename_program;
+    if (!mirror_root) {
+        auto compiled_directory = compile_expression(layout, layout.relative_directory_expression,
+                                                     "output layout directory expression");
+        auto compiled_basename = compile_expression(layout, layout.basename_expression,
+                                                    "output layout basename expression");
+        if (!compiled_directory || !compiled_basename) {
+            return std::unexpected(!compiled_directory ? std::move(compiled_directory.error())
+                                                       : std::move(compiled_basename.error()));
+        }
+        directory_program = std::move(*compiled_directory);
+        basename_program = std::move(*compiled_basename);
     }
 
     std::unordered_map<std::string, ObservedOutputPathKind> observed;
@@ -470,58 +518,81 @@ plan_output_paths(const std::span<const OutputPathPlanningItem> items,
             continue;
         }
 
-        const PathEvaluationContext context{input.final_metadata, input.source_raw_path,
-                                            target_extension};
-        if (operations.move_files) {
-            auto evaluated = titleformat::evaluate(
-                *directory_program, context,
-                titleformat::EvaluationOptions{.maximum_steps = 100'000U,
-                                               .maximum_output_bytes = limits.expression_bytes,
-                                               .maximum_expanded_results = 1U,
-                                               .cancellation = cancellation});
-            if (!evaluated) {
-                if (evaluated.error().code == core::ErrorCode::cancelled) {
-                    return std::unexpected(std::move(evaluated.error()));
-                }
-                add_item_issue(item, OutputPathPlanIssueKind::expression_evaluation_failed,
-                               "Directory expression failed: " + evaluated.error().message);
-            } else {
-                item.source.raw_relative_directory = std::move(evaluated->text);
+        if (mirror_root) {
+            // Byte-exact mirroring below the source root: raw OS path bytes,
+            // so the expression-output UTF-8 gate does not apply.
+            const auto& source = input.source_raw_path;
+            const auto slash = source.rfind('/');
+            const auto directory = slash == 0U ? std::string{"/"} : source.substr(0U, slash);
+            const auto inside =
+                directory == *mirror_root ||
+                (directory.size() > mirror_root->size() && directory.starts_with(*mirror_root) &&
+                 (*mirror_root == "/" || directory[mirror_root->size()] == '/'));
+            if (!inside) {
+                add_item_issue(item, OutputPathPlanIssueKind::mirror_source_outside_root,
+                               "Source lies outside the mirrored root directory");
+            } else if (directory != *mirror_root) {
+                item.source.raw_relative_directory =
+                    directory.substr(*mirror_root == "/" ? 1U : mirror_root->size() + 1U);
             }
-        }
-        if (operations.rename_files) {
-            auto evaluated = titleformat::evaluate(
-                *basename_program, context,
-                titleformat::EvaluationOptions{.maximum_steps = 100'000U,
-                                               .maximum_output_bytes = limits.expression_bytes,
-                                               .maximum_expanded_results = 1U,
-                                               .cancellation = cancellation});
-            if (!evaluated) {
-                if (evaluated.error().code == core::ErrorCode::cancelled) {
-                    return std::unexpected(std::move(evaluated.error()));
+            const auto filename = source.substr(slash + 1U);
+            const auto dot = filename.rfind('.');
+            item.source.raw_basename =
+                dot == std::string::npos || dot == 0U ? filename : filename.substr(0U, dot);
+        } else {
+            const PathEvaluationContext context{input.final_metadata, input.source_raw_path,
+                                                target_extension};
+            if (operations.move_files) {
+                auto evaluated = titleformat::evaluate(
+                    *directory_program, context,
+                    titleformat::EvaluationOptions{.maximum_steps = 100'000U,
+                                                   .maximum_output_bytes = limits.expression_bytes,
+                                                   .maximum_expanded_results = 1U,
+                                                   .cancellation = cancellation});
+                if (!evaluated) {
+                    if (evaluated.error().code == core::ErrorCode::cancelled) {
+                        return std::unexpected(std::move(evaluated.error()));
+                    }
+                    add_item_issue(item, OutputPathPlanIssueKind::expression_evaluation_failed,
+                                   "Directory expression failed: " + evaluated.error().message);
+                } else {
+                    item.source.raw_relative_directory = std::move(evaluated->text);
                 }
-                add_item_issue(item, OutputPathPlanIssueKind::expression_evaluation_failed,
-                               "Basename expression failed: " + evaluated.error().message);
-            } else {
-                item.source.raw_basename = std::move(evaluated->text);
             }
-        }
-        if (auto valid =
-                validate_utf8(item.source.raw_relative_directory, "evaluated relative directory");
-            !valid) {
-            add_item_issue(item, OutputPathPlanIssueKind::invalid_expression_output,
-                           valid.error().message);
-        }
-        if (operations.rename_files) {
-            if (auto valid = validate_utf8(item.source.raw_basename, "evaluated basename");
+            if (operations.rename_files) {
+                auto evaluated = titleformat::evaluate(
+                    *basename_program, context,
+                    titleformat::EvaluationOptions{.maximum_steps = 100'000U,
+                                                   .maximum_output_bytes = limits.expression_bytes,
+                                                   .maximum_expanded_results = 1U,
+                                                   .cancellation = cancellation});
+                if (!evaluated) {
+                    if (evaluated.error().code == core::ErrorCode::cancelled) {
+                        return std::unexpected(std::move(evaluated.error()));
+                    }
+                    add_item_issue(item, OutputPathPlanIssueKind::expression_evaluation_failed,
+                                   "Basename expression failed: " + evaluated.error().message);
+                } else {
+                    item.source.raw_basename = std::move(evaluated->text);
+                }
+            }
+            if (auto valid = validate_utf8(item.source.raw_relative_directory,
+                                           "evaluated relative directory");
                 !valid) {
                 add_item_issue(item, OutputPathPlanIssueKind::invalid_expression_output,
                                valid.error().message);
             }
-        }
-        if (operations.move_files && item.source.raw_relative_directory.starts_with('/')) {
-            add_item_issue(item, OutputPathPlanIssueKind::absolute_relative_directory,
-                           "Directory expression produced an absolute path");
+            if (operations.rename_files) {
+                if (auto valid = validate_utf8(item.source.raw_basename, "evaluated basename");
+                    !valid) {
+                    add_item_issue(item, OutputPathPlanIssueKind::invalid_expression_output,
+                                   valid.error().message);
+                }
+            }
+            if (operations.move_files && item.source.raw_relative_directory.starts_with('/')) {
+                add_item_issue(item, OutputPathPlanIssueKind::absolute_relative_directory,
+                               "Directory expression produced an absolute path");
+            }
         }
 
         const auto sanitized_directory = sanitize_directory(item.source.raw_relative_directory);

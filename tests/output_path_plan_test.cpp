@@ -205,9 +205,9 @@ void forcedTargetExtensionRenamesAndResolvesInExpressions() {
         .source_revision = revision(1U),
         .final_metadata = document("Converted"),
     }};
-    const auto planned = plan_output_paths(items, {.rename_files = true, .move_files = false},
-                                           forced_layout, std::nullopt, {}, {}, {},
-                                           ConvertedPublicationPolicy{.target_extension = "opus"});
+    const auto planned = plan_output_paths(
+        items, {.rename_files = true, .move_files = false}, forced_layout, std::nullopt, {}, {}, {},
+        ConvertedPublicationPolicy{.target_extension = "opus", .mirror_source_root_raw_path = {}});
     CHECK(planned.has_value());
     CHECK(planned && planned->ready());
     // The expression's %extension% resolves to the forced target and the
@@ -238,9 +238,10 @@ void forcedTargetExtensionRenamesAndResolvesInExpressions() {
                                       .source_revision = revision(1U),
                                       .final_metadata = document("Second"),
                                   }};
-    const auto fanned = plan_output_paths(fanout_items, {.rename_files = true, .move_files = false},
-                                          fanout_layout, std::nullopt, {}, {}, {},
-                                          ConvertedPublicationPolicy{.target_extension = "opus"});
+    const auto fanned = plan_output_paths(
+        fanout_items, {.rename_files = true, .move_files = false}, fanout_layout, std::nullopt, {},
+        {}, {},
+        ConvertedPublicationPolicy{.target_extension = "opus", .mirror_source_root_raw_path = {}});
     CHECK(fanned.has_value());
     CHECK(fanned && fanned->ready());
     CHECK(fanned && fanned->sources.size() == 2U);
@@ -429,7 +430,111 @@ void validationLimitsAndCancellationRejectInvalidPlans() {
 
 } // namespace
 
+// ADR-0132: mirror mode reproduces the source structure below the inferred
+// root byte-exactly, swaps the extension, and fails closed for sources
+// outside the root or logical items sharing one file.
+void mirrorModeReproducesSourceStructureBelowTheRoot() {
+    using namespace trackknife::operations;
+    const std::vector<std::string> paths{"/music/Artist/Album/01 - One.flac",
+                                         "/music/Artist/Album/CD2/02.flac",
+                                         "/music/Artist/one.flac"};
+    CHECK(common_source_directory_raw_path(paths) == "/music/Artist");
+    CHECK(common_source_directory_raw_path({}).empty());
+    const std::vector<std::string> disjoint{"/music/a.flac", "/video/b.flac"};
+    CHECK(common_source_directory_raw_path(disjoint) == "/");
+    const std::vector<std::string> relative{"relative.flac"};
+    CHECK(common_source_directory_raw_path(relative).empty());
+
+    const auto mirrored_policy = [](std::string root) {
+        return ConvertedPublicationPolicy{.target_extension = "opus",
+                                          .mirror_source_root_raw_path = std::move(root)};
+    };
+    const std::array items{
+        OutputPathPlanningItem{.item_index = 0U,
+                               .source_raw_path = paths[0],
+                               .source_revision = revision(1U),
+                               .final_metadata = document("Ignored")},
+        OutputPathPlanningItem{.item_index = 1U,
+                               .source_raw_path = paths[1],
+                               .source_revision = revision(2U),
+                               .final_metadata = document("Ignored")},
+        OutputPathPlanningItem{.item_index = 2U,
+                               .source_raw_path = paths[2],
+                               .source_revision = revision(3U),
+                               .final_metadata = document("Ignored")},
+    };
+    const auto plan =
+        plan_output_paths(items, {.rename_files = true, .move_files = true}, layout(),
+                          destination(), {}, {}, {}, mirrored_policy("/music/Artist"));
+    CHECK(plan.has_value());
+    if (!plan) {
+        std::cerr << plan.error().message << '\n';
+        return;
+    }
+    CHECK(plan->ready());
+    CHECK(plan->issues.empty());
+    CHECK(plan->sources.size() == 3U);
+    CHECK(plan->sources[0].raw_relative_directory == "Album");
+    CHECK(plan->sources[0].raw_basename == "01 - One");
+    CHECK(plan->sources[0].target_raw_path == "/library/Album/01 - One.opus");
+    CHECK(plan->sources[1].target_raw_path == "/library/Album/CD2/02.opus");
+    CHECK(plan->sources[2].raw_relative_directory.empty());
+    CHECK(plan->sources[2].target_raw_path == "/library/one.opus");
+
+    // Non-UTF-8 source names mirror byte-exactly; only the extension changes.
+    const std::string invalid_filename{"bad-\xff.flac", 10U};
+    const std::array raw_items{OutputPathPlanningItem{
+        .item_index = 0U,
+        .source_raw_path = "/incoming/deep/" + invalid_filename,
+        .source_revision = revision(4U),
+        .final_metadata = document("Ignored"),
+    }};
+    const auto raw_plan =
+        plan_output_paths(raw_items, {.rename_files = true, .move_files = true}, layout(),
+                          destination(), {}, {}, {}, mirrored_policy("/incoming"));
+    CHECK(raw_plan.has_value() && raw_plan->ready());
+    const std::string mirrored_raw_target{"/library/deep/bad-\xff.opus", 24U};
+    CHECK(raw_plan && raw_plan->sources[0].target_raw_path == mirrored_raw_target);
+
+    // A source outside the mirror root blocks instead of guessing.
+    const std::array outside_items{OutputPathPlanningItem{
+        .item_index = 0U,
+        .source_raw_path = "/elsewhere/track.flac",
+        .source_revision = revision(5U),
+        .final_metadata = document("Ignored"),
+    }};
+    const auto outside =
+        plan_output_paths(outside_items, {.rename_files = true, .move_files = true}, layout(),
+                          destination(), {}, {}, {}, mirrored_policy("/music/Artist"));
+    CHECK(outside.has_value() && !outside->ready());
+    CHECK(outside && has_issue(*outside, OutputPathPlanIssueKind::mirror_source_outside_root));
+
+    // Logical items sharing one physical source map onto one mirrored name:
+    // the duplicate-target conflict fails closed, mirror mode never splits.
+    const std::array shared_items{
+        OutputPathPlanningItem{.item_index = 0U,
+                               .source_raw_path = "/music/Artist/image.flac",
+                               .source_revision = revision(6U),
+                               .final_metadata = document("First")},
+        OutputPathPlanningItem{.item_index = 1U,
+                               .source_raw_path = "/music/Artist/image.flac",
+                               .source_revision = revision(6U),
+                               .final_metadata = document("Second")},
+    };
+    const auto shared =
+        plan_output_paths(shared_items, {.rename_files = true, .move_files = true}, layout(),
+                          destination(), {}, {}, {}, mirrored_policy("/music/Artist"));
+    CHECK(shared.has_value() && !shared->ready());
+    CHECK(shared && has_issue(*shared, OutputPathPlanIssueKind::duplicate_target));
+
+    // The mirror root itself must be a normalized absolute path.
+    CHECK(!plan_output_paths(items, {.rename_files = true, .move_files = true}, layout(),
+                             destination(), {}, {}, {}, mirrored_policy("relative"))
+               .has_value());
+}
+
 int main() {
+    mirrorModeReproducesSourceStructureBelowTheRoot();
     renameAndMoveUseFinalMetadataAndExposeSanitization();
     independentTogglesPreserveDirectoryExtensionAndRawFilename();
     forcedTargetExtensionRenamesAndResolvesInExpressions();

@@ -244,6 +244,16 @@ ConvertDialog::ConvertDialog(std::vector<ConvertDialogItem> items, ConvertProfil
     form->addRow(QStringLiteral("Layout:"), layout_choice_);
     form->setRowVisible(layout_choice_, false);
 
+    mirror_structure_ = new QCheckBox(QStringLiteral("Mirror source folders"), this);
+    mirror_structure_->setObjectName(QStringLiteral("bench-convert-mirror"));
+    mirror_structure_->setChecked(
+        settings.value(QStringLiteral("convert/mirror-structure"), false).toBool());
+    mirror_structure_->setToolTip(
+        QStringLiteral("Reproduces the folder structure below the sources' deepest common "
+                       "directory beneath the destination, keeping source file names instead of "
+                       "the expressions"));
+    form->addRow(QString{}, mirror_structure_);
+
     directory_expression_ = new QLineEdit(this);
     directory_expression_->setObjectName(QStringLiteral("bench-convert-directory-expression"));
     directory_expression_->setText(settingsText(settings, "convert/directory-expression",
@@ -346,6 +356,15 @@ ConvertDialog::ConvertDialog(std::vector<ConvertDialogItem> items, ConvertProfil
     connect(destination_, &QLineEdit::textChanged, this, schedule);
     connect(directory_expression_, &QLineEdit::textChanged, this, schedule);
     connect(basename_expression_, &QLineEdit::textChanged, this, schedule);
+    const auto apply_mirror_mode = [this, schedule] {
+        const auto mirrored = mirror_structure_->isChecked();
+        directory_expression_->setEnabled(!mirrored);
+        basename_expression_->setEnabled(!mirrored);
+        layout_choice_->setEnabled(!mirrored);
+        schedule();
+    };
+    connect(mirror_structure_, &QCheckBox::toggled, this, apply_mirror_mode);
+    apply_mirror_mode();
     connect(preset_, &QComboBox::currentIndexChanged, this, schedule);
     connect(preset_, &QComboBox::currentIndexChanged, this, [this] {
         const auto chosen = preset_->currentData().toString().toStdString();
@@ -597,10 +616,25 @@ void ConvertDialog::refreshPreview() {
     operations::DestinationProfile destination;
     destination.name = "convert";
     destination.root_raw_path = std::filesystem::path{root}.lexically_normal().native();
+    operations::ConvertedPublicationPolicy converted{.target_extension = preset->file_extension,
+                                                     .mirror_source_root_raw_path = {}};
+    if (mirror_structure_->isChecked()) {
+        std::vector<std::string> source_paths;
+        source_paths.reserve(planning_items.size());
+        for (const auto& planning_item : planning_items) {
+            source_paths.push_back(planning_item.source_raw_path);
+        }
+        auto mirror_root = operations::common_source_directory_raw_path(source_paths);
+        if (mirror_root.empty()) {
+            status_->setText(QStringLiteral("No common source folder to mirror."));
+            return;
+        }
+        preview_->addItem(QStringLiteral("Mirroring below %1").arg(displayText(mirror_root)));
+        converted.mirror_source_root_raw_path = std::move(mirror_root);
+    }
     auto planned = operations::plan_output_paths(
         planning_items, {.rename_files = true, .move_files = true}, std::move(layout),
-        std::move(destination), {}, {}, {},
-        operations::ConvertedPublicationPolicy{.target_extension = preset->file_extension});
+        std::move(destination), {}, {}, {}, converted);
     if (!planned) {
         status_->setText(displayText(planned.error().message));
         return;
@@ -655,6 +689,7 @@ void ConvertDialog::startConversion() {
     settings.setValue(QStringLiteral("convert/resample-rate"), resample_->currentData().toInt());
     settings.setValue(QStringLiteral("convert/bit-depth"), bit_depth_->currentData().toInt());
     settings.setValue(QStringLiteral("convert/embed-artwork"), embed_artwork_->isChecked());
+    settings.setValue(QStringLiteral("convert/mirror-structure"), mirror_structure_->isChecked());
 
     std::vector<convert::ConversionScanItem> scan_items;
     scan_items.reserve(plan_->sources.size());

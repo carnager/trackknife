@@ -1369,9 +1369,15 @@ afterwards is a separate explicit command in Trackbench's MPD authority.
   Real-file tests round-trip each target independently with TagLib; the
   converter dialog exposes a persisted, default-on "Embed cover art"
   opt-out.
-- Next: mirror-source-structure destination mode, a
-  downsample-only rate cap, keep-source bit depth, and stale-ReplayGain
-  handling on signal change.
+- Done: ADR-0132 adds the mirror-source-structure destination mode: the
+  path planner derives relative directories and basenames byte-exactly
+  from each source's location below the inferred deepest common source
+  directory, keeping sanitization, containment, and collision checks;
+  sources outside the root and shared-source logical items fail closed.
+  The converter dialog exposes it as a persisted "Mirror source folders"
+  checkbox that disables the naming expressions.
+- Next: a downsample-only rate cap, keep-source bit depth, and
+  stale-ReplayGain handling on signal change.
 
 ### Exit criteria
 
