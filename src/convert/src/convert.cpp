@@ -317,6 +317,27 @@ ensure_convert_capacity(EncoderPipeline& pipeline, const std::string& raw_path, 
     return {};
 }
 
+// Loudness claims measured against the source signal are stale after any
+// re-encode; conversion strips them instead of transferring them
+// (ADR-0133). Canonical names have separators removed and are lowercase.
+[[nodiscard]] bool is_loudness_field(const std::string_view canonical_name) {
+    return canonical_name.starts_with("replaygain") || canonical_name == "r128trackgain" ||
+           canonical_name == "r128albumgain";
+}
+
+[[nodiscard]] metadata::MetadataDocument
+strip_loudness_fields(const metadata::MetadataDocument& document) {
+    metadata::MetadataDocument stripped;
+    stripped.fields.reserve(document.fields.size());
+    for (const auto& field : document.fields) {
+        if (!is_loudness_field(field.canonical_name)) {
+            stripped.fields.push_back(field);
+        }
+    }
+    stripped.unsupported_native_objects = document.unsupported_native_objects;
+    return stripped;
+}
+
 // The ID3 muxer only writes proper frames for FFmpeg's generic key names;
 // everything else becomes a TXXX frame with the key as its description.
 [[nodiscard]] std::string id3_metadata_key(const std::string& canonical_name,
@@ -518,21 +539,27 @@ ensure_convert_capacity(EncoderPipeline& pipeline, const std::string& raw_path, 
 [[nodiscard]] core::Result<void> verify_written_metadata(const std::string& temporary_path,
                                                          const metadata::MetadataDocument& document,
                                                          const std::string& raw_path) {
-    const auto requested = document.effective_fields();
-    if (requested.empty()) {
-        return {};
-    }
     const auto reread = metadata::read_local_metadata(temporary_path);
     if (!reread) {
         return std::unexpected(std::move(core::Error{reread.error()})
                                    .with_context("verify", "rereading converted metadata failed"));
     }
-    for (const auto& field : requested) {
+    for (const auto& field : document.effective_fields()) {
         const auto values = reread->document.effective_values(field.canonical_name);
         if (values != field.values) {
             return std::unexpected(core::Error{
                 .code = core::ErrorCode::invariant,
                 .message = "converted metadata reread differs for " + field.canonical_name,
+                .context = {{.key = "path", .value = raw_path},
+                            {.key = "field", .value = field.canonical_name}}});
+        }
+    }
+    // Loudness fields were stripped before the transfer; none may survive.
+    for (const auto& field : reread->document.effective_fields()) {
+        if (is_loudness_field(field.canonical_name)) {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::invariant,
+                .message = "stale ReplayGain survived the conversion as " + field.canonical_name,
                 .context = {{.key = "path", .value = raw_path},
                             {.key = "field", .value = field.canonical_name}}});
         }
@@ -722,9 +749,10 @@ core::Result<ConvertedAudioFile> convert_audio_file(const AudioConversionRequest
                                      core::StableId::random().to_string());
     TemporaryOutputGuard guard{temporary};
 
+    const auto transfer_metadata = strip_loudness_fields(request.metadata);
     auto pipeline_result = open_pipeline(
         request.preset, source_format, request.target_sample_rate, request.target_bit_depth,
-        request.metadata, request.artwork, temporary.native(), request.destination_raw_path);
+        transfer_metadata, request.artwork, temporary.native(), request.destination_raw_path);
     if (!pipeline_result) {
         return std::unexpected(pipeline_result.error());
     }
@@ -865,7 +893,7 @@ core::Result<ConvertedAudioFile> convert_audio_file(const AudioConversionRequest
                         {.key = "verified_frames", .value = std::to_string(verified_frames)}}});
     }
 
-    if (auto tags_verified = verify_written_metadata(temporary.native(), request.metadata,
+    if (auto tags_verified = verify_written_metadata(temporary.native(), transfer_metadata,
                                                      request.destination_raw_path);
         !tags_verified) {
         return std::unexpected(tags_verified.error());

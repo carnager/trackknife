@@ -1376,8 +1376,12 @@ afterwards is a separate explicit command in Trackbench's MPD authority.
   sources outside the root and shared-source logical items fail closed.
   The converter dialog exposes it as a persisted "Mirror source folders"
   checkbox that disables the naming expressions.
-- Next: a downsample-only rate cap, keep-source bit depth, and
-  stale-ReplayGain handling on signal change.
+- Done: ADR-0133 treats every conversion as signal-changing: the
+  mux-time transfer strips `REPLAYGAIN_*` and `R128_*` fields, the
+  pre-publication reread verifies none survive, and real-file tests pin
+  the stripping for every qualified preset. A bit-identical lossless
+  transfer exception and automatic output rescanning remain follow-ups.
+- Next: a downsample-only rate cap and keep-source bit depth.
 
 ### Exit criteria
 

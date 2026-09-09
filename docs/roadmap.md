@@ -104,7 +104,10 @@ chosen; external query-language compatibility is not an accepted requirement.
   (ADR-0132): byte-exact mirroring below the sources' inferred deepest common
   directory, with the planner's sanitization/collision/containment checks
   unchanged. An editable mirror root remains a follow-up.
-- [ ] Remove or recalculate stale ReplayGain when processing changes the audio.
+- [x] Remove stale ReplayGain when processing changes the audio (ADR-0133):
+  conversion strips `REPLAYGAIN_*`/`R128_*` fields from the transfer and
+  verifies none survive in the output. Automatically rescanning converted
+  outputs remains a follow-up tied to the M7 storage work.
 
 The existing converter already supports codec presets, expression-based naming,
 resampling, bit-depth choices, and text metadata transfer. Preserve its

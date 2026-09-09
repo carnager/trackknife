@@ -382,7 +382,12 @@ void carriesMetadataIntoEveryPreset() {
     document.fields.push_back(field("title", "TITLE", {"Converted Tone"}));
     document.fields.push_back(field("artist", "ARTIST", {"Fixture Band"}));
     document.fields.push_back(field("tracknumber", "TRACKNUMBER", {"7"}));
+    // Loudness claims measured against the source signal are stale after a
+    // re-encode and must be stripped, never transferred (ADR-0133).
     document.fields.push_back(field("replaygaintrackgain", "REPLAYGAIN_TRACK_GAIN", {"-6.50 dB"}));
+    document.fields.push_back(field("replaygaintrackpeak", "REPLAYGAIN_TRACK_PEAK", {"0.988547"}));
+    document.fields.push_back(field("replaygainalbumgain", "REPLAYGAIN_ALBUM_GAIN", {"-7.10 dB"}));
+    document.fields.push_back(field("r128trackgain", "R128_TRACK_GAIN", {"-1536"}));
 
     for (const auto& preset : trackknife::convert::builtin_encoder_presets()) {
         const auto destination =
@@ -415,8 +420,10 @@ void carriesMetadataIntoEveryPreset() {
               std::optional<std::string>{"Fixture Band"});
         CHECK(reread->document.first_effective_value("tracknumber") ==
               std::optional<std::string>{"7"});
-        CHECK(reread->document.first_effective_value("replaygaintrackgain") ==
-              std::optional<std::string>{"-6.50 dB"});
+        CHECK(!reread->document.first_effective_value("replaygaintrackgain").has_value());
+        CHECK(!reread->document.first_effective_value("replaygaintrackpeak").has_value());
+        CHECK(!reread->document.first_effective_value("replaygainalbumgain").has_value());
+        CHECK(!reread->document.first_effective_value("r128trackgain").has_value());
     }
 }
 
