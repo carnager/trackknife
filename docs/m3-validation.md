@@ -31,7 +31,7 @@ Build and launch with:
 ```sh
 cmake --preset dev
 cmake --build --preset dev
-./build/dev/src/app/trackknife
+./build/dev/src/bench/trackknife
 ```
 
 On both Melody and stock MPD:

@@ -102,7 +102,8 @@ is deliberately after both authority backbones are proven.
 ## Established requirements
 
 - One primary native Linux Qt 6 Widgets workspace; Wine is not part of the
-  product story. The standalone MPD executable is retained during migration.
+  product story. The standalone MPD executable was retired at parity
+  (ADR-0071).
 - Standard MPD compatibility before optional Melody extensions.
 - MPD is authoritative for its database, current queue, stored playlists,
   transport, and outputs. The MPD client is one of potentially several
