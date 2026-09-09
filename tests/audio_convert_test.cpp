@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+#include "trackknife/convert/artwork.hpp"
 #include "trackknife/convert/convert.hpp"
 #include "trackknife/convert/preset.hpp"
 #include "trackknife/convert/scan.hpp"
@@ -8,6 +9,14 @@
 #include "trackknife/formats/probe.hpp"
 #include "trackknife/metadata/document.hpp"
 #include "trackknife/metadata/local_reader.hpp"
+
+#include <taglib/attachedpictureframe.h>
+#include <taglib/flacfile.h>
+#include <taglib/id3v2tag.h>
+#include <taglib/mpegfile.h>
+#include <taglib/opusfile.h>
+#include <taglib/vorbisfile.h>
+#include <taglib/xiphcomment.h>
 
 #include <algorithm>
 #include <array>
@@ -141,6 +150,136 @@ void write_sine_wav_24_96(const std::filesystem::path& path, const double amplit
     }
 }
 
+[[nodiscard]] std::optional<std::vector<unsigned char>>
+decode_base64_file(const std::filesystem::path& path) {
+    std::ifstream input{path, std::ios::binary};
+    if (!input) {
+        return std::nullopt;
+    }
+    const std::string encoded{std::istreambuf_iterator<char>{input},
+                              std::istreambuf_iterator<char>{}};
+    std::array<int, 256> values{};
+    values.fill(-1);
+    constexpr std::string_view alphabet{
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"};
+    for (std::size_t index = 0U; index < alphabet.size(); ++index) {
+        values[static_cast<unsigned char>(alphabet[index])] = static_cast<int>(index);
+    }
+    std::vector<unsigned char> decoded;
+    unsigned accumulator = 0U;
+    unsigned bits = 0U;
+    for (const auto character : encoded) {
+        if (character == '=') {
+            break;
+        }
+        const auto byte = static_cast<unsigned char>(character);
+        const auto value = values[byte];
+        if (value < 0) {
+            if (character == '\r' || character == '\n' || character == ' ' || character == '\t') {
+                continue;
+            }
+            return std::nullopt;
+        }
+        accumulator = (accumulator << 6U) | static_cast<unsigned>(value);
+        bits += 6U;
+        if (bits >= 8U) {
+            bits -= 8U;
+            decoded.push_back(static_cast<unsigned char>((accumulator >> bits) & 0xFFU));
+        }
+    }
+    return decoded;
+}
+
+[[nodiscard]] std::filesystem::path materialize(const std::filesystem::path& fixture_directory,
+                                                const std::string_view fixture,
+                                                const std::filesystem::path& destination) {
+    const auto decoded = decode_base64_file(fixture_directory / fixture);
+    CHECK(decoded.has_value());
+    if (decoded) {
+        std::ofstream output{destination, std::ios::binary};
+        output.write(reinterpret_cast<const char*>(decoded->data()),
+                     static_cast<std::streamsize>(decoded->size()));
+        CHECK(output.good());
+    }
+    return destination;
+}
+
+struct ReadPicture {
+    std::vector<unsigned char> bytes;
+    unsigned type{0U};
+    std::string mime;
+};
+
+[[nodiscard]] std::optional<ReadPicture> from_flac_picture(const TagLib::FLAC::Picture* picture) {
+    if (picture == nullptr) {
+        return std::nullopt;
+    }
+    const auto data = picture->data();
+    return ReadPicture{
+        .bytes = {reinterpret_cast<const unsigned char*>(data.data()),
+                  reinterpret_cast<const unsigned char*>(data.data()) + data.size()},
+        .type = static_cast<unsigned>(picture->type()),
+        .mime = picture->mimeType().to8Bit(true),
+    };
+}
+
+// Rereads the single embedded cover with TagLib — deliberately independent
+// of the FFmpeg code that wrote it.
+[[nodiscard]] std::optional<ReadPicture> read_output_picture(const std::filesystem::path& path,
+                                                             const std::string& extension) {
+    if (extension == "flac") {
+        TagLib::FLAC::File file{path.c_str()};
+        if (!file.isValid() || file.pictureList().size() != 1U) {
+            return std::nullopt;
+        }
+        return from_flac_picture(file.pictureList().front());
+    }
+    if (extension == "opus" || extension == "ogg") {
+        std::optional<ReadPicture> result;
+        const auto from_comment = [&result](TagLib::Ogg::XiphComment* comment) {
+            if (comment != nullptr && comment->pictureList().size() == 1U) {
+                result = from_flac_picture(comment->pictureList().front());
+            }
+        };
+        if (extension == "opus") {
+            TagLib::Ogg::Opus::File file{path.c_str()};
+            if (file.isValid()) {
+                from_comment(file.tag());
+            }
+        } else {
+            TagLib::Ogg::Vorbis::File file{path.c_str()};
+            if (file.isValid()) {
+                from_comment(file.tag());
+            }
+        }
+        return result;
+    }
+    if (extension == "mp3") {
+        TagLib::MPEG::File file{path.c_str()};
+        auto* tag = file.isValid() ? file.ID3v2Tag(false) : nullptr;
+        if (tag == nullptr) {
+            return std::nullopt;
+        }
+        const auto& frames = tag->frameListMap()["APIC"];
+        if (frames.size() != 1U) {
+            return std::nullopt;
+        }
+        const auto* frame =
+            dynamic_cast<const TagLib::ID3v2::AttachedPictureFrame*>(frames.front());
+        if (frame == nullptr) {
+            return std::nullopt;
+        }
+        const auto data = frame->picture();
+        return ReadPicture{
+            .bytes = {reinterpret_cast<const unsigned char*>(data.data()),
+                      reinterpret_cast<const unsigned char*>(data.data()) + data.size()},
+            .type = static_cast<unsigned>(frame->type()),
+            .mime = frame->mimeType().to8Bit(true),
+        };
+    }
+    return std::nullopt;
+}
+
 // Anything besides the named survivors — hidden temporaries above all —
 // counts as leftover.
 [[nodiscard]] std::size_t entries_besides(const std::filesystem::path& directory,
@@ -196,7 +335,8 @@ void convertsToEveryPresetAtomically() {
              .preset = preset,
              .target_sample_rate = {},
              .target_bit_depth = {},
-             .metadata = {}},
+             .metadata = {},
+             .artwork = {}},
             [&last_frames, &total_present](const std::uint64_t frames_done,
                                            const std::optional<std::uint64_t> frames_total) {
                 CHECK(frames_done >= last_frames);
@@ -255,7 +395,8 @@ void carriesMetadataIntoEveryPreset() {
                                                      .preset = preset,
                                                      .target_sample_rate = {},
                                                      .target_bit_depth = {},
-                                                     .metadata = document});
+                                                     .metadata = document,
+                                                     .artwork = {}});
         if (!converted) {
             std::cerr << preset.id << ": " << converted.error().message << '\n';
         }
@@ -294,7 +435,8 @@ void resamplesOnRequestWithinEncoderConstraints() {
          .preset = *trackknife::convert::find_encoder_preset("flac"),
          .target_sample_rate = 96'000,
          .target_bit_depth = {},
-         .metadata = {}});
+         .metadata = {},
+         .artwork = {}});
     CHECK(upsampled.has_value());
     CHECK(upsampled && upsampled->sample_rate == 96'000);
     CHECK(upsampled && std::abs(upsampled->duration_samples - 48'000) <= 96'000 / 5);
@@ -309,7 +451,8 @@ void resamplesOnRequestWithinEncoderConstraints() {
          .preset = *trackknife::convert::find_encoder_preset("opus-192"),
          .target_sample_rate = 96'000,
          .target_bit_depth = {},
-         .metadata = {}});
+         .metadata = {},
+         .artwork = {}});
     CHECK(constrained.has_value());
     CHECK(constrained && constrained->sample_rate == 48'000);
 
@@ -322,7 +465,8 @@ void resamplesOnRequestWithinEncoderConstraints() {
          .preset = *trackknife::convert::find_encoder_preset("flac"),
          .target_sample_rate = 4'000,
          .target_bit_depth = {},
-         .metadata = {}});
+         .metadata = {},
+         .artwork = {}});
     CHECK(!absurd.has_value());
     CHECK(!absurd && absurd.error().code == trackknife::core::ErrorCode::invalid_argument);
     CHECK(entries_besides(directory.path(), {"tone.wav", "up.flac", "constrained.opus"}) == 0U);
@@ -353,7 +497,8 @@ void quantizesHiResToSixteenFortyFourWithDither() {
          .preset = *trackknife::convert::find_encoder_preset("flac"),
          .target_sample_rate = 44'100,
          .target_bit_depth = 16,
-         .metadata = {}});
+         .metadata = {},
+         .artwork = {}});
     CHECK(quantized.has_value());
     if (!quantized) {
         std::cerr << quantized.error().message << '\n';
@@ -375,7 +520,8 @@ void quantizesHiResToSixteenFortyFourWithDither() {
          .preset = *trackknife::convert::find_encoder_preset("flac"),
          .target_sample_rate = {},
          .target_bit_depth = {},
-         .metadata = {}});
+         .metadata = {},
+         .artwork = {}});
     CHECK(kept.has_value());
     const auto [archive_format, archive_rate] = probe_format(archive);
     CHECK(archive_format == "s32");
@@ -390,7 +536,8 @@ void quantizesHiResToSixteenFortyFourWithDither() {
          .preset = *trackknife::convert::find_encoder_preset("opus-192"),
          .target_sample_rate = {},
          .target_bit_depth = 16,
-         .metadata = {}});
+         .metadata = {},
+         .artwork = {}});
     CHECK(lossy.has_value());
     CHECK(lossy && lossy->sample_rate == 48'000);
 
@@ -403,7 +550,8 @@ void quantizesHiResToSixteenFortyFourWithDither() {
          .preset = *trackknife::convert::find_encoder_preset("flac"),
          .target_sample_rate = {},
          .target_bit_depth = 20,
-         .metadata = {}});
+         .metadata = {},
+         .artwork = {}});
     CHECK(!odd.has_value());
     CHECK(!odd && odd.error().code == trackknife::core::ErrorCode::invalid_argument);
 }
@@ -424,7 +572,8 @@ void refusesExistingDestinationAndMissingDirectory() {
                                                  .preset = preset,
                                                  .target_sample_rate = {},
                                                  .target_bit_depth = {},
-                                                 .metadata = {}});
+                                                 .metadata = {},
+                                                 .artwork = {}});
     CHECK(!conflicting.has_value());
     CHECK(!conflicting && conflicting.error().code == trackknife::core::ErrorCode::conflict);
     {
@@ -443,7 +592,8 @@ void refusesExistingDestinationAndMissingDirectory() {
                                                  .preset = preset,
                                                  .target_sample_rate = {},
                                                  .target_bit_depth = {},
-                                                 .metadata = {}});
+                                                 .metadata = {},
+                                                 .artwork = {}});
     CHECK(!orphaned.has_value());
     CHECK(!orphaned && orphaned.error().code == trackknife::core::ErrorCode::invalid_argument);
 
@@ -464,7 +614,8 @@ void cancellationLeavesNoPartialOutput() {
          .preset = *trackknife::convert::find_encoder_preset("opus-192"),
          .target_sample_rate = {},
          .target_bit_depth = {},
-         .metadata = {}},
+         .metadata = {},
+         .artwork = {}},
         {}, cancellation.token());
     CHECK(!cancelled.has_value());
     CHECK(!cancelled && cancelled.error().code == trackknife::core::ErrorCode::cancelled);
@@ -507,7 +658,8 @@ void scansItemsInParallelIsolatingFailures() {
         {.preset = preset,
          .maximum_parallelism = 3U,
          .target_sample_rate = {},
-         .target_bit_depth = {}},
+         .target_bit_depth = {},
+         .carry_artwork = false},
         [&final_completed](const trackknife::convert::ConversionScanProgress& update) {
             final_completed = std::max(final_completed, update.completed_items);
             CHECK(update.total_items == 7U);
@@ -539,7 +691,8 @@ void scansItemsInParallelIsolatingFailures() {
     CHECK(trackknife::convert::scan_conversion(items, {.preset = preset,
                                                        .maximum_parallelism = 0U,
                                                        .target_sample_rate = {},
-                                                       .target_bit_depth = {}})
+                                                       .target_bit_depth = {},
+                                                       .carry_artwork = false})
               .has_value() == false);
 
     trackknife::core::CancellationSource cancellation;
@@ -548,7 +701,8 @@ void scansItemsInParallelIsolatingFailures() {
                                                                 {.preset = preset,
                                                                  .maximum_parallelism = 1U,
                                                                  .target_sample_rate = {},
-                                                                 .target_bit_depth = {}},
+                                                                 .target_bit_depth = {},
+                                                                 .carry_artwork = false},
                                                                 {}, cancellation.token());
     CHECK(cancelled.has_value());
     CHECK(cancelled && cancelled->cancellation_requested);
@@ -556,12 +710,136 @@ void scansItemsInParallelIsolatingFailures() {
           cancelled->items[0].state == trackknife::convert::ConversionScanState::cancelled);
 }
 
+// ADR-0131: the resolved cover must round-trip byte-exactly into every
+// qualified preset, with the FLAC source's role-level type preserved.
+void carriesArtworkIntoEveryPreset(const std::filesystem::path& fixture_directory) {
+    TemporaryDirectory directory;
+    const auto source =
+        materialize(fixture_directory, "art-tone-flac.b64", directory.path() / "art-tone.flac");
+
+    // The fixture stores its picture with the native type "Other"; the
+    // qualified FLAC read must preserve that instead of reclassifying it.
+    const auto artwork = trackknife::convert::resolve_conversion_artwork(source.native());
+    CHECK(artwork.has_value());
+    if (!artwork) {
+        return;
+    }
+    CHECK(artwork->mime_type == "image/png");
+    CHECK(artwork->picture_type == 0U);
+    CHECK(artwork->width == 64U && artwork->height == 64U);
+    CHECK(!artwork->bytes.empty());
+
+    for (const auto& preset : trackknife::convert::builtin_encoder_presets()) {
+        const auto destination =
+            directory.path() / ("covered-" + preset.id + "." + preset.file_extension);
+        const auto converted =
+            trackknife::convert::convert_audio_file({.source_raw_path = source.native(),
+                                                     .source_selection = {},
+                                                     .source_range = {},
+                                                     .destination_raw_path = destination.native(),
+                                                     .preset = preset,
+                                                     .target_sample_rate = {},
+                                                     .target_bit_depth = {},
+                                                     .metadata = {},
+                                                     .artwork = artwork});
+        CHECK(converted.has_value());
+        if (!converted) {
+            std::cerr << preset.id << ": " << converted.error().message << '\n';
+            continue;
+        }
+        const auto reread = read_output_picture(destination, preset.file_extension);
+        CHECK(reread.has_value());
+        if (reread) {
+            CHECK(reread->bytes == artwork->bytes);
+            CHECK(reread->type == artwork->picture_type);
+            CHECK(reread->mime == artwork->mime_type);
+        }
+    }
+
+    // A converted Opus is itself a valid source: its embedded cover resolves
+    // through the container-agnostic reader, normalized to a front cover.
+    const auto opus_output = directory.path() / "covered-opus-192.opus";
+    const auto from_opus = trackknife::convert::resolve_conversion_artwork(opus_output.native());
+    CHECK(from_opus.has_value());
+    if (from_opus) {
+        CHECK(from_opus->bytes == artwork->bytes);
+        CHECK(from_opus->picture_type == 3U);
+    }
+}
+
+// A source without embedded pictures falls back to the exact-basename
+// sibling cover, carried as a front cover; the parallel scan resolves it
+// through its carry_artwork option.
+void carriesExternalCoverThroughTheScan(const std::filesystem::path& fixture_directory) {
+    TemporaryDirectory directory;
+    const auto source = directory.path() / "tone.wav";
+    write_sine_wav(source, 0.6, 1.0);
+    const auto flac_fixture =
+        materialize(fixture_directory, "art-tone-flac.b64", directory.path() / "art-donor.flac");
+    const auto donor = trackknife::convert::resolve_conversion_artwork(flac_fixture.native());
+    CHECK(donor.has_value());
+    if (!donor) {
+        return;
+    }
+    {
+        std::ofstream cover{directory.path() / "cover.png", std::ios::binary};
+        cover.write(reinterpret_cast<const char*>(donor->bytes.data()),
+                    static_cast<std::streamsize>(donor->bytes.size()));
+        CHECK(cover.good());
+    }
+
+    const std::vector<trackknife::convert::ConversionScanItem> items{
+        {.item_index = 0U,
+         .source_raw_path = source.native(),
+         .selection = {},
+         .range = {},
+         .destination_raw_path = (directory.path() / "covered.flac").native(),
+         .metadata = {}}};
+    const auto result = trackknife::convert::scan_conversion(
+        items, {.preset = *trackknife::convert::find_encoder_preset("flac"),
+                .maximum_parallelism = 1U,
+                .target_sample_rate = {},
+                .target_bit_depth = {},
+                .carry_artwork = true});
+    CHECK(result.has_value() && result->converted_count() == 1U);
+    const auto reread = read_output_picture(directory.path() / "covered.flac", "flac");
+    CHECK(reread.has_value());
+    if (reread) {
+        CHECK(reread->bytes == donor->bytes);
+        CHECK(reread->type == 3U);
+    }
+
+    // Without artwork carriage the same conversion embeds nothing.
+    const std::vector<trackknife::convert::ConversionScanItem> plain{
+        {.item_index = 0U,
+         .source_raw_path = source.native(),
+         .selection = {},
+         .range = {},
+         .destination_raw_path = (directory.path() / "plain.flac").native(),
+         .metadata = {}}};
+    const auto without = trackknife::convert::scan_conversion(
+        plain, {.preset = *trackknife::convert::find_encoder_preset("flac"),
+                .maximum_parallelism = 1U,
+                .target_sample_rate = {},
+                .target_bit_depth = {},
+                .carry_artwork = false});
+    CHECK(without.has_value() && without->converted_count() == 1U);
+    CHECK(!read_output_picture(directory.path() / "plain.flac", "flac").has_value());
+}
+
 } // namespace
 
-int main() {
+int main(const int argc, char** argv) {
+    if (argc < 2) {
+        std::cerr << "usage: trackknife_audio_convert_tests <fixture-directory>\n";
+        return 1;
+    }
+    const std::filesystem::path fixture_directory{argv[1]};
     builtinPresetsProbeAvailable();
     convertsToEveryPresetAtomically();
     carriesMetadataIntoEveryPreset();
+    carriesArtworkIntoEveryPreset(fixture_directory);
+    carriesExternalCoverThroughTheScan(fixture_directory);
     resamplesOnRequestWithinEncoderConstraints();
     quantizesHiResToSixteenFortyFourWithDither();
     refusesExistingDestinationAndMissingDirectory();

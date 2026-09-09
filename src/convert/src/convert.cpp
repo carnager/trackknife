@@ -4,12 +4,14 @@
 
 #include "trackknife/core/atomic_rename.hpp"
 #include "trackknife/core/stable_id.hpp"
+#include "trackknife/formats/artwork.hpp"
 #include "trackknife/metadata/local_reader.hpp"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/audio_fifo.h>
+#include <libavutil/base64.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/dict.h>
 #include <libavutil/error.h>
@@ -26,6 +28,7 @@ extern "C" {
 #include <cerrno>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -89,6 +92,7 @@ struct EncoderPipeline {
     AVFrame* convert_frame{nullptr};
     AVPacket* packet{nullptr};
     AVStream* stream{nullptr};
+    AVStream* picture_stream{nullptr};
     std::int64_t next_pts{0};
 
     EncoderPipeline() = default;
@@ -357,6 +361,158 @@ ensure_convert_capacity(EncoderPipeline& pipeline, const std::string& raw_path, 
     return {};
 }
 
+// FFmpeg's shared FLAC/ID3v2 picture-type vocabulary: the muxers map an
+// attached-picture stream's "comment" metadata onto the numeric type
+// through exactly these strings.
+[[nodiscard]] const char* picture_type_name(const std::uint32_t picture_type) {
+    static constexpr std::array names{"Other",
+                                      "32x32 pixels 'file icon'",
+                                      "Other file icon",
+                                      "Cover (front)",
+                                      "Cover (back)",
+                                      "Leaflet page",
+                                      "Media (e.g. label side of CD)",
+                                      "Lead artist/lead performer/soloist",
+                                      "Artist/performer",
+                                      "Conductor",
+                                      "Band/Orchestra",
+                                      "Composer",
+                                      "Lyricist/text writer",
+                                      "Recording Location",
+                                      "During recording",
+                                      "During performance",
+                                      "Movie/video screen capture",
+                                      "A bright coloured fish",
+                                      "Illustration",
+                                      "Band/artist logotype",
+                                      "Publisher/Studio logotype"};
+    return picture_type < names.size() ? names[picture_type] : names[3];
+}
+
+// The FLAC PICTURE structure that Vorbis comments carry base64-encoded as
+// METADATA_BLOCK_PICTURE (the standard Ogg cover-art mapping).
+[[nodiscard]] std::string metadata_block_picture(const ConversionArtwork& artwork) {
+    std::vector<unsigned char> block;
+    block.reserve(32U + artwork.mime_type.size() + artwork.description.size() +
+                  artwork.bytes.size());
+    const auto append_be32 = [&block](const std::uint32_t value) {
+        block.push_back(static_cast<unsigned char>(value >> 24U));
+        block.push_back(static_cast<unsigned char>(value >> 16U));
+        block.push_back(static_cast<unsigned char>(value >> 8U));
+        block.push_back(static_cast<unsigned char>(value));
+    };
+    append_be32(artwork.picture_type);
+    append_be32(static_cast<std::uint32_t>(artwork.mime_type.size()));
+    block.insert(block.end(), artwork.mime_type.begin(), artwork.mime_type.end());
+    append_be32(static_cast<std::uint32_t>(artwork.description.size()));
+    block.insert(block.end(), artwork.description.begin(), artwork.description.end());
+    append_be32(artwork.width);
+    append_be32(artwork.height);
+    append_be32(0U); // Color depth and palette size are unknown for
+    append_be32(0U); // encoded PNG/JPEG payloads; zero is the defined "n/a".
+    append_be32(static_cast<std::uint32_t>(artwork.bytes.size()));
+    block.insert(block.end(), artwork.bytes.begin(), artwork.bytes.end());
+
+    std::string encoded;
+    encoded.resize(static_cast<std::size_t>(AV_BASE64_SIZE(block.size())));
+    av_base64_encode(encoded.data(), static_cast<int>(encoded.size()), block.data(),
+                     static_cast<int>(block.size()));
+    encoded.resize(std::strlen(encoded.c_str()));
+    return encoded;
+}
+
+// Declares the cover image before the header is written: FLAC and MP3 get a
+// real attached-picture stream (their muxers turn it into a PICTURE block or
+// APIC frame), Opus and Vorbis get the METADATA_BLOCK_PICTURE comment.
+[[nodiscard]] core::Result<void> apply_request_artwork(EncoderPipeline& pipeline,
+                                                       const EncoderPreset& preset,
+                                                       const ConversionArtwork& artwork,
+                                                       const std::string& raw_path) {
+    if (artwork.bytes.empty() ||
+        (artwork.mime_type != "image/png" && artwork.mime_type != "image/jpeg")) {
+        return std::unexpected(
+            core::Error{.code = core::ErrorCode::invalid_argument,
+                        .message = "conversion artwork requires PNG or JPEG bytes",
+                        .context = {{.key = "path", .value = raw_path}}});
+    }
+    if (preset.container_name == "opus" || preset.container_name == "ogg") {
+        if (const auto set = av_dict_set(&pipeline.format->metadata, "METADATA_BLOCK_PICTURE",
+                                         metadata_block_picture(artwork).c_str(), 0);
+            set < 0) {
+            return std::unexpected(convert_error(set, "recording the cover comment", raw_path));
+        }
+        return {};
+    }
+
+    auto* stream = avformat_new_stream(pipeline.format, nullptr);
+    if (stream == nullptr) {
+        return std::unexpected(
+            convert_error(AVERROR(ENOMEM), "creating the cover stream", raw_path));
+    }
+    stream->disposition |= AV_DISPOSITION_ATTACHED_PIC;
+    stream->time_base = AVRational{1, 90'000};
+    stream->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
+    stream->codecpar->codec_id =
+        artwork.mime_type == "image/png" ? AV_CODEC_ID_PNG : AV_CODEC_ID_MJPEG;
+    stream->codecpar->width = static_cast<int>(artwork.width);
+    stream->codecpar->height = static_cast<int>(artwork.height);
+    if (av_dict_set(&stream->metadata, "comment", picture_type_name(artwork.picture_type), 0) < 0) {
+        return std::unexpected(
+            convert_error(AVERROR(ENOMEM), "recording the cover picture type", raw_path));
+    }
+    if (!artwork.description.empty() &&
+        av_dict_set(&stream->metadata, "title", artwork.description.c_str(), 0) < 0) {
+        return std::unexpected(
+            convert_error(AVERROR(ENOMEM), "recording the cover description", raw_path));
+    }
+    pipeline.picture_stream = stream;
+    return {};
+}
+
+// Sends the single cover packet right after the header so the muxer sees it
+// before any audio.
+[[nodiscard]] core::Result<void> write_attached_picture(EncoderPipeline& pipeline,
+                                                        const ConversionArtwork& artwork,
+                                                        const std::string& raw_path) {
+    AVPacket* packet = av_packet_alloc();
+    if (packet == nullptr || av_new_packet(packet, static_cast<int>(artwork.bytes.size())) < 0) {
+        av_packet_free(&packet);
+        return std::unexpected(
+            convert_error(AVERROR(ENOMEM), "allocating the cover packet", raw_path));
+    }
+    std::memcpy(packet->data, artwork.bytes.data(), artwork.bytes.size());
+    packet->stream_index = pipeline.picture_stream->index;
+    packet->pts = 0;
+    packet->dts = 0;
+    packet->duration = 0;
+    packet->flags |= AV_PKT_FLAG_KEY;
+    const auto written = av_interleaved_write_frame(pipeline.format, packet);
+    av_packet_free(&packet);
+    if (written < 0) {
+        return std::unexpected(convert_error(written, "writing the cover image", raw_path));
+    }
+    return {};
+}
+
+// The embedded cover must reread from the finished file byte-exactly, the
+// same honesty verify_written_metadata proves for text.
+[[nodiscard]] core::Result<void> verify_written_artwork(const std::string& temporary_path,
+                                                        const ConversionArtwork& artwork,
+                                                        const std::string& raw_path) {
+    auto reread = formats::load_embedded_artwork(temporary_path);
+    if (!reread) {
+        return std::unexpected(
+            std::move(reread.error()).with_context("verify", "rereading converted artwork failed"));
+    }
+    if (*reread != artwork.bytes) {
+        return std::unexpected(
+            core::Error{.code = core::ErrorCode::invariant,
+                        .message = "converted artwork reread differs from the request",
+                        .context = {{.key = "path", .value = raw_path}}});
+    }
+    return {};
+}
+
 // Every requested field must reread from the finished file with exactly the
 // requested values — the same honesty the qualified tag writers prove.
 [[nodiscard]] core::Result<void> verify_written_metadata(const std::string& temporary_path,
@@ -384,12 +540,11 @@ ensure_convert_capacity(EncoderPipeline& pipeline, const std::string& raw_path, 
     return {};
 }
 
-[[nodiscard]] core::Result<std::unique_ptr<EncoderPipeline>>
-open_pipeline(const EncoderPreset& preset, const formats::PcmFormat& source_format,
-              const std::optional<int>& target_sample_rate,
-              const std::optional<int>& target_bit_depth,
-              const metadata::MetadataDocument& document, const std::string& temporary_path,
-              const std::string& destination_raw_path) {
+[[nodiscard]] core::Result<std::unique_ptr<EncoderPipeline>> open_pipeline(
+    const EncoderPreset& preset, const formats::PcmFormat& source_format,
+    const std::optional<int>& target_sample_rate, const std::optional<int>& target_bit_depth,
+    const metadata::MetadataDocument& document, const std::optional<ConversionArtwork>& artwork,
+    const std::string& temporary_path, const std::string& destination_raw_path) {
     const auto* const codec = avcodec_find_encoder_by_name(preset.codec_name.c_str());
     if (codec == nullptr) {
         return std::unexpected(core::Error{.code = core::ErrorCode::unsupported,
@@ -489,6 +644,12 @@ open_pipeline(const EncoderPreset& preset, const formats::PcmFormat& source_form
         !applied) {
         return std::unexpected(applied.error());
     }
+    if (artwork) {
+        if (auto cover = apply_request_artwork(*pipeline, preset, *artwork, destination_raw_path);
+            !cover) {
+            return std::unexpected(cover.error());
+        }
+    }
     if (const auto opened =
             avio_open(&pipeline->format->pb, temporary_path.c_str(), AVIO_FLAG_WRITE);
         opened < 0) {
@@ -498,6 +659,12 @@ open_pipeline(const EncoderPreset& preset, const formats::PcmFormat& source_form
     if (const auto header = avformat_write_header(pipeline->format, nullptr); header < 0) {
         return std::unexpected(
             convert_error(header, "writing the container header", destination_raw_path));
+    }
+    if (pipeline->picture_stream != nullptr) {
+        if (auto written = write_attached_picture(*pipeline, *artwork, destination_raw_path);
+            !written) {
+            return std::unexpected(written.error());
+        }
     }
     return pipeline;
 }
@@ -555,9 +722,9 @@ core::Result<ConvertedAudioFile> convert_audio_file(const AudioConversionRequest
                                      core::StableId::random().to_string());
     TemporaryOutputGuard guard{temporary};
 
-    auto pipeline_result = open_pipeline(request.preset, source_format, request.target_sample_rate,
-                                         request.target_bit_depth, request.metadata,
-                                         temporary.native(), request.destination_raw_path);
+    auto pipeline_result = open_pipeline(
+        request.preset, source_format, request.target_sample_rate, request.target_bit_depth,
+        request.metadata, request.artwork, temporary.native(), request.destination_raw_path);
     if (!pipeline_result) {
         return std::unexpected(pipeline_result.error());
     }
@@ -702,6 +869,13 @@ core::Result<ConvertedAudioFile> convert_audio_file(const AudioConversionRequest
                                                      request.destination_raw_path);
         !tags_verified) {
         return std::unexpected(tags_verified.error());
+    }
+    if (request.artwork) {
+        if (auto artwork_verified = verify_written_artwork(temporary.native(), *request.artwork,
+                                                           request.destination_raw_path);
+            !artwork_verified) {
+            return std::unexpected(artwork_verified.error());
+        }
     }
 
     if (auto published =

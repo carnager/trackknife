@@ -101,10 +101,13 @@ add_test(
 add_executable(trackknife_audio_convert_tests audio_convert_test.cpp)
 target_link_libraries(
     trackknife_audio_convert_tests
-    PRIVATE Trackknife::Convert Trackknife::Formats Trackknife::Metadata trackknife_project_options
-            trackknife_project_warnings
+    PRIVATE Trackknife::Convert Trackknife::Formats Trackknife::Metadata PkgConfig::TAGLIB
+            trackknife_project_options trackknife_project_warnings
 )
-add_test(NAME audio-convert COMMAND trackknife_audio_convert_tests)
+add_test(
+    NAME audio-convert
+    COMMAND trackknife_audio_convert_tests "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"
+)
 
 add_executable(trackknife_metadata_wavpack_writer_tests metadata_wavpack_writer_test.cpp)
 target_link_libraries(

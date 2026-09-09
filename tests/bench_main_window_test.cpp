@@ -3499,6 +3499,11 @@ void BenchMainWindowTest::convertDialogPlansAndConvertsSelection() {
     QVERIFY(reread.has_value());
     QCOMPARE(reread->document.first_effective_value("title"), std::optional<std::string>{"Quiet"});
 
+    // Artwork carriage is a persisted opt-out (ADR-0131), enabled by default.
+    auto* embed_artwork = dialog->findChild<QCheckBox*>(QStringLiteral("bench-convert-artwork"));
+    QVERIFY(embed_artwork != nullptr);
+    QVERIFY(embed_artwork->isChecked());
+
     // The resampling and bit-depth choices reach the pipeline: FLAC at a
     // forced 96 kHz stored as dithered 16-bit.
     auto* resample = dialog->findChild<QComboBox*>(QStringLiteral("bench-convert-resample"));

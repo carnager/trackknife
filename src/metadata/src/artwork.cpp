@@ -738,4 +738,17 @@ fingerprint_embedded_artwork_inventory(const std::span<const ArtworkInventoryIte
     return fingerprint(bytes, {});
 }
 
+std::optional<InspectedEncodedImage>
+inspect_encoded_image_bytes(const std::span<const unsigned char> bytes) {
+    const auto inspected = inspect_encoded_image(bytes);
+    if (!inspected || !inspected->width || !inspected->height) {
+        return std::nullopt;
+    }
+    return InspectedEncodedImage{
+        .mime_type = inspected->mime_type,
+        .width = *inspected->width,
+        .height = *inspected->height,
+    };
+}
+
 } // namespace trackknife::metadata

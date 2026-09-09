@@ -2,6 +2,7 @@
 
 add_library(
     trackknife_convert STATIC
+    src/artwork.cpp
     src/convert.cpp
     src/preset.cpp
     src/scan.cpp

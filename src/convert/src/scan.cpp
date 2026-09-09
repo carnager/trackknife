@@ -2,6 +2,8 @@
 
 #include "trackknife/convert/scan.hpp"
 
+#include "trackknife/convert/artwork.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <filesystem>
@@ -49,6 +51,9 @@ struct ItemOutcome {
             .target_sample_rate = options.target_sample_rate,
             .target_bit_depth = options.target_bit_depth,
             .metadata = item.metadata,
+            .artwork = options.carry_artwork
+                           ? resolve_conversion_artwork(item.source_raw_path, cancellation)
+                           : std::nullopt,
         },
         item_progress, cancellation);
     if (!converted) {

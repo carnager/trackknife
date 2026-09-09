@@ -96,7 +96,10 @@ chosen; external query-language compatibility is not an accepted requirement.
 
 **Proposal:** A conversion should produce a complete album ready for use.
 
-- [ ] Carry artwork into converted output using qualified format mappings.
+- [x] Carry artwork into converted output using qualified format mappings
+  (ADR-0131): one resolved cover per source, embedded as FLAC `PICTURE`,
+  ID3v2 `APIC`, or `METADATA_BLOCK_PICTURE`, verified byte-exactly before
+  publication. Multi-picture carriage remains a follow-up.
 - [ ] Mirror the source folder structure beneath an explicit destination root.
 - [ ] Remove or recalculate stale ReplayGain when processing changes the audio.
 

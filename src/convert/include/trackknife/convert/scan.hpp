@@ -42,6 +42,9 @@ struct ConversionScanOptions {
     // One stored-bit-depth policy for the whole scan (16 or 24; see
     // AudioConversionRequest::target_bit_depth).
     std::optional<int> target_bit_depth;
+    // Resolves each item's cover image (ADR-0131) and embeds it into the
+    // output; a source without usable artwork converts without one.
+    bool carry_artwork{false};
 };
 
 enum class ConversionScanState : std::uint8_t { pending, running, converted, failed, cancelled };

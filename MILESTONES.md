@@ -1360,7 +1360,16 @@ afterwards is a separate explicit command in Trackbench's MPD authority.
   correctness. The full publication executor suite and text tag commits
   now pass with their files living on the NFS NAS; the artwork undo
   chain on exchange-less filesystems remains a follow-up.
-- Next: mirror-source-structure destination mode, artwork carriage, a
+- Done: ADR-0131 carries one resolved cover per source into every
+  qualified preset — native-FLAC pictures through the qualified inventory
+  (role-level type and description preserved), other containers through
+  the container-agnostic reader, then exact-basename sibling covers —
+  embedded at mux time as FLAC `PICTURE`, ID3v2 `APIC`, or
+  `METADATA_BLOCK_PICTURE` and reread byte-exactly before publication.
+  Real-file tests round-trip each target independently with TagLib; the
+  converter dialog exposes a persisted, default-on "Embed cover art"
+  opt-out.
+- Next: mirror-source-structure destination mode, a
   downsample-only rate cap, keep-source bit depth, and stale-ReplayGain
   handling on signal change.
 

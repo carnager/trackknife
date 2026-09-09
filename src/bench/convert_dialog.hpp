@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+class QCheckBox;
 class QComboBox;
 class QFormLayout;
 class QLabel;
@@ -108,6 +109,7 @@ class ConvertDialog final : public QDialog {
     QLineEdit* basename_expression_{nullptr};
     QComboBox* resample_{nullptr};
     QComboBox* bit_depth_{nullptr};
+    QCheckBox* embed_artwork_{nullptr};
     QSpinBox* parallelism_{nullptr};
     QListWidget* preview_{nullptr};
     QLabel* status_{nullptr};

@@ -108,8 +108,8 @@ Evidence: [ReplayGain specification](replaygain.md),
 | Encoder presets | Implemented | Runtime availability checks, built-in FLAC/Opus/MP3/Vorbis presets, and saved user presets constrained to qualified targets (ADRs 0105, 0108). |
 | Naming and destinations | Partial | Explicit destination roots, `tkfmt-1` path preview, saved naming layouts/destinations, and one output per logical track. Source-root mirror and grouped/merge output modes remain open. |
 | Signal processing | Partial | Target resampling, 16/24-bit policy where applicable, and dither when quantizing to 16-bit. Downsample-only caps, explicit keep-source depth, channel policy, DSP, and permanent gain application remain open. |
-| Text metadata transfer | Implemented | Mux-time text mappings with exact reread verification for qualified outputs. This does not include artwork transfer or proof of interoperable loudness semantics in every container. |
-| Artwork and output loudness | Open | Carry artwork and remove/rescan stale loudness after signal changes. Current text transfer does not implement a stale-ReplayGain policy. |
+| Text metadata transfer | Implemented | Mux-time text mappings with exact reread verification for qualified outputs. This does not include proof of interoperable loudness semantics in every container. |
+| Artwork and output loudness | Partial | One resolved cover per source is embedded into every qualified preset and reread byte-exactly before publication (ADR-0131); multi-picture carriage and per-item "no usable artwork" reporting remain open. Removing/rescanning stale loudness after signal changes remains open. |
 | Parallel conversion and verification | Implemented | Bounded workers, progress/cancellation, per-item failures, source-revision checks, hidden temporary outputs, full decode/duration/format verification, and no-overwrite publication. General retry/resource scheduling remains open. |
 | Limited filesystems | Partial | Publication and locking fallbacks plus tested NFS paths (ADR-0111). Artwork undo on exchange-less filesystems remains a core follow-up, not an exposed undo feature. |
 

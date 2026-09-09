@@ -55,6 +55,19 @@ struct ArtworkInventoryPolicy {
 
 [[nodiscard]] ArtworkInventoryPolicy default_artwork_inventory_policy();
 
+struct InspectedEncodedImage {
+    std::string mime_type;
+    std::uint32_t width{0U};
+    std::uint32_t height{0U};
+
+    friend bool operator==(const InspectedEncodedImage&, const InspectedEncodedImage&) = default;
+};
+
+// Recognizes exactly the supported encoded image formats — PNG and JPEG —
+// by signature and reports their pixel dimensions. Anything else is nullopt.
+[[nodiscard]] std::optional<InspectedEncodedImage>
+inspect_encoded_image_bytes(std::span<const unsigned char> bytes);
+
 struct ArtworkImageFile {
     std::string raw_path;
     core::LocalSourceRevision source_revision;

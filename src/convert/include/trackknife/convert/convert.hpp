@@ -12,8 +12,23 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace trackknife::convert {
+
+// One encoded cover image to embed into the converted output (ADR-0131).
+// Bytes are exact PNG/JPEG data; picture_type uses the shared FLAC/ID3v2
+// numbering (3 = front cover).
+struct ConversionArtwork {
+    std::vector<unsigned char> bytes;
+    std::string mime_type;
+    std::uint32_t width{0U};
+    std::uint32_t height{0U};
+    std::uint32_t picture_type{3U};
+    std::string description;
+
+    friend bool operator==(const ConversionArtwork&, const ConversionArtwork&) = default;
+};
 
 // One source-to-destination conversion. The selection and range address
 // logical tracks inside container files exactly as the decoder does, so
@@ -39,6 +54,11 @@ struct AudioConversionRequest {
     // receive exact native key spellings; MP3 maps the common fields onto
     // proper ID3 frames and passes the rest through as TXXX.
     metadata::MetadataDocument metadata;
+    // Optional cover image embedded at mux time — FLAC/MP3 through an
+    // attached-picture stream, Opus/Vorbis through a METADATA_BLOCK_PICTURE
+    // comment — and verified by rereading the finished file's embedded
+    // artwork byte-exactly before it may become the destination.
+    std::optional<ConversionArtwork> artwork;
 
     friend bool operator==(const AudioConversionRequest&, const AudioConversionRequest&) = default;
 };

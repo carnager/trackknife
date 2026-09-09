@@ -5,6 +5,7 @@
 #include "bench_main_window_helpers.hpp"
 #include "trackknife/convert/preset.hpp"
 
+#include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -283,6 +284,15 @@ ConvertDialog::ConvertDialog(std::vector<ConvertDialogItem> items, ConvertProfil
         QStringLiteral("Stored bit depth for lossless output; Opus and other float-based "
                        "encoders have no stored depth and ignore this"));
     form->addRow(QStringLiteral("Bit depth:"), bit_depth_);
+
+    embed_artwork_ = new QCheckBox(QStringLiteral("Embed cover art"), this);
+    embed_artwork_->setObjectName(QStringLiteral("bench-convert-artwork"));
+    embed_artwork_->setChecked(
+        settings.value(QStringLiteral("convert/embed-artwork"), true).toBool());
+    embed_artwork_->setToolTip(
+        QStringLiteral("Carries each source's cover image (embedded pictures first, then "
+                       "cover/folder/front siblings) into the converted file"));
+    form->addRow(QString{}, embed_artwork_);
 
     parallelism_ = new QSpinBox(this);
     parallelism_->setObjectName(QStringLiteral("bench-convert-parallelism"));
@@ -644,6 +654,7 @@ void ConvertDialog::startConversion() {
     settings.setValue(QStringLiteral("convert/parallelism"), parallelism_->value());
     settings.setValue(QStringLiteral("convert/resample-rate"), resample_->currentData().toInt());
     settings.setValue(QStringLiteral("convert/bit-depth"), bit_depth_->currentData().toInt());
+    settings.setValue(QStringLiteral("convert/embed-artwork"), embed_artwork_->isChecked());
 
     std::vector<convert::ConversionScanItem> scan_items;
     scan_items.reserve(plan_->sources.size());
@@ -689,9 +700,10 @@ void ConvertDialog::startConversion() {
     const auto target_sample_rate = resample_rate > 0 ? std::optional{resample_rate} : std::nullopt;
     const auto depth_choice = bit_depth_->currentData().toInt();
     const auto target_bit_depth = depth_choice > 0 ? std::optional{depth_choice} : std::nullopt;
+    const auto carry_artwork = embed_artwork_->isChecked();
     watcher_.setFuture(QtConcurrent::run([scan_items = std::move(scan_items), preset = *preset,
                                           parallelism, target_sample_rate, target_bit_depth,
-                                          completed = completed_, cancellation] {
+                                          carry_artwork, completed = completed_, cancellation] {
         // The conversion core requires existing target directories; create
         // them up front so parallel workers never race directory creation.
         for (const auto& item : scan_items) {
@@ -704,7 +716,8 @@ void ConvertDialog::startConversion() {
             {.preset = preset,
              .maximum_parallelism = parallelism,
              .target_sample_rate = target_sample_rate,
-             .target_bit_depth = target_bit_depth},
+             .target_bit_depth = target_bit_depth,
+             .carry_artwork = carry_artwork},
             [completed](const convert::ConversionScanProgress& update) {
                 completed->store(update.completed_items);
             },
