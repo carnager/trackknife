@@ -762,6 +762,90 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
             }
         }
 
+        // ADR-0143: an adapter that cannot take a safe tag write still
+        // gets its ReplayGain — clean conventional REPLAYGAIN_* changes
+        // divert into the file's loudness sidecar as a whole-file entry.
+        // Everything else keeps the visible writer block below.
+        const auto tag_write_safe = read->capabilities.fields_writable &&
+                                    read->capabilities.unknown_data_preserved_on_write;
+        if (!tag_write_safe && source.ready()) {
+            std::vector<MetadataWritePlanLoudnessField> diverted;
+            std::erase_if(source.changes, [&diverted](const MetadataWritePlanChange& change) {
+                if (change.conflicting_intents || change.exact_native_name ||
+                    change.intents.empty() || !is_cue_replay_gain_field(change.canonical_name)) {
+                    return false;
+                }
+                MetadataWritePlanLoudnessField field{
+                    .field_index = change.field_index,
+                    .canonical_name = change.canonical_name,
+                    .kind = change.intents.front().kind,
+                    .values = change.intents.front().values,
+                    .item_indexes = {},
+                };
+                for (const auto& intent : change.intents) {
+                    field.item_indexes.push_back(intent.item_index);
+                }
+                diverted.push_back(std::move(field));
+                return true;
+            });
+            if (!diverted.empty()) {
+                auto sidecar_position = std::ranges::find(
+                    plan.sidecars, source.raw_path, &MetadataWritePlanSidecar::raw_audio_path);
+                if (sidecar_position == plan.sidecars.end()) {
+                    plan.sidecars.push_back(MetadataWritePlanSidecar{
+                        .raw_audio_path = source.raw_path,
+                        .expected_revision = source.expected_revision,
+                        .observed_revision = read->source_revision,
+                        .entries = {},
+                        .issues = {},
+                    });
+                    sidecar_position = std::prev(plan.sidecars.end());
+                } else if (sidecar_position->expected_revision != source.expected_revision) {
+                    add_sidecar_issue(
+                        *sidecar_position,
+                        MetadataWritePlanIssueKind::inconsistent_baseline_revision,
+                        planner_error(core::ErrorCode::conflict,
+                                      "staged occurrences disagree about the source revision",
+                                      source.raw_path));
+                }
+                for (const auto& field : diverted) {
+                    if (field.kind == StagedMetadataPatchKind::replace_values &&
+                        (field.values.size() != 1U ||
+                         !valid_cue_replay_gain_value(field.canonical_name,
+                                                      field.values.front()))) {
+                        add_sidecar_issue(*sidecar_position,
+                                          MetadataWritePlanIssueKind::unsupported_field_mapping,
+                                          planner_error(core::ErrorCode::unsupported,
+                                                        "a sidecar loudness value must be a "
+                                                        "single number the writer can "
+                                                        "canonicalize",
+                                                        source.raw_path),
+                                          field.field_index, field.item_indexes);
+                    }
+                }
+                const auto whole_file = std::ranges::find_if(
+                    sidecar_position->entries, [](const MetadataWritePlanSidecarEntry& entry) {
+                        return entry.identity == StagedLogicalIdentity{};
+                    });
+                if (whole_file == sidecar_position->entries.end()) {
+                    sidecar_position->entries.push_back(MetadataWritePlanSidecarEntry{
+                        .identity = {},
+                        .occurrence_indexes = source.occurrence_indexes,
+                        .fields = std::move(diverted),
+                    });
+                } else {
+                    whole_file->fields.insert(whole_file->fields.end(),
+                                              std::make_move_iterator(diverted.begin()),
+                                              std::make_move_iterator(diverted.end()));
+                }
+            }
+            if (source.changes.empty()) {
+                // The whole draft moved to the sidecar; the tag plan no
+                // longer owns this source.
+                continue;
+            }
+        }
+
         if (!read->capabilities.fields_writable) {
             add_issue(source, MetadataWritePlanIssueKind::writer_unavailable,
                       planner_error(core::ErrorCode::unsupported,
@@ -866,6 +950,10 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
         }
     }
 
+    // ADR-0143: sources whose entire draft diverted to the sidecar no
+    // longer belong to the tag plan.
+    std::erase_if(plan.sources,
+                  [](const MetadataWritePlanSource& source) { return source.changes.empty(); });
     return plan;
 }
 

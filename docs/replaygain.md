@@ -210,6 +210,11 @@ file's size+mtime. Probing projects fresh sidecar values onto rows at
 sidecar provenance — the highest effective precedence — and the
 playback override consumes them ahead of CUE and embedded values.
 
+Implemented for unwritable formats (ADR-0143): whole-file tracks whose
+adapter cannot take a safe tag write (WAV, AIFF, APE, …) divert their
+conventional ReplayGain into the same sidecar as a whole-file entry
+during planning; other staged fields keep the visible writer block.
+
 A scan result should be written to the selected canonical target and then cached
 in the common `TrackRef`. A playlist may serialize the cached values for fast
 offline display, as classic FPL did, but that snapshot must not override a newer

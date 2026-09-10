@@ -171,9 +171,11 @@ Reference: [metadata and artwork](metadata-and-files.md).
   atomic commit, staleness-checked by size+mtime — and project onto
   probed rows at sidecar provenance, which local playback consumes
   ahead of CUE and embedded values.
-- [ ] Offer the sidecar as an explicit fallback target for whole-file
-  tracks in unwritable formats (writer-unavailable sources currently
-  still block; the fallback must be visible, not silent).
+- [x] Sidecar fallback for unwritable formats (ADR-0143): clean
+  conventional ReplayGain on adapters without a safe tag writer
+  (WAV/AIFF/APE/…) diverts into the whole-file sidecar entry during the
+  planner's reader pass; other fields keep the visible writer block, and
+  the outcome stays visible through provenance and the apply summary.
 - [ ] Bring sidecar and CUE rewrites into the undo journal (shared
   ADR-0139/0141 follow-up).
 - [ ] Define and implement Opus R128 storage and playback handling.

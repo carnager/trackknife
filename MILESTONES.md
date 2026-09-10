@@ -1335,6 +1335,19 @@ quickly and correctly.
   CUE → embedded). The explicit unwritable-format fallback and shared
   undo-journal parity remain open.
 
+### Unwritable-format sidecar fallback (2026-09-11)
+
+- ADR-0143 closes the last storage gap for local ReplayGain: whole-file
+  tracks whose adapter cannot take a safe tag write (WAV/AIFF/APE via
+  `taglib-properties-v1`) divert their clean conventional
+  `REPLAYGAIN_*` changes into the file's loudness sidecar as a
+  whole-file entry during the planner's reader pass — merged with any
+  logical-track entries, revision-gated in the sidecar commit, visible
+  through provenance and the apply summary. Other staged fields keep
+  the `writer_unavailable` block, conflicting or exact-native edits do
+  not divert, and writable formats keep using ordinary tags. Undo-
+  journal parity remains the shared ADR-0139/0141 follow-up.
+
 ## M8 — Parallel converter, resampler, and organized output
 
 ### Objective

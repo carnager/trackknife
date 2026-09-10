@@ -628,6 +628,83 @@ void routesNonCueLogicalLoudnessIntoSidecarPlans() {
     std::filesystem::remove_all(root, fs_error);
 }
 
+// ADR-0143: clean conventional ReplayGain on an adapter without a safe
+// tag writer diverts to the whole-file sidecar entry; everything else
+// keeps the visible writer block, and writable formats are untouched.
+void divertsUnwritableWholeFileLoudnessToSidecars() {
+    using namespace trackknife::metadata;
+    const auto unwritable_reader = [](const std::string& path,
+                                      const trackknife::core::CancellationToken&) {
+        return trackknife::core::Result<LocalMetadataRead>{
+            read(path, revision(51U), {}, false, false)};
+    };
+    auto selection =
+        StagedMetadataSelection::create({source("/music/take.wav", revision(51U), {}),
+                                         source("/music/take.wav", revision(51U), {})});
+    CHECK(selection.has_value());
+    if (!selection) {
+        return;
+    }
+    const auto track_gain =
+        selection->ensure_missing_field("REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_TRACK_GAIN");
+    const auto track_peak =
+        selection->ensure_missing_field("REPLAYGAIN_TRACK_PEAK", "REPLAYGAIN_TRACK_PEAK");
+    const auto title = selection->ensure_missing_field("TITLE", "TITLE");
+    CHECK(track_gain && track_peak && title);
+    if (!track_gain || !track_peak || !title) {
+        return;
+    }
+
+    StagedMetadataPatchSet loudness_only;
+    CHECK(loudness_only.replace_values(*selection, 0U, *track_gain, {"-6.02 dB"}).has_value());
+    CHECK(loudness_only.replace_values(*selection, 0U, *track_peak, {"1.000000"}).has_value());
+    const auto diverted = build_metadata_write_plan(*selection, loudness_only, unwritable_reader);
+    CHECK(diverted.has_value());
+    if (diverted) {
+        CHECK(diverted->ready());
+        CHECK(diverted->sources.empty());
+        CHECK(diverted->sidecars.size() == 1U);
+        if (diverted->sidecars.size() == 1U) {
+            const auto& sidecar = diverted->sidecars.front();
+            CHECK(sidecar.raw_audio_path == "/music/take.wav");
+            CHECK(sidecar.expected_revision == revision(51U));
+            CHECK(sidecar.observed_revision == revision(51U));
+            CHECK(sidecar.entries.size() == 1U);
+            const std::vector<std::size_t> both_occurrences{0U, 1U};
+            CHECK(sidecar.entries.size() == 1U &&
+                  sidecar.entries.front().identity == StagedLogicalIdentity{} &&
+                  sidecar.entries.front().fields.size() == 2U &&
+                  sidecar.entries.front().occurrence_indexes == both_occurrences);
+        }
+    }
+
+    // A mixed draft still blocks visibly: the title keeps the writer
+    // block while the loudness half waits in the sidecar section.
+    StagedMetadataPatchSet mixed;
+    CHECK(mixed.replace_values(*selection, 0U, *track_gain, {"-6.02 dB"}).has_value());
+    CHECK(mixed.replace_values(*selection, 0U, *title, {"New title"}).has_value());
+    const auto blocked = build_metadata_write_plan(*selection, mixed, unwritable_reader);
+    CHECK(blocked.has_value());
+    if (blocked) {
+        CHECK(!blocked->ready());
+        CHECK(blocked->sources.size() == 1U);
+        CHECK(blocked->sources.size() == 1U &&
+              has_issue(blocked->sources.front(), MetadataWritePlanIssueKind::writer_unavailable));
+        CHECK(blocked->sidecars.size() == 1U);
+    }
+
+    // Writable adapters keep ReplayGain in ordinary tags.
+    const auto writable_reader = [](const std::string& path,
+                                    const trackknife::core::CancellationToken&) {
+        auto result = read(path, revision(51U), {});
+        result.adapter_name = "taglib-flac-v1";
+        return trackknife::core::Result<LocalMetadataRead>{std::move(result)};
+    };
+    const auto tagged = build_metadata_write_plan(*selection, loudness_only, writable_reader);
+    CHECK(tagged.has_value());
+    CHECK(tagged && tagged->ready() && tagged->sources.size() == 1U && tagged->sidecars.empty());
+}
+
 } // namespace
 
 int main() {
@@ -639,5 +716,6 @@ int main() {
     logicalLoudnessRequiresItsOwnStorageTarget();
     routesCueReplayGainIntoSheetPlans();
     routesNonCueLogicalLoudnessIntoSidecarPlans();
+    divertsUnwritableWholeFileLoudnessToSidecars();
     return failures == 0 ? 0 : 1;
 }

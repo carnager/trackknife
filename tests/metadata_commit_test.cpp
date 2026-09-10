@@ -2057,6 +2057,84 @@ void commits_loudness_sidecars_atomically() {
     CHECK(!stale && stale.error().code == core::ErrorCode::conflict);
 }
 
+// ADR-0143: end to end with the production reader — ReplayGain staged
+// on a real WAV (no qualified writer) diverts through the plan into a
+// committed whole-file sidecar entry, touching no audio bytes.
+void diverted_unwritable_loudness_reaches_the_sidecar() {
+    using namespace trackknife;
+    const TemporaryDirectory root;
+    const auto wav = (root.path() / "take.wav").native();
+    {
+        // Minimal canonical PCM WAV: 44-byte header plus one silent frame.
+        constexpr std::array<unsigned char, 48> bytes{
+            'R', 'I', 'F', 'F', 40,  0,   0,   0,   'W',  'A',  'V', 'E', 'f',  'm',  't',  ' ',
+            16,  0,   0,   0,   1,   0,   1,   0,   0x44, 0xAC, 0,   0,   0x88, 0x58, 0x01, 0,
+            2,   0,   16,  0,   'd', 'a', 't', 'a', 4,    0,    0,   0,   0,    0,    0,    0};
+        std::ofstream output{wav, std::ios::binary};
+        output.write(reinterpret_cast<const char*>(bytes.data()),
+                     static_cast<std::streamsize>(bytes.size()));
+    }
+    auto baseline = metadata::read_local_metadata(wav);
+    CHECK(baseline.has_value());
+    if (!baseline) {
+        return;
+    }
+    CHECK(baseline->adapter_name == "taglib-properties-v1");
+    CHECK(!baseline->capabilities.fields_writable);
+
+    auto selection = metadata::StagedMetadataSelection::create({metadata::StagedMetadataSource{
+        .raw_path = wav,
+        .source_revision = baseline->source_revision,
+        .baseline = baseline->document,
+    }});
+    CHECK(selection.has_value());
+    if (!selection) {
+        return;
+    }
+    const auto gain =
+        selection->ensure_missing_field("REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_TRACK_GAIN");
+    CHECK(gain.has_value());
+    metadata::StagedMetadataPatchSet patches;
+    CHECK(patches.replace_values(*selection, 0U, *gain, {"-6.02 dB"}).has_value());
+    const auto plan = metadata::revalidate_metadata_write_plan(*selection, patches);
+    CHECK(plan.has_value());
+    if (!plan) {
+        return;
+    }
+    CHECK(plan->ready());
+    CHECK(plan->sources.empty());
+    CHECK(plan->sidecars.size() == 1U);
+
+    const auto applied = operations::apply_metadata_write_plan(
+        *plan,
+        [](const metadata::MetadataWritePlanSource& source,
+           const core::CancellationToken&) -> core::Result<operations::MetadataCommitResult> {
+            return std::unexpected(core::Error{
+                .code = core::ErrorCode::invariant,
+                .message = "no tag source should remain in a fully diverted plan",
+                .context = {{.key = "path", .value = source.raw_path}},
+            });
+        });
+    CHECK(applied.has_value());
+    CHECK(applied && applied->sources.empty());
+    CHECK(applied && applied->sidecars.size() == 1U &&
+          applied->sidecars.front().state == operations::MetadataApplySourceState::committed);
+
+    const auto stored = metadata::read_loudness_sidecar(wav);
+    CHECK(stored.has_value() && stored->has_value());
+    if (stored && *stored) {
+        CHECK((*stored)->matches(baseline->source_revision));
+        CHECK((*stored)->entries.size() == 1U);
+        CHECK((*stored)->entries.size() == 1U && !(*stored)->entries.front().start_sample &&
+              !(*stored)->entries.front().stream_index &&
+              (*stored)->entries.front().track_gain_db == -6.02);
+    }
+    // The audio file itself is untouched.
+    const auto after = core::observe_local_source_revision(wav);
+    CHECK(after.has_value());
+    CHECK(after && *after == baseline->source_revision);
+}
+
 } // namespace
 
 int main(const int argc, char** argv) {
@@ -2085,6 +2163,7 @@ int main(const int argc, char** argv) {
         combined_apply_reuses_directories_created_by_a_rolled_back_member(fixture_directory);
         commits_cue_replay_gain_sheets_atomically();
         commits_loudness_sidecars_atomically();
+        diverted_unwritable_loudness_reaches_the_sidecar();
     }
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
