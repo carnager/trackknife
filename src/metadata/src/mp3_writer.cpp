@@ -3,6 +3,7 @@
 #include "trackknife/metadata/mp3_writer.hpp"
 
 #include "apev2_trailer_detail.hpp"
+#include "container_preservation_detail.hpp"
 #include "text_writer_detail.hpp"
 #include "trackknife/metadata/local_reader.hpp"
 #include "trackknife/metadata/mp4_writer.hpp"
@@ -104,13 +105,16 @@ read_file_bytes(const std::string& raw_path, const std::string& source_raw_path,
     return total;
 }
 
-// The qualification proof: the MPEG audio region — between the leading
-// ID3v2 tag and any trailing ID3v1/APEv2 tags — is byte-identical, and
-// every trailing APEv2 binary item survives byte-exactly.
-[[nodiscard]] core::Result<void>
-verify_mp3_binary_preservation(const std::string& source_raw_path,
-                               const std::string& prepared_raw_path,
-                               const core::CancellationToken& cancellation) {
+} // namespace
+
+// The qualification proof, shared with the APIC artwork writer
+// (ADR-0137): the MPEG audio region — between the leading ID3v2 tag and
+// any trailing ID3v1/APEv2 tags — is byte-identical, and every trailing
+// APEv2 binary item survives byte-exactly.
+core::Result<void>
+preservation_detail::verify_mp3_binary_preservation(const std::string& source_raw_path,
+                                                    const std::string& prepared_raw_path,
+                                                    const core::CancellationToken& cancellation) {
     auto source_bytes = read_file_bytes(source_raw_path, source_raw_path, prepared_raw_path);
     if (!source_bytes) {
         return std::unexpected(std::move(source_bytes.error()));
@@ -164,6 +168,8 @@ verify_mp3_binary_preservation(const std::string& source_raw_path,
     }
     return {};
 }
+
+namespace {
 
 [[nodiscard]] core::Result<void> apply_text_changes(const MetadataWritePlanSource& source_plan,
                                                     const std::string& prepared_raw_path,
@@ -286,8 +292,8 @@ prepare_mp3_metadata_write_copy(const MetadataWritePlanSource& source_plan,
     if (!text_verified) {
         return std::unexpected(std::move(text_verified.error()));
     }
-    auto binary_verified =
-        verify_mp3_binary_preservation(source_plan.raw_path, prepared_raw_path, cancellation);
+    auto binary_verified = preservation_detail::verify_mp3_binary_preservation(
+        source_plan.raw_path, prepared_raw_path, cancellation);
     if (!binary_verified) {
         return std::unexpected(std::move(binary_verified.error()));
     }

@@ -5,6 +5,7 @@
 #include "bench/preparation_feedback_dialog.hpp"
 #include "trackknife/core/local_sources.hpp"
 #include "trackknife/metadata/artwork.hpp"
+#include "trackknife/metadata/artwork_write_plan.hpp"
 
 #include <QAbstractItemView>
 #include <QDialog>
@@ -291,12 +292,11 @@ MetadataArtworkSection::MetadataArtworkSection(QWidget* parent)
                        "role"));
     add_button_ = new QPushButton(QStringLiteral("Add…"), this);
     add_button_->setObjectName(QStringLiteral("bench-metadata-artwork-add"));
-    add_button_->setToolTip(
-        QStringLiteral("Add one PNG or JPEG to every selected native FLAC file"));
+    add_button_->setToolTip(QStringLiteral("Add one PNG or JPEG to every selected writable file"));
     copy_button_ = new QPushButton(QStringLiteral("Copy to Selection"), this);
     copy_button_->setObjectName(QStringLiteral("bench-metadata-artwork-copy"));
     copy_button_->setToolTip(
-        QStringLiteral("Add the selected image to the other selected native FLAC files"));
+        QStringLiteral("Add the selected image to the other selected writable files"));
     export_button_ = new QPushButton(QStringLiteral("Export…"), this);
     export_button_->setObjectName(QStringLiteral("bench-metadata-artwork-export"));
     export_button_->setToolTip(
@@ -638,7 +638,7 @@ void MetadataArtworkSection::present(const BatchResult& result) {
         const auto& inventory = *source.inventory;
         const auto changes_available =
             applier_factory_ && inventory.capabilities.embedded_readable &&
-            inventory.embedded_adapter_name == "taglib-flac-picture-v1" &&
+            metadata::is_qualified_artwork_adapter(inventory.embedded_adapter_name) &&
             source.scope.captured_revision_consistent && source.scope.captured_revision &&
             *source.scope.captured_revision == inventory.media_revision;
         if (!changes_available) {
@@ -648,9 +648,9 @@ void MetadataArtworkSection::present(const BatchResult& result) {
             // table restated this for every file.
             QString reason;
             if (!inventory.capabilities.embedded_readable ||
-                inventory.embedded_adapter_name != "taglib-flac-picture-v1") {
+                !metadata::is_qualified_artwork_adapter(inventory.embedded_adapter_name)) {
                 reason = QStringLiteral(
-                    "Artwork changes need a native FLAC file; this file is view-only");
+                    "Artwork changes need a FLAC, MP3, or MP4 file; this file is view-only");
             } else if (!source.scope.captured_revision_consistent ||
                        !source.scope.captured_revision ||
                        *source.scope.captured_revision != inventory.media_revision) {
@@ -1338,7 +1338,7 @@ void MetadataArtworkSection::startReview(
     }
     if (intents.empty()) {
         status_->setText(kind == metadata::ArtworkWritePlanIntentKind::add
-                             ? QStringLiteral("Select at least one writable native FLAC file")
+                             ? QStringLiteral("Select at least one writable FLAC, MP3, or MP4 file")
                              : QStringLiteral("Select at least one embedded FLAC picture"));
         updateActionButtons();
         return;
@@ -1405,7 +1405,7 @@ void MetadataArtworkSection::reviewFetchedCover(const std::string& replacement_r
         }
     }
     if (intents.empty()) {
-        status_->setText(QStringLiteral("Select at least one writable native FLAC file"));
+        status_->setText(QStringLiteral("Select at least one writable FLAC, MP3, or MP4 file"));
         updateActionButtons();
         return;
     }

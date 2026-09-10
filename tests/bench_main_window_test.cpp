@@ -3981,7 +3981,7 @@ void BenchMainWindowTest::artworkFetchesCoverArtFromArchiveAndAddsFront() {
                         plan,
                         [&journal](const metadata::ArtworkWritePlanSource& source_plan,
                                    const core::CancellationToken& source_cancellation) {
-                            return operations::commit_flac_artwork_source(
+                            return operations::commit_artwork_source(
                                 source_plan, journal,
                                 [](const operations::MetadataCommitResult&) -> core::Result<void> {
                                     return {};
@@ -4136,7 +4136,7 @@ void BenchMainWindowTest::artworkFetchesCoverArtFromArchiveAndAddsFront() {
                         plan,
                         [&journal](const metadata::ArtworkWritePlanSource& source_plan,
                                    const core::CancellationToken& source_cancellation) {
-                            return operations::commit_flac_artwork_source(
+                            return operations::commit_artwork_source(
                                 source_plan, journal,
                                 [](const operations::MetadataCommitResult&) -> core::Result<void> {
                                     return {};
@@ -4280,7 +4280,7 @@ void BenchMainWindowTest::artworkArchivePickerAddsChosenImageWithItsRole() {
                         plan,
                         [&journal](const metadata::ArtworkWritePlanSource& source_plan,
                                    const core::CancellationToken& source_cancellation) {
-                            return operations::commit_flac_artwork_source(
+                            return operations::commit_artwork_source(
                                 source_plan, journal,
                                 [](const operations::MetadataCommitResult&) -> core::Result<void> {
                                     return {};
@@ -6394,7 +6394,7 @@ void BenchMainWindowTest::metadataPropertiesArtworkRemoveReviewsAppliesAndRefres
                         plan,
                         [&journal](const metadata::ArtworkWritePlanSource& source_plan,
                                    const core::CancellationToken& source_cancellation) {
-                            return operations::commit_flac_artwork_source(
+                            return operations::commit_artwork_source(
                                 source_plan, journal,
                                 [](const operations::MetadataCommitResult&) -> core::Result<void> {
                                     return {};

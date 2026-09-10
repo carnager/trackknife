@@ -2,6 +2,9 @@
 
 #include "trackknife/core/stable_id.hpp"
 #include "trackknife/formats/decoder.hpp"
+#include "trackknife/metadata/artwork.hpp"
+#include "trackknife/metadata/artwork_write_plan.hpp"
+#include "trackknife/metadata/artwork_writers.hpp"
 #include "trackknife/metadata/local_reader.hpp"
 #include "trackknife/metadata/mp3_writer.hpp"
 #include "trackknife/metadata/mp4_writer.hpp"
@@ -197,7 +200,7 @@ void roundTripsAtomEditsPreservingBoxes(const std::filesystem::path& fixture_dir
     CHECK(read->adapter_name == "taglib-mp4-v1");
     CHECK(read->capabilities.fields_writable);
     CHECK(read->capabilities.unknown_data_preserved_on_write);
-    CHECK(!read->capabilities.pictures_writable);
+    CHECK(read->capabilities.pictures_writable);
     CHECK(read->document.first_effective_value("title") ==
           std::optional<std::string>{"Fixture Tone"});
     CHECK(read->document.first_effective_value("tracknumber") ==
@@ -288,12 +291,163 @@ void roundTripsAtomEditsPreservingBoxes(const std::filesystem::path& fixture_dir
     CHECK(!trackknife::metadata::is_qualified_text_adapter("taglib-properties-v1"));
 }
 
+// ADR-0137: covr replace/remove/add through the qualified prepared-copy
+// writer — untyped front-cover items, unrelated entries preserved by
+// fingerprint, ftyp/mdat byte-identical, text and PCM unchanged.
+void roundTripsCovrArtworkEdits(const std::filesystem::path& fixture_directory) {
+    using trackknife::metadata::ArtworkWritePlanIntent;
+    using trackknife::metadata::ArtworkWritePlanIntentKind;
+
+    TemporaryDirectory directory;
+    const auto media =
+        materialize(fixture_directory, "tagged-tone-m4a.b64", directory.path() / "artful.m4a");
+    const auto replacement = materialize(fixture_directory, "external-blue-jpeg.b64",
+                                         directory.path() / "replacement.jpg");
+    const std::vector<unsigned char> first_pixels{0xFFU, 0xD8U, 0xFFU, 0xDBU, 0x00U,
+                                                  0x04U, 0x01U, 0x02U, 0xFFU, 0xD9U};
+    const std::vector<unsigned char> second_pixels{0xFFU, 0xD8U, 0xFFU, 0xDBU, 0x00U,
+                                                   0x04U, 0x03U, 0x04U, 0xFFU, 0xD9U};
+    {
+        TagLib::MP4::File file{media.c_str()};
+        CHECK(file.isValid());
+        TagLib::MP4::CoverArtList covers;
+        covers.append(TagLib::MP4::CoverArt{
+            TagLib::MP4::CoverArt::JPEG,
+            TagLib::ByteVector{reinterpret_cast<const char*>(first_pixels.data()),
+                               static_cast<unsigned int>(first_pixels.size())}});
+        covers.append(TagLib::MP4::CoverArt{
+            TagLib::MP4::CoverArt::JPEG,
+            TagLib::ByteVector{reinterpret_cast<const char*>(second_pixels.data()),
+                               static_cast<unsigned int>(second_pixels.size())}});
+        file.tag()->setItem("covr", TagLib::MP4::Item{covers});
+        CHECK(file.save());
+    }
+
+    auto policy = trackknife::metadata::default_artwork_inventory_policy();
+    policy.external_patterns.clear();
+    const auto inventory =
+        trackknife::metadata::read_local_artwork_inventory(media.native(), policy);
+    CHECK(inventory.has_value());
+    if (!inventory) {
+        return;
+    }
+    CHECK(inventory->embedded_adapter_name == "taglib-mp4-covr-v1");
+    CHECK(inventory->capabilities.embedded_readable);
+    CHECK(inventory->items.size() == 2U);
+    CHECK(inventory->items[0].role == trackknife::metadata::ArtworkRole::front);
+    CHECK(inventory->items[0].native_type.empty());
+    CHECK(inventory->items[0].description.empty());
+    CHECK(inventory->items[0].mime_type == "image/jpeg");
+    CHECK(inventory->items[1].source_ordinal == 1U);
+
+    const ArtworkWritePlanIntent replace_intent{
+        .occurrence_index = 0U,
+        .raw_media_path = media.native(),
+        .expected_media_revision = inventory->media_revision,
+        .target_ordinal = 0U,
+        .expected_target_fingerprint = inventory->items[0].content_fingerprint,
+        .kind = ArtworkWritePlanIntentKind::replace,
+        .replacement_raw_path = replacement.native(),
+        .added_role = trackknife::metadata::ArtworkRole::front,
+        .added_description = {},
+        .replacement_embedded_source = std::nullopt,
+    };
+    const auto replace_plan = trackknife::metadata::revalidate_artwork_write_plan({replace_intent});
+    CHECK(replace_plan.has_value() && replace_plan->ready());
+    if (!replace_plan || !replace_plan->ready()) {
+        return;
+    }
+    CHECK(replace_plan->sources.front().adapter_name == "taglib-mp4-covr-v1");
+    const auto replaced_path = directory.path() / "replaced.m4a";
+    const auto replaced = trackknife::metadata::prepare_mp4_artwork_write_copy(
+        replace_plan->sources.front(), replaced_path.native());
+    if (!replaced) {
+        std::cerr << replaced.error().message << '\n';
+    }
+    CHECK(replaced.has_value());
+    if (!replaced) {
+        return;
+    }
+    CHECK(replaced->inventory.items.size() == 2U);
+    CHECK(replaced->inventory.items[0].content_fingerprint !=
+          inventory->items[0].content_fingerprint);
+    CHECK(replaced->inventory.items[0].mime_type == "image/jpeg");
+    CHECK(replaced->inventory.items[0].native_type.empty());
+    CHECK(replaced->inventory.items[1].content_fingerprint ==
+          inventory->items[1].content_fingerprint);
+    CHECK(replaced->document.first_effective_value("title") ==
+          std::optional<std::string>{"Fixture Tone"});
+    const auto media_bytes = read_bytes(media);
+    const auto replaced_bytes = read_bytes(replaced_path);
+    CHECK(box_bytes(media_bytes, "ftyp") == box_bytes(replaced_bytes, "ftyp"));
+    CHECK(box_bytes(media_bytes, "mdat") == box_bytes(replaced_bytes, "mdat"));
+    CHECK(decoded_pcm_matches(media, replaced_path));
+
+    auto remove_intent = replace_intent;
+    remove_intent.kind = ArtworkWritePlanIntentKind::remove;
+    remove_intent.target_ordinal = 1U;
+    remove_intent.expected_target_fingerprint = inventory->items[1].content_fingerprint;
+    remove_intent.replacement_raw_path.reset();
+    const auto remove_plan = trackknife::metadata::revalidate_artwork_write_plan({remove_intent});
+    CHECK(remove_plan.has_value() && remove_plan->ready());
+    if (remove_plan && remove_plan->ready()) {
+        const auto removed_path = directory.path() / "removed.m4a";
+        const auto removed = trackknife::metadata::prepare_mp4_artwork_write_copy(
+            remove_plan->sources.front(), removed_path.native());
+        CHECK(removed.has_value());
+        if (removed) {
+            CHECK(removed->inventory.items.size() == 1U);
+            CHECK(removed->inventory.items[0].content_fingerprint ==
+                  inventory->items[0].content_fingerprint);
+            CHECK(removed->inventory.items[0].source_ordinal == 0U);
+        }
+    }
+
+    // Adds land as untyped covr entries; a requested description is
+    // unsupported in this container.
+    const auto plain =
+        materialize(fixture_directory, "tagged-tone-m4a.b64", directory.path() / "plain.m4a");
+    auto add_intent = replace_intent;
+    add_intent.raw_media_path = plain.native();
+    add_intent.expected_media_revision =
+        *trackknife::core::observe_local_source_revision(plain.native());
+    add_intent.kind = ArtworkWritePlanIntentKind::add;
+    add_intent.target_ordinal = 0U;
+    add_intent.expected_target_fingerprint = {};
+    add_intent.added_role = trackknife::metadata::ArtworkRole::back;
+    const auto add_plan = trackknife::metadata::revalidate_artwork_write_plan({add_intent});
+    CHECK(add_plan.has_value() && add_plan->ready());
+    if (add_plan && add_plan->ready()) {
+        const auto added_path = directory.path() / "added.m4a";
+        const auto added = trackknife::metadata::prepare_mp4_artwork_write_copy(
+            add_plan->sources.front(), added_path.native());
+        if (!added) {
+            std::cerr << "add: " << added.error().message << '\n';
+        }
+        CHECK(added.has_value());
+        if (added) {
+            CHECK(added->inventory.items.size() == 1U);
+            CHECK(added->inventory.items[0].role == trackknife::metadata::ArtworkRole::front);
+            CHECK(added->inventory.items[0].native_type.empty());
+            CHECK(added->inventory.items[0].mime_type == "image/jpeg");
+        }
+
+        auto described = add_plan->sources.front();
+        described.change.added_description = "Not representable";
+        const auto rejected = trackknife::metadata::prepare_mp4_artwork_write_copy(
+            described, (directory.path() / "rejected.m4a").native());
+        CHECK(!rejected.has_value() &&
+              rejected.error().code == trackknife::core::ErrorCode::unsupported);
+    }
+}
+
 } // namespace
 
 int main(const int argc, char** argv) {
     CHECK(argc == 2);
     if (argc == 2) {
         roundTripsAtomEditsPreservingBoxes(std::filesystem::path{argv[1]});
+        roundTripsCovrArtworkEdits(std::filesystem::path{argv[1]});
     }
     return failures == 0 ? 0 : 1;
 }

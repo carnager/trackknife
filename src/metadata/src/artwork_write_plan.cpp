@@ -206,7 +206,7 @@ bool ArtworkWritePlanSource::ready() const noexcept {
     const auto target_complete = change.kind == ArtworkWritePlanIntentKind::add || change.original;
     const auto complete = expected_media_revision && observed_media_revision &&
                           *expected_media_revision == *observed_media_revision &&
-                          adapter_name == "taglib-flac-picture-v1" && target_complete &&
+                          is_qualified_artwork_adapter(adapter_name) && target_complete &&
                           complete_change;
     return complete &&
            std::ranges::none_of(issues, [](const auto& issue) { return issue.blocking; });
@@ -320,10 +320,11 @@ build_artwork_write_plan(const std::vector<ArtworkWritePlanIntent>& intents,
                                  source.raw_media_path));
         }
         if (!inventory->capabilities.embedded_readable ||
-            inventory->embedded_adapter_name != "taglib-flac-picture-v1") {
+            !is_qualified_artwork_adapter(inventory->embedded_adapter_name)) {
             add_issue(source, ArtworkWritePlanIssueKind::writer_unavailable,
                       plan_error(core::ErrorCode::unsupported,
-                                 "artwork changes require native FLAC", source.raw_media_path));
+                                 "artwork changes require a qualified FLAC, MP3, or MP4 file",
+                                 source.raw_media_path));
             continue;
         }
         if (source.change.kind == ArtworkWritePlanIntentKind::add) {
@@ -420,7 +421,7 @@ build_artwork_write_plan(const std::vector<ArtworkWritePlanIntent>& intents,
             *replacement.height > static_cast<std::uint32_t>(INT_MAX)) {
             add_issue(source, ArtworkWritePlanIssueKind::replacement_unsupported,
                       plan_error(core::ErrorCode::unsupported,
-                                 "replacement dimensions cannot be represented in native FLAC",
+                                 "replacement dimensions cannot be represented in the container",
                                  replacement.raw_path));
         }
         const auto duplicate = std::ranges::find_if(inventory->items, [&](const auto& item) {
@@ -480,6 +481,11 @@ revalidate_artwork_write_plan(const std::vector<ArtworkWritePlanIntent>& intents
             return read_artwork_image_file(raw_path, maximum_replacement_bytes, token);
         },
         cancellation);
+}
+
+bool is_qualified_artwork_adapter(const std::string_view adapter_name) {
+    return adapter_name == "taglib-flac-picture-v1" || adapter_name == "taglib-id3v2-apic-v1" ||
+           adapter_name == "taglib-mp4-covr-v1";
 }
 
 } // namespace trackknife::metadata

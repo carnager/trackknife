@@ -126,12 +126,16 @@ References: [converter specification](playback-library-conversion.md#converter),
   `com.apple.iTunes` freeform for everything else, box-level preservation
   proof (`ftyp`/`mdat` byte-identical) plus decoded-PCM equality, and
   `covr` survival. A dedicated ALAC fixture remains a follow-up.
-- [ ] Qualify MP3 and M4A artwork management.
+- [x] Qualify MP3 and M4A artwork management (ADR-0137): ID3v2 APIC and
+  MP4 covr join the FLAC adapter across inventory, donors/export/
+  thumbnails/conversion carriage, the write plan, prepared-copy writers
+  with the containers' preservation proofs, and the journaled commit.
+  covr entries are untyped front covers; Ogg pictures remain open below.
 - [ ] Extend artwork management to other supported containers as their
   preservation behavior is proven.
 
 Qualified text writers cover FLAC, WavPack, MP3,
-Vorbis, Opus, and MP4/M4A (ADR-0136), while artwork editing remains FLAC-only. Playback support
+Vorbis, Opus, and MP4/M4A (ADR-0136), while qualified artwork editing covers FLAC, MP3, and MP4 (ADR-0137). Playback support
 must remain distinct from write support. Each new writer needs real-file
 round trips proving preservation of audio, unknown metadata, and container data.
 

@@ -2,6 +2,7 @@
 
 #include "trackknife/operations/metadata_commit.hpp"
 
+#include "trackknife/metadata/artwork_writers.hpp"
 #include "trackknife/metadata/flac_mapping.hpp"
 #include "trackknife/metadata/flac_writer.hpp"
 #include "trackknife/metadata/local_reader.hpp"
@@ -654,11 +655,15 @@ project_artwork_inventory(const metadata::LocalArtworkInventory& inventory,
                                                    "added artwork already exists in the target",
                                                    source_plan.raw_media_path));
         }
+        // covr entries are untyped (ADR-0137); FLAC and APIC share the
+        // canonical picture-type vocabulary.
+        const auto covr = inventory.embedded_adapter_name == "taglib-mp4-covr-v1";
         projected.push_back(metadata::ArtworkInventoryItem{
-            .role = source_plan.change.added_role,
-            .native_type = canonical_flac_picture_type(source_plan.change.added_role),
+            .role = covr ? metadata::ArtworkRole::front : source_plan.change.added_role,
+            .native_type =
+                covr ? std::string{} : canonical_flac_picture_type(source_plan.change.added_role),
             .mime_type = replacement.mime_type,
-            .description = source_plan.change.added_description,
+            .description = covr ? std::string{} : source_plan.change.added_description,
             .width = replacement.width,
             .height = replacement.height,
             .byte_size = replacement.byte_size,
@@ -1611,16 +1616,16 @@ commit_flac_metadata_source(const metadata::MetadataWritePlanSource& source_plan
 }
 
 core::Result<MetadataCommitResult>
-commit_flac_artwork_source(const metadata::ArtworkWritePlanSource& source_plan,
-                           MetadataOperationJournal& journal,
-                           const MetadataDependentStateCommitter& dependent_state_committer,
-                           const core::CancellationToken& cancellation) {
+commit_artwork_source(const metadata::ArtworkWritePlanSource& source_plan,
+                      MetadataOperationJournal& journal,
+                      const MetadataDependentStateCommitter& dependent_state_committer,
+                      const core::CancellationToken& cancellation) {
     if (cancellation.is_cancellation_requested()) {
         return std::unexpected(cancelled(source_plan.raw_media_path));
     }
     if (!dependent_state_committer || source_plan.raw_media_path.empty() ||
         source_plan.raw_media_path.find('\0') != std::string::npos || !source_plan.ready() ||
-        source_plan.adapter_name != "taglib-flac-picture-v1" ||
+        !metadata::is_qualified_artwork_adapter(source_plan.adapter_name) ||
         !source_plan.expected_media_revision || !source_plan.observed_media_revision ||
         *source_plan.expected_media_revision != *source_plan.observed_media_revision ||
         (source_plan.change.kind != metadata::ArtworkWritePlanIntentKind::add &&
@@ -1630,7 +1635,7 @@ commit_flac_artwork_source(const metadata::ArtworkWritePlanSource& source_plan,
          !source_plan.change.replacement)) {
         return std::unexpected(
             operation_error(core::ErrorCode::invalid_argument,
-                            "artwork commit requires a ready native-FLAC plan and state committer",
+                            "artwork commit requires a ready qualified plan and state committer",
                             source_plan.raw_media_path));
     }
 
@@ -1661,10 +1666,16 @@ commit_flac_artwork_source(const metadata::ArtworkWritePlanSource& source_plan,
         return std::unexpected(!fresh_document ? std::move(fresh_document.error())
                                                : std::move(fresh_inventory.error()));
     }
+    // Each artwork adapter pairs with exactly one text adapter of the same
+    // container (ADR-0137).
+    const std::string_view expected_text_adapter =
+        source_plan.adapter_name == "taglib-id3v2-apic-v1" ? "taglib-mpeg-v1"
+        : source_plan.adapter_name == "taglib-mp4-covr-v1" ? "taglib-mp4-v1"
+                                                           : "taglib-flac-v1";
     if (fresh_document->source_revision != *source_plan.observed_media_revision ||
-        fresh_document->adapter_name != "taglib-flac-v1" ||
+        fresh_document->adapter_name != expected_text_adapter ||
         fresh_inventory->media_revision != *source_plan.observed_media_revision ||
-        fresh_inventory->embedded_adapter_name != "taglib-flac-picture-v1") {
+        fresh_inventory->embedded_adapter_name != source_plan.adapter_name) {
         return std::unexpected(
             operation_error(core::ErrorCode::conflict,
                             "artwork source changed before its commit journal was created",
@@ -1681,7 +1692,7 @@ commit_flac_artwork_source(const metadata::ArtworkWritePlanSource& source_plan,
         return std::unexpected(std::move(created.error()));
     }
 
-    auto prepared = metadata::prepare_flac_artwork_write_copy(
+    auto prepared = metadata::prepare_qualified_artwork_write_copy(
         source_plan, record->prepared_raw_path, cancellation);
     if (!prepared) {
         const auto& failure = prepared.error();

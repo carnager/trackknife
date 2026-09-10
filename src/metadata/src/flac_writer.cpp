@@ -2,6 +2,7 @@
 
 #include "trackknife/metadata/flac_writer.hpp"
 
+#include "container_preservation_detail.hpp"
 #include "text_writer_detail.hpp"
 
 #include "trackknife/metadata/flac_mapping.hpp"
@@ -300,24 +301,7 @@ read_embedded_inventory(const std::string& raw_path, const core::CancellationTok
 
 using PicturePayloads = std::vector<std::vector<unsigned char>>;
 
-[[nodiscard]] TagLib::FLAC::Picture::Type canonical_picture_type(const ArtworkRole role) {
-    using Picture = TagLib::FLAC::Picture;
-    switch (role) {
-    case ArtworkRole::front:
-        return Picture::FrontCover;
-    case ArtworkRole::back:
-        return Picture::BackCover;
-    case ArtworkRole::artist:
-        return Picture::Artist;
-    case ArtworkRole::disc:
-        return Picture::Media;
-    case ArtworkRole::icon:
-        return Picture::FileIcon;
-    case ArtworkRole::other:
-        return Picture::Other;
-    }
-    return Picture::Other;
-}
+using artwork_detail::canonical_picture_type;
 
 [[nodiscard]] core::Result<PicturePayloads>
 read_picture_payloads(const std::string& raw_path, const ArtworkWritePlanSource& source_plan,
@@ -979,6 +963,25 @@ prepare_flac_artwork_write_copy(const ArtworkWritePlanSource& source_plan,
         .kind = source_plan.change.kind,
         .target_ordinal = source_plan.change.target_ordinal,
     };
+}
+
+TagLib::FLAC::Picture::Type artwork_detail::canonical_picture_type(const ArtworkRole role) {
+    using Picture = TagLib::FLAC::Picture;
+    switch (role) {
+    case ArtworkRole::front:
+        return Picture::FrontCover;
+    case ArtworkRole::back:
+        return Picture::BackCover;
+    case ArtworkRole::artist:
+        return Picture::Artist;
+    case ArtworkRole::disc:
+        return Picture::Media;
+    case ArtworkRole::icon:
+        return Picture::FileIcon;
+    case ArtworkRole::other:
+        return Picture::Other;
+    }
+    return Picture::Other;
 }
 
 } // namespace trackknife::metadata

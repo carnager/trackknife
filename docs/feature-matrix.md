@@ -76,7 +76,7 @@ and [local playback modes](adr/0119-local-playback-modes-and-replaygain.md).
 | MusicBrainz and AcoustID | Implemented | Text search, ranked release versions, matching, identifier/credit/sort metadata proposals, and optional fingerprint identification through external `fpcalc`. Cache-first paced requests and typed failures are implemented (ADRs 0088–0096). |
 | Cover Art Archive | Implemented | Fetch front cover from one unambiguous draft-or-baseline release ID, or choose archive images by role. Embedding uses the qualified artwork path. Same-workspace cover commits preserve pending tag drafts and undo history (ADRs 0091, 0094, 0121). |
 | Text metadata writes | Partial | Qualified FLAC, WavPack, MP3, Vorbis, Opus, and MP4/M4A adapters (ADR-0136), with preservation checks and journaled publication. Other containers remain read-only for text mutation; see the format table below. |
-| Artwork management | Partial | Native-FLAC inventory, thumbnails, add/replace/remove/copy, and bounded export. External PNG/JPEG files are donors/export sources; other containers lack qualified artwork mutation. The Properties inventory is bounded to 64 physical sources. |
+| Artwork management | Partial | Qualified embedded inventory and add/replace/remove/copy for native FLAC, ID3v2 APIC, and MP4 covr (ADR-0137; covr entries are untyped front covers), plus thumbnails and bounded export. External PNG/JPEG files are donors/export sources; Ogg and other containers lack qualified artwork mutation. The Properties inventory is bounded to 64 physical sources. |
 | Rename/move and combined preparation | Partial | Reusable naming layouts/destinations, `linux-v1` sanitization, fresh conflict checks, same/cross-filesystem publication, and verified dependent list/cache/library/playback relocation. Combined native-FLAC tag/path publication is qualified. Portable/custom sanitization and Unicode-normalization policies remain open. |
 | Recovery and commit feedback | Implemented | Journals and automatic recovery remain. Unresolved incidents surface once; ordinary Apply uses inline progress and problems-only feedback. The old history/undo window and cross-restart undo retention were removed in ADR-0084. Do not confuse this with tag-draft undo or local removal/reorder undo. |
 
@@ -142,10 +142,10 @@ never qualifies a writer or proves exact seek/gapless behavior.
 | --- | --- | --- | --- |
 | Native FLAC | Yes | Yes | Yes |
 | Native WavPack | Yes, within adapter restrictions | No | No |
-| MP3 | Yes, qualified ID3 path | No | Yes |
+| MP3 | Yes, qualified ID3 path | Yes, APIC qualified path (ADR-0137) | Yes |
 | Ogg Vorbis | Yes, single-stream qualified path | No | Yes |
 | Ogg Opus | Yes, single-stream qualified path | No | Yes |
-| MP4/M4A (AAC/ALAC) | Yes, box-preserving qualified path (ADR-0136) | No | No |
+| MP4/M4A (AAC/ALAC) | Yes, box-preserving qualified path (ADR-0136) | Yes, untyped covr qualified path (ADR-0137) | No |
 | WAV/RF64/Wave64, AIFF, other decoded containers | No qualified writer | No | No qualified output preset |
 
 Conversion outputs remain conditional on the installed FFmpeg encoder/muxer.

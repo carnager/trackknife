@@ -124,10 +124,14 @@ build_artwork_write_plan(const std::vector<ArtworkWritePlanIntent>& intents,
                          const ArtworkWritePlanImageReader& image_reader,
                          const core::CancellationToken& cancellation = {});
 
-// Production convenience using the native-FLAC inventory and bounded PNG/JPEG
+// Production convenience using the embedded inventory and bounded PNG/JPEG
 // replacement reader. Callers dispatch this filesystem work off the UI thread.
 [[nodiscard]] core::Result<ArtworkWritePlan>
 revalidate_artwork_write_plan(const std::vector<ArtworkWritePlanIntent>& intents,
                               const core::CancellationToken& cancellation = {});
+
+// The embedded adapters with a qualified prepared-copy artwork writer
+// (ADR-0137): native FLAC pictures, ID3v2 APIC frames, and MP4 covr entries.
+[[nodiscard]] bool is_qualified_artwork_adapter(std::string_view adapter_name);
 
 } // namespace trackknife::metadata

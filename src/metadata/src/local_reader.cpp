@@ -247,8 +247,8 @@ core::Result<LocalMetadataRead> read_local_metadata(const std::string& raw_path,
                 .fields_readable = true,
                 .fields_writable = native_flac || native_wavpack || native_mpeg || native_vorbis ||
                                    native_opus || native_mp4,
-                .pictures_readable = native_flac,
-                .pictures_writable = native_flac,
+                .pictures_readable = native_flac || native_mpeg || native_mp4,
+                .pictures_writable = native_flac || native_mpeg || native_mp4,
                 .unknown_data_preserved_on_write = preservation_supported,
             },
     };

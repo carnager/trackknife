@@ -1047,9 +1047,18 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   box-level preservation proof (`ftyp`, `mdat`, and every other
   non-`moov`/`free` top-level box byte-identical) plus decoded-PCM
   equality and `covr` survival in the real-file test.
+- Done: ADR-0137 extends qualified embedded artwork from native FLAC to
+  MP3 (ID3v2 APIC) and MP4 (covr) across the inventory, the byte reread
+  (donors, export, thumbnails, conversion carriage), the write plan, new
+  prepared-copy writers reusing the containers' text-writer preservation
+  proofs, and the journaled commit — whose projected inventory now
+  branches per adapter (covr entries are untyped front covers, APIC
+  shares FLAC's type vocabulary). The journal schema is unchanged;
+  real-file tests round-trip replace/remove/add per adapter and a commit
+  case proves the projection plus byte-exact undo.
 - Next: the remaining open M5 capability decisions (sanitization and
   Unicode normalization options, richer match dialects, Musepack and
-  Monkey's Audio writers).
+  Monkey's Audio writers), plus Ogg artwork mutation.
 
 ### Exit criteria
 

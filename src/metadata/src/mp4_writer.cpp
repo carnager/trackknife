@@ -2,6 +2,7 @@
 
 #include "trackknife/metadata/mp4_writer.hpp"
 
+#include "container_preservation_detail.hpp"
 #include "text_writer_detail.hpp"
 #include "trackknife/metadata/local_reader.hpp"
 
@@ -110,14 +111,17 @@ parse_top_level_boxes(const std::vector<unsigned char>& bytes, const core::Error
     return boxes;
 }
 
-// The qualification proof (ADR-0136): TagLib rewrites `moov` and may grow
-// or shrink `free` padding, so those two may differ. Everything else —
-// `ftyp`, every `mdat`, and any other top-level box — must be byte-identical
-// and appear in the same order.
-[[nodiscard]] core::Result<void>
-verify_mp4_box_preservation(const std::string& source_raw_path,
-                            const std::string& prepared_raw_path,
-                            const core::CancellationToken& cancellation) {
+} // namespace
+
+// The qualification proof (ADR-0136), shared with the covr artwork writer
+// (ADR-0137): TagLib rewrites `moov` and may grow or shrink `free`
+// padding, so those two may differ. Everything else — `ftyp`, every
+// `mdat`, and any other top-level box — must be byte-identical and appear
+// in the same order.
+core::Result<void>
+preservation_detail::verify_mp4_box_preservation(const std::string& source_raw_path,
+                                                 const std::string& prepared_raw_path,
+                                                 const core::CancellationToken& cancellation) {
     auto source_bytes = read_file_bytes(source_raw_path, source_raw_path, prepared_raw_path);
     if (!source_bytes) {
         return std::unexpected(std::move(source_bytes.error()));
@@ -186,6 +190,8 @@ verify_mp4_box_preservation(const std::string& source_raw_path,
     }
     return {};
 }
+
+namespace {
 
 [[nodiscard]] core::Result<void> apply_text_changes(const MetadataWritePlanSource& source_plan,
                                                     const std::string& prepared_raw_path,
@@ -309,8 +315,8 @@ prepare_mp4_metadata_write_copy(const MetadataWritePlanSource& source_plan,
     if (!text_verified) {
         return std::unexpected(std::move(text_verified.error()));
     }
-    auto boxes_verified =
-        verify_mp4_box_preservation(source_plan.raw_path, prepared_raw_path, cancellation);
+    auto boxes_verified = preservation_detail::verify_mp4_box_preservation(
+        source_plan.raw_path, prepared_raw_path, cancellation);
     if (!boxes_verified) {
         return std::unexpected(std::move(boxes_verified.error()));
     }

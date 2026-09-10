@@ -47,10 +47,10 @@ commit_flac_metadata_source(const metadata::MetadataWritePlanSource& source_plan
 // unchanged-path publication, undo, and restart-recovery lifecycle as text
 // metadata. Artwork bytes are never written to the operation database.
 [[nodiscard]] core::Result<MetadataCommitResult>
-commit_flac_artwork_source(const metadata::ArtworkWritePlanSource& source_plan,
-                           MetadataOperationJournal& journal,
-                           const MetadataDependentStateCommitter& dependent_state_committer,
-                           const core::CancellationToken& cancellation = {});
+commit_artwork_source(const metadata::ArtworkWritePlanSource& source_plan,
+                      MetadataOperationJournal& journal,
+                      const MetadataDependentStateCommitter& dependent_state_committer,
+                      const core::CancellationToken& cancellation = {});
 
 enum class MetadataRecoveryOutcome : std::uint8_t {
     completed,

@@ -776,7 +776,7 @@ void BenchMainWindow::showMetadataProperties() {
                         plan,
                         [&journal, &dependent](const metadata::ArtworkWritePlanSource& source,
                                                const core::CancellationToken& source_cancellation) {
-                            return operations::commit_flac_artwork_source(
+                            return operations::commit_artwork_source(
                                 source, journal, dependent, source_cancellation);
                         },
                         progress, cancellation,

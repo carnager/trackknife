@@ -1,11 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "trackknife/core/stable_id.hpp"
+#include "trackknife/metadata/artwork.hpp"
+#include "trackknife/metadata/artwork_write_plan.hpp"
+#include "trackknife/metadata/artwork_writers.hpp"
 #include "trackknife/metadata/local_reader.hpp"
 #include "trackknife/metadata/mp3_writer.hpp"
 #include "trackknife/metadata/staged_patch.hpp"
 #include "trackknife/metadata/staged_selection.hpp"
 #include "trackknife/metadata/write_plan.hpp"
+
+#include <taglib/attachedpictureframe.h>
+#include <taglib/id3v2tag.h>
+#include <taglib/mpegfile.h>
 
 #include <algorithm>
 #include <array>
@@ -164,7 +171,7 @@ void roundTripsId3TextEditsPreservingAudio(const std::filesystem::path& fixture_
     CHECK(read->adapter_name == "taglib-mpeg-v1");
     CHECK(read->capabilities.fields_writable);
     CHECK(read->capabilities.unknown_data_preserved_on_write);
-    CHECK(!read->capabilities.pictures_writable);
+    CHECK(read->capabilities.pictures_writable);
     CHECK(read->document.first_effective_value("title") ==
           std::optional<std::string>{"Fixture Tone"});
 
@@ -285,12 +292,138 @@ void toleratesId3v1TrailersUnlikeWavPack(const std::filesystem::path& fixture_di
 
 } // namespace
 
+// ADR-0137: APIC replace mutates the frame in place — position, type, and
+// description survive — remove reorders the ordinals, add lands with the
+// canonical type and its description, and the MPEG audio region stays
+// byte-identical throughout.
+void roundTripsApicArtworkEdits(const std::filesystem::path& fixture_directory) {
+    using trackknife::metadata::ArtworkWritePlanIntent;
+    using trackknife::metadata::ArtworkWritePlanIntentKind;
+
+    TemporaryDirectory directory;
+    const auto media =
+        materialize(fixture_directory, "tagged-tone-mp3.b64", directory.path() / "artful.mp3");
+    const auto replacement = materialize(fixture_directory, "external-blue-jpeg.b64",
+                                         directory.path() / "replacement.jpg");
+    const std::vector<unsigned char> first_pixels{0xFFU, 0xD8U, 0xFFU, 0xDBU, 0x00U,
+                                                  0x04U, 0x01U, 0x02U, 0xFFU, 0xD9U};
+    {
+        TagLib::MPEG::File file{media.c_str(), false};
+        CHECK(file.isValid());
+        auto* frame = new TagLib::ID3v2::AttachedPictureFrame();
+        frame->setType(TagLib::ID3v2::AttachedPictureFrame::Other);
+        frame->setMimeType(TagLib::String{"image/jpeg", TagLib::String::UTF8});
+        frame->setDescription(TagLib::String{"Secondary", TagLib::String::UTF8});
+        frame->setPicture(TagLib::ByteVector{reinterpret_cast<const char*>(first_pixels.data()),
+                                             static_cast<unsigned int>(first_pixels.size())});
+        file.ID3v2Tag(true)->addFrame(frame);
+        CHECK(file.save());
+    }
+
+    auto policy = trackknife::metadata::default_artwork_inventory_policy();
+    policy.external_patterns.clear();
+    const auto inventory =
+        trackknife::metadata::read_local_artwork_inventory(media.native(), policy);
+    CHECK(inventory.has_value());
+    if (!inventory) {
+        return;
+    }
+    CHECK(inventory->embedded_adapter_name == "taglib-id3v2-apic-v1");
+    CHECK(inventory->items.size() == 1U);
+    CHECK(inventory->items[0].role == trackknife::metadata::ArtworkRole::other);
+    CHECK(inventory->items[0].native_type == "Other");
+    CHECK(inventory->items[0].description == "Secondary");
+    CHECK(inventory->items[0].mime_type == "image/jpeg");
+
+    // Replace keeps the frame's type and description.
+    const ArtworkWritePlanIntent replace_intent{
+        .occurrence_index = 0U,
+        .raw_media_path = media.native(),
+        .expected_media_revision = inventory->media_revision,
+        .target_ordinal = 0U,
+        .expected_target_fingerprint = inventory->items[0].content_fingerprint,
+        .kind = ArtworkWritePlanIntentKind::replace,
+        .replacement_raw_path = replacement.native(),
+        .added_role = trackknife::metadata::ArtworkRole::front,
+        .added_description = {},
+        .replacement_embedded_source = std::nullopt,
+    };
+    const auto replace_plan = trackknife::metadata::revalidate_artwork_write_plan({replace_intent});
+    CHECK(replace_plan.has_value() && replace_plan->ready());
+    if (!replace_plan || !replace_plan->ready()) {
+        return;
+    }
+    const auto replaced_path = directory.path() / "replaced.mp3";
+    const auto replaced = trackknife::metadata::prepare_mp3_artwork_write_copy(
+        replace_plan->sources.front(), replaced_path.native());
+    if (!replaced) {
+        std::cerr << "replace: " << replaced.error().message << '\n';
+    }
+    CHECK(replaced.has_value());
+    if (!replaced) {
+        return;
+    }
+    CHECK(replaced->inventory.items.size() == 1U);
+    CHECK(replaced->inventory.items[0].native_type == "Other");
+    CHECK(replaced->inventory.items[0].description == "Secondary");
+    CHECK(replaced->inventory.items[0].content_fingerprint !=
+          inventory->items[0].content_fingerprint);
+    CHECK(replaced->document.first_effective_value("title") ==
+          std::optional<std::string>{"Fixture Tone"});
+    CHECK(audio_region(read_bytes(media)) == audio_region(read_bytes(replaced_path)));
+
+    // Add carries the canonical type and description; remove empties the tag.
+    auto add_intent = replace_intent;
+    add_intent.kind = ArtworkWritePlanIntentKind::add;
+    add_intent.expected_target_fingerprint = {};
+    add_intent.added_role = trackknife::metadata::ArtworkRole::front;
+    add_intent.added_description = "Chosen front";
+    const auto add_plan = trackknife::metadata::revalidate_artwork_write_plan({add_intent});
+    CHECK(add_plan.has_value() && add_plan->ready());
+    if (add_plan && add_plan->ready()) {
+        const auto added_path = directory.path() / "added.mp3";
+        const auto added = trackknife::metadata::prepare_mp3_artwork_write_copy(
+            add_plan->sources.front(), added_path.native());
+        if (!added) {
+            std::cerr << "add: " << added.error().message << '\n';
+        }
+        CHECK(added.has_value());
+        if (added) {
+            CHECK(added->inventory.items.size() == 2U);
+            CHECK(added->inventory.items[1].native_type == "Front Cover");
+            CHECK(added->inventory.items[1].description == "Chosen front");
+            CHECK(added->inventory.items[1].role == trackknife::metadata::ArtworkRole::front);
+            CHECK(audio_region(read_bytes(media)) == audio_region(read_bytes(added_path)));
+        }
+    }
+
+    auto remove_intent = replace_intent;
+    remove_intent.kind = ArtworkWritePlanIntentKind::remove;
+    remove_intent.replacement_raw_path.reset();
+    const auto remove_plan = trackknife::metadata::revalidate_artwork_write_plan({remove_intent});
+    CHECK(remove_plan.has_value() && remove_plan->ready());
+    if (remove_plan && remove_plan->ready()) {
+        const auto removed_path = directory.path() / "removed.mp3";
+        const auto removed = trackknife::metadata::prepare_mp3_artwork_write_copy(
+            remove_plan->sources.front(), removed_path.native());
+        if (!removed) {
+            std::cerr << "remove: " << removed.error().message << '\n';
+        }
+        CHECK(removed.has_value());
+        if (removed) {
+            CHECK(removed->inventory.items.empty());
+            CHECK(audio_region(read_bytes(media)) == audio_region(read_bytes(removed_path)));
+        }
+    }
+}
+
 int main(const int argc, char** argv) {
     CHECK(argc == 2);
     if (argc == 2) {
         const std::filesystem::path fixture_directory{argv[1]};
         roundTripsId3TextEditsPreservingAudio(fixture_directory);
         toleratesId3v1TrailersUnlikeWavPack(fixture_directory);
+        roundTripsApicArtworkEdits(fixture_directory);
     }
     return failures == 0 ? 0 : 1;
 }

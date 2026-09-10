@@ -700,6 +700,70 @@ void recovers_publication_interrupted_before_journal_transition(
     CHECK(std::filesystem::exists(record.backup_raw_path));
 }
 
+// ADR-0137: the commit journal's projected-inventory fingerprint must
+// match what the covr writer actually produces — untyped front-cover
+// items — and undo restores the exact original bytes.
+void commits_and_undoes_mp4_covr_artwork(const std::filesystem::path& fixture_directory) {
+    TemporaryDirectory directory;
+    auto policy = metadata::default_artwork_inventory_policy();
+    policy.external_patterns.clear();
+
+    const auto source = materialize(fixture_directory, "tagged-tone-m4a.b64",
+                                    directory.path() / "artwork-covr.m4a");
+    const auto replacement = materialize(fixture_directory, "external-blue-jpeg.b64",
+                                         directory.path() / "covr-replacement.jpg");
+    const auto original_bytes = read_bytes(source);
+    const auto inventory = metadata::read_local_artwork_inventory(source.native(), policy);
+    CHECK(inventory && inventory->items.empty() &&
+          inventory->embedded_adapter_name == "taglib-mp4-covr-v1");
+    if (!inventory) {
+        return;
+    }
+    auto journal = open_journal(directory, "covr.sqlite3");
+    CHECK(journal.has_value());
+    if (!journal) {
+        return;
+    }
+    const metadata::ArtworkWritePlanIntent add_intent{
+        .occurrence_index = 4U,
+        .raw_media_path = source.native(),
+        .expected_media_revision = inventory->media_revision,
+        .target_ordinal = 0U,
+        .expected_target_fingerprint = {},
+        .kind = metadata::ArtworkWritePlanIntentKind::add,
+        .replacement_raw_path = replacement.native(),
+        .added_role = metadata::ArtworkRole::back,
+        .added_description = {},
+        .replacement_embedded_source = std::nullopt,
+    };
+    const auto add_plan = metadata::revalidate_artwork_write_plan({add_intent});
+    CHECK(add_plan && add_plan->ready() && add_plan->sources.size() == 1U);
+    if (!add_plan || !add_plan->ready() || add_plan->sources.size() != 1U) {
+        return;
+    }
+    CHECK(add_plan->sources.front().adapter_name == "taglib-mp4-covr-v1");
+    const auto added = operations::commit_artwork_source(
+        add_plan->sources.front(), *journal,
+        [](const operations::MetadataCommitResult&) -> core::Result<void> { return {}; });
+    if (!added) {
+        std::cerr << "covr commit: " << added.error().message << '\n';
+    }
+    CHECK(added.has_value());
+    if (!added) {
+        return;
+    }
+    const auto committed_inventory =
+        metadata::read_local_artwork_inventory(source.native(), policy);
+    CHECK(committed_inventory && committed_inventory->items.size() == 1U &&
+          committed_inventory->items.front().role == metadata::ArtworkRole::front &&
+          committed_inventory->items.front().native_type.empty() &&
+          committed_inventory->items.front().description.empty());
+    const auto undone = operations::undo_flac_metadata_operation(
+        added->journal_id, *journal,
+        [](const operations::MetadataCommitResult&) -> core::Result<void> { return {}; });
+    CHECK(undone.has_value() && read_bytes(source) == original_bytes);
+}
+
 void commits_and_recovers_artwork_at_unchanged_paths(
     const std::filesystem::path& fixture_directory) {
     TemporaryDirectory directory;
@@ -724,7 +788,7 @@ void commits_and_recovers_artwork_at_unchanged_paths(
         return;
     }
     std::size_t refreshed_occurrences = 0U;
-    const auto committed = operations::commit_flac_artwork_source(
+    const auto committed = operations::commit_artwork_source(
         *commit_plan, *journal,
         [&refreshed_occurrences](
             const operations::MetadataCommitResult& result) -> core::Result<void> {
@@ -779,7 +843,7 @@ void commits_and_recovers_artwork_at_unchanged_paths(
     auto remove_plan = *commit_plan;
     remove_plan.change.kind = metadata::ArtworkWritePlanIntentKind::remove;
     remove_plan.change.replacement.reset();
-    const auto removed = operations::commit_flac_artwork_source(
+    const auto removed = operations::commit_artwork_source(
         remove_plan, *journal,
         [](const operations::MetadataCommitResult&) -> core::Result<void> { return {}; });
     const auto removed_inventory =
@@ -833,7 +897,7 @@ void commits_and_recovers_artwork_at_unchanged_paths(
     if (!add_plan || !add_plan->ready() || add_plan->sources.size() != 1U) {
         return;
     }
-    const auto added = operations::commit_flac_artwork_source(
+    const auto added = operations::commit_artwork_source(
         add_plan->sources.front(), *journal,
         [](const operations::MetadataCommitResult&) -> core::Result<void> { return {}; });
     const auto added_inventory =
@@ -1816,6 +1880,7 @@ int main(const int argc, char** argv) {
         rejects_hard_linked_sources_before_journaling(fixture_directory);
         recovers_publication_interrupted_before_journal_transition(fixture_directory);
         commits_and_recovers_artwork_at_unchanged_paths(fixture_directory);
+        commits_and_undoes_mp4_covr_artwork(fixture_directory);
         recovers_safe_prepublication_debris_but_retains_ambiguous_paths(fixture_directory);
         undoes_completed_metadata_and_recovers_interrupted_undo(fixture_directory);
         retention_releases_only_verified_backups(fixture_directory);

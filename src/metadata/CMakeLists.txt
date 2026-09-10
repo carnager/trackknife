@@ -13,6 +13,7 @@ add_library(
     src/apev2_trailer_detail.hpp
     src/mp3_writer.cpp
     src/ogg_stream_detail.hpp
+    src/container_artwork_writer.cpp
     src/mp4_writer.cpp
     src/ogg_writer.cpp
     src/text_writer_detail.hpp

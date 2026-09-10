@@ -7,9 +7,16 @@ extern "C" {
 #include <libavutil/sha.h>
 }
 
+#include <attachedpictureframe.h>
 #include <fileref.h>
 #include <flacfile.h>
 #include <flacpicture.h>
+#include <id3v2tag.h>
+#include <mp4coverart.h>
+#include <mp4file.h>
+#include <mp4item.h>
+#include <mp4tag.h>
+#include <mpegfile.h>
 
 #include <algorithm>
 #include <array>
@@ -56,6 +63,27 @@ struct InspectedImage {
     std::array<char, 4> marker{};
     return input.read(marker.data(), static_cast<std::streamsize>(marker.size())) &&
            marker == std::array<char, 4>{'f', 'L', 'a', 'C'};
+}
+
+[[nodiscard]] bool is_native_mp4(const std::string& raw_path) {
+    std::ifstream input{std::filesystem::path{raw_path}, std::ios::binary};
+    std::array<char, 8> header{};
+    return input.read(header.data(), static_cast<std::streamsize>(header.size())) &&
+           header[4] == 'f' && header[5] == 't' && header[6] == 'y' && header[7] == 'p';
+}
+
+[[nodiscard]] bool is_native_mpeg(const std::string& raw_path) {
+    std::ifstream input{std::filesystem::path{raw_path}, std::ios::binary};
+    std::array<char, 3> marker{};
+    if (!input.read(marker.data(), static_cast<std::streamsize>(marker.size()))) {
+        return false;
+    }
+    if (marker == std::array<char, 3>{'I', 'D', '3'}) {
+        return true;
+    }
+    const auto first = static_cast<unsigned char>(marker[0]);
+    const auto second = static_cast<unsigned char>(marker[1]);
+    return first == 0xFFU && (second & 0xE0U) == 0xE0U;
 }
 
 [[nodiscard]] core::Result<core::ContentFingerprint>
@@ -256,6 +284,107 @@ void mark_duplicate(std::vector<ArtworkInventoryItem>& items, ArtworkInventoryIt
     };
 }
 
+// `covr` entries carry a format enum instead of a MIME string; unknown
+// formats fall back to the signature sniff. The inventory and the byte
+// reread must derive MIME identically.
+[[nodiscard]] std::string covr_mime_type(const TagLib::MP4::CoverArt::Format format,
+                                         const std::span<const unsigned char> bytes) {
+    switch (format) {
+    case TagLib::MP4::CoverArt::JPEG:
+        return "image/jpeg";
+    case TagLib::MP4::CoverArt::PNG:
+        return "image/png";
+    case TagLib::MP4::CoverArt::BMP:
+        return "image/bmp";
+    case TagLib::MP4::CoverArt::GIF:
+        return "image/gif";
+    default:
+        break;
+    }
+    const auto inspected = inspect_encoded_image(bytes);
+    return inspected ? inspected->mime_type : std::string{};
+}
+
+// One embedded picture as its adapter exposes it; empty MIME and absent
+// dimensions fall back to the signature sniff in append_embedded_item so
+// every adapter derives them identically.
+struct EmbeddedPictureView {
+    ArtworkRole role{ArtworkRole::other};
+    std::string native_type;
+    std::string mime_type;
+    std::string description;
+    std::optional<std::uint32_t> width;
+    std::optional<std::uint32_t> height;
+    std::span<const unsigned char> bytes;
+};
+
+[[nodiscard]] core::Result<void>
+append_embedded_item(LocalArtworkInventory& result, const ArtworkInventoryPolicy& policy,
+                     std::uint64_t& total_bytes, const std::string& raw_media_path,
+                     const core::LocalSourceRevision& media_revision, const std::size_t ordinal,
+                     EmbeddedPictureView view) {
+    if (view.bytes.empty()) {
+        return std::unexpected(error(core::ErrorCode::backend,
+                                     "an embedded artwork picture has no encoded bytes",
+                                     raw_media_path));
+    }
+    const auto byte_size = static_cast<std::uint64_t>(view.bytes.size());
+    if (auto reserved =
+            reserve_item(policy, byte_size, total_bytes, result.items.size(), raw_media_path);
+        !reserved) {
+        return std::unexpected(std::move(reserved.error()));
+    }
+    auto item_fingerprint = fingerprint(view.bytes, raw_media_path);
+    if (!item_fingerprint) {
+        return std::unexpected(std::move(item_fingerprint.error()));
+    }
+    if (view.native_type.size() + view.mime_type.size() + view.description.size() >
+        maximum_attribute_bytes) {
+        return std::unexpected(error(core::ErrorCode::limit_exceeded,
+                                     "embedded artwork attributes exceed the text limit",
+                                     raw_media_path));
+    }
+    const auto inspected = inspect_encoded_image(view.bytes);
+    ArtworkInventoryItem item{
+        .role = view.role,
+        .native_type = std::move(view.native_type),
+        .mime_type = !view.mime_type.empty()
+                         ? std::move(view.mime_type)
+                         : inspected.transform([](const auto& image) { return image.mime_type; })
+                               .value_or(""),
+        .description = std::move(view.description),
+        .width = view.width ? view.width
+                            : inspected.and_then([](const auto& image) { return image.width; }),
+        .height = view.height ? view.height
+                              : inspected.and_then([](const auto& image) { return image.height; }),
+        .byte_size = byte_size,
+        .content_fingerprint = *item_fingerprint,
+        .provenance = ArtworkProvenance::embedded,
+        .raw_source_path = raw_media_path,
+        .source_revision = media_revision,
+        .source_ordinal = ordinal,
+        .duplicate_of = {},
+    };
+    mark_duplicate(result.items, item);
+    result.items.push_back(std::move(item));
+    total_bytes += byte_size;
+    return {};
+}
+
+// APIC frames of one ID3v2 tag, in frame order; a non-APIC entry in the
+// APIC list is a malformed tag.
+[[nodiscard]] std::vector<TagLib::ID3v2::AttachedPictureFrame*>
+apic_frames(TagLib::ID3v2::Tag* tag) {
+    std::vector<TagLib::ID3v2::AttachedPictureFrame*> frames;
+    if (tag == nullptr) {
+        return frames;
+    }
+    for (auto* frame : tag->frameListMap()["APIC"]) {
+        frames.push_back(dynamic_cast<TagLib::ID3v2::AttachedPictureFrame*>(frame));
+    }
+    return frames;
+}
+
 } // namespace
 
 std::string_view artwork_role_name(const ArtworkRole role) {
@@ -402,39 +531,93 @@ read_artwork_image_bytes(const ArtworkImageFile& image, const std::uint64_t maxi
     std::optional<std::uint32_t> observed_width;
     std::optional<std::uint32_t> observed_height;
     if (image.embedded_source_ordinal) {
-        TagLib::FLAC::File file{image.raw_path.c_str(), false};
-        if (!file.isValid()) {
-            return std::unexpected(error(core::ErrorCode::backend,
-                                         "TagLib rejected the embedded artwork donor",
+        const auto ordinal = *image.embedded_source_ordinal;
+        const auto missing_ordinal =
+            error(core::ErrorCode::conflict, "embedded artwork donor ordinal no longer exists",
+                  image.raw_path);
+        // Every embedded adapter rereads through the same derivation the
+        // inventory used, so the equality contract below stays exact.
+        if (is_native_flac(image.raw_path)) {
+            TagLib::FLAC::File file{image.raw_path.c_str(), false};
+            if (!file.isValid()) {
+                return std::unexpected(error(core::ErrorCode::backend,
+                                             "TagLib rejected the embedded artwork donor",
+                                             image.raw_path));
+            }
+            const auto pictures = file.pictureList();
+            if (ordinal >= pictures.size() ||
+                pictures[static_cast<unsigned int>(ordinal)] == nullptr) {
+                return std::unexpected(missing_ordinal);
+            }
+            const auto* picture = pictures[static_cast<unsigned int>(ordinal)];
+            const auto data = picture->data();
+            const auto* begin = reinterpret_cast<const unsigned char*>(data.data());
+            bytes.assign(begin, begin + data.size());
+            const auto inspected = inspect_encoded_image(bytes);
+            observed_mime = picture->mimeType().to8Bit(true);
+            if (observed_mime.empty() && inspected) {
+                observed_mime = inspected->mime_type;
+            }
+            observed_width =
+                picture->width() > 0
+                    ? std::optional{static_cast<std::uint32_t>(picture->width())}
+                    : inspected.and_then([](const auto& value) { return value.width; });
+            observed_height =
+                picture->height() > 0
+                    ? std::optional{static_cast<std::uint32_t>(picture->height())}
+                    : inspected.and_then([](const auto& value) { return value.height; });
+        } else if (is_native_mp4(image.raw_path)) {
+            TagLib::MP4::File file{image.raw_path.c_str(), false};
+            if (!file.isValid()) {
+                return std::unexpected(error(core::ErrorCode::backend,
+                                             "TagLib rejected the embedded artwork donor",
+                                             image.raw_path));
+            }
+            const auto covers = file.tag() != nullptr && file.tag()->contains("covr")
+                                    ? file.tag()->item("covr").toCoverArtList()
+                                    : TagLib::MP4::CoverArtList{};
+            if (ordinal >= covers.size()) {
+                return std::unexpected(missing_ordinal);
+            }
+            const auto& cover = covers[static_cast<unsigned int>(ordinal)];
+            const auto data = cover.data();
+            const auto* begin = reinterpret_cast<const unsigned char*>(data.data());
+            bytes.assign(begin, begin + data.size());
+            const auto inspected = inspect_encoded_image(bytes);
+            observed_mime = covr_mime_type(cover.format(), bytes);
+            observed_width = inspected.and_then([](const auto& value) { return value.width; });
+            observed_height = inspected.and_then([](const auto& value) { return value.height; });
+        } else if (is_native_mpeg(image.raw_path)) {
+            TagLib::MPEG::File file{image.raw_path.c_str(), false};
+            if (!file.isValid()) {
+                return std::unexpected(error(core::ErrorCode::backend,
+                                             "TagLib rejected the embedded artwork donor",
+                                             image.raw_path));
+            }
+            const auto frames = apic_frames(file.ID3v2Tag(false));
+            if (ordinal >= frames.size() || frames[ordinal] == nullptr) {
+                return std::unexpected(missing_ordinal);
+            }
+            const auto data = frames[ordinal]->picture();
+            const auto* begin = reinterpret_cast<const unsigned char*>(data.data());
+            bytes.assign(begin, begin + data.size());
+            const auto inspected = inspect_encoded_image(bytes);
+            observed_mime = frames[ordinal]->mimeType().to8Bit(true);
+            if (observed_mime.empty() && inspected) {
+                observed_mime = inspected->mime_type;
+            }
+            observed_width = inspected.and_then([](const auto& value) { return value.width; });
+            observed_height = inspected.and_then([](const auto& value) { return value.height; });
+        } else {
+            return std::unexpected(error(core::ErrorCode::unsupported,
+                                         "this container has no embedded artwork adapter",
                                          image.raw_path));
         }
-        const auto pictures = file.pictureList();
-        if (*image.embedded_source_ordinal >= pictures.size() ||
-            pictures[static_cast<unsigned int>(*image.embedded_source_ordinal)] == nullptr) {
-            return std::unexpected(error(core::ErrorCode::conflict,
-                                         "embedded artwork donor ordinal no longer exists",
-                                         image.raw_path));
-        }
-        const auto* picture = pictures[static_cast<unsigned int>(*image.embedded_source_ordinal)];
-        const auto data = picture->data();
-        if (data.isEmpty()) {
+        if (bytes.empty()) {
             return std::unexpected(error(core::ErrorCode::conflict,
                                          "embedded artwork donor has no encoded bytes",
                                          image.raw_path));
         }
-        const auto* begin = reinterpret_cast<const unsigned char*>(data.data());
-        bytes.assign(begin, begin + data.size());
-        const auto inspected = inspect_encoded_image(bytes);
-        observed_mime = picture->mimeType().to8Bit(true);
-        if (observed_mime.empty() && inspected) {
-            observed_mime = inspected->mime_type;
-        }
-        observed_width = picture->width() > 0
-                             ? std::optional{static_cast<std::uint32_t>(picture->width())}
-                             : inspected.and_then([](const auto& value) { return value.width; });
-        observed_height = picture->height() > 0
-                              ? std::optional{static_cast<std::uint32_t>(picture->height())}
-                              : inspected.and_then([](const auto& value) { return value.height; });
     } else {
         if (revision_before->size != image.byte_size) {
             return std::unexpected(error(core::ErrorCode::conflict,
@@ -501,6 +684,7 @@ read_local_artwork_inventory(const std::string& raw_media_path,
     };
     std::uint64_t total_bytes = 0U;
 
+    bool embedded_read = false;
     if (is_native_flac(raw_media_path)) {
         TagLib::FLAC::File file{raw_media_path.c_str(), false};
         if (!file.isValid()) {
@@ -510,6 +694,7 @@ read_local_artwork_inventory(const std::string& raw_media_path,
         }
         result.capabilities.embedded_readable = true;
         result.embedded_adapter_name = "taglib-flac-picture-v1";
+        embedded_read = true;
         const auto pictures = file.pictureList();
         for (std::size_t ordinal = 0U; ordinal < pictures.size(); ++ordinal) {
             if (cancellation.is_cancellation_requested()) {
@@ -522,63 +707,108 @@ read_local_artwork_inventory(const std::string& raw_media_path,
                                              raw_media_path));
             }
             const auto data = picture->data();
-            if (data.isEmpty()) {
-                return std::unexpected(error(core::ErrorCode::backend,
-                                             "FLAC artwork picture has no encoded bytes",
-                                             raw_media_path));
+            if (auto appended = append_embedded_item(
+                    result, policy, total_bytes, raw_media_path, *media_revision, ordinal,
+                    EmbeddedPictureView{
+                        .role = artwork_role(picture->type()),
+                        .native_type =
+                            TagLib::FLAC::Picture::typeToString(picture->type()).to8Bit(true),
+                        .mime_type = picture->mimeType().to8Bit(true),
+                        .description = picture->description().to8Bit(true),
+                        .width = picture->width() > 0
+                                     ? std::optional{static_cast<std::uint32_t>(picture->width())}
+                                     : std::nullopt,
+                        .height = picture->height() > 0
+                                      ? std::optional{static_cast<std::uint32_t>(picture->height())}
+                                      : std::nullopt,
+                        .bytes = {reinterpret_cast<const unsigned char*>(data.data()),
+                                  static_cast<std::size_t>(data.size())},
+                    });
+                !appended) {
+                return std::unexpected(std::move(appended.error()));
             }
-            const auto byte_size = static_cast<std::uint64_t>(data.size());
-            if (auto reserved = reserve_item(policy, byte_size, total_bytes, result.items.size(),
-                                             raw_media_path);
-                !reserved) {
-                return std::unexpected(std::move(reserved.error()));
-            }
-            const auto bytes = std::span{
-                reinterpret_cast<const unsigned char*>(data.data()),
-                static_cast<std::size_t>(data.size()),
-            };
-            auto item_fingerprint = fingerprint(bytes, raw_media_path);
-            if (!item_fingerprint) {
-                return std::unexpected(std::move(item_fingerprint.error()));
-            }
-            auto native_type = TagLib::FLAC::Picture::typeToString(picture->type()).to8Bit(true);
-            auto mime_type = picture->mimeType().to8Bit(true);
-            auto description = picture->description().to8Bit(true);
-            if (native_type.size() + mime_type.size() + description.size() >
-                maximum_attribute_bytes) {
-                return std::unexpected(error(core::ErrorCode::limit_exceeded,
-                                             "FLAC artwork attributes exceed the text limit",
-                                             raw_media_path));
-            }
-            const auto inspected = inspect_encoded_image(bytes);
-            ArtworkInventoryItem item{
-                .role = artwork_role(picture->type()),
-                .native_type = std::move(native_type),
-                .mime_type =
-                    !mime_type.empty()
-                        ? std::move(mime_type)
-                        : inspected.transform([](const auto& image) { return image.mime_type; })
-                              .value_or(""),
-                .description = std::move(description),
-                .width = picture->width() > 0
-                             ? std::optional{static_cast<std::uint32_t>(picture->width())}
-                             : inspected.and_then([](const auto& image) { return image.width; }),
-                .height = picture->height() > 0
-                              ? std::optional{static_cast<std::uint32_t>(picture->height())}
-                              : inspected.and_then([](const auto& image) { return image.height; }),
-                .byte_size = byte_size,
-                .content_fingerprint = *item_fingerprint,
-                .provenance = ArtworkProvenance::embedded,
-                .raw_source_path = raw_media_path,
-                .source_revision = *media_revision,
-                .source_ordinal = ordinal,
-                .duplicate_of = {},
-            };
-            mark_duplicate(result.items, item);
-            result.items.push_back(std::move(item));
-            total_bytes += byte_size;
         }
-
+    } else if (is_native_mp4(raw_media_path)) {
+        TagLib::MP4::File file{raw_media_path.c_str(), false};
+        if (!file.isValid()) {
+            return std::unexpected(error(core::ErrorCode::backend,
+                                         "TagLib rejected the MP4 artwork source", raw_media_path));
+        }
+        result.capabilities.embedded_readable = true;
+        result.embedded_adapter_name = "taglib-mp4-covr-v1";
+        embedded_read = true;
+        const auto covers = file.tag() != nullptr && file.tag()->contains("covr")
+                                ? file.tag()->item("covr").toCoverArtList()
+                                : TagLib::MP4::CoverArtList{};
+        std::size_t ordinal = 0U;
+        for (const auto& cover : covers) {
+            if (cancellation.is_cancellation_requested()) {
+                return std::unexpected(cancelled(raw_media_path));
+            }
+            const auto data = cover.data();
+            const std::span<const unsigned char> bytes{
+                reinterpret_cast<const unsigned char*>(data.data()),
+                static_cast<std::size_t>(data.size())};
+            // covr entries are untyped cover art: no picture type, no
+            // description, dimensions from the signature sniff (ADR-0137).
+            if (auto appended = append_embedded_item(
+                    result, policy, total_bytes, raw_media_path, *media_revision, ordinal,
+                    EmbeddedPictureView{
+                        .role = ArtworkRole::front,
+                        .native_type = {},
+                        .mime_type = covr_mime_type(cover.format(), bytes),
+                        .description = {},
+                        .width = {},
+                        .height = {},
+                        .bytes = bytes,
+                    });
+                !appended) {
+                return std::unexpected(std::move(appended.error()));
+            }
+            ++ordinal;
+        }
+    } else if (is_native_mpeg(raw_media_path)) {
+        TagLib::MPEG::File file{raw_media_path.c_str(), false};
+        if (!file.isValid()) {
+            return std::unexpected(error(core::ErrorCode::backend,
+                                         "TagLib rejected the MP3 artwork source", raw_media_path));
+        }
+        result.capabilities.embedded_readable = true;
+        result.embedded_adapter_name = "taglib-id3v2-apic-v1";
+        embedded_read = true;
+        const auto frames = apic_frames(file.ID3v2Tag(false));
+        for (std::size_t ordinal = 0U; ordinal < frames.size(); ++ordinal) {
+            if (cancellation.is_cancellation_requested()) {
+                return std::unexpected(cancelled(raw_media_path));
+            }
+            const auto* frame = frames[ordinal];
+            if (frame == nullptr) {
+                return std::unexpected(error(core::ErrorCode::backend,
+                                             "ID3v2 APIC inventory contains a malformed frame",
+                                             raw_media_path));
+            }
+            const auto data = frame->picture();
+            // APIC picture types share FLAC's numbering, so the role
+            // mapping and type vocabulary are the same (ADR-0137).
+            const auto type = static_cast<TagLib::FLAC::Picture::Type>(frame->type());
+            if (auto appended = append_embedded_item(
+                    result, policy, total_bytes, raw_media_path, *media_revision, ordinal,
+                    EmbeddedPictureView{
+                        .role = artwork_role(type),
+                        .native_type = TagLib::FLAC::Picture::typeToString(type).to8Bit(true),
+                        .mime_type = frame->mimeType().to8Bit(true),
+                        .description = frame->description().to8Bit(true),
+                        .width = {},
+                        .height = {},
+                        .bytes = {reinterpret_cast<const unsigned char*>(data.data()),
+                                  static_cast<std::size_t>(data.size())},
+                    });
+                !appended) {
+                return std::unexpected(std::move(appended.error()));
+            }
+        }
+    }
+    if (embedded_read) {
         auto revision_after = core::observe_local_source_revision(raw_media_path);
         if (!revision_after || *revision_after != *media_revision) {
             return std::unexpected(error(core::ErrorCode::conflict,
