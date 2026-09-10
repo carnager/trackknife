@@ -60,8 +60,12 @@ References: [library refresh decision](adr/0126-library-deletion-and-search-artw
   in the current workspace (ADR-0129): sidebar list, server-keyed closable
   tabs, capability-gated server-round-trip edits, and idle-driven refresh.
   Multi-row reorder and restoring open playlist tabs remain follow-ups.
-- [ ] Restore separately committed MPD search-result tabs where useful; the
-  current library-integrated live search remains available.
+- [ ] Committed search-result tabs in both authorities: pressing Enter in a
+  library search keeps the current hits as a durable result tab — a new
+  ordinary local list tab from the local library, a server-keyed result tab
+  (like ADR-0129 playlist tabs) from MPD. The library-integrated live search
+  remains the transient default. (The MPD side restores a removed feature;
+  the local side is new.)
 - [ ] Extend Find beyond cached display text to arbitrary metadata and
   technical fields (the ADR-0125 first slice excludes them).
 
