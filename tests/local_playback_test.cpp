@@ -714,6 +714,23 @@ void replayGainUsesRealTagsAndChangesAtGaplessBoundary(const std::filesystem::pa
           audio::replay_gain_multiplier(info, audio::ReplayGainMode::track));
     info.track_gain_db = std::numeric_limits<double>::quiet_NaN();
     CHECK(audio::replay_gain_multiplier(info, audio::ReplayGainMode::track) == 1.0F);
+
+    // ADR-0138 preamps: with-data stacks on the gain before the peak limit,
+    // without-data applies alone, and off bypasses both.
+    const audio::ReplayGainPreamps preamps{.with_gain_db = 3.0F, .without_gain_db = -6.0F};
+    formats::ReplayGainInfo preamped;
+    preamped.track_gain_db = -6.0;
+    CHECK(std::abs(audio::replay_gain_multiplier(preamped, audio::ReplayGainMode::track, preamps) -
+                   static_cast<float>(std::pow(10.0, -3.0 / 20.0))) < 1e-6F);
+    // A known peak caps the boosted result at full scale.
+    preamped.track_gain_db = 0.0;
+    preamped.track_peak = 1.0;
+    CHECK(audio::replay_gain_multiplier(preamped, audio::ReplayGainMode::track, preamps) == 1.0F);
+    // No usable gain: only the without-data preamp applies.
+    formats::ReplayGainInfo gainless;
+    CHECK(std::abs(audio::replay_gain_multiplier(gainless, audio::ReplayGainMode::track, preamps) -
+                   static_cast<float>(std::pow(10.0, -6.0 / 20.0))) < 1e-6F);
+    CHECK(audio::replay_gain_multiplier(gainless, audio::ReplayGainMode::off, preamps) == 1.0F);
     for (const auto* invalid : {"nan", "inf", "10000 dB", "-inf", "3junk", "3 dB garbage"}) {
         write(first, invalid, "-12 dB");
         auto bad = formats::AudioDecoder::open(first.native());

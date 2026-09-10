@@ -6730,6 +6730,15 @@ void BenchMainWindowTest::localPlaybackModesPersistAndStayLocal() {
         QVERIFY(repeat->isChecked());
         QVERIFY(random->isChecked());
         QVERIFY(automatic->isChecked());
+        // ADR-0138: the preamp dialog is reachable from the ReplayGain menu.
+        QVERIFY(window.findChild<QAction*>(QStringLiteral("action-local-replaygain-preamp")) !=
+                nullptr);
+    }
+    // Persisted preamps reach the playback worker on the next start.
+    {
+        QSettings settings;
+        settings.setValue(QStringLiteral("playback/rg-preamp-with"), 4.5);
+        settings.setValue(QStringLiteral("playback/rg-preamp-without"), -3.0);
     }
     BenchMainWindow restored;
     restored.show();
@@ -6743,6 +6752,8 @@ void BenchMainWindowTest::localPlaybackModesPersistAndStayLocal() {
     QCOMPARE(single->iconText(), QStringLiteral("1×"));
     QCOMPARE(consume->iconText(), QStringLiteral("C×"));
     QTRY_COMPARE(restored.property("trackknife-player-replaygain").toInt(), 1);
+    QTRY_COMPARE(restored.property("trackknife-player-rg-preamp-with").toDouble(), 4.5);
+    QTRY_COMPARE(restored.property("trackknife-player-rg-preamp-without").toDouble(), -3.0);
 }
 
 void BenchMainWindowTest::localPlaybackModesAdvance_data() {

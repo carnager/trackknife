@@ -1296,6 +1296,17 @@ quickly and correctly.
   logical-source loudness from becoming whole-file tags. Durable logical
   storage remains open; this does not close M7 or change the active M5 gate.
 
+### Playback preamps (2026-09-10)
+
+- ADR-0138 delivers work item 7's preamp piece: separate ±20 dB preamps
+  for tracks with and without loudness data, applied only while local
+  ReplayGain is active (with-data stacks under the existing peak limit;
+  without-data levels unnormalized sources), carried through the
+  serialized worker command path, inherited by loaded sources, surfaced
+  in the snapshot, and persisted behind a Preamp dialog in the local
+  ReplayGain menu. The specification's additional processing-mode
+  policies and true-peak limiting remain open.
+
 ## M8 — Parallel converter, resampler, and organized output
 
 ### Objective

@@ -94,7 +94,7 @@ Evidence: [metadata and files](metadata-and-files.md),
 | Grouping and Properties scan | Implemented | Track, selection-as-album, release-aware, and `tkfmt-1` grouping; progress/cancel, incomplete-album feedback, and visible ReplayGain draft proposals. Storage coverage remains separate. |
 | CUE/chapter/subsong scan from Properties | Implemented | ADR-0124 preserves decoder selections and exact sample ranges through capture and subset rescans. Real-file workspace regressions compare gains, peaks, and album gains with direct logical-source scans. Logical-track loudness cannot be written as whole-file tags; durable logical storage remains open. |
 | Embedded storage and fallback | Partial | Conventional ReplayGain values use the ordinary qualified text-write pipeline. Durable sidecar/library loudness fallback and a qualified Opus R128 policy are missing. Scanning must remain independent of tag writability. |
-| Local playback gain | Partial | Off/Track/Album/Automatic, album-to-track fallback, and matching-peak clipping prevention are implemented. Sidecar gain, Opus R128, and preamps remain open (ADR-0119). |
+| Local playback gain | Partial | Off/Track/Album/Automatic, album-to-track fallback, matching-peak clipping prevention, and separate persisted ±20 dB preamps for tracks with and without loudness data (ADR-0138). Sidecar gain and Opus R128 remain open (ADR-0119). |
 
 Evidence: [ReplayGain specification](replaygain.md),
 [scan core](../src/loudness/include/trackknife/loudness/scan.hpp),

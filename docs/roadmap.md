@@ -148,7 +148,9 @@ Reference: [metadata and artwork](metadata-and-files.md).
 - [ ] Store results in a sidecar or library record when no safe writable
   embedded mapping exists, and use those results during local playback.
 - [ ] Define and implement Opus R128 storage and playback handling.
-- [ ] Add playback preamp controls.
+- [x] Add playback preamp controls (ADR-0138): separate ±20 dB preamps for
+  tracks with and without loudness data, applied only while local
+  ReplayGain is active, persisted, and inherited by every loaded source.
 - [ ] Decide and implement the true-peak policy (standards-compliant true
   peak alongside the cheap sample peak, with the peak type recorded); this is
   an open pre-M5–M8 decision in [open-decisions](open-decisions.md).

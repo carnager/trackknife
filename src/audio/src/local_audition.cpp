@@ -5,6 +5,7 @@
 #include "trackknife/core/cancellation.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <condition_variable>
 #include <deque>
 #include <future>
@@ -24,6 +25,7 @@ enum class CommandKind {
     seek,
     set_volume,
     set_replay_gain,
+    set_replay_gain_preamps,
     set_buffer,
     refresh_devices,
     set_target,
@@ -40,6 +42,7 @@ struct Command {
     std::optional<formats::SampleRange> segment;
     std::int64_t target_sample{0};
     ReplayGainMode replay_gain_mode{ReplayGainMode::off};
+    ReplayGainPreamps replay_gain_preamps{};
     int volume_percent{100};
     std::optional<std::string> target;
     PlaybackBufferDurationConfig buffer;
@@ -119,6 +122,7 @@ struct LocalAuditionService::Impl {
     explicit Impl(LocalAuditionConfig audition_config) : config(std::move(audition_config)) {
         published.configured_buffer = config.buffer;
         published.replay_gain_mode = config.replay_gain_mode;
+        published.replay_gain_preamps = config.replay_gain_preamps;
         worker = std::jthread{[this](const std::stop_token stop_token) { run(stop_token); }};
     }
 
@@ -152,6 +156,7 @@ struct LocalAuditionService::Impl {
                 return pending.kind != CommandKind::set_volume &&
                        pending.kind != CommandKind::set_buffer &&
                        pending.kind != CommandKind::set_replay_gain &&
+                       pending.kind != CommandKind::set_replay_gain_preamps &&
                        pending.kind != CommandKind::set_target &&
                        pending.kind != CommandKind::relocate_source;
             });
@@ -161,6 +166,7 @@ struct LocalAuditionService::Impl {
         } else if (command.kind == CommandKind::set_volume ||
                    command.kind == CommandKind::set_buffer ||
                    command.kind == CommandKind::set_replay_gain ||
+                   command.kind == CommandKind::set_replay_gain_preamps ||
                    command.kind == CommandKind::refresh_devices ||
                    command.kind == CommandKind::set_target) {
             std::erase_if(commands, [kind = command.kind](const Command& pending) {
@@ -319,6 +325,7 @@ struct LocalAuditionService::Impl {
         next.volume_percent = volume_percent;
         next.configured_buffer = config.buffer;
         next.replay_gain_mode = config.replay_gain_mode;
+        next.replay_gain_preamps = config.replay_gain_preamps;
         next.active_buffer = active_buffer;
         next.output_target = config.output.target_object;
         next.default_output_target = default_output_target;
@@ -561,6 +568,7 @@ struct LocalAuditionService::Impl {
         }
         source.emplace(std::move(*opened));
         source->set_replay_gain_mode(config.replay_gain_mode);
+        source->set_replay_gain_preamps(config.replay_gain_preamps);
         current_revision = *observed_revision;
         active_buffer = config.buffer;
         const auto opened_snapshot = source->snapshot();
@@ -1016,6 +1024,13 @@ struct LocalAuditionService::Impl {
             }
             publish();
             break;
+        case CommandKind::set_replay_gain_preamps:
+            config.replay_gain_preamps = command.replay_gain_preamps;
+            if (source) {
+                source->set_replay_gain_preamps(config.replay_gain_preamps);
+            }
+            publish();
+            break;
         case CommandKind::set_volume:
             set_volume(command.volume_percent);
             break;
@@ -1383,6 +1398,18 @@ core::Result<void> LocalAuditionService::set_replay_gain_mode(const ReplayGainMo
     Command command;
     command.kind = CommandKind::set_replay_gain;
     command.replay_gain_mode = mode;
+    return implementation_->enqueue(std::move(command));
+}
+
+core::Result<void> LocalAuditionService::set_replay_gain_preamps(const ReplayGainPreamps preamps) {
+    if (!std::isfinite(preamps.with_gain_db) || !std::isfinite(preamps.without_gain_db) ||
+        std::abs(preamps.with_gain_db) > maximum_replay_gain_preamp_db ||
+        std::abs(preamps.without_gain_db) > maximum_replay_gain_preamp_db) {
+        return std::unexpected(invalid_config("ReplayGain preamps must be within ±20 dB"));
+    }
+    Command command;
+    command.kind = CommandKind::set_replay_gain_preamps;
+    command.replay_gain_preamps = preamps;
     return implementation_->enqueue(std::move(command));
 }
 

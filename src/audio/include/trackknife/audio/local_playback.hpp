@@ -18,10 +18,23 @@ namespace trackknife::audio {
 
 enum class ReplayGainMode { off, track, album };
 
-// Album falls back to track; absent gain is unity. A matching known peak
-// limits amplification to full scale. Off is a sample-exact bypass.
-[[nodiscard]] float replay_gain_multiplier(const formats::ReplayGainInfo& info,
-                                           ReplayGainMode mode) noexcept;
+// User level adjustments applied only while ReplayGain is active
+// (ADR-0138): with_gain_db stacks on the selected gain before the peak
+// limit; without_gain_db applies alone to sources carrying no usable gain.
+struct ReplayGainPreamps {
+    float with_gain_db{0.0F};
+    float without_gain_db{0.0F};
+
+    friend bool operator==(const ReplayGainPreamps&, const ReplayGainPreamps&) = default;
+};
+
+inline constexpr float maximum_replay_gain_preamp_db = 20.0F;
+
+// Album falls back to track; absent gain applies the without-data preamp
+// (unity by default). A matching known peak limits amplification to full
+// scale. Off is a sample-exact bypass.
+[[nodiscard]] float replay_gain_multiplier(const formats::ReplayGainInfo& info, ReplayGainMode mode,
+                                           const ReplayGainPreamps& preamps = {}) noexcept;
 
 enum class LocalPlaybackState {
     stopped,
@@ -103,6 +116,7 @@ class LocalPlayback final {
     // Producer-thread policy: affects newly decoded PCM, including continuations.
     // Already buffered PCM is unchanged.
     void set_replay_gain_mode(ReplayGainMode mode) noexcept;
+    void set_replay_gain_preamps(ReplayGainPreamps preamps) noexcept;
 
     // Queues a source to continue seamlessly in the same ring the moment the
     // active source's decode ends. The queued source must match the active

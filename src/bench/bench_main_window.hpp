@@ -284,6 +284,7 @@ class BenchMainWindow final : public QMainWindow {
     void refreshLocalPlaybackControls();
     void saveLocalPlaybackModes();
     void applyLocalPlaybackModes();
+    void showReplayGainPreampDialog();
     void resetPlaybackOrder();
     void adoptPlaybackRow(ListTab& tab, int row, const LocalTrackSource& source, bool consume,
                           int direction = 1);
@@ -503,6 +504,8 @@ class BenchMainWindow final : public QMainWindow {
     int local_single_{0};
     int local_consume_{0};
     QString local_replaygain_{QStringLiteral("off")};
+    double local_rg_preamp_with_{0.0};
+    double local_rg_preamp_without_{0.0};
     audio::PlaybackOrder playback_order_;
     QPersistentModelIndex playback_index_;
     QPersistentModelIndex queued_playback_index_;

@@ -13,6 +13,7 @@
 #include <QApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -551,6 +552,13 @@ void BenchMainWindow::buildLocalPlaybackControls(QMenu* playback_menu) {
         local_replaygain_ != QStringLiteral("auto")) {
         local_replaygain_ = QStringLiteral("off");
     }
+    const auto preamp_limit = static_cast<double>(audio::maximum_replay_gain_preamp_db);
+    local_rg_preamp_with_ =
+        std::clamp(settings.value(QStringLiteral("playback/rg-preamp-with"), 0.0).toDouble(),
+                   -preamp_limit, preamp_limit);
+    local_rg_preamp_without_ =
+        std::clamp(settings.value(QStringLiteral("playback/rg-preamp-without"), 0.0).toDouble(),
+                   -preamp_limit, preamp_limit);
     const auto add_mode = [&](const QString& id, const QString& label, const QString& icon) {
         auto* action = new QAction(label, this);
         action->setObjectName(QStringLiteral("action-local-%1").arg(id));
@@ -638,6 +646,10 @@ void BenchMainWindow::buildLocalPlaybackControls(QMenu* playback_menu) {
             applyLocalPlaybackModes();
         });
     }
+    menu->addSeparator();
+    auto* preamp_action = menu->addAction(QStringLiteral("Preamp…"));
+    preamp_action->setObjectName(QStringLiteral("action-local-replaygain-preamp"));
+    connect(preamp_action, &QAction::triggered, this, &BenchMainWindow::showReplayGainPreampDialog);
     local_replaygain_button_->setMenu(menu);
     statusBar()->addPermanentWidget(local_replaygain_button_);
     playback_menu->addMenu(menu);
@@ -652,6 +664,8 @@ void BenchMainWindow::saveLocalPlaybackModes() {
     settings.setValue(QStringLiteral("playback/local-single"), local_single_);
     settings.setValue(QStringLiteral("playback/local-consume"), local_consume_);
     settings.setValue(QStringLiteral("playback/local-replaygain"), local_replaygain_);
+    settings.setValue(QStringLiteral("playback/rg-preamp-with"), local_rg_preamp_with_);
+    settings.setValue(QStringLiteral("playback/rg-preamp-without"), local_rg_preamp_without_);
 }
 
 void BenchMainWindow::applyLocalPlaybackModes() {
@@ -668,8 +682,47 @@ void BenchMainWindow::applyLocalPlaybackModes() {
             mode = audio::ReplayGainMode::album;
         }
         static_cast<void>(player_->set_replay_gain_mode(mode));
+        static_cast<void>(player_->set_replay_gain_preamps(audio::ReplayGainPreamps{
+            .with_gain_db = static_cast<float>(local_rg_preamp_with_),
+            .without_gain_db = static_cast<float>(local_rg_preamp_without_),
+        }));
     }
     refreshLocalPlaybackControls();
+}
+
+// Separate preamps for tracks with and without loudness data (ADR-0138);
+// both apply only while local ReplayGain is active.
+void BenchMainWindow::showReplayGainPreampDialog() {
+    QDialog dialog{this};
+    dialog.setWindowTitle(QStringLiteral("ReplayGain preamp"));
+    dialog.setObjectName(QStringLiteral("bench-rg-preamp-dialog"));
+    auto* form = new QFormLayout(&dialog);
+    const auto preamp_limit = static_cast<double>(audio::maximum_replay_gain_preamp_db);
+    const auto make_spin = [&](const QString& name, const double value) {
+        auto* spin = new QDoubleSpinBox(&dialog);
+        spin->setObjectName(name);
+        spin->setRange(-preamp_limit, preamp_limit);
+        spin->setSingleStep(0.5);
+        spin->setDecimals(1);
+        spin->setSuffix(QStringLiteral(" dB"));
+        spin->setValue(value);
+        return spin;
+    };
+    auto* with_gain = make_spin(QStringLiteral("bench-rg-preamp-with"), local_rg_preamp_with_);
+    auto* without_gain =
+        make_spin(QStringLiteral("bench-rg-preamp-without"), local_rg_preamp_without_);
+    form->addRow(QStringLiteral("With ReplayGain data:"), with_gain);
+    form->addRow(QStringLiteral("Without ReplayGain data:"), without_gain);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    form->addRow(buttons);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    local_rg_preamp_with_ = with_gain->value();
+    local_rg_preamp_without_ = without_gain->value();
+    applyLocalPlaybackModes();
 }
 
 void BenchMainWindow::refreshLocalPlaybackControls() {
@@ -936,6 +989,10 @@ void BenchMainWindow::refreshTransport() {
         }
     }
     setProperty("trackknife-player-replaygain", static_cast<int>(snapshot.replay_gain_mode));
+    setProperty("trackknife-player-rg-preamp-with",
+                static_cast<double>(snapshot.replay_gain_preamps.with_gain_db));
+    setProperty("trackknife-player-rg-preamp-without",
+                static_cast<double>(snapshot.replay_gain_preamps.without_gain_db));
     setProperty("trackknife-player-row", playback_row_);
     setProperty("trackknife-player-position", static_cast<qlonglong>(snapshot.position_sample));
     setProperty("trackknife-player-buffered", static_cast<qlonglong>(snapshot.buffered_frames));

@@ -169,8 +169,8 @@ frame_buffer_config(const PlaybackBufferDurationConfig config, const int sample_
 
 } // namespace
 
-float replay_gain_multiplier(const formats::ReplayGainInfo& info,
-                             const ReplayGainMode mode) noexcept {
+float replay_gain_multiplier(const formats::ReplayGainInfo& info, const ReplayGainMode mode,
+                             const ReplayGainPreamps& preamps) noexcept {
     if (mode == ReplayGainMode::off) {
         return 1.0F;
     }
@@ -178,9 +178,12 @@ float replay_gain_multiplier(const formats::ReplayGainInfo& info,
     const auto gain = album ? info.album_gain_db : info.track_gain_db;
     const auto peak = album ? info.album_peak : info.track_peak;
     if (!gain || !std::isfinite(*gain) || *gain < -60.0 || *gain > 60.0) {
-        return 1.0F;
+        // No usable loudness data: the without-data preamp levels such
+        // sources against normalized material (ADR-0138).
+        return static_cast<float>(
+            std::pow(10.0, static_cast<double>(preamps.without_gain_db) / 20.0));
     }
-    auto multiplier = std::pow(10.0, *gain / 20.0);
+    auto multiplier = std::pow(10.0, (*gain + static_cast<double>(preamps.with_gain_db)) / 20.0);
     if (peak && std::isfinite(*peak) && *peak > 0.0) {
         multiplier = std::min(multiplier, 1.0 / *peak);
     }
@@ -189,6 +192,7 @@ float replay_gain_multiplier(const formats::ReplayGainInfo& info,
 
 struct LocalPlayback::Impl {
     ReplayGainMode replay_gain_mode{ReplayGainMode::off};
+    ReplayGainPreamps replay_gain_preamps{};
     PcmRingBuffer ring;
     formats::AudioDecoder decoder;
     formats::ReplayGainInfo replay_gain;
@@ -390,6 +394,10 @@ core::Result<LocalPlayback> LocalPlayback::open_selected_segment(
 
 void LocalPlayback::set_replay_gain_mode(const ReplayGainMode mode) noexcept {
     implementation_->replay_gain_mode = mode;
+}
+
+void LocalPlayback::set_replay_gain_preamps(const ReplayGainPreamps preamps) noexcept {
+    implementation_->replay_gain_preamps = preamps;
 }
 
 const formats::PcmFormat& LocalPlayback::output_format() const noexcept {
@@ -655,7 +663,8 @@ core::Result<void> LocalPlayback::fill_buffer() {
         playback.next_decode_sample += chunk_frames;
         playback.pending_samples = std::move((*chunk)->interleaved_samples);
         playback.pending_frame_offset = 0U;
-        const auto gain = replay_gain_multiplier(playback.replay_gain, playback.replay_gain_mode);
+        const auto gain = replay_gain_multiplier(playback.replay_gain, playback.replay_gain_mode,
+                                                 playback.replay_gain_preamps);
         if (gain != 1.0F) {
             for (auto& sample : playback.pending_samples) {
                 sample *= gain;

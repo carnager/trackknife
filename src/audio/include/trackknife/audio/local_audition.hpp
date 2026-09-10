@@ -51,6 +51,7 @@ playback_buffer_preset_config(PlaybackBufferPreset preset) noexcept;
 struct LocalAuditionConfig {
     PlaybackBufferDurationConfig buffer;
     ReplayGainMode replay_gain_mode{ReplayGainMode::off};
+    ReplayGainPreamps replay_gain_preamps{};
     PipeWireOutputConfig output;
     std::chrono::milliseconds producer_period{5};
     std::size_t command_capacity{64U};
@@ -83,6 +84,7 @@ struct LocalAuditionSnapshot {
     // next ordinary source load.
     std::optional<PlaybackBufferDurationConfig> active_buffer;
     ReplayGainMode replay_gain_mode{ReplayGainMode::off};
+    ReplayGainPreamps replay_gain_preamps{};
     int volume_percent{100};
     std::optional<std::string> output_target;
     std::optional<std::string> default_output_target;
@@ -166,6 +168,7 @@ class LocalAuditionService final {
     // linear stream mixer and reapplied when a new source connects.
     [[nodiscard]] core::Result<void> set_volume_percent(int percent);
     [[nodiscard]] core::Result<void> set_replay_gain_mode(ReplayGainMode mode);
+    [[nodiscard]] core::Result<void> set_replay_gain_preamps(ReplayGainPreamps preamps);
     // Selects the decoded-PCM ring policy for the next source load. If a
     // source is active, its immutable ring remains attached and any prepared
     // gapless continuation is dropped so the new policy takes effect at the
