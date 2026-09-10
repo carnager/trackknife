@@ -1040,6 +1040,13 @@ editing feels like a modern data tool rather than a stack of per-field dialogs.
   preservation at the logical packet layer (every packet except the
   comment packet byte-identical, decode-verified in tests) with the
   shared text-writer core and paired totals enabled.
+- Done: ADR-0136 qualifies the MP4/M4A text writer over the shared
+  prepared-copy core: standard atoms through TagLib's documented table,
+  exact `com.apple.iTunes` freeform identity for everything else, the
+  combined `trkn` number/total value with paired totals off, and a
+  box-level preservation proof (`ftyp`, `mdat`, and every other
+  non-`moov`/`free` top-level box byte-identical) plus decoded-PCM
+  equality and `covr` survival in the real-file test.
 - Next: the remaining open M5 capability decisions (sanitization and
   Unicode normalization options, richer match dialects, Musepack and
   Monkey's Audio writers).

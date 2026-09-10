@@ -360,3 +360,25 @@ Binary SHA-256:
 The Ogg writer qualification requires the reread tags to match the plan
 exactly and every logical packet except the comment packet to stay
 byte-identical through a prepared-copy tag write.
+
+## Tagged MP4/M4A fixture
+
+`tagged-tone-m4a.b64` is a 2 s 44.1 kHz stereo 997 Hz sine encoded as AAC
+in an MP4 container (`ftyp free mdat moov` layout, `moov` trailing) with
+the standard atoms `©nam`, `©ART`, `©alb`, and `trkn`, generated with
+FFmpeg n9.0.1:
+
+```sh
+ffmpeg -f lavfi -i "sine=frequency=997:duration=2" -ac 2 \
+  -metadata title="Fixture Tone" -metadata artist="Trackknife Project" \
+  -metadata album="Container Fixtures" -metadata track="3" \
+  -c:a aac -b:a 128k -bitexact tagged-tone.m4a
+```
+
+The binary SHA-256 is
+`a66fd41662cd3ce5d6b79e3397a6416940801c78f2cf72eb37532fed07ffa04a`.
+The MP4 writer qualification requires the reread tags to match the plan
+exactly, the `ftyp` and `mdat` boxes to stay byte-identical, and the
+decoded PCM to be unchanged through a prepared-copy tag write; freeform
+`----:com.apple.iTunes:NAME` items are created by the writer under test,
+not stored in the fixture.

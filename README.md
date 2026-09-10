@@ -12,7 +12,7 @@ MPD. The two players keep separate queues.
 
 For the files that need work, there's bulk tagging, MusicBrainz lookup,
 ReplayGain scanning, conversion, and renaming. Tag edits support FLAC,
-WavPack, MP3, Vorbis, and Opus; other formats are read-only.
+WavPack, MP3, Vorbis, Opus, and MP4/M4A; other formats are read-only.
 
 Still in development, with no versioned releases yet.
 

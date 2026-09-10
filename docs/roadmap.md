@@ -121,13 +121,17 @@ References: [converter specification](playback-library-conversion.md#converter),
 
 **Proposal:** Prioritize common collection formats before more obscure writers.
 
-- [ ] Qualify text tagging in MP4/M4A containers carrying AAC or ALAC.
+- [x] Qualify text tagging in MP4/M4A containers carrying AAC or ALAC
+  (ADR-0136): standard atoms through TagLib's documented table, exact
+  `com.apple.iTunes` freeform for everything else, box-level preservation
+  proof (`ftyp`/`mdat` byte-identical) plus decoded-PCM equality, and
+  `covr` survival. A dedicated ALAC fixture remains a follow-up.
 - [ ] Qualify MP3 and M4A artwork management.
 - [ ] Extend artwork management to other supported containers as their
   preservation behavior is proven.
 
-At the review baseline, qualified text writers cover FLAC, WavPack, MP3,
-Vorbis, and Opus, while artwork editing remains FLAC-only. Playback support
+Qualified text writers cover FLAC, WavPack, MP3,
+Vorbis, Opus, and MP4/M4A (ADR-0136), while artwork editing remains FLAC-only. Playback support
 must remain distinct from write support. Each new writer needs real-file
 round trips proving preservation of audio, unknown metadata, and container data.
 

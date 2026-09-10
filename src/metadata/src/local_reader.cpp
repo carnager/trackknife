@@ -6,6 +6,7 @@
 
 #include <fileref.h>
 #include <flacfile.h>
+#include <mp4file.h>
 #include <mpegfile.h>
 #include <opusfile.h>
 #include <tfile.h>
@@ -87,6 +88,14 @@ constexpr std::size_t maximum_text_bytes = 4U * 1024U * 1024U;
            marker == std::array<char, 4>{'O', 'g', 'g', 'S'};
 }
 
+// The MP4 brand marker sits after the leading box-size word.
+[[nodiscard]] bool has_native_mp4_marker(const std::string& raw_path) {
+    std::ifstream input{std::filesystem::path{raw_path}, std::ios::binary};
+    std::array<char, 8> header{};
+    return input.read(header.data(), static_cast<std::streamsize>(header.size())) &&
+           header[4] == 'f' && header[5] == 't' && header[6] == 'y' && header[7] == 'p';
+}
+
 } // namespace
 
 core::Result<LocalMetadataRead> read_local_metadata(const std::string& raw_path,
@@ -122,6 +131,10 @@ core::Result<LocalMetadataRead> read_local_metadata(const std::string& raw_path,
     const bool native_opus = !native_flac && !native_wavpack && !native_mpeg && !native_vorbis &&
                              dynamic_cast<TagLib::Ogg::Opus::File*>(reference.file()) != nullptr &&
                              has_native_ogg_marker(raw_path);
+    const bool native_mp4 = !native_flac && !native_wavpack && !native_mpeg && !native_vorbis &&
+                            !native_opus &&
+                            dynamic_cast<TagLib::MP4::File*>(reference.file()) != nullptr &&
+                            has_native_mp4_marker(raw_path);
     const auto properties = reference.file()->properties();
     if (cancellation.is_cancellation_requested()) {
         return std::unexpected(cancelled(raw_path));
@@ -217,7 +230,7 @@ core::Result<LocalMetadataRead> read_local_metadata(const std::string& raw_path,
     // does not block writes.
     const bool preservation_supported =
         (native_flac && document.unsupported_native_objects.empty()) || native_wavpack ||
-        native_mpeg || native_vorbis || native_opus;
+        native_mpeg || native_vorbis || native_opus || native_mp4;
     return LocalMetadataRead{
         .raw_path = raw_path,
         .source_revision = *revision_after,
@@ -227,12 +240,13 @@ core::Result<LocalMetadataRead> read_local_metadata(const std::string& raw_path,
                         : native_mpeg    ? "taglib-mpeg-v1"
                         : native_vorbis  ? "taglib-vorbis-v1"
                         : native_opus    ? "taglib-opus-v1"
+                        : native_mp4     ? "taglib-mp4-v1"
                                          : "taglib-properties-v1",
         .capabilities =
             MetadataCapabilities{
                 .fields_readable = true,
-                .fields_writable =
-                    native_flac || native_wavpack || native_mpeg || native_vorbis || native_opus,
+                .fields_writable = native_flac || native_wavpack || native_mpeg || native_vorbis ||
+                                   native_opus || native_mp4,
                 .pictures_readable = native_flac,
                 .pictures_writable = native_flac,
                 .unknown_data_preserved_on_write = preservation_supported,
