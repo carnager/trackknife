@@ -216,9 +216,9 @@ they are not additional immediate commitments.
 - File-operation undo: cross-filesystem undo, changed-artifact undo, and the
   artwork undo chain on exchange-less filesystems (ADR-0111 addendum) remain
   recorded follow-ups without a current surface.
-- Conversion: downsample-only rate caps, explicit keep-source depth,
-  channel-processing policy, grouped/merge output, qualified DSP/gain, and
-  splitting cue tracks into separate files.
+- Conversion: channel-processing policy, grouped/merge output, qualified
+  DSP/gain, and splitting cue tracks into separate files. Downsample-only
+  caps and keep-source depth landed in ADR-0134.
 - Infrastructure: shared resource scheduling/retry, secure credential storage,
   user backup/restore, and representative large-library/network/device testing.
 - Later product work: Melody playback endpoint, DSP graph, release hardening

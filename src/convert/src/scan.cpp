@@ -49,7 +49,9 @@ struct ItemOutcome {
             .destination_raw_path = item.destination_raw_path,
             .preset = options.preset,
             .target_sample_rate = options.target_sample_rate,
+            .sample_rate_cap = options.sample_rate_cap,
             .target_bit_depth = options.target_bit_depth,
+            .keep_source_bit_depth = options.keep_source_bit_depth,
             .metadata = item.metadata,
             .artwork = options.carry_artwork
                            ? resolve_conversion_artwork(item.source_raw_path, cancellation)

@@ -39,9 +39,15 @@ struct ConversionScanOptions {
     // One resampling policy for the whole scan; absent keeps each source's
     // rate (see AudioConversionRequest::target_sample_rate).
     std::optional<int> target_sample_rate;
+    // Downsample-only cap applied per item (ADR-0134); mutually exclusive
+    // with target_sample_rate.
+    std::optional<int> sample_rate_cap;
     // One stored-bit-depth policy for the whole scan (16 or 24; see
     // AudioConversionRequest::target_bit_depth).
     std::optional<int> target_bit_depth;
+    // Keeps each source's stored depth (ADR-0134); mutually exclusive with
+    // target_bit_depth.
+    bool keep_source_bit_depth{false};
     // Resolves each item's cover image (ADR-0131) and embeds it into the
     // output; a source without usable artwork converts without one.
     bool carry_artwork{false};

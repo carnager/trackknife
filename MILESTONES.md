@@ -1381,7 +1381,14 @@ afterwards is a separate explicit command in Trackbench's MPD authority.
   pre-publication reread verifies none survive, and real-file tests pin
   the stripping for every qualified preset. A bit-identical lossless
   transfer exception and automatic output rescanning remain follow-ups.
-- Next: a downsample-only rate cap and keep-source bit depth.
+- Done: ADR-0134 adds the downsample-only rate cap (sources above are
+  resampled to it, sources at or below keep their rate, encoder
+  constraints still apply) and keep-source bit depth from the probed
+  stored format (≤16 stored bits keep 16, everything else keeps 24).
+  Both are per-item scan options with converter-dialog entries, and
+  conflicting option pairs fail closed with real-file test coverage.
+- Next: grouped/cue-aware and merge output modes (work item 4) plus the
+  remaining item-3 pieces (channel policy, DSP, permanent gain).
 
 ### Exit criteria
 

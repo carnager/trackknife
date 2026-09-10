@@ -5,6 +5,7 @@
 #include "trackknife/core/atomic_rename.hpp"
 #include "trackknife/core/stable_id.hpp"
 #include "trackknife/formats/artwork.hpp"
+#include "trackknife/formats/probe.hpp"
 #include "trackknife/metadata/local_reader.hpp"
 
 extern "C" {
@@ -709,12 +710,25 @@ core::Result<ConvertedAudioFile> convert_audio_file(const AudioConversionRequest
                         .message = "the conversion destination already exists",
                         .context = {{.key = "path", .value = request.destination_raw_path}}});
     }
-    if (request.target_sample_rate &&
-        (*request.target_sample_rate < 8'000 || *request.target_sample_rate > 768'000)) {
-        return std::unexpected(
-            core::Error{.code = core::ErrorCode::invalid_argument,
-                        .message = "the requested sample rate must be between 8 and 768 kHz",
-                        .context = {{.key = "path", .value = request.destination_raw_path}}});
+    if (request.target_sample_rate && request.sample_rate_cap) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invalid_argument,
+            .message = "a forced sample rate and a downsample-only cap are mutually exclusive",
+            .context = {{.key = "path", .value = request.destination_raw_path}}});
+    }
+    for (const auto& rate : {request.target_sample_rate, request.sample_rate_cap}) {
+        if (rate && (*rate < 8'000 || *rate > 768'000)) {
+            return std::unexpected(
+                core::Error{.code = core::ErrorCode::invalid_argument,
+                            .message = "the requested sample rate must be between 8 and 768 kHz",
+                            .context = {{.key = "path", .value = request.destination_raw_path}}});
+        }
+    }
+    if (request.target_bit_depth && request.keep_source_bit_depth) {
+        return std::unexpected(core::Error{
+            .code = core::ErrorCode::invalid_argument,
+            .message = "a forced bit depth and keep-source depth are mutually exclusive",
+            .context = {{.key = "path", .value = request.destination_raw_path}}});
     }
     if (request.target_bit_depth &&
         (*request.target_bit_depth != 16 && *request.target_bit_depth != 24)) {
@@ -722,6 +736,25 @@ core::Result<ConvertedAudioFile> convert_audio_file(const AudioConversionRequest
             core::Error{.code = core::ErrorCode::invalid_argument,
                         .message = "the requested bit depth must be 16 or 24",
                         .context = {{.key = "path", .value = request.destination_raw_path}}});
+    }
+    // Keep-source depth reads the stored format from the probe: at most 16
+    // stored bits keeps 16, everything else — including float and unknown —
+    // keeps 24, the pipeline's maximum stored depth (ADR-0134).
+    std::optional<int> effective_bit_depth = request.target_bit_depth;
+    if (request.keep_source_bit_depth) {
+        auto probed = formats::probe_local_media(request.source_raw_path, cancellation);
+        if (!probed) {
+            return std::unexpected(
+                std::move(probed.error()).with_context("probe", "reading the stored bit depth"));
+        }
+        std::string stored_format;
+        if (probed->best_audio_stream) {
+            stored_format =
+                probed->audio_streams[static_cast<std::size_t>(*probed->best_audio_stream)]
+                    .sample_format;
+        }
+        effective_bit_depth =
+            stored_format.starts_with("u8") || stored_format.starts_with("s16") ? 16 : 24;
     }
     std::error_code parent_error;
     if (!std::filesystem::is_directory(destination.parent_path(), parent_error)) {
@@ -749,10 +782,16 @@ core::Result<ConvertedAudioFile> convert_audio_file(const AudioConversionRequest
                                      core::StableId::random().to_string());
     TemporaryOutputGuard guard{temporary};
 
+    // The cap only ever lowers: sources at or below it keep their rate.
+    std::optional<int> effective_sample_rate = request.target_sample_rate;
+    if (request.sample_rate_cap && source_format.sample_rate > *request.sample_rate_cap) {
+        effective_sample_rate = request.sample_rate_cap;
+    }
+
     const auto transfer_metadata = strip_loudness_fields(request.metadata);
-    auto pipeline_result = open_pipeline(
-        request.preset, source_format, request.target_sample_rate, request.target_bit_depth,
-        transfer_metadata, request.artwork, temporary.native(), request.destination_raw_path);
+    auto pipeline_result = open_pipeline(request.preset, source_format, effective_sample_rate,
+                                         effective_bit_depth, transfer_metadata, request.artwork,
+                                         temporary.native(), request.destination_raw_path);
     if (!pipeline_result) {
         return std::unexpected(pipeline_result.error());
     }

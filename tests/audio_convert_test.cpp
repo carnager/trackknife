@@ -334,7 +334,9 @@ void convertsToEveryPresetAtomically() {
              .destination_raw_path = destination.native(),
              .preset = preset,
              .target_sample_rate = {},
+             .sample_rate_cap = {},
              .target_bit_depth = {},
+             .keep_source_bit_depth = false,
              .metadata = {},
              .artwork = {}},
             [&last_frames, &total_present](const std::uint64_t frames_done,
@@ -399,7 +401,9 @@ void carriesMetadataIntoEveryPreset() {
                                                      .destination_raw_path = destination.native(),
                                                      .preset = preset,
                                                      .target_sample_rate = {},
+                                                     .sample_rate_cap = {},
                                                      .target_bit_depth = {},
+                                                     .keep_source_bit_depth = false,
                                                      .metadata = document,
                                                      .artwork = {}});
         if (!converted) {
@@ -441,7 +445,9 @@ void resamplesOnRequestWithinEncoderConstraints() {
          .destination_raw_path = (directory.path() / "up.flac").native(),
          .preset = *trackknife::convert::find_encoder_preset("flac"),
          .target_sample_rate = 96'000,
+         .sample_rate_cap = {},
          .target_bit_depth = {},
+         .keep_source_bit_depth = false,
          .metadata = {},
          .artwork = {}});
     CHECK(upsampled.has_value());
@@ -457,7 +463,9 @@ void resamplesOnRequestWithinEncoderConstraints() {
          .destination_raw_path = (directory.path() / "constrained.opus").native(),
          .preset = *trackknife::convert::find_encoder_preset("opus-192"),
          .target_sample_rate = 96'000,
+         .sample_rate_cap = {},
          .target_bit_depth = {},
+         .keep_source_bit_depth = false,
          .metadata = {},
          .artwork = {}});
     CHECK(constrained.has_value());
@@ -471,7 +479,9 @@ void resamplesOnRequestWithinEncoderConstraints() {
          .destination_raw_path = (directory.path() / "absurd.flac").native(),
          .preset = *trackknife::convert::find_encoder_preset("flac"),
          .target_sample_rate = 4'000,
+         .sample_rate_cap = {},
          .target_bit_depth = {},
+         .keep_source_bit_depth = false,
          .metadata = {},
          .artwork = {}});
     CHECK(!absurd.has_value());
@@ -503,7 +513,9 @@ void quantizesHiResToSixteenFortyFourWithDither() {
          .destination_raw_path = cd.native(),
          .preset = *trackknife::convert::find_encoder_preset("flac"),
          .target_sample_rate = 44'100,
+         .sample_rate_cap = {},
          .target_bit_depth = 16,
+         .keep_source_bit_depth = false,
          .metadata = {},
          .artwork = {}});
     CHECK(quantized.has_value());
@@ -526,7 +538,9 @@ void quantizesHiResToSixteenFortyFourWithDither() {
          .destination_raw_path = archive.native(),
          .preset = *trackknife::convert::find_encoder_preset("flac"),
          .target_sample_rate = {},
+         .sample_rate_cap = {},
          .target_bit_depth = {},
+         .keep_source_bit_depth = false,
          .metadata = {},
          .artwork = {}});
     CHECK(kept.has_value());
@@ -542,7 +556,9 @@ void quantizesHiResToSixteenFortyFourWithDither() {
          .destination_raw_path = (directory.path() / "lossy.opus").native(),
          .preset = *trackknife::convert::find_encoder_preset("opus-192"),
          .target_sample_rate = {},
+         .sample_rate_cap = {},
          .target_bit_depth = 16,
+         .keep_source_bit_depth = false,
          .metadata = {},
          .artwork = {}});
     CHECK(lossy.has_value());
@@ -556,7 +572,9 @@ void quantizesHiResToSixteenFortyFourWithDither() {
          .destination_raw_path = (directory.path() / "odd.flac").native(),
          .preset = *trackknife::convert::find_encoder_preset("flac"),
          .target_sample_rate = {},
+         .sample_rate_cap = {},
          .target_bit_depth = 20,
+         .keep_source_bit_depth = false,
          .metadata = {},
          .artwork = {}});
     CHECK(!odd.has_value());
@@ -578,7 +596,9 @@ void refusesExistingDestinationAndMissingDirectory() {
                                                  .destination_raw_path = occupied.native(),
                                                  .preset = preset,
                                                  .target_sample_rate = {},
+                                                 .sample_rate_cap = {},
                                                  .target_bit_depth = {},
+                                                 .keep_source_bit_depth = false,
                                                  .metadata = {},
                                                  .artwork = {}});
     CHECK(!conflicting.has_value());
@@ -598,7 +618,9 @@ void refusesExistingDestinationAndMissingDirectory() {
                                                  .destination_raw_path = orphan.native(),
                                                  .preset = preset,
                                                  .target_sample_rate = {},
+                                                 .sample_rate_cap = {},
                                                  .target_bit_depth = {},
+                                                 .keep_source_bit_depth = false,
                                                  .metadata = {},
                                                  .artwork = {}});
     CHECK(!orphaned.has_value());
@@ -620,7 +642,9 @@ void cancellationLeavesNoPartialOutput() {
          .destination_raw_path = (directory.path() / "cancelled.opus").native(),
          .preset = *trackknife::convert::find_encoder_preset("opus-192"),
          .target_sample_rate = {},
+         .sample_rate_cap = {},
          .target_bit_depth = {},
+         .keep_source_bit_depth = false,
          .metadata = {},
          .artwork = {}},
         {}, cancellation.token());
@@ -665,7 +689,9 @@ void scansItemsInParallelIsolatingFailures() {
         {.preset = preset,
          .maximum_parallelism = 3U,
          .target_sample_rate = {},
+         .sample_rate_cap = {},
          .target_bit_depth = {},
+         .keep_source_bit_depth = false,
          .carry_artwork = false},
         [&final_completed](const trackknife::convert::ConversionScanProgress& update) {
             final_completed = std::max(final_completed, update.completed_items);
@@ -698,7 +724,9 @@ void scansItemsInParallelIsolatingFailures() {
     CHECK(trackknife::convert::scan_conversion(items, {.preset = preset,
                                                        .maximum_parallelism = 0U,
                                                        .target_sample_rate = {},
+                                                       .sample_rate_cap = {},
                                                        .target_bit_depth = {},
+                                                       .keep_source_bit_depth = false,
                                                        .carry_artwork = false})
               .has_value() == false);
 
@@ -708,7 +736,9 @@ void scansItemsInParallelIsolatingFailures() {
                                                                 {.preset = preset,
                                                                  .maximum_parallelism = 1U,
                                                                  .target_sample_rate = {},
+                                                                 .sample_rate_cap = {},
                                                                  .target_bit_depth = {},
+                                                                 .keep_source_bit_depth = false,
                                                                  .carry_artwork = false},
                                                                 {}, cancellation.token());
     CHECK(cancelled.has_value());
@@ -746,7 +776,9 @@ void carriesArtworkIntoEveryPreset(const std::filesystem::path& fixture_director
                                                      .destination_raw_path = destination.native(),
                                                      .preset = preset,
                                                      .target_sample_rate = {},
+                                                     .sample_rate_cap = {},
                                                      .target_bit_depth = {},
+                                                     .keep_source_bit_depth = false,
                                                      .metadata = {},
                                                      .artwork = artwork});
         CHECK(converted.has_value());
@@ -806,7 +838,9 @@ void carriesExternalCoverThroughTheScan(const std::filesystem::path& fixture_dir
         items, {.preset = *trackknife::convert::find_encoder_preset("flac"),
                 .maximum_parallelism = 1U,
                 .target_sample_rate = {},
+                .sample_rate_cap = {},
                 .target_bit_depth = {},
+                .keep_source_bit_depth = false,
                 .carry_artwork = true});
     CHECK(result.has_value() && result->converted_count() == 1U);
     const auto reread = read_output_picture(directory.path() / "covered.flac", "flac");
@@ -828,13 +862,82 @@ void carriesExternalCoverThroughTheScan(const std::filesystem::path& fixture_dir
         plain, {.preset = *trackknife::convert::find_encoder_preset("flac"),
                 .maximum_parallelism = 1U,
                 .target_sample_rate = {},
+                .sample_rate_cap = {},
                 .target_bit_depth = {},
+                .keep_source_bit_depth = false,
                 .carry_artwork = false});
     CHECK(without.has_value() && without->converted_count() == 1U);
     CHECK(!read_output_picture(directory.path() / "plain.flac", "flac").has_value());
 }
 
 } // namespace
+
+// ADR-0134: the cap only lowers, keep-source depth follows the probed
+// stored format, and conflicting option pairs fail before any I/O.
+void capsRateDownOnlyAndKeepsSourceDepth() {
+    TemporaryDirectory directory;
+    const auto hires = directory.path() / "hires.wav";
+    write_sine_wav_24_96(hires, 0.6, 0.5);
+    const auto cd = directory.path() / "cd.wav";
+    write_sine_wav(cd, 0.6, 0.5);
+    const auto preset = *trackknife::convert::find_encoder_preset("flac");
+
+    const auto request = [&preset](const std::filesystem::path& source,
+                                   const std::filesystem::path& destination) {
+        return trackknife::convert::AudioConversionRequest{.source_raw_path = source.native(),
+                                                           .source_selection = {},
+                                                           .source_range = {},
+                                                           .destination_raw_path =
+                                                               destination.native(),
+                                                           .preset = preset,
+                                                           .target_sample_rate = {},
+                                                           .sample_rate_cap = 48'000,
+                                                           .target_bit_depth = {},
+                                                           .keep_source_bit_depth = true,
+                                                           .metadata = {},
+                                                           .artwork = {}};
+    };
+    const auto stored_format = [](const std::filesystem::path& path) {
+        const auto probed = trackknife::formats::probe_local_media(path.native());
+        return probed && probed->best_audio_stream
+                   ? probed->audio_streams[static_cast<std::size_t>(*probed->best_audio_stream)]
+                         .sample_format
+                   : std::string{};
+    };
+
+    // 96 kHz / 24-bit lands at the cap and keeps a 24-bit (s32) store.
+    const auto capped =
+        trackknife::convert::convert_audio_file(request(hires, directory.path() / "capped.flac"));
+    CHECK(capped.has_value());
+    if (capped) {
+        CHECK(capped->sample_rate == 48'000);
+        CHECK(stored_format(directory.path() / "capped.flac") == "s32");
+    }
+
+    // 44.1 kHz / 16-bit stays untouched below the cap and keeps s16.
+    const auto kept =
+        trackknife::convert::convert_audio_file(request(cd, directory.path() / "kept.flac"));
+    CHECK(kept.has_value());
+    if (kept) {
+        CHECK(kept->sample_rate == 44'100);
+        CHECK(stored_format(directory.path() / "kept.flac") == "s16");
+    }
+
+    // Conflicting pairs fail closed before any I/O.
+    auto forced_and_capped = request(cd, directory.path() / "conflict-a.flac");
+    forced_and_capped.target_sample_rate = 48'000;
+    const auto rate_conflict = trackknife::convert::convert_audio_file(forced_and_capped);
+    CHECK(!rate_conflict.has_value() &&
+          rate_conflict.error().code == trackknife::core::ErrorCode::invalid_argument);
+    auto forced_and_kept = request(cd, directory.path() / "conflict-b.flac");
+    forced_and_kept.sample_rate_cap = {};
+    forced_and_kept.target_bit_depth = 16;
+    const auto depth_conflict = trackknife::convert::convert_audio_file(forced_and_kept);
+    CHECK(!depth_conflict.has_value() &&
+          depth_conflict.error().code == trackknife::core::ErrorCode::invalid_argument);
+    CHECK(entries_besides(directory.path(), {"hires.wav", "cd.wav", "capped.flac", "kept.flac"}) ==
+          0U);
+}
 
 int main(const int argc, char** argv) {
     if (argc < 2) {
@@ -849,6 +952,7 @@ int main(const int argc, char** argv) {
     carriesExternalCoverThroughTheScan(fixture_directory);
     resamplesOnRequestWithinEncoderConstraints();
     quantizesHiResToSixteenFortyFourWithDither();
+    capsRateDownOnlyAndKeepsSourceDepth();
     refusesExistingDestinationAndMissingDirectory();
     cancellationLeavesNoPartialOutput();
     scansItemsInParallelIsolatingFailures();
