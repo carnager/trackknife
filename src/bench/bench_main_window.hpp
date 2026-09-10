@@ -79,6 +79,7 @@ struct MetadataOperationJobOutcome;
 class MusicBrainzFetchService;
 class LocalLibraryPanel;
 class MpdLibrarySearchModel;
+class DesktopNotifier;
 class MprisService;
 class TrackListFindBar;
 class LocalListEditBar;
@@ -483,6 +484,8 @@ class BenchMainWindow final : public QMainWindow {
     QHash<QString, QByteArray> restored_track_view_layouts_;
 
     MprisService* mpris_{nullptr};
+    DesktopNotifier* notifier_{nullptr};
+    QAction* notifications_action_{nullptr};
     ui::ListPersistenceService* persistence_{nullptr};
     std::filesystem::path database_path_;
     MusicBrainzFetchService* musicbrainz_service_{nullptr};

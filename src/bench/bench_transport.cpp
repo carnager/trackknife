@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "bench/bench_main_window.hpp"
+#include "bench/desktop_notifier.hpp"
 #include "bench/mpris_service.hpp"
 
 #include "bench/bench_main_window_helpers.hpp"
@@ -396,6 +397,23 @@ void BenchMainWindow::buildTransport() {
     playback_menu->addSeparator();
 
     buildLocalPlaybackControls(playback_menu);
+
+    // ADR-0144: quiet, opt-in track-change notifications while the
+    // window is in the background.
+    notifications_action_ = playback_menu->addAction(QStringLiteral("Desktop notifications"));
+    notifications_action_->setObjectName(QStringLiteral("action-desktop-notifications"));
+    notifications_action_->setCheckable(true);
+    notifications_action_->setChecked(
+        QSettings{}.value(QStringLiteral("desktop/notifications"), false).toBool());
+    notifications_action_->setToolTip(
+        QStringLiteral("Show a notification when the track changes while Trackknife is in the "
+                       "background"));
+    connect(notifications_action_, &QAction::toggled, this, [this](const bool enabled) {
+        QSettings{}.setValue(QStringLiteral("desktop/notifications"), enabled);
+        if (notifier_ != nullptr) {
+            notifier_->setEnabled(enabled);
+        }
+    });
 
     buffer_menu_ = playback_menu->addMenu(QStringLiteral("Playback buffer"));
     buffer_menu_->setObjectName(QStringLiteral("bench-buffer-menu"));
@@ -1398,10 +1416,19 @@ void BenchMainWindow::buildMprisService() {
         raise();
         activateWindow();
     });
+    // ADR-0144: quiet, opt-in track-change notifications share the MPRIS
+    // now-playing snapshot.
+    notifier_ = new DesktopNotifier(this);
+    notifier_->setEnabled(
+        QSettings{}.value(QStringLiteral("desktop/notifications"), false).toBool());
+    if (notifications_action_ != nullptr) {
+        const QSignalBlocker blocker{notifications_action_};
+        notifications_action_->setChecked(notifier_->isEnabled());
+    }
 }
 
 void BenchMainWindow::publishMprisState() {
-    if (mpris_ == nullptr) {
+    if (mpris_ == nullptr && notifier_ == nullptr) {
         return;
     }
     MprisPlaybackState state;
@@ -1470,7 +1497,15 @@ void BenchMainWindow::publishMprisState() {
         state.can_pause = state.can_play;
         state.can_seek = source_ready && state.length_us > 0;
     }
-    mpris_->publish(state);
+    if (mpris_ != nullptr) {
+        mpris_->publish(state);
+    }
+    if (notifier_ != nullptr && notifier_->publish(state, isActiveWindow())) {
+        setProperty("trackknife-notifications-sent",
+                    static_cast<qulonglong>(notifier_->sentCount()));
+        setProperty("trackknife-notification-summary", notifier_->lastSummary());
+        setProperty("trackknife-notification-body", notifier_->lastBody());
+    }
 }
 
 } // namespace trackknife::bench

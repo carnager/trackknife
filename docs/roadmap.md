@@ -205,7 +205,12 @@ References: [ReplayGain](replaygain.md),
   active authority — with typed metadata, position/Seeked, and volume.
 - [x] Media-key control while the application is unfocused: delivered
   through MPRIS, which modern Linux desktops use for media keys.
-- [ ] Optional desktop notifications.
+- [x] Optional desktop notifications (ADR-0144): a Playback-menu toggle
+  (off by default, persisted) posts a quiet transient toast on track
+  changes while the window is in the background, fed by the same
+  authority-aware MPRIS now-playing snapshot. One replaced bubble, low
+  urgency, silent degradation without a notification daemon.
+  Notification artwork remains a follow-up.
 
 Desktop controls must respect the established MPD/local playback authority
 contract. Notification behavior should be optional and quiet by default.

@@ -14,6 +14,7 @@ qt_add_library(
     bench_metadata_operations.cpp
     bench_mpd.cpp
     bench_mpd_playlists.cpp
+    desktop_notifier.cpp
     mpris_service.cpp
     mpris_service.hpp
     mpd_library_search_model.cpp

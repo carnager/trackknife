@@ -2,6 +2,7 @@
 
 #include "bench/bench_main_window.hpp"
 #include "bench/convert_dialog.hpp"
+#include "bench/desktop_notifier.hpp"
 #include "bench/local_list_edit_bar.hpp"
 #include "bench/local_list_model.hpp"
 #include "bench/metadata_grid_model.hpp"
@@ -194,6 +195,7 @@ class BenchMainWindowTest final : public QObject {
     void musicBrainzFingerprintScanRanksAndStages();
     void replayGainScanStagesMeasuredGainsAsDrafts();
     void loudnessSidecarProjectsOntoProbedRows();
+    void desktopNotificationsNotifyBackgroundTrackChanges();
     void replayGainScanPreservesLogicalSources_data();
     void replayGainScanPreservesLogicalSources();
     void convertDialogPlansAndConvertsSelection();
@@ -3571,6 +3573,56 @@ void BenchMainWindowTest::convertDialogPlansAndConvertsSelection() {
     mirror->setChecked(false);
     QVERIFY(directory_field->isEnabled());
     delete dialog;
+}
+
+// ADR-0144: notifications fire only for track changes while playing in
+// the background, never retro-notify, and the menu toggle persists.
+void BenchMainWindowTest::desktopNotificationsNotifyBackgroundTrackChanges() {
+    DesktopNotifier notifier;
+    QStringList sent;
+    notifier.setSendOverride([&sent](const QString& summary, const QString& body) {
+        sent << summary + QStringLiteral("|") + body;
+    });
+    MprisPlaybackState playing;
+    playing.status = QStringLiteral("Playing");
+    playing.title = QStringLiteral("First Song");
+    playing.artist = QStringLiteral("Artist");
+    playing.album = QStringLiteral("Album");
+    playing.track_key = QStringLiteral("key-1");
+    // Disabled: tracked but silent; enabling never retro-notifies.
+    QVERIFY(!notifier.publish(playing, false));
+    notifier.setEnabled(true);
+    QVERIFY(!notifier.publish(playing, false));
+    // A background track change notifies with a markup-escaped body.
+    playing.track_key = QStringLiteral("key-2");
+    playing.title = QStringLiteral("Second Song");
+    playing.artist = QStringLiteral("A & B");
+    QVERIFY(notifier.publish(playing, false));
+    QCOMPARE(notifier.sentCount(), 1ULL);
+    QCOMPARE(sent.size(), 1);
+    QCOMPARE(sent.front(), QStringLiteral("Second Song|A &amp; B — Album"));
+    // A change while the window is active stays silent and is tracked.
+    playing.track_key = QStringLiteral("key-3");
+    QVERIFY(!notifier.publish(playing, true));
+    QVERIFY(!notifier.publish(playing, false));
+    // Pause never notifies; resuming into a new track does.
+    playing.track_key = QStringLiteral("key-4");
+    playing.status = QStringLiteral("Paused");
+    QVERIFY(!notifier.publish(playing, false));
+    playing.status = QStringLiteral("Playing");
+    QVERIFY(notifier.publish(playing, false));
+    QCOMPARE(notifier.sentCount(), 2ULL);
+
+    BenchMainWindow window;
+    window.show();
+    auto* action = window.findChild<QAction*>(QStringLiteral("action-desktop-notifications"));
+    QVERIFY(action != nullptr);
+    QVERIFY(action->isCheckable());
+    QVERIFY(!action->isChecked());
+    action->setChecked(true);
+    QCOMPARE(QSettings{}.value(QStringLiteral("desktop/notifications"), false).toBool(), true);
+    action->setChecked(false);
+    QCOMPARE(QSettings{}.value(QStringLiteral("desktop/notifications"), true).toBool(), false);
 }
 
 // ADR-0141: a fresh sidecar beside the file projects onto probed rows
