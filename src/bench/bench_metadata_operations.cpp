@@ -393,6 +393,25 @@ void BenchMainWindow::showMetadataProperties() {
             if (!row.artist.empty()) {
                 label = QStringLiteral("%1 — %2").arg(displayText(row.artist), label);
             }
+            // ADR-0139: CUE-bound occurrences capture their sheet identity
+            // and revision so ReplayGain drafts can resolve to a sheet
+            // rewrite instead of blocked whole-file tags.
+            auto cue_binding = [&row]() -> std::optional<metadata::StagedCueSheetBinding> {
+                if (!row.logical_reference) {
+                    return std::nullopt;
+                }
+                auto parts = parse_cue_logical_reference(*row.logical_reference);
+                if (!parts) {
+                    return std::nullopt;
+                }
+                auto revision = core::observe_local_source_revision(parts->raw_cue_path);
+                return metadata::StagedCueSheetBinding{
+                    .raw_cue_path = std::move(parts->raw_cue_path),
+                    .cue_revision = revision ? std::optional{*revision} : std::nullopt,
+                    .file_index = parts->file_index,
+                    .track_index = parts->track_index,
+                };
+            }();
             return MetadataPropertiesSource{
                 .source =
                     metadata::StagedMetadataSource{
@@ -401,6 +420,7 @@ void BenchMainWindow::showMetadataProperties() {
                         .baseline = row.metadata,
                         .logical_track = row.logical_reference.has_value() || row.segment ||
                                          row.selection.stream_index || row.selection.subsong_index,
+                        .cue_sheet = std::move(cue_binding),
                     },
                 .track_label = std::move(label),
                 .audio = {.selection = row.selection, .range = row.segment},
@@ -471,6 +491,13 @@ void BenchMainWindow::showMetadataProperties() {
                     continue;
                 }
                 applyCommittedMetadata(*source.commit);
+                committed = true;
+            }
+            for (const auto& sheet : result.cue_sheets) {
+                if (!sheet.commit) {
+                    continue;
+                }
+                applyCommittedCueReplayGain(*sheet.commit);
                 committed = true;
             }
             if (committed) {
@@ -776,8 +803,8 @@ void BenchMainWindow::showMetadataProperties() {
                         plan,
                         [&journal, &dependent](const metadata::ArtworkWritePlanSource& source,
                                                const core::CancellationToken& source_cancellation) {
-                            return operations::commit_artwork_source(
-                                source, journal, dependent, source_cancellation);
+                            return operations::commit_artwork_source(source, journal, dependent,
+                                                                     source_cancellation);
                         },
                         progress, cancellation,
                         operations::ArtworkApplyOptions{.maximum_parallelism = 2U});
@@ -872,6 +899,45 @@ void BenchMainWindow::applyCommittedMetadata(const operations::MetadataCommitRes
         }
         if (*applied > 0U) {
             syncArtwork(*tab);
+        }
+    }
+}
+
+void BenchMainWindow::applyCommittedCueReplayGain(
+    const operations::CueReplayGainCommitResult& result) {
+    if (local_library_ != nullptr) {
+        local_library_->refreshLibrary();
+    }
+    const auto to_updates = [](const std::vector<operations::CueReplayGainAppliedField>& fields) {
+        std::vector<LocalListModel::CueReplayGainFieldUpdate> updates;
+        updates.reserve(fields.size());
+        for (const auto& field : fields) {
+            updates.push_back({.display_name = field.display_name,
+                               .canonical_name = field.canonical_name,
+                               .value = field.value});
+        }
+        return updates;
+    };
+    // Album REMs live in the sheet header and project onto every logical
+    // track of the sheet, planned or not.
+    std::string sheet_prefix{"cue-v1"};
+    sheet_prefix.push_back('\0');
+    sheet_prefix += result.raw_cue_path;
+    sheet_prefix.push_back('\0');
+    const auto album_updates = to_updates(result.album_fields);
+    for (auto& tab : list_tabs_) {
+        if (!album_updates.empty()) {
+            static_cast<void>(tab->model->applyCueReplayGain(sheet_prefix, true, album_updates));
+        }
+        for (const auto& track : result.tracks) {
+            const auto track_updates = to_updates(track.fields);
+            if (track_updates.empty()) {
+                continue;
+            }
+            static_cast<void>(tab->model->applyCueReplayGain(
+                cue_track_logical_reference(result.raw_cue_path, track.file_index,
+                                            track.track_index),
+                false, track_updates));
         }
     }
 }

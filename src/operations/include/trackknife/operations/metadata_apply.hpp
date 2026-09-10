@@ -6,6 +6,7 @@
 #include "trackknife/core/error.hpp"
 #include "trackknife/core/result.hpp"
 #include "trackknife/metadata/write_plan.hpp"
+#include "trackknife/operations/cue_replay_gain_apply.hpp"
 #include "trackknife/operations/metadata_commit.hpp"
 
 #include <cstddef>
@@ -47,8 +48,21 @@ struct MetadataApplyProgress {
     friend bool operator==(const MetadataApplyProgress&, const MetadataApplyProgress&) = default;
 };
 
+// ADR-0139: outcome of one CUE sheet's ReplayGain rewrite, applied
+// alongside the tag sources of the same plan.
+struct CueReplayGainApplyOutcome {
+    std::string raw_cue_path;
+    MetadataApplySourceState state{MetadataApplySourceState::pending};
+    std::optional<CueReplayGainCommitResult> commit;
+    std::optional<core::Error> issue;
+
+    friend bool operator==(const CueReplayGainApplyOutcome&,
+                           const CueReplayGainApplyOutcome&) = default;
+};
+
 struct MetadataApplyResult {
     std::vector<MetadataApplySourceResult> sources;
+    std::vector<CueReplayGainApplyOutcome> cue_sheets{};
     bool cancellation_requested{false};
 
     [[nodiscard]] std::size_t committed_source_count() const noexcept;

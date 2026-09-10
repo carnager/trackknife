@@ -28,6 +28,20 @@ enum class MetadataSelectionFieldState : std::uint8_t {
 [[nodiscard]] std::string_view
 metadata_selection_field_state_name(MetadataSelectionFieldState state);
 
+// ADR-0139: binds one logical occurrence to the CUE sheet carrying its
+// per-track metadata. ReplayGain drafts on such occurrences resolve to a
+// sheet rewrite instead of whole-file tags.
+struct StagedCueSheetBinding {
+    std::string raw_cue_path;
+    // The sheet revision observed when the draft was captured; commit is
+    // gated on it so results never reach a changed sheet.
+    std::optional<core::LocalSourceRevision> cue_revision;
+    std::size_t file_index{0U};
+    std::size_t track_index{0U};
+
+    friend bool operator==(const StagedCueSheetBinding&, const StagedCueSheetBinding&) = default;
+};
+
 // Immutable baseline captured when a properties workspace opens. Later staged
 // patches remain sparse and refer back to this document/revision; the list
 // cache is never sufficient authority for commit.
@@ -38,6 +52,7 @@ struct StagedMetadataSource {
     // Segment/subsong/selected-stream measurements cannot become whole-file
     // loudness tags. Ordinary physical metadata editing remains independent.
     bool logical_track{false};
+    std::optional<StagedCueSheetBinding> cue_sheet{};
 
     friend bool operator==(const StagedMetadataSource&, const StagedMetadataSource&) = default;
 };

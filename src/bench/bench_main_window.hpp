@@ -7,6 +7,7 @@
 #include "trackknife/audio/playback_order.hpp"
 #include "trackknife/core/cancellation.hpp"
 #include "trackknife/core/local_sources.hpp"
+#include "trackknife/operations/cue_replay_gain_apply.hpp"
 #include "trackknife/operations/file_publication.hpp"
 #include "trackknife/operations/metadata_commit.hpp"
 #include "trackknife/persistence/list_repository.hpp"
@@ -217,6 +218,7 @@ class BenchMainWindow final : public QMainWindow {
     void finishMetadataOperationJob();
     void presentInterruptedOperations();
     void applyCommittedMetadata(const operations::MetadataCommitResult& result);
+    void applyCommittedCueReplayGain(const operations::CueReplayGainCommitResult& result);
     void applyCommittedRelocation(const operations::FilePublicationCommitResult& result);
     void applyCommittedPublicationMetadata(const operations::FilePublicationCommitResult& result,
                                            const metadata::MetadataDocument& document);

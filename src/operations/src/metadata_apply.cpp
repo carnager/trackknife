@@ -139,6 +139,36 @@ core::Result<MetadataApplyResult> apply_metadata_write_plan(
         const auto completed = completed_sources.fetch_add(1U, std::memory_order_relaxed) + 1U;
         report(source_result.source_index, source_result.state, completed, source_result.issue);
     }
+    // ADR-0139: CUE sheets commit after the tag sources, sequentially —
+    // each sheet is one independent revision-gated atomic rewrite.
+    result.cue_sheets.reserve(plan.cue_sheets.size());
+    for (const auto& sheet : plan.cue_sheets) {
+        CueReplayGainApplyOutcome outcome{
+            .raw_cue_path = sheet.raw_cue_path,
+            .state = MetadataApplySourceState::pending,
+            .commit = std::nullopt,
+            .issue = std::nullopt,
+        };
+        if (cancellation.is_cancellation_requested()) {
+            outcome.state = MetadataApplySourceState::cancelled;
+            outcome.issue = apply_error(
+                core::ErrorCode::cancelled,
+                "metadata Apply was cancelled before this CUE sheet started", sheet.raw_cue_path);
+        } else {
+            auto committed = commit_cue_replay_gain_sheet(sheet, cancellation);
+            if (committed) {
+                outcome.state = MetadataApplySourceState::committed;
+                outcome.commit = std::move(*committed);
+            } else {
+                outcome.issue = std::move(committed.error());
+                outcome.state = outcome.issue->code == core::ErrorCode::cancelled
+                                    ? MetadataApplySourceState::cancelled
+                                    : MetadataApplySourceState::failed;
+            }
+        }
+        result.cue_sheets.push_back(std::move(outcome));
+    }
+
     result.cancellation_requested =
         cancellation.is_cancellation_requested() || result.cancelled_source_count() > 0U;
     return result;

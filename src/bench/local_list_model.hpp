@@ -105,6 +105,16 @@ class LocalListModel final : public QAbstractTableModel {
     [[nodiscard]] core::Result<std::size_t>
     applyCommittedMetadata(const std::string& raw_path, const metadata::MetadataDocument& document,
                            const core::LocalSourceRevision& published_revision);
+    // ADR-0139: refreshes segment-provenance ReplayGain projections after
+    // a committed CUE sheet rewrite. Prefix matching addresses every
+    // logical track of one sheet (album values), exact matching one track.
+    struct CueReplayGainFieldUpdate {
+        std::string display_name;
+        std::string canonical_name;
+        std::optional<std::string> value;
+    };
+    std::size_t applyCueReplayGain(const std::string& reference, bool prefix_match,
+                                   const std::vector<CueReplayGainFieldUpdate>& fields);
     // Advances every in-memory occurrence of one durably relocated physical
     // source while retaining logical identities and playback selection.
     [[nodiscard]] core::Result<std::size_t>

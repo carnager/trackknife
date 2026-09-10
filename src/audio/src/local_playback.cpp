@@ -213,14 +213,17 @@ struct LocalPlayback::Impl {
     // chain_offset maps produced samples onto the active decoder's own
     // sample domain.
     std::optional<formats::AudioDecoder> next_decoder;
+    std::optional<formats::ReplayGainInfo> next_replay_gain_override;
     std::int64_t chain_offset{0};
     std::atomic<std::int64_t> chain_boundary{-1};
     std::atomic_bool chain_crossed{false};
 
-    Impl(formats::AudioDecoder source_decoder, const PlaybackBufferConfig buffer_config)
+    Impl(formats::AudioDecoder source_decoder, const PlaybackBufferConfig buffer_config,
+         const std::optional<formats::ReplayGainInfo>& replay_gain_override = {})
         : ring(buffer_config.capacity_frames,
                static_cast<std::size_t>(source_decoder.output_format().channels)),
-          decoder(std::move(source_decoder)), replay_gain(decoder.replay_gain()),
+          decoder(std::move(source_decoder)),
+          replay_gain(replay_gain_override ? *replay_gain_override : decoder.replay_gain()),
           next_decode_sample(decoder.sample_range().start_sample),
           position_sample(decoder.sample_range().start_sample), config(buffer_config),
           range(decoder.sample_range()), output(decoder.output_format()) {}
@@ -242,6 +245,7 @@ struct LocalPlayback::Impl {
 
     void clear_chain_quiesced() noexcept {
         next_decoder.reset();
+        next_replay_gain_override.reset();
         chain_offset = 0;
         chain_boundary.store(-1, std::memory_order_release);
         chain_crossed.store(false, std::memory_order_release);
@@ -305,7 +309,8 @@ core::Result<LocalPlayback> LocalPlayback::open(std::string raw_path,
 core::Result<LocalPlayback>
 LocalPlayback::open_selected(std::string raw_path, formats::AudioSourceSelection selection,
                              const PlaybackBufferDurationConfig buffer_config,
-                             core::CancellationToken cancellation) {
+                             core::CancellationToken cancellation,
+                             std::optional<formats::ReplayGainInfo> replay_gain_override) {
     if (buffer_config.capacity <= std::chrono::milliseconds::zero() ||
         buffer_config.start_threshold <= std::chrono::milliseconds::zero() ||
         buffer_config.start_threshold > buffer_config.capacity) {
@@ -328,7 +333,8 @@ LocalPlayback::open_selected(std::string raw_path, formats::AudioSourceSelection
             .context = {},
         });
     }
-    return LocalPlayback{std::make_unique<Impl>(std::move(*decoder), *frames)};
+    return LocalPlayback{
+        std::make_unique<Impl>(std::move(*decoder), *frames, replay_gain_override)};
 }
 
 core::Result<LocalPlayback> LocalPlayback::open_segment(std::string raw_path,
@@ -366,7 +372,8 @@ LocalPlayback::open_segment(std::string raw_path, const formats::SampleRange ran
 
 core::Result<LocalPlayback> LocalPlayback::open_selected_segment(
     std::string raw_path, formats::AudioSourceSelection selection, const formats::SampleRange range,
-    const PlaybackBufferDurationConfig buffer_config, core::CancellationToken cancellation) {
+    const PlaybackBufferDurationConfig buffer_config, core::CancellationToken cancellation,
+    std::optional<formats::ReplayGainInfo> replay_gain_override) {
     if (buffer_config.capacity <= std::chrono::milliseconds::zero() ||
         buffer_config.start_threshold <= std::chrono::milliseconds::zero() ||
         buffer_config.start_threshold > buffer_config.capacity) {
@@ -389,7 +396,8 @@ core::Result<LocalPlayback> LocalPlayback::open_selected_segment(
             .context = {},
         });
     }
-    return LocalPlayback{std::make_unique<Impl>(std::move(*decoder), *frames)};
+    return LocalPlayback{
+        std::make_unique<Impl>(std::move(*decoder), *frames, replay_gain_override)};
 }
 
 void LocalPlayback::set_replay_gain_mode(const ReplayGainMode mode) noexcept {
@@ -530,11 +538,12 @@ core::Result<void> LocalPlayback::queue_next(std::string raw_path,
                                        std::move(cancellation));
 }
 
-core::Result<void> LocalPlayback::queue_next_selected(std::string raw_path,
-                                                      formats::AudioSourceSelection selection,
-                                                      core::CancellationToken cancellation) {
+core::Result<void>
+LocalPlayback::queue_next_selected(std::string raw_path, formats::AudioSourceSelection selection,
+                                   core::CancellationToken cancellation,
+                                   std::optional<formats::ReplayGainInfo> replay_gain_override) {
     return queue_next_selected_segment(std::move(raw_path), selection, formats::SampleRange{},
-                                       std::move(cancellation));
+                                       std::move(cancellation), std::move(replay_gain_override));
 }
 
 core::Result<void> LocalPlayback::queue_next_segment(std::string raw_path,
@@ -545,7 +554,8 @@ core::Result<void> LocalPlayback::queue_next_segment(std::string raw_path,
 
 core::Result<void> LocalPlayback::queue_next_selected_segment(
     std::string raw_path, formats::AudioSourceSelection selection, const formats::SampleRange range,
-    core::CancellationToken cancellation) {
+    core::CancellationToken cancellation,
+    std::optional<formats::ReplayGainInfo> replay_gain_override) {
     auto& playback = *implementation_;
     if (playback.state.load(std::memory_order_acquire) == LocalPlaybackState::failed) {
         return std::unexpected(core::Error{
@@ -588,10 +598,14 @@ core::Result<void> LocalPlayback::queue_next_selected_segment(
         });
     }
     playback.next_decoder = std::move(*decoder);
+    playback.next_replay_gain_override = std::move(replay_gain_override);
     return {};
 }
 
-void LocalPlayback::clear_next() noexcept { implementation_->next_decoder.reset(); }
+void LocalPlayback::clear_next() noexcept {
+    implementation_->next_decoder.reset();
+    implementation_->next_replay_gain_override.reset();
+}
 
 std::optional<std::int64_t> LocalPlayback::take_chain_crossing() noexcept {
     auto& playback = *implementation_;
@@ -638,7 +652,10 @@ core::Result<void> LocalPlayback::fill_buffer() {
                 const auto boundary = playback.next_decode_sample;
                 playback.decoder = std::move(*playback.next_decoder);
                 playback.next_decoder.reset();
-                playback.replay_gain = playback.decoder.replay_gain();
+                playback.replay_gain = playback.next_replay_gain_override
+                                           ? *playback.next_replay_gain_override
+                                           : playback.decoder.replay_gain();
+                playback.next_replay_gain_override.reset();
                 playback.range = playback.decoder.sample_range();
                 playback.chain_offset = boundary - playback.range.start_sample;
                 playback.chain_boundary.store(boundary, std::memory_order_release);

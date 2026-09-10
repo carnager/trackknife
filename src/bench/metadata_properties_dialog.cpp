@@ -2770,6 +2770,17 @@ void MetadataPropertiesDialog::finishWritePlan() {
                 }
             }
         }
+        for (const auto& sheet : plan->metadata->cue_sheets) {
+            for (const auto& issue : sheet.issues) {
+                if (issue.blocking) {
+                    add_row(
+                        sheet.raw_cue_path,
+                        QStringLiteral("%1: %2").arg(
+                            display_utf8(metadata::metadata_write_plan_issue_kind_name(issue.kind)),
+                            display_utf8(issue.error.message)));
+                }
+            }
+        }
     }
     if (plan->output_paths) {
         for (const auto& issue : plan->output_paths->issues) {
@@ -3002,8 +3013,18 @@ void MetadataPropertiesDialog::finishMetadataApply() {
         return;
     }
     const auto& outcome = **result;
-    const auto saved = outcome.committed_source_count();
-    if (saved == outcome.sources.size()) {
+    // ADR-0139: committed CUE sheets count as saved files; a sheet
+    // failure keeps the dialog open with the problem listed.
+    const auto saved_sheets = static_cast<std::size_t>(
+        std::ranges::count(outcome.cue_sheets, operations::MetadataApplySourceState::committed,
+                           &operations::CueReplayGainApplyOutcome::state));
+    const auto failed_sheets = static_cast<std::size_t>(
+        std::ranges::count(outcome.cue_sheets, operations::MetadataApplySourceState::failed,
+                           &operations::CueReplayGainApplyOutcome::state));
+    const auto stopped_sheets = outcome.cue_sheets.size() - saved_sheets - failed_sheets;
+    apply_committed_ = apply_committed_ || saved_sheets > 0U;
+    const auto saved = outcome.committed_source_count() + saved_sheets;
+    if (saved == outcome.sources.size() + outcome.cue_sheets.size()) {
         read_only_->setText(
             QStringLiteral("Saved %1 %2")
                 .arg(saved)
@@ -3022,18 +3043,29 @@ void MetadataPropertiesDialog::finishMetadataApply() {
                 source.issue ? display_utf8(source.issue->message) : apply_state_text(source.state),
         });
     }
-    const auto stopped =
-        outcome.cancelled_source_count() > 0U && outcome.failed_source_count() == 0U;
+    for (const auto& sheet : outcome.cue_sheets) {
+        if (sheet.state == operations::MetadataApplySourceState::committed) {
+            continue;
+        }
+        rows.push_back(PreparationFeedbackRow{
+            .file = QString::fromStdString(core::escape_raw_path(sheet.raw_cue_path)),
+            .detail =
+                sheet.issue ? display_utf8(sheet.issue->message) : apply_state_text(sheet.state),
+        });
+    }
+    const auto failed = outcome.failed_source_count() + failed_sheets;
+    const auto stopped_count = outcome.cancelled_source_count() + stopped_sheets;
+    const auto stopped = stopped_count > 0U && failed == 0U;
     const auto summary =
         QStringLiteral("%1 saved · %2 failed · %3 stopped. Saved files are done; the files below "
                        "were not touched.")
             .arg(saved)
-            .arg(outcome.failed_source_count())
-            .arg(outcome.cancelled_source_count());
+            .arg(failed)
+            .arg(stopped_count);
     read_only_->setText(QStringLiteral("%1 saved · %2 failed · %3 stopped")
                             .arg(saved)
-                            .arg(outcome.failed_source_count())
-                            .arg(outcome.cancelled_source_count()));
+                            .arg(failed)
+                            .arg(stopped_count));
     showPreparationFeedback(stopped ? QStringLiteral("Save stopped")
                                     : QStringLiteral("Saved with problems"),
                             summary, std::move(rows));

@@ -279,6 +279,148 @@ void resolvesContainedPhysicalSourcesAndExactDurations() {
     CHECK(!error);
 }
 
+void insertsReplayGainLinesPreservingBytes() {
+    constexpr std::string_view source = "\xEF\xBB\xBFPERFORMER \"AA\"\r\n"
+                                        "FILE \"disc.flac\" WAVE\r\n"
+                                        "  TRACK 01 AUDIO\r\n"
+                                        "    TITLE \"First\"\r\n"
+                                        "    INDEX 01 00:00:00\r\n"
+                                        "  TRACK 02 AUDIO\r\n"
+                                        "    INDEX 01 00:02:00\r\n";
+    const trackknife::formats::CueReplayGainUpdate update{
+        .album_gain_db = {.update = true, .value = -5.53},
+        .album_peak = {.update = true, .value = 0.994629},
+        .tracks =
+            {
+                {.file_index = 0U,
+                 .track_index = 0U,
+                 .track_gain_db = {.update = true, .value = -3.46},
+                 .track_peak = {.update = true, .value = 0.994629}},
+                {.file_index = 0U,
+                 .track_index = 1U,
+                 .track_gain_db = {.update = true, .value = 1.25},
+                 .track_peak = {.update = true, .value = 1.0}},
+            },
+    };
+    const auto rewritten = trackknife::formats::rewrite_cue_replay_gain(source, update);
+    CHECK(rewritten.has_value());
+    if (!rewritten) {
+        return;
+    }
+    constexpr std::string_view expected = "\xEF\xBB\xBFPERFORMER \"AA\"\r\n"
+                                          "REM REPLAYGAIN_ALBUM_GAIN -5.53 dB\r\n"
+                                          "REM REPLAYGAIN_ALBUM_PEAK 0.994629\r\n"
+                                          "FILE \"disc.flac\" WAVE\r\n"
+                                          "  TRACK 01 AUDIO\r\n"
+                                          "    TITLE \"First\"\r\n"
+                                          "    REM REPLAYGAIN_TRACK_GAIN -3.46 dB\r\n"
+                                          "    REM REPLAYGAIN_TRACK_PEAK 0.994629\r\n"
+                                          "    INDEX 01 00:00:00\r\n"
+                                          "  TRACK 02 AUDIO\r\n"
+                                          "    REM REPLAYGAIN_TRACK_GAIN 1.25 dB\r\n"
+                                          "    REM REPLAYGAIN_TRACK_PEAK 1.000000\r\n"
+                                          "    INDEX 01 00:02:00\r\n";
+    CHECK(rewritten->bytes == expected);
+    CHECK(rewritten->inserted_lines == 6U);
+    CHECK(rewritten->replaced_lines == 0U);
+    CHECK(rewritten->removed_lines == 0U);
+}
+
+void replacesRemovesAndDeduplicatesReplayGainLines() {
+    constexpr std::string_view source = "REM REPLAYGAIN_ALBUM_GAIN -2.00 dB\n"
+                                        "REM REPLAYGAIN_ALBUM_PEAK 0.900000\n"
+                                        "FILE disc.flac WAVE\n"
+                                        "TRACK 01 AUDIO\n"
+                                        "REM REPLAYGAIN_TRACK_GAIN -1.00 dB\n"
+                                        "REM REPLAYGAIN_TRACK_GAIN -1.50 dB\n"
+                                        "REM REPLAYGAIN_TRACK_PEAK 0.800000\n"
+                                        "INDEX 01 00:00:00\n"
+                                        "TRACK 02 AUDIO\n"
+                                        "REM REPLAYGAIN_TRACK_GAIN -4.00 dB\n"
+                                        "INDEX 01 00:01:00\n";
+    const trackknife::formats::CueReplayGainUpdate update{
+        .album_gain_db = {.update = true, .value = -2.5},
+        .album_peak = {.update = true, .value = std::nullopt},
+        .tracks = {{.file_index = 0U,
+                    .track_index = 0U,
+                    .track_gain_db = {.update = true, .value = -1.75},
+                    .track_peak = {}}},
+    };
+    const auto rewritten = trackknife::formats::rewrite_cue_replay_gain(source, update);
+    CHECK(rewritten.has_value());
+    if (!rewritten) {
+        return;
+    }
+    constexpr std::string_view expected = "REM REPLAYGAIN_ALBUM_GAIN -2.50 dB\n"
+                                          "FILE disc.flac WAVE\n"
+                                          "TRACK 01 AUDIO\n"
+                                          "REM REPLAYGAIN_TRACK_GAIN -1.75 dB\n"
+                                          "REM REPLAYGAIN_TRACK_PEAK 0.800000\n"
+                                          "INDEX 01 00:00:00\n"
+                                          "TRACK 02 AUDIO\n"
+                                          "REM REPLAYGAIN_TRACK_GAIN -4.00 dB\n"
+                                          "INDEX 01 00:01:00\n";
+    CHECK(rewritten->bytes == expected);
+    CHECK(rewritten->replaced_lines == 2U);
+    CHECK(rewritten->removed_lines == 2U);
+    CHECK(rewritten->inserted_lines == 0U);
+}
+
+void insertsBeforeFileAndKeepsMissingTrailingNewline() {
+    const auto rewritten = trackknife::formats::rewrite_cue_replay_gain(
+        "FILE disc.flac WAVE\nTRACK 01 AUDIO\nINDEX 01 00:00:00",
+        {.album_gain_db = {.update = true, .value = -1.0}, .album_peak = {}, .tracks = {}});
+    CHECK(rewritten.has_value());
+    if (rewritten) {
+        CHECK(rewritten->bytes == "REM REPLAYGAIN_ALBUM_GAIN -1.00 dB\n"
+                                  "FILE disc.flac WAVE\nTRACK 01 AUDIO\nINDEX 01 00:00:00");
+        CHECK(rewritten->inserted_lines == 1U);
+    }
+}
+
+void rejectsInvalidReplayGainUpdates() {
+    constexpr std::string_view source = "FILE disc.flac WAVE\n"
+                                        "TRACK 01 AUDIO\n"
+                                        "INDEX 01 00:00:00\n";
+    const auto missing = trackknife::formats::rewrite_cue_replay_gain(
+        source, {.album_gain_db = {},
+                 .album_peak = {},
+                 .tracks = {{.file_index = 0U,
+                             .track_index = 5U,
+                             .track_gain_db = {.update = true, .value = -1.0},
+                             .track_peak = {}}}});
+    CHECK(!missing);
+    CHECK(missing.error().code == trackknife::core::ErrorCode::invalid_argument);
+
+    const auto duplicated = trackknife::formats::rewrite_cue_replay_gain(
+        source,
+        {.album_gain_db = {},
+         .album_peak = {},
+         .tracks = {{.file_index = 0U, .track_index = 0U, .track_gain_db = {}, .track_peak = {}},
+                    {.file_index = 0U, .track_index = 0U, .track_gain_db = {}, .track_peak = {}}}});
+    CHECK(!duplicated);
+
+    const auto out_of_range = trackknife::formats::rewrite_cue_replay_gain(
+        source,
+        {.album_gain_db = {.update = true, .value = 100.0}, .album_peak = {}, .tracks = {}});
+    CHECK(!out_of_range);
+
+    const auto negative_peak = trackknife::formats::rewrite_cue_replay_gain(
+        source, {.album_gain_db = {}, .album_peak = {.update = true, .value = -0.5}, .tracks = {}});
+    CHECK(!negative_peak);
+}
+
+void parsesReplayGainTextLeniently() {
+    CHECK(trackknife::formats::parse_replay_gain_decibels("+1.20 dB") == 1.2);
+    CHECK(trackknife::formats::parse_replay_gain_decibels("-3.46dB") == -3.46);
+    CHECK(trackknife::formats::parse_replay_gain_decibels("2.5") == 2.5);
+    CHECK(!trackknife::formats::parse_replay_gain_decibels("70 dB").has_value());
+    CHECK(!trackknife::formats::parse_replay_gain_decibels("loud").has_value());
+    CHECK(trackknife::formats::parse_replay_gain_peak("0.994629") == 0.994629);
+    CHECK(!trackknife::formats::parse_replay_gain_peak("-1").has_value());
+    CHECK(!trackknife::formats::parse_replay_gain_peak("0").has_value());
+}
+
 } // namespace
 
 int main() {
@@ -287,5 +429,10 @@ int main() {
     rejectsMalformedAndUnboundedInputs();
     mapsFractionalCueFramesWithoutBoundaryDrift();
     resolvesContainedPhysicalSourcesAndExactDurations();
+    insertsReplayGainLinesPreservingBytes();
+    replacesRemovesAndDeduplicatesReplayGainLines();
+    insertsBeforeFileAndKeepsMissingTrailingNewline();
+    rejectsInvalidReplayGainUpdates();
+    parsesReplayGainTextLeniently();
     return failures == 0 ? 0 : 1;
 }

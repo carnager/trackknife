@@ -101,18 +101,73 @@ struct PlaybackBufferPreference {
            state == audio::LocalAuditionState::draining;
 }
 
-[[nodiscard]] core::Result<void> load_and_play(audio::LocalAuditionService& player,
-                                               const LocalTrackSource& source) {
-    return source.segment ? player.load_selected_segment_and_play(source.raw_path, source.selection,
-                                                                  *source.segment)
-                          : player.load_selected_and_play(source.raw_path, source.selection);
+// ADR-0139: a CUE logical track's sheet-carried REM ReplayGain values
+// outrank the physical file's whole-file tags during local playback.
+// Rows without usable sheet values fall back to the decoder's own tags.
+[[nodiscard]] std::optional<formats::ReplayGainInfo>
+cue_replay_gain_override(const LocalTrackRow& row) {
+    if (!row.logical_reference || !row.logical_reference->starts_with("cue-v1")) {
+        return std::nullopt;
+    }
+    const auto last_segment_value =
+        [&row](const std::string_view name) -> std::optional<std::string> {
+        const auto canonical = metadata::canonicalize_field_name(name);
+        std::optional<std::string> value;
+        for (const auto& field : row.metadata.fields) {
+            if (field.provenance == metadata::FieldProvenance::segment &&
+                field.canonical_name == canonical && !field.values.empty()) {
+                value = field.values.back();
+            }
+        }
+        return value;
+    };
+    formats::ReplayGainInfo info;
+    if (const auto text = last_segment_value("REPLAYGAIN_TRACK_GAIN")) {
+        info.track_gain_db = formats::parse_replay_gain_decibels(*text);
+    }
+    if (const auto text = last_segment_value("REPLAYGAIN_TRACK_PEAK")) {
+        info.track_peak = formats::parse_replay_gain_peak(*text);
+    }
+    if (const auto text = last_segment_value("REPLAYGAIN_ALBUM_GAIN")) {
+        info.album_gain_db = formats::parse_replay_gain_decibels(*text);
+    }
+    if (const auto text = last_segment_value("REPLAYGAIN_ALBUM_PEAK")) {
+        info.album_peak = formats::parse_replay_gain_peak(*text);
+    }
+    if (!info.track_gain_db && !info.album_gain_db) {
+        return std::nullopt;
+    }
+    return info;
 }
 
-[[nodiscard]] core::Result<void> queue_gapless(audio::LocalAuditionService& player,
-                                               const LocalTrackSource& source) {
-    return source.segment ? player.queue_gapless_next_selected_segment(
-                                source.raw_path, source.selection, *source.segment)
-                          : player.queue_gapless_next_selected(source.raw_path, source.selection);
+[[nodiscard]] std::optional<formats::ReplayGainInfo>
+cue_replay_gain_override(const LocalListModel& model, const int row) {
+    const auto& rows = model.rows();
+    if (row < 0 || row >= static_cast<int>(rows.size())) {
+        return std::nullopt;
+    }
+    return cue_replay_gain_override(rows[static_cast<std::size_t>(row)]);
+}
+
+[[nodiscard]] core::Result<void>
+load_and_play(audio::LocalAuditionService& player, const LocalTrackSource& source,
+              std::optional<formats::ReplayGainInfo> replay_gain_override = {}) {
+    return source.segment ? player.load_selected_segment_and_play(source.raw_path, source.selection,
+                                                                  *source.segment,
+                                                                  std::move(replay_gain_override))
+                          : player.load_selected_and_play(source.raw_path, source.selection,
+                                                          std::move(replay_gain_override));
+}
+
+[[nodiscard]] core::Result<void>
+queue_gapless(audio::LocalAuditionService& player, const LocalTrackSource& source,
+              std::optional<formats::ReplayGainInfo> replay_gain_override = {}) {
+    return source.segment
+               ? player.queue_gapless_next_selected_segment(source.raw_path, source.selection,
+                                                            *source.segment,
+                                                            std::move(replay_gain_override))
+               : player.queue_gapless_next_selected(source.raw_path, source.selection,
+                                                    std::move(replay_gain_override));
 }
 
 [[nodiscard]] LocalTrackSource source_from_snapshot(const audio::LocalAuditionSnapshot& snapshot) {
@@ -839,7 +894,8 @@ void BenchMainWindow::playRow(ListTab& tab, const int row) {
     if (source.raw_path.empty()) {
         return;
     }
-    if (auto result = load_and_play(*player_, source); !result) {
+    if (auto result = load_and_play(*player_, source, cue_replay_gain_override(*tab.model, row));
+        !result) {
         statusBar()->showMessage(
             QStringLiteral("Playback failed: %1").arg(displayText(result.error().message)), 5'000);
         return;
@@ -886,7 +942,9 @@ void BenchMainWindow::playAdjacent(const int direction) {
     if (tab == nullptr || !next || player_ == nullptr) {
         return;
     }
-    if (auto result = load_and_play(*player_, next->second); result) {
+    if (auto result = load_and_play(*player_, next->second,
+                                    cue_replay_gain_override(*tab->model, next->first));
+        result) {
         adoptPlaybackRow(*tab, next->first, next->second, true, direction);
         advance_pending_ = true;
         last_requested_next_.reset();
@@ -1027,7 +1085,10 @@ void BenchMainWindow::refreshTransport() {
             const auto next = automaticPlaybackRow();
             if (auto* tab = tabForDocument(playback_document_id_); tab != nullptr) {
                 if (next) {
-                    if (auto result = load_and_play(*player_, next->second); result) {
+                    if (auto result =
+                            load_and_play(*player_, next->second,
+                                          cue_replay_gain_override(*tab->model, next->first));
+                        result) {
                         adoptPlaybackRow(*tab, next->first, next->second, true);
                         last_requested_next_.reset();
                         queued_playback_index_ = QPersistentModelIndex{};
@@ -1125,8 +1186,13 @@ void BenchMainWindow::refreshTransport() {
             if (!desired) {
                 static_cast<void>(player_->clear_gapless_next());
             } else {
-                if (auto result = queue_gapless(*player_, *desired); result) {
-                    if (auto* tab = tabForDocument(playback_document_id_); tab != nullptr) {
+                auto* tab = tabForDocument(playback_document_id_);
+                auto override_info = tab != nullptr
+                                         ? cue_replay_gain_override(*tab->model, next->first)
+                                         : std::nullopt;
+                if (auto result = queue_gapless(*player_, *desired, std::move(override_info));
+                    result) {
+                    if (tab != nullptr) {
                         requested_playback_index_ = tab->model->index(next->first, 0);
                     }
                 }

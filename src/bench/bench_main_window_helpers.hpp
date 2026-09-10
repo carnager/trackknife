@@ -46,4 +46,20 @@ void remove_shadowed_probed_metadata(metadata::MetadataDocument& document);
                                          std::initializer_list<std::string_view> candidate_names);
 void project_display_metadata(LocalTrackRow& row);
 
+// ADR-0139: the stable CUE logical identity ("cue-v1" NUL sheet path NUL
+// file index NUL track index), shared by ingest, apply capture, and
+// committed-sheet view refresh.
+[[nodiscard]] std::string cue_track_logical_reference(const std::string& raw_cue_path,
+                                                      std::size_t file_index,
+                                                      std::size_t track_index);
+
+struct CueLogicalReferenceParts {
+    std::string raw_cue_path;
+    std::size_t file_index{0U};
+    std::size_t track_index{0U};
+};
+
+[[nodiscard]] std::optional<CueLogicalReferenceParts>
+parse_cue_logical_reference(const std::string& reference);
+
 } // namespace trackknife::bench

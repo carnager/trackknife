@@ -1307,6 +1307,20 @@ quickly and correctly.
   ReplayGain menu. The specification's additional processing-mode
   policies and true-peak limiting remain open.
 
+### CUE sheet ReplayGain carriage (2026-09-10)
+
+- ADR-0139 closes the CUE half of work item 8's durable-storage gap
+  with the interoperable foobar2000 convention instead of a proprietary
+  sidecar: scan results for CUE logical tracks route through the write
+  plan into `REM REPLAYGAIN_*` lines (per-track in the TRACK block,
+  album values in the header with cross-track agreement enforced) and
+  publish via a revision-gated atomic rewrite whose reparse proof keeps
+  every other byte — BOM, terminators, indentation, unknown directives.
+  Local playback consumes the sheet values as an explicit override that
+  outranks the physical file's whole-file tags, at load and across
+  gapless takeovers. Undo-journal parity for sheet rewrites and durable
+  storage for chapters/subsongs/unwritable formats remain open.
+
 ## M8 — Parallel converter, resampler, and organized output
 
 ### Objective

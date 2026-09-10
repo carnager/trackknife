@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace trackknife::formats {
@@ -19,7 +20,15 @@ struct ReplayGainInfo {
     std::optional<double> track_peak;
     std::optional<double> album_gain_db;
     std::optional<double> album_peak;
+
+    friend bool operator==(const ReplayGainInfo&, const ReplayGainInfo&) = default;
 };
+
+// Lenient ReplayGain text parsing shared by every textual carrier (tags,
+// CUE REM lines, staged drafts): optional leading +, optional dB suffix
+// on gains, ±60 dB gain and positive peak sanity ranges.
+[[nodiscard]] std::optional<double> parse_replay_gain_decibels(std::string_view value) noexcept;
+[[nodiscard]] std::optional<double> parse_replay_gain_peak(std::string_view value) noexcept;
 
 struct PcmFormat {
     int sample_rate{0};

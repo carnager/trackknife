@@ -312,14 +312,7 @@ constexpr std::array<std::string_view, 28> audio_extensions{
 
 [[nodiscard]] std::string cue_logical_reference(const std::string& raw_cue_path,
                                                 const formats::CueLogicalTrack& track) {
-    std::string reference{"cue-v1"};
-    reference.push_back('\0');
-    reference += raw_cue_path;
-    reference.push_back('\0');
-    reference += std::to_string(track.file_index);
-    reference.push_back('\0');
-    reference += std::to_string(track.track_index);
-    return reference;
+    return cue_track_logical_reference(raw_cue_path, track.file_index, track.track_index);
 }
 
 [[nodiscard]] LocalTrackRow

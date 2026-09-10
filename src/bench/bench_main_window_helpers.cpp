@@ -3,6 +3,7 @@
 #include "bench/bench_main_window_helpers.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <ranges>
 #include <unordered_set>
 
@@ -106,6 +107,49 @@ void project_display_metadata(LocalTrackRow& row) {
     row.album_artist = metadata_value(row.metadata, {"albumartist"});
     row.date = metadata_value(row.metadata, {"date", "year"});
     row.track_number = metadata_value(row.metadata, {"tracknumber", "track"});
+}
+
+std::string cue_track_logical_reference(const std::string& raw_cue_path,
+                                        const std::size_t file_index,
+                                        const std::size_t track_index) {
+    std::string reference{"cue-v1"};
+    reference.push_back('\0');
+    reference += raw_cue_path;
+    reference.push_back('\0');
+    reference += std::to_string(file_index);
+    reference.push_back('\0');
+    reference += std::to_string(track_index);
+    return reference;
+}
+
+std::optional<CueLogicalReferenceParts> parse_cue_logical_reference(const std::string& reference) {
+    constexpr std::string_view prefix{"cue-v1"};
+    if (!reference.starts_with(prefix) || reference.size() <= prefix.size() + 1U ||
+        reference[prefix.size()] != '\0') {
+        return std::nullopt;
+    }
+    // Raw paths cannot contain NUL, so the remaining separators are exact.
+    const auto body = std::string_view{reference}.substr(prefix.size() + 1U);
+    const auto first = body.find('\0');
+    const auto second = first == std::string_view::npos ? first : body.find('\0', first + 1U);
+    if (first == std::string_view::npos || second == std::string_view::npos ||
+        body.find('\0', second + 1U) != std::string_view::npos) {
+        return std::nullopt;
+    }
+    CueLogicalReferenceParts parts;
+    parts.raw_cue_path = std::string{body.substr(0U, first)};
+    const auto file_text = body.substr(first + 1U, second - first - 1U);
+    const auto track_text = body.substr(second + 1U);
+    const auto file_parsed =
+        std::from_chars(file_text.data(), file_text.data() + file_text.size(), parts.file_index);
+    const auto track_parsed = std::from_chars(
+        track_text.data(), track_text.data() + track_text.size(), parts.track_index);
+    if (parts.raw_cue_path.empty() || file_parsed.ec != std::errc{} ||
+        file_parsed.ptr != file_text.data() + file_text.size() || track_parsed.ec != std::errc{} ||
+        track_parsed.ptr != track_text.data() + track_text.size()) {
+        return std::nullopt;
+    }
+    return parts;
 }
 
 } // namespace trackknife::bench

@@ -457,6 +457,48 @@ AudioDecoder::open_selected_segment(std::string raw_path, AudioSourceSelection s
     return opened;
 }
 
+namespace {
+
+[[nodiscard]] std::optional<double> parse_replay_gain_number(std::string_view value,
+                                                             const bool gain) noexcept {
+    while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) {
+        value.remove_prefix(1);
+    }
+    if (!value.empty() && value.front() == '+') {
+        value.remove_prefix(1);
+    }
+    double result = 0.0;
+    const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);
+    if (parsed.ec != std::errc{} || !std::isfinite(result)) {
+        return std::nullopt;
+    }
+    auto suffix = value.substr(static_cast<std::size_t>(parsed.ptr - value.data()));
+    while (!suffix.empty() && (suffix.front() == ' ' || suffix.front() == '\t')) {
+        suffix.remove_prefix(1);
+    }
+    if (gain &&
+        (suffix.starts_with("dB") || suffix.starts_with("db") || suffix.starts_with("DB"))) {
+        suffix.remove_prefix(2);
+    }
+    while (!suffix.empty() && (suffix.front() == ' ' || suffix.front() == '\t')) {
+        suffix.remove_prefix(1);
+    }
+    if (!suffix.empty() || (gain ? result < -60.0 || result > 60.0 : result <= 0.0)) {
+        return std::nullopt;
+    }
+    return result;
+}
+
+} // namespace
+
+std::optional<double> parse_replay_gain_decibels(const std::string_view value) noexcept {
+    return parse_replay_gain_number(value, true);
+}
+
+std::optional<double> parse_replay_gain_peak(const std::string_view value) noexcept {
+    return parse_replay_gain_number(value, false);
+}
+
 ReplayGainInfo AudioDecoder::replay_gain() const noexcept {
     const auto& decoder = *implementation_;
     const auto* stream = decoder.format->streams[static_cast<unsigned>(decoder.stream_index)];
@@ -468,33 +510,7 @@ ReplayGainInfo AudioDecoder::replay_gain() const noexcept {
         if (entry == nullptr) {
             return std::nullopt;
         }
-        std::string_view value{entry->value};
-        while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) {
-            value.remove_prefix(1);
-        }
-        if (!value.empty() && value.front() == '+') {
-            value.remove_prefix(1);
-        }
-        double result = 0.0;
-        const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);
-        if (parsed.ec != std::errc{} || !std::isfinite(result)) {
-            return std::nullopt;
-        }
-        auto suffix = value.substr(static_cast<std::size_t>(parsed.ptr - value.data()));
-        while (!suffix.empty() && (suffix.front() == ' ' || suffix.front() == '\t')) {
-            suffix.remove_prefix(1);
-        }
-        if (gain &&
-            (suffix.starts_with("dB") || suffix.starts_with("db") || suffix.starts_with("DB"))) {
-            suffix.remove_prefix(2);
-        }
-        while (!suffix.empty() && (suffix.front() == ' ' || suffix.front() == '\t')) {
-            suffix.remove_prefix(1);
-        }
-        if (!suffix.empty() || (gain ? result < -60.0 || result > 60.0 : result <= 0.0)) {
-            return std::nullopt;
-        }
-        return result;
+        return parse_replay_gain_number(entry->value, gain);
     };
     const auto present = [&](const char* key) {
         return av_dict_get(stream->metadata, key, nullptr, 0) != nullptr ||

@@ -5,9 +5,14 @@
 #include "trackknife/metadata/flac_mapping.hpp"
 
 #include <algorithm>
+#include <array>
+#include <charconv>
+#include <cmath>
+#include <cstddef>
 #include <map>
 #include <ranges>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -65,6 +70,71 @@ void add_issue(MetadataWritePlanSource& source, const MetadataWritePlanIssueKind
     });
 }
 
+// ADR-0139: ReplayGain fields on a CUE-bound logical track resolve to a
+// sheet rewrite. R128 fields have no CUE convention and stay blocked.
+[[nodiscard]] bool is_cue_replay_gain_field(const std::string& canonical_name) {
+    return canonical_name == "replaygaintrackgain" || canonical_name == "replaygaintrackpeak" ||
+           canonical_name == "replaygainalbumgain" || canonical_name == "replaygainalbumpeak";
+}
+
+[[nodiscard]] bool is_cue_album_field(const std::string& canonical_name) {
+    return canonical_name == "replaygainalbumgain" || canonical_name == "replaygainalbumpeak";
+}
+
+// Staged text must already be a number the sheet committer can
+// canonicalize: optional +, optional dB suffix on gains, sane ranges.
+[[nodiscard]] bool valid_cue_replay_gain_value(const std::string& canonical_name,
+                                               std::string_view text) {
+    const bool gain =
+        canonical_name == "replaygaintrackgain" || canonical_name == "replaygainalbumgain";
+    while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) {
+        text.remove_prefix(1U);
+    }
+    if (!text.empty() && text.front() == '+') {
+        text.remove_prefix(1U);
+    }
+    double value = 0.0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (parsed.ec != std::errc{} || !std::isfinite(value)) {
+        return false;
+    }
+    auto suffix = text.substr(static_cast<std::size_t>(parsed.ptr - text.data()));
+    while (!suffix.empty() && (suffix.front() == ' ' || suffix.front() == '\t')) {
+        suffix.remove_prefix(1U);
+    }
+    if (gain &&
+        (suffix.starts_with("dB") || suffix.starts_with("db") || suffix.starts_with("DB"))) {
+        suffix.remove_prefix(2U);
+    }
+    while (!suffix.empty() && (suffix.front() == ' ' || suffix.front() == '\t')) {
+        suffix.remove_prefix(1U);
+    }
+    return suffix.empty() && (gain ? std::abs(value) <= 60.0 : value >= 0.0);
+}
+
+void add_cue_issue(MetadataWritePlanCueSheet& sheet, const MetadataWritePlanIssueKind kind,
+                   core::Error error, const std::optional<std::size_t> field_index = std::nullopt,
+                   std::vector<std::size_t> item_indexes = {}) {
+    sheet.issues.push_back(MetadataWritePlanIssue{
+        .kind = kind,
+        .error = std::move(error),
+        .field_index = field_index,
+        .item_indexes = std::move(item_indexes),
+        .blocking = true,
+    });
+}
+
+struct CueIntentRecord {
+    std::size_t field_index{0U};
+    std::string canonical_name;
+    std::size_t item_index{0U};
+    StagedMetadataPatchKind kind{StagedMetadataPatchKind::replace_values};
+    std::vector<std::string> values;
+    std::size_t file_index{0U};
+    std::size_t track_index{0U};
+    std::optional<core::LocalSourceRevision> cue_revision;
+};
+
 } // namespace
 
 std::string_view metadata_write_plan_issue_kind_name(const MetadataWritePlanIssueKind kind) {
@@ -102,8 +172,19 @@ std::size_t MetadataWritePlanSource::blocking_issue_count() const noexcept {
         std::ranges::count_if(issues, [](const auto& issue) { return issue.blocking; }));
 }
 
+bool MetadataWritePlanCueSheet::ready() const noexcept {
+    return std::ranges::none_of(issues, [](const auto& issue) { return issue.blocking; });
+}
+
+std::size_t MetadataWritePlanCueSheet::blocking_issue_count() const noexcept {
+    return static_cast<std::size_t>(
+        std::ranges::count_if(issues, [](const auto& issue) { return issue.blocking; }));
+}
+
 bool MetadataWritePlan::ready() const noexcept {
-    return !sources.empty() && std::ranges::all_of(sources, &MetadataWritePlanSource::ready);
+    return (!sources.empty() || !cue_sheets.empty()) &&
+           std::ranges::all_of(sources, &MetadataWritePlanSource::ready) &&
+           std::ranges::all_of(cue_sheets, &MetadataWritePlanCueSheet::ready);
 }
 
 std::size_t MetadataWritePlan::ready_source_count() const noexcept {
@@ -115,6 +196,9 @@ std::size_t MetadataWritePlan::blocking_issue_count() const noexcept {
     std::size_t count = 0U;
     for (const auto& source : sources) {
         count += source.blocking_issue_count();
+    }
+    for (const auto& sheet : cue_sheets) {
+        count += sheet.blocking_issue_count();
     }
     return count;
 }
@@ -134,10 +218,11 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
                                              "metadata write plan requires staged changes"));
     }
 
-    MetadataWritePlan plan{.sources = {}, .patch_count = patches.patch_count()};
+    MetadataWritePlan plan{.sources = {}, .patch_count = patches.patch_count(), .cue_sheets = {}};
     std::unordered_map<std::string, std::size_t> source_positions;
     source_positions.reserve(std::min(patches.patch_count(), selection.item_count()));
     std::vector<std::unordered_map<std::size_t, std::size_t>> change_positions;
+    std::map<std::string, std::vector<CueIntentRecord>> cue_buckets;
 
     const auto staged_patches = patches.patches();
     for (const auto& patch : staged_patches) {
@@ -151,6 +236,20 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
                               "metadata write plan contains a patch outside its staged selection"));
         }
         const auto& staged_source = selection.source(patch.item_index);
+        if (staged_source.cue_sheet && staged_source.logical_track &&
+            is_cue_replay_gain_field(selection.field(patch.field_index).canonical_name)) {
+            cue_buckets[staged_source.cue_sheet->raw_cue_path].push_back(CueIntentRecord{
+                .field_index = patch.field_index,
+                .canonical_name = selection.field(patch.field_index).canonical_name,
+                .item_index = patch.item_index,
+                .kind = patch.kind,
+                .values = patch.values,
+                .file_index = staged_source.cue_sheet->file_index,
+                .track_index = staged_source.cue_sheet->track_index,
+                .cue_revision = staged_source.cue_sheet->cue_revision,
+            });
+            continue;
+        }
         auto [source_position, inserted] =
             source_positions.emplace(staged_source.raw_path, plan.sources.size());
         if (inserted) {
@@ -196,6 +295,137 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
         if (found != source_positions.end()) {
             plan.sources[found->second].occurrence_indexes.push_back(item_index);
         }
+    }
+
+    for (auto& [raw_cue_path, records] : cue_buckets) {
+        MetadataWritePlanCueSheet sheet{
+            .raw_cue_path = raw_cue_path,
+            .expected_revision = std::nullopt,
+            .observed_revision = std::nullopt,
+            .tracks = {},
+            .album_fields = {},
+            .issues = {},
+        };
+
+        std::optional<core::LocalSourceRevision> expected;
+        std::vector<std::size_t> missing_revision_items;
+        std::vector<std::size_t> inconsistent_revision_items;
+        for (const auto& record : records) {
+            if (!record.cue_revision) {
+                missing_revision_items.push_back(record.item_index);
+            } else if (!expected) {
+                expected = record.cue_revision;
+            } else if (*expected != *record.cue_revision) {
+                inconsistent_revision_items.push_back(record.item_index);
+            }
+        }
+        sheet.expected_revision = expected;
+        if (!missing_revision_items.empty()) {
+            add_cue_issue(sheet, MetadataWritePlanIssueKind::missing_baseline_revision,
+                          planner_error(core::ErrorCode::conflict,
+                                        "a staged CUE occurrence has no captured sheet revision",
+                                        raw_cue_path),
+                          std::nullopt, std::move(missing_revision_items));
+        }
+        if (!inconsistent_revision_items.empty()) {
+            add_cue_issue(sheet, MetadataWritePlanIssueKind::inconsistent_baseline_revision,
+                          planner_error(core::ErrorCode::conflict,
+                                        "staged CUE occurrences disagree about the sheet revision",
+                                        raw_cue_path),
+                          std::nullopt, std::move(inconsistent_revision_items));
+        }
+
+        const auto finalize_field =
+            [&sheet, &raw_cue_path](
+                const std::vector<const CueIntentRecord*>& intents) -> MetadataWritePlanCueField {
+            MetadataWritePlanCueField field{
+                .field_index = intents.front()->field_index,
+                .canonical_name = intents.front()->canonical_name,
+                .kind = intents.front()->kind,
+                .values = intents.front()->values,
+                .item_indexes = {},
+            };
+            bool conflicting = false;
+            for (const auto* intent : intents) {
+                field.item_indexes.push_back(intent->item_index);
+                conflicting =
+                    conflicting || intent->kind != field.kind || intent->values != field.values;
+            }
+            if (conflicting) {
+                add_cue_issue(
+                    sheet, MetadataWritePlanIssueKind::conflicting_logical_edits,
+                    planner_error(core::ErrorCode::conflict,
+                                  "staged occurrences disagree about one CUE ReplayGain value",
+                                  raw_cue_path),
+                    field.field_index, field.item_indexes);
+            } else if (field.kind == StagedMetadataPatchKind::replace_values &&
+                       (field.values.size() != 1U ||
+                        !valid_cue_replay_gain_value(field.canonical_name, field.values.front()))) {
+                add_cue_issue(sheet, MetadataWritePlanIssueKind::unsupported_field_mapping,
+                              planner_error(core::ErrorCode::unsupported,
+                                            "a CUE ReplayGain value must be a single number the "
+                                            "sheet writer can canonicalize",
+                                            raw_cue_path),
+                              field.field_index, field.item_indexes);
+            }
+            return field;
+        };
+
+        std::map<std::string, std::vector<const CueIntentRecord*>> album_groups;
+        std::map<std::tuple<std::size_t, std::size_t, std::string>,
+                 std::vector<const CueIntentRecord*>>
+            track_groups;
+        for (const auto& record : records) {
+            if (is_cue_album_field(record.canonical_name)) {
+                album_groups[record.canonical_name].push_back(&record);
+            } else {
+                track_groups[{record.file_index, record.track_index, record.canonical_name}]
+                    .push_back(&record);
+            }
+        }
+        for (const auto& [name, intents] : album_groups) {
+            sheet.album_fields.push_back(finalize_field(intents));
+        }
+        std::map<std::pair<std::size_t, std::size_t>, std::size_t> track_positions;
+        for (const auto& [key, intents] : track_groups) {
+            const auto track_key = std::pair{std::get<0>(key), std::get<1>(key)};
+            auto [position, inserted] = track_positions.emplace(track_key, sheet.tracks.size());
+            if (inserted) {
+                sheet.tracks.push_back(MetadataWritePlanCueTrack{
+                    .file_index = track_key.first,
+                    .track_index = track_key.second,
+                    .occurrence_indexes = {},
+                    .fields = {},
+                });
+            }
+            sheet.tracks[position->second].fields.push_back(finalize_field(intents));
+        }
+        for (auto& track : sheet.tracks) {
+            for (std::size_t item_index = 0U; item_index < selection.item_count(); ++item_index) {
+                const auto& binding = selection.source(item_index).cue_sheet;
+                if (binding && binding->raw_cue_path == raw_cue_path &&
+                    binding->file_index == track.file_index &&
+                    binding->track_index == track.track_index) {
+                    track.occurrence_indexes.push_back(item_index);
+                }
+            }
+        }
+
+        auto observed = core::observe_local_source_revision(raw_cue_path);
+        if (!observed) {
+            add_cue_issue(sheet, MetadataWritePlanIssueKind::source_revalidation_failed,
+                          std::move(observed.error()));
+        } else {
+            sheet.observed_revision = *observed;
+            if (sheet.expected_revision && *sheet.expected_revision != *observed) {
+                add_cue_issue(
+                    sheet, MetadataWritePlanIssueKind::source_changed,
+                    planner_error(core::ErrorCode::conflict,
+                                  "the CUE sheet changed after the ReplayGain draft was captured",
+                                  raw_cue_path));
+            }
+        }
+        plan.cue_sheets.push_back(std::move(sheet));
     }
 
     for (auto& source : plan.sources) {

@@ -6,6 +6,7 @@ add_library(
     trackknife_operations STATIC
     src/artwork_apply.cpp
     src/artwork_export.cpp
+    src/cue_replay_gain_apply.cpp
     src/file_publication.cpp
     src/file_publication_apply.cpp
     src/file_publication_journal.cpp
@@ -25,6 +26,6 @@ target_include_directories(
 target_link_libraries(
     trackknife_operations
     PUBLIC Trackknife::Core Trackknife::Metadata Threads::Threads trackknife_project_options
-    PRIVATE trackknife_project_warnings
+    PRIVATE Trackknife::Formats trackknife_project_warnings
 )
 target_compile_features(trackknife_operations PUBLIC cxx_std_23)

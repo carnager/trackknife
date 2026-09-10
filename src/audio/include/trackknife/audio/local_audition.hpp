@@ -73,6 +73,10 @@ struct LocalAuditionSnapshot {
     formats::AudioSourceSelection next_selection;
     std::optional<formats::SampleRange> next_segment;
     std::uint64_t chain_transitions{0U};
+    // Caller-supplied ReplayGain replacing the decoder's tag values for
+    // the active and queued source (ADR-0139).
+    std::optional<formats::ReplayGainInfo> replay_gain_override;
+    std::optional<formats::ReplayGainInfo> next_replay_gain_override;
     std::optional<formats::PcmFormat> format;
     std::int64_t position_sample{0};
     std::optional<std::int64_t> end_sample;
@@ -140,25 +144,26 @@ class LocalAuditionService final {
 
     [[nodiscard]] core::Result<void> load_and_play(std::string raw_path);
     [[nodiscard]] core::Result<void>
-    load_selected_and_play(std::string raw_path, formats::AudioSourceSelection selection);
+    load_selected_and_play(std::string raw_path, formats::AudioSourceSelection selection,
+                           std::optional<formats::ReplayGainInfo> replay_gain_override = {});
     [[nodiscard]] core::Result<void> load_segment_and_play(std::string raw_path,
                                                            formats::SampleRange segment);
-    [[nodiscard]] core::Result<void>
-    load_selected_segment_and_play(std::string raw_path, formats::AudioSourceSelection selection,
-                                   formats::SampleRange segment);
+    [[nodiscard]] core::Result<void> load_selected_segment_and_play(
+        std::string raw_path, formats::AudioSourceSelection selection, formats::SampleRange segment,
+        std::optional<formats::ReplayGainInfo> replay_gain_override = {});
     // Queues the file to continue seamlessly when the current one ends. The
     // continuation must match the active PCM format exactly; on rejection the
     // snapshot's next_raw_path simply stays empty and the caller falls back
     // to an ordinary load at end-of-track. Seeks and loads drop the queue.
     [[nodiscard]] core::Result<void> queue_gapless_next(std::string raw_path);
     [[nodiscard]] core::Result<void>
-    queue_gapless_next_selected(std::string raw_path, formats::AudioSourceSelection selection);
+    queue_gapless_next_selected(std::string raw_path, formats::AudioSourceSelection selection,
+                                std::optional<formats::ReplayGainInfo> replay_gain_override = {});
     [[nodiscard]] core::Result<void> queue_gapless_next_segment(std::string raw_path,
                                                                 formats::SampleRange segment);
-    [[nodiscard]] core::Result<void>
-    queue_gapless_next_selected_segment(std::string raw_path,
-                                        formats::AudioSourceSelection selection,
-                                        formats::SampleRange segment);
+    [[nodiscard]] core::Result<void> queue_gapless_next_selected_segment(
+        std::string raw_path, formats::AudioSourceSelection selection, formats::SampleRange segment,
+        std::optional<formats::ReplayGainInfo> replay_gain_override = {});
     [[nodiscard]] core::Result<void> clear_gapless_next();
     [[nodiscard]] core::Result<void> play();
     [[nodiscard]] core::Result<void> pause();

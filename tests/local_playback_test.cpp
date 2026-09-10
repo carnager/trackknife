@@ -741,6 +741,92 @@ void replayGainUsesRealTagsAndChangesAtGaplessBoundary(const std::filesystem::pa
     }
 }
 
+// ADR-0139: a caller-supplied ReplayGain override outranks the physical
+// file's tags, both at open and across a gapless takeover.
+void replayGainOverrideOutranksTagsAcrossTakeover(const std::filesystem::path& fixtures,
+                                                  const std::filesystem::path& root) {
+    using namespace trackknife;
+    const auto bytes = decode_base64_file(fixtures / "tagged-tone-flac.b64");
+    CHECK(bytes.has_value());
+    if (!bytes) {
+        return;
+    }
+    const auto first = root / "override-first.flac";
+    const auto second = root / "override-second.flac";
+    const auto write = [&](const std::filesystem::path& path, const char* track_gain) {
+        {
+            std::ofstream file{path, std::ios::binary};
+            file.write(reinterpret_cast<const char*>(bytes->data()),
+                       static_cast<std::streamsize>(bytes->size()));
+        }
+        TagLib::FLAC::File file{path.c_str()};
+        auto tags = file.properties();
+        tags.replace("REPLAYGAIN_TRACK_GAIN", TagLib::String{track_gain});
+        tags.replace("REPLAYGAIN_TRACK_PEAK", TagLib::String{"0.75"});
+        file.setProperties(tags);
+        CHECK(file.save());
+    };
+    write(first, "-6.00 dB");
+    write(second, "+3.00 dB");
+    auto decoder = formats::AudioDecoder::open(first.native());
+    CHECK(decoder.has_value());
+    if (!decoder) {
+        return;
+    }
+    std::vector<float> original;
+    while (true) {
+        const auto chunk = decoder->next_chunk();
+        CHECK(chunk.has_value());
+        if (!chunk || !*chunk) {
+            break;
+        }
+        original.insert(original.end(), (*chunk)->interleaved_samples.begin(),
+                        (*chunk)->interleaved_samples.end());
+    }
+    CHECK(!original.empty());
+    const auto channels = decoder->output_format().channels;
+
+    auto playback = audio::LocalPlayback::open_selected(
+        first.native(), {}, audio::PlaybackBufferDurationConfig{}, {},
+        formats::ReplayGainInfo{.track_gain_db = -2.0,
+                                .track_peak = std::nullopt,
+                                .album_gain_db = std::nullopt,
+                                .album_peak = std::nullopt});
+    CHECK(playback.has_value());
+    if (!playback) {
+        return;
+    }
+    playback->set_replay_gain_mode(audio::ReplayGainMode::track);
+    CHECK(playback
+              ->queue_next_selected(second.native(), {}, {},
+                                    formats::ReplayGainInfo{.track_gain_db = 1.0,
+                                                            .track_peak = std::nullopt,
+                                                            .album_gain_db = std::nullopt,
+                                                            .album_peak = std::nullopt})
+              .has_value());
+    CHECK(playback->play().has_value());
+    std::vector<float> actual;
+    std::vector<float> block(128U * static_cast<std::size_t>(channels));
+    for (int guard = 0;
+         guard < 10000 && playback->snapshot().state != audio::LocalPlaybackState::ended; ++guard) {
+        CHECK(playback->fill_buffer().has_value());
+        const auto frames = playback->render(block);
+        actual.insert(actual.end(), block.begin(),
+                      block.begin() +
+                          static_cast<std::ptrdiff_t>(frames * static_cast<std::size_t>(channels)));
+    }
+    CHECK(actual.size() == original.size() * 2U);
+    if (actual.size() != original.size() * 2U) {
+        return;
+    }
+    const auto first_gain = static_cast<float>(std::pow(10.0, -2.0 / 20.0));
+    const auto second_gain = static_cast<float>(std::pow(10.0, 1.0 / 20.0));
+    for (std::size_t i = 0U; i < original.size(); ++i) {
+        CHECK(std::abs(actual[i] - original[i] * first_gain) < 0.000001F);
+        CHECK(std::abs(actual[i + original.size()] - original[i] * second_gain) < 0.000001F);
+    }
+}
+
 } // namespace
 
 int main(const int argc, char** argv) {
@@ -767,6 +853,7 @@ int main(const int argc, char** argv) {
     if (argc == 2) {
         chainsSelectedCodecSubsongs(argv[1], root);
         replayGainUsesRealTagsAndChangesAtGaplessBoundary(argv[1], root);
+        replayGainOverrideOutranksTagsAcrossTakeover(argv[1], root);
     }
 
     std::filesystem::remove_all(root, error);

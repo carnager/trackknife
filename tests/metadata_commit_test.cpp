@@ -8,6 +8,7 @@
 #include "trackknife/metadata/staged_selection.hpp"
 #include "trackknife/metadata/write_plan.hpp"
 #include "trackknife/operations/artwork_apply.hpp"
+#include "trackknife/operations/cue_replay_gain_apply.hpp"
 #include "trackknife/operations/file_publication.hpp"
 #include "trackknife/operations/file_publication_apply.hpp"
 #include "trackknife/operations/metadata_apply.hpp"
@@ -1867,6 +1868,94 @@ void combined_apply_reuses_directories_created_by_a_rolled_back_member(
                         std::vector<std::string>{"Second committed title"});
 }
 
+// ADR-0139: a ready CUE sheet plan publishes the REM rewrite atomically,
+// reports canonical applied values, and refuses a changed sheet.
+void commits_cue_replay_gain_sheets_atomically() {
+    using namespace trackknife;
+    const TemporaryDirectory root;
+    const auto cue = root.path() / "album.cue";
+    {
+        std::ofstream output{cue, std::ios::binary};
+        output << "PERFORMER \"AA\"\n"
+                  "FILE \"disc.flac\" WAVE\n"
+                  "  TRACK 01 AUDIO\n"
+                  "    INDEX 01 00:00:00\n"
+                  "  TRACK 02 AUDIO\n"
+                  "    INDEX 01 00:01:00\n";
+    }
+    const auto revision = core::observe_local_source_revision(cue.native());
+    CHECK(revision.has_value());
+    if (!revision) {
+        return;
+    }
+    const auto gain_field = [](std::string canonical, std::string value,
+                               const std::size_t item_index) {
+        return metadata::MetadataWritePlanCueField{
+            .field_index = 0U,
+            .canonical_name = std::move(canonical),
+            .kind = metadata::StagedMetadataPatchKind::replace_values,
+            .values = {std::move(value)},
+            .item_indexes = {item_index},
+        };
+    };
+    const metadata::MetadataWritePlanCueSheet plan{
+        .raw_cue_path = cue.native(),
+        .expected_revision = *revision,
+        .observed_revision = *revision,
+        .tracks =
+            {
+                {.file_index = 0U,
+                 .track_index = 0U,
+                 .occurrence_indexes = {0U},
+                 .fields = {gain_field("replaygaintrackgain", "-3.46 dB", 0U),
+                            gain_field("replaygaintrackpeak", "0.994629", 0U)}},
+                {.file_index = 0U,
+                 .track_index = 1U,
+                 .occurrence_indexes = {1U},
+                 .fields = {gain_field("replaygaintrackgain", "+1.25 dB", 1U)}},
+            },
+        .album_fields = {gain_field("replaygainalbumgain", "-5.53 dB", 0U)},
+        .issues = {},
+    };
+    const auto committed = operations::commit_cue_replay_gain_sheet(plan);
+    CHECK(committed.has_value());
+    if (!committed) {
+        std::cerr << "cue commit failed: " << committed.error().message << '\n';
+        return;
+    }
+    CHECK(committed->raw_cue_path == cue.native());
+    CHECK(committed->previous_revision == *revision);
+    CHECK(committed->album_fields.size() == 1U);
+    CHECK(committed->album_fields.size() == 1U &&
+          committed->album_fields.front().value == "-5.53 dB");
+    CHECK(committed->tracks.size() == 2U);
+    CHECK(committed->tracks.size() == 2U && committed->tracks[1].fields.size() == 1U &&
+          committed->tracks[1].fields.front().value == "1.25 dB");
+    const auto published = core::observe_local_source_revision(cue.native());
+    CHECK(published.has_value());
+    CHECK(published && *published == committed->published_revision);
+    {
+        std::ifstream input{cue, std::ios::binary};
+        const std::string bytes{std::istreambuf_iterator<char>{input},
+                                std::istreambuf_iterator<char>{}};
+        CHECK(bytes == "PERFORMER \"AA\"\n"
+                       "REM REPLAYGAIN_ALBUM_GAIN -5.53 dB\n"
+                       "FILE \"disc.flac\" WAVE\n"
+                       "  TRACK 01 AUDIO\n"
+                       "    REM REPLAYGAIN_TRACK_GAIN -3.46 dB\n"
+                       "    REM REPLAYGAIN_TRACK_PEAK 0.994629\n"
+                       "    INDEX 01 00:00:00\n"
+                       "  TRACK 02 AUDIO\n"
+                       "    REM REPLAYGAIN_TRACK_GAIN 1.25 dB\n"
+                       "    INDEX 01 00:01:00\n");
+    }
+
+    // The stale pre-commit plan no longer matches the published sheet.
+    const auto stale = operations::commit_cue_replay_gain_sheet(plan);
+    CHECK(!stale);
+    CHECK(!stale && stale.error().code == core::ErrorCode::conflict);
+}
+
 } // namespace
 
 int main(const int argc, char** argv) {
@@ -1893,6 +1982,7 @@ int main(const int argc, char** argv) {
         bounded_preparation_apply_combines_metadata_and_relocation_transaction(fixture_directory);
         bounded_preparation_apply_commits_metadata_when_path_is_unchanged(fixture_directory);
         combined_apply_reuses_directories_created_by_a_rolled_back_member(fixture_directory);
+        commits_cue_replay_gain_sheets_atomically();
     }
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -531,6 +531,51 @@ LocalListModel::applyCommittedMetadata(const std::string& raw_path,
     return affected;
 }
 
+std::size_t
+LocalListModel::applyCueReplayGain(const std::string& reference, const bool prefix_match,
+                                   const std::vector<CueReplayGainFieldUpdate>& fields) {
+    if (fields.empty()) {
+        return 0U;
+    }
+    const auto matches = [&](const LocalTrackRow& row) {
+        return row.logical_reference &&
+               (prefix_match ? row.logical_reference->starts_with(reference)
+                             : *row.logical_reference == reference);
+    };
+    const auto update_row = [&fields](LocalTrackRow& row) {
+        for (const auto& field : fields) {
+            std::erase_if(row.metadata.fields, [&field](const metadata::MetadataField& existing) {
+                return existing.provenance == metadata::FieldProvenance::segment &&
+                       existing.canonical_name == field.canonical_name;
+            });
+            if (field.value) {
+                row.metadata.fields.push_back(metadata::MetadataField{
+                    .canonical_name = field.canonical_name,
+                    .native_name = field.display_name,
+                    .values = {*field.value},
+                    .qualifier = {},
+                    .provenance = metadata::FieldProvenance::segment,
+                });
+            }
+        }
+    };
+    std::size_t affected = 0U;
+    for (std::size_t index = 0U; index < rows_.size(); ++index) {
+        if (!matches(rows_[index])) {
+            continue;
+        }
+        update_row(rows_[index]);
+        ++affected;
+        emitRowChanged(static_cast<int>(index));
+    }
+    for (auto* row : retainedRows()) {
+        if (matches(*row)) {
+            update_row(*row);
+        }
+    }
+    return affected;
+}
+
 core::Result<std::size_t>
 LocalListModel::applyCommittedRelocation(const std::string& source_raw_path,
                                          const std::string& target_raw_path,

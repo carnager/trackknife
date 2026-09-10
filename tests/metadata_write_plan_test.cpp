@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+#include "trackknife/core/stable_id.hpp"
 #include "trackknife/metadata/write_plan.hpp"
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -105,6 +108,12 @@ read(std::string path, const trackknife::core::LocalSourceRevision source_revisi
 [[nodiscard]] bool has_issue(const trackknife::metadata::MetadataWritePlanSource& source_plan,
                              const trackknife::metadata::MetadataWritePlanIssueKind kind) {
     return std::ranges::any_of(source_plan.issues,
+                               [kind](const auto& issue) { return issue.kind == kind; });
+}
+
+[[nodiscard]] bool has_cue_issue(const trackknife::metadata::MetadataWritePlanCueSheet& sheet_plan,
+                                 const trackknife::metadata::MetadataWritePlanIssueKind kind) {
+    return std::ranges::any_of(sheet_plan.issues,
                                [kind](const auto& issue) { return issue.kind == kind; });
 }
 
@@ -384,6 +393,150 @@ void logicalLoudnessRequiresItsOwnStorageTarget() {
     }
 }
 
+// ADR-0139: ReplayGain drafts on CUE-bound logical tracks resolve to a
+// per-sheet plan section instead of the unresolved-target block, without
+// ever invoking the tag reader.
+void routesCueReplayGainIntoSheetPlans() {
+    using namespace trackknife::metadata;
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("trackknife-write-plan-cue-" + trackknife::core::StableId::random().to_string());
+    std::error_code fs_error;
+    CHECK(std::filesystem::create_directories(root, fs_error));
+    const auto cue = root / "album.cue";
+    {
+        std::ofstream output{cue, std::ios::binary};
+        output << "FILE \"disc.flac\" WAVE\n"
+                  "TRACK 01 AUDIO\n"
+                  "INDEX 01 00:00:00\n"
+                  "TRACK 02 AUDIO\n"
+                  "INDEX 01 00:01:00\n";
+    }
+    const auto cue_revision = trackknife::core::observe_local_source_revision(cue.native());
+    CHECK(cue_revision.has_value());
+    if (!cue_revision) {
+        return;
+    }
+    const auto bound_source =
+        [&](const std::size_t track_index,
+            const std::optional<trackknife::core::LocalSourceRevision>& sheet_revision) {
+            auto result = source("/music/disc.flac", revision(11U), {});
+            result.logical_track = true;
+            result.cue_sheet = StagedCueSheetBinding{
+                .raw_cue_path = cue.native(),
+                .cue_revision = sheet_revision,
+                .file_index = 0U,
+                .track_index = track_index,
+            };
+            return result;
+        };
+    int reader_calls = 0;
+    const auto reader = [&reader_calls](const std::string& path,
+                                        const trackknife::core::CancellationToken&) {
+        ++reader_calls;
+        return trackknife::core::Result<LocalMetadataRead>{read(path, revision(11U), {})};
+    };
+
+    auto selection = StagedMetadataSelection::create(
+        {bound_source(0U, *cue_revision), bound_source(1U, *cue_revision)});
+    CHECK(selection.has_value());
+    if (!selection) {
+        return;
+    }
+    const auto track_gain =
+        selection->ensure_missing_field("REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_TRACK_GAIN");
+    const auto track_peak =
+        selection->ensure_missing_field("REPLAYGAIN_TRACK_PEAK", "REPLAYGAIN_TRACK_PEAK");
+    const auto album_gain =
+        selection->ensure_missing_field("REPLAYGAIN_ALBUM_GAIN", "REPLAYGAIN_ALBUM_GAIN");
+    CHECK(track_gain && track_peak && album_gain);
+    if (!track_gain || !track_peak || !album_gain) {
+        return;
+    }
+    StagedMetadataPatchSet patches;
+    CHECK(patches.replace_values(*selection, 0U, *track_gain, {"-3.46 dB"}).has_value());
+    CHECK(patches.replace_values(*selection, 0U, *track_peak, {"0.994629"}).has_value());
+    CHECK(patches.replace_values(*selection, 0U, *album_gain, {"-5.53 dB"}).has_value());
+    CHECK(patches.replace_values(*selection, 1U, *track_gain, {"1.25 dB"}).has_value());
+    CHECK(patches.replace_values(*selection, 1U, *album_gain, {"-5.53 dB"}).has_value());
+    const auto plan = build_metadata_write_plan(*selection, patches, reader);
+    CHECK(plan.has_value());
+    CHECK(reader_calls == 0);
+    if (plan) {
+        CHECK(plan->ready());
+        CHECK(plan->sources.empty());
+        CHECK(plan->cue_sheets.size() == 1U);
+        if (plan->cue_sheets.size() == 1U) {
+            const auto& sheet = plan->cue_sheets.front();
+            CHECK(sheet.raw_cue_path == cue.native());
+            CHECK(sheet.expected_revision == *cue_revision);
+            CHECK(sheet.observed_revision == *cue_revision);
+            CHECK(sheet.album_fields.size() == 1U);
+            CHECK(sheet.tracks.size() == 2U);
+            CHECK(sheet.tracks.size() == 2U && sheet.tracks[0].track_index == 0U &&
+                  sheet.tracks[0].fields.size() == 2U && sheet.tracks[1].track_index == 1U &&
+                  sheet.tracks[1].fields.size() == 1U);
+            CHECK(sheet.tracks.size() == 2U &&
+                  sheet.tracks[0].occurrence_indexes == std::vector<std::size_t>{0U} &&
+                  sheet.tracks[1].occurrence_indexes == std::vector<std::size_t>{1U});
+        }
+    }
+
+    // Disagreeing album values across the sheet block the plan.
+    StagedMetadataPatchSet conflicting;
+    CHECK(conflicting.replace_values(*selection, 0U, *album_gain, {"-5.53 dB"}).has_value());
+    CHECK(conflicting.replace_values(*selection, 1U, *album_gain, {"-9.99 dB"}).has_value());
+    const auto conflicted = build_metadata_write_plan(*selection, conflicting, reader);
+    CHECK(conflicted && !conflicted->ready());
+    CHECK(conflicted && has_cue_issue(conflicted->cue_sheets.front(),
+                                      MetadataWritePlanIssueKind::conflicting_logical_edits));
+
+    // Unparseable staged text blocks before any write is planned.
+    StagedMetadataPatchSet invalid;
+    CHECK(invalid.replace_values(*selection, 0U, *track_gain, {"loud"}).has_value());
+    const auto unparseable = build_metadata_write_plan(*selection, invalid, reader);
+    CHECK(unparseable && !unparseable->ready());
+    CHECK(unparseable && has_cue_issue(unparseable->cue_sheets.front(),
+                                       MetadataWritePlanIssueKind::unsupported_field_mapping));
+
+    // A sheet that changed since capture blocks with source_changed.
+    auto stale_revision = *cue_revision;
+    ++stale_revision.size;
+    auto stale_selection = StagedMetadataSelection::create({bound_source(0U, stale_revision)});
+    CHECK(stale_selection.has_value());
+    if (stale_selection) {
+        const auto stale_gain =
+            stale_selection->ensure_missing_field("REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_TRACK_GAIN");
+        CHECK(stale_gain.has_value());
+        StagedMetadataPatchSet stale_patches;
+        CHECK(stale_patches.replace_values(*stale_selection, 0U, *stale_gain, {"-1.00 dB"})
+                  .has_value());
+        const auto stale_plan = build_metadata_write_plan(*stale_selection, stale_patches, reader);
+        CHECK(stale_plan && !stale_plan->ready());
+        CHECK(stale_plan && has_cue_issue(stale_plan->cue_sheets.front(),
+                                          MetadataWritePlanIssueKind::source_changed));
+    }
+
+    // A missing captured sheet revision blocks like a missing baseline.
+    auto unbound_selection = StagedMetadataSelection::create({bound_source(0U, std::nullopt)});
+    CHECK(unbound_selection.has_value());
+    if (unbound_selection) {
+        const auto unbound_gain = unbound_selection->ensure_missing_field("REPLAYGAIN_TRACK_GAIN",
+                                                                          "REPLAYGAIN_TRACK_GAIN");
+        CHECK(unbound_gain.has_value());
+        StagedMetadataPatchSet unbound_patches;
+        CHECK(unbound_patches.replace_values(*unbound_selection, 0U, *unbound_gain, {"-1.00 dB"})
+                  .has_value());
+        const auto unbound_plan =
+            build_metadata_write_plan(*unbound_selection, unbound_patches, reader);
+        CHECK(unbound_plan && !unbound_plan->ready());
+        CHECK(unbound_plan && has_cue_issue(unbound_plan->cue_sheets.front(),
+                                            MetadataWritePlanIssueKind::missing_baseline_revision));
+    }
+
+    std::filesystem::remove_all(root, fs_error);
+}
+
 } // namespace
 
 int main() {
@@ -393,5 +546,6 @@ int main() {
     rejectsEmptyInvalidAndCancelledPlanning();
     blocksUntouchedExactEmptyFlacValues();
     logicalLoudnessRequiresItsOwnStorageTarget();
+    routesCueReplayGainIntoSheetPlans();
     return failures == 0 ? 0 : 1;
 }

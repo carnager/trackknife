@@ -128,6 +128,61 @@ struct ResolvedCueSheet {
     friend bool operator==(const ResolvedCueSheet&, const ResolvedCueSheet&) = default;
 };
 
+// ADR-0139: ReplayGain carriage inside the sheet itself, following the
+// foobar2000 REM convention (album values in the header, track values
+// inside each TRACK block). A field left with update=false keeps any
+// existing line untouched; update=true replaces or inserts the line
+// when a value is present and removes it when the value is absent.
+struct CueReplayGainField {
+    bool update{false};
+    std::optional<double> value;
+
+    friend bool operator==(const CueReplayGainField&, const CueReplayGainField&) = default;
+};
+
+struct CueTrackReplayGainUpdate {
+    std::size_t file_index{0U};
+    std::size_t track_index{0U};
+    CueReplayGainField track_gain_db;
+    CueReplayGainField track_peak;
+
+    friend bool operator==(const CueTrackReplayGainUpdate&,
+                           const CueTrackReplayGainUpdate&) = default;
+};
+
+struct CueReplayGainUpdate {
+    CueReplayGainField album_gain_db;
+    CueReplayGainField album_peak;
+    std::vector<CueTrackReplayGainUpdate> tracks;
+
+    friend bool operator==(const CueReplayGainUpdate&, const CueReplayGainUpdate&) = default;
+};
+
+struct CueReplayGainRewrite {
+    std::string bytes;
+    std::size_t replaced_lines{0U};
+    std::size_t inserted_lines{0U};
+    std::size_t removed_lines{0U};
+
+    friend bool operator==(const CueReplayGainRewrite&, const CueReplayGainRewrite&) = default;
+};
+
+// Canonical REM value texts shared by the rewriter and its consumers:
+// gains as fixed two-decimal "x.xx dB", peaks as fixed six decimals,
+// always the C locale's decimal point.
+[[nodiscard]] std::string replay_gain_decibel_text(double value);
+[[nodiscard]] std::string replay_gain_peak_text(double value);
+
+// Produces the sheet bytes with exactly the requested REPLAYGAIN_* REM
+// changes applied. Every other byte is preserved: BOM, encoding, line
+// terminators, indentation, unknown directives, and remark order. The
+// result is proven before returning: the output must re-parse into the
+// original sheet with only the intended remark differences, or the
+// rewrite fails without producing bytes.
+[[nodiscard]] core::Result<CueReplayGainRewrite>
+rewrite_cue_replay_gain(std::string_view source, const CueReplayGainUpdate& update,
+                        const CueParseLimits& limits = {});
+
 [[nodiscard]] core::Result<CueSheet> parse_cue_sheet(std::string_view source,
                                                      const CueParseLimits& limits = {});
 

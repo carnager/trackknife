@@ -48,6 +48,7 @@ struct Command {
     PlaybackBufferDurationConfig buffer;
     LocalAuditionSourceRelocation relocation;
     std::size_t relocated_pending_commands{0U};
+    std::optional<formats::ReplayGainInfo> replay_gain_override;
     std::shared_ptr<std::promise<core::Result<LocalAuditionSourceRelocationResult>>>
         relocation_completion;
 };
@@ -198,6 +199,8 @@ struct LocalAuditionService::Impl {
             published.next_source_revision.reset();
             published.next_selection = {};
             published.next_segment.reset();
+            published.replay_gain_override = command.replay_gain_override;
+            published.next_replay_gain_override.reset();
             published.format.reset();
             published.position_sample = 0;
             published.end_sample.reset();
@@ -261,6 +264,7 @@ struct LocalAuditionService::Impl {
                 .buffer = {},
                 .relocation = std::move(relocation),
                 .relocated_pending_commands = relocated_pending_commands,
+                .replay_gain_override = {},
                 .relocation_completion = completion,
             });
         }
@@ -271,6 +275,14 @@ struct LocalAuditionService::Impl {
     [[nodiscard]] LocalAuditionSnapshot snapshot() const {
         std::lock_guard lock{snapshot_mutex};
         return published;
+    }
+
+    void clear_pending_next() {
+        pending_next_path.clear();
+        pending_next_revision.reset();
+        pending_next_selection = {};
+        pending_next_segment.reset();
+        pending_next_replay_gain_override.reset();
     }
 
     // Rebases the audible-track bookkeeping when the consumer crossed into a
@@ -291,6 +303,8 @@ struct LocalAuditionService::Impl {
                 pending_next_selection = {};
                 current_segment = pending_next_segment;
                 pending_next_segment.reset();
+                current_replay_gain_override = pending_next_replay_gain_override;
+                pending_next_replay_gain_override.reset();
             }
             const auto playback = source->snapshot();
             current_duration_samples = playback.end_sample
@@ -311,6 +325,8 @@ struct LocalAuditionService::Impl {
         next.next_source_revision = pending_next_revision;
         next.next_selection = pending_next_selection;
         next.next_segment = pending_next_segment;
+        next.replay_gain_override = current_replay_gain_override;
+        next.next_replay_gain_override = pending_next_replay_gain_override;
         next.chain_transitions = chain_transitions;
         next.error = std::move(error);
         if (source) {
@@ -392,10 +408,7 @@ struct LocalAuditionService::Impl {
         source->pause();
         output_suspended_for_device = true;
         output_recovery_error.reset();
-        pending_next_path.clear();
-        pending_next_revision.reset();
-        pending_next_selection = {};
-        pending_next_segment.reset();
+        clear_pending_next();
         source->clear_next();
         if (output) {
             // A removed backend may already have put the stream into ERROR,
@@ -480,10 +493,8 @@ struct LocalAuditionService::Impl {
         current_revision.reset();
         current_selection = {};
         current_segment.reset();
-        pending_next_path.clear();
-        pending_next_revision.reset();
-        pending_next_selection = {};
-        pending_next_segment.reset();
+        current_replay_gain_override.reset();
+        clear_pending_next();
         current_duration_samples.reset();
         track_base = 0;
         sticky_failure.reset();
@@ -505,15 +516,13 @@ struct LocalAuditionService::Impl {
         output_suspended_for_device = false;
         output_recovery_error.reset();
         sticky_failure.reset();
-        pending_next_path.clear();
-        pending_next_revision.reset();
-        pending_next_selection = {};
-        pending_next_segment.reset();
+        clear_pending_next();
         track_base = 0;
         current_path = std::move(command.raw_path);
         current_revision.reset();
         current_selection = command.selection;
         current_segment = command.segment;
+        current_replay_gain_override = command.replay_gain_override;
         auto observed_revision = core::observe_local_source_revision(current_path);
         if (!observed_revision) {
             fail(std::move(observed_revision.error()));
@@ -540,12 +549,13 @@ struct LocalAuditionService::Impl {
                 source_cancellation.reset();
             }
         };
-        auto opened = command.segment
-                          ? LocalPlayback::open_selected_segment(current_path, command.selection,
-                                                                 *command.segment, config.buffer,
-                                                                 cancellation->token())
-                          : LocalPlayback::open_selected(current_path, command.selection,
-                                                         config.buffer, cancellation->token());
+        auto opened =
+            command.segment
+                ? LocalPlayback::open_selected_segment(
+                      current_path, command.selection, *command.segment, config.buffer,
+                      cancellation->token(), command.replay_gain_override)
+                : LocalPlayback::open_selected(current_path, command.selection, config.buffer,
+                                               cancellation->token(), command.replay_gain_override);
         if (!opened) {
             clear_open_cancellation();
             fail(std::move(opened.error()));
@@ -696,10 +706,7 @@ struct LocalAuditionService::Impl {
         auto stopped = source->stop();
         // The core collapses the chain back to single-source semantics.
         track_base = 0;
-        pending_next_path.clear();
-        pending_next_revision.reset();
-        pending_next_selection = {};
-        pending_next_segment.reset();
+        clear_pending_next();
         if (!stopped) {
             fail(std::move(stopped.error()));
             return;
@@ -727,10 +734,7 @@ struct LocalAuditionService::Impl {
         // boundary non-gapless so the following ordinary load can apply it.
         if (!output_available || (active_buffer && *active_buffer != config.buffer)) {
             source->clear_next();
-            pending_next_path.clear();
-            pending_next_revision.reset();
-            pending_next_selection = {};
-            pending_next_segment.reset();
+            clear_pending_next();
             publish();
             return;
         }
@@ -738,20 +742,14 @@ struct LocalAuditionService::Impl {
         auto observed_revision = core::observe_local_source_revision(path);
         if (!observed_revision) {
             source->clear_next();
-            pending_next_path.clear();
-            pending_next_revision.reset();
-            pending_next_selection = {};
-            pending_next_segment.reset();
+            clear_pending_next();
             publish();
             return;
         }
         if (command.relocation.target_raw_path == path &&
             *observed_revision != command.relocation.target_revision) {
             source->clear_next();
-            pending_next_path.clear();
-            pending_next_revision.reset();
-            pending_next_selection = {};
-            pending_next_segment.reset();
+            clear_pending_next();
             publish(core::Error{
                 .code = core::ErrorCode::conflict,
                 .message = "relocated gapless source no longer has its published revision",
@@ -764,8 +762,10 @@ struct LocalAuditionService::Impl {
         // falls back to an ordinary load at end-of-track.
         const auto queued =
             command.segment
-                ? source->queue_next_selected_segment(path, command.selection, *command.segment)
-                : source->queue_next_selected(path, command.selection);
+                ? source->queue_next_selected_segment(path, command.selection, *command.segment, {},
+                                                      command.replay_gain_override)
+                : source->queue_next_selected(path, command.selection, {},
+                                              command.replay_gain_override);
         if (queued) {
             auto confirmed_revision = core::observe_local_source_revision(path);
             if ((confirmed_revision && *confirmed_revision == *observed_revision) ||
@@ -775,18 +775,13 @@ struct LocalAuditionService::Impl {
                 pending_next_revision = *observed_revision;
                 pending_next_selection = command.selection;
                 pending_next_segment = command.segment;
+                pending_next_replay_gain_override = command.replay_gain_override;
             } else {
                 source->clear_next();
-                pending_next_path.clear();
-                pending_next_revision.reset();
-                pending_next_selection = {};
-                pending_next_segment.reset();
+                clear_pending_next();
             }
         } else {
-            pending_next_path.clear();
-            pending_next_revision.reset();
-            pending_next_selection = {};
-            pending_next_segment.reset();
+            clear_pending_next();
         }
         publish();
     }
@@ -850,10 +845,7 @@ struct LocalAuditionService::Impl {
                 return;
             }
         }
-        pending_next_path.clear();
-        pending_next_revision.reset();
-        pending_next_selection = {};
-        pending_next_segment.reset();
+        clear_pending_next();
         publish();
     }
 
@@ -878,10 +870,7 @@ struct LocalAuditionService::Impl {
         // Track-relative target onto the produced domain; the flush drops any
         // queued continuation, which the caller re-queues afterwards.
         auto sought = source->seek_to_sample(track_base + target_sample);
-        pending_next_path.clear();
-        pending_next_revision.reset();
-        pending_next_selection = {};
-        pending_next_segment.reset();
+        clear_pending_next();
         if (!sought) {
             publish(std::move(sought.error()));
             return;
@@ -992,10 +981,7 @@ struct LocalAuditionService::Impl {
         config.buffer = buffer_config;
         if (source && active_buffer && *active_buffer != config.buffer) {
             source->clear_next();
-            pending_next_path.clear();
-            pending_next_revision.reset();
-            pending_next_selection = {};
-            pending_next_segment.reset();
+            clear_pending_next();
         }
         publish();
     }
@@ -1170,12 +1156,14 @@ struct LocalAuditionService::Impl {
     std::optional<core::LocalSourceRevision> current_revision;
     formats::AudioSourceSelection current_selection;
     std::optional<formats::SampleRange> current_segment;
+    std::optional<formats::ReplayGainInfo> current_replay_gain_override;
     // Gapless bookkeeping: the queued continuation's path, the produced-domain
     // sample where the audible track begins, and the consumed takeover count.
     std::string pending_next_path;
     std::optional<core::LocalSourceRevision> pending_next_revision;
     formats::AudioSourceSelection pending_next_selection;
     std::optional<formats::SampleRange> pending_next_segment;
+    std::optional<formats::ReplayGainInfo> pending_next_replay_gain_override;
     std::optional<std::int64_t> current_duration_samples;
     std::int64_t track_base{0};
     std::uint64_t chain_transitions{0U};
@@ -1224,9 +1212,9 @@ core::Result<void> LocalAuditionService::load_and_play(std::string raw_path) {
     return load_selected_and_play(std::move(raw_path), {});
 }
 
-core::Result<void>
-LocalAuditionService::load_selected_and_play(std::string raw_path,
-                                             formats::AudioSourceSelection selection) {
+core::Result<void> LocalAuditionService::load_selected_and_play(
+    std::string raw_path, formats::AudioSourceSelection selection,
+    std::optional<formats::ReplayGainInfo> replay_gain_override) {
     if (raw_path.empty()) {
         return std::unexpected(invalid_config("local audition path must not be empty"));
     }
@@ -1240,6 +1228,7 @@ LocalAuditionService::load_selected_and_play(std::string raw_path,
                                             .buffer = {},
                                             .relocation = {},
                                             .relocated_pending_commands = 0U,
+                                            .replay_gain_override = std::move(replay_gain_override),
                                             .relocation_completion = {}});
 }
 
@@ -1248,10 +1237,10 @@ core::Result<void> LocalAuditionService::load_segment_and_play(std::string raw_p
     return load_selected_segment_and_play(std::move(raw_path), {}, segment);
 }
 
-core::Result<void>
-LocalAuditionService::load_selected_segment_and_play(std::string raw_path,
-                                                     formats::AudioSourceSelection selection,
-                                                     const formats::SampleRange segment) {
+core::Result<void> LocalAuditionService::load_selected_segment_and_play(
+    std::string raw_path, formats::AudioSourceSelection selection,
+    const formats::SampleRange segment,
+    std::optional<formats::ReplayGainInfo> replay_gain_override) {
     if (raw_path.empty()) {
         return std::unexpected(invalid_config("local audition path must not be empty"));
     }
@@ -1265,6 +1254,7 @@ LocalAuditionService::load_selected_segment_and_play(std::string raw_path,
                                             .buffer = {},
                                             .relocation = {},
                                             .relocated_pending_commands = 0U,
+                                            .replay_gain_override = std::move(replay_gain_override),
                                             .relocation_completion = {}});
 }
 
@@ -1272,9 +1262,9 @@ core::Result<void> LocalAuditionService::queue_gapless_next(std::string raw_path
     return queue_gapless_next_selected(std::move(raw_path), {});
 }
 
-core::Result<void>
-LocalAuditionService::queue_gapless_next_selected(std::string raw_path,
-                                                  formats::AudioSourceSelection selection) {
+core::Result<void> LocalAuditionService::queue_gapless_next_selected(
+    std::string raw_path, formats::AudioSourceSelection selection,
+    std::optional<formats::ReplayGainInfo> replay_gain_override) {
     if (raw_path.empty()) {
         return std::unexpected(invalid_config("local audition path must not be empty"));
     }
@@ -1288,6 +1278,7 @@ LocalAuditionService::queue_gapless_next_selected(std::string raw_path,
                                             .buffer = {},
                                             .relocation = {},
                                             .relocated_pending_commands = 0U,
+                                            .replay_gain_override = std::move(replay_gain_override),
                                             .relocation_completion = {}});
 }
 
@@ -1297,10 +1288,10 @@ LocalAuditionService::queue_gapless_next_segment(std::string raw_path,
     return queue_gapless_next_selected_segment(std::move(raw_path), {}, segment);
 }
 
-core::Result<void>
-LocalAuditionService::queue_gapless_next_selected_segment(std::string raw_path,
-                                                          formats::AudioSourceSelection selection,
-                                                          const formats::SampleRange segment) {
+core::Result<void> LocalAuditionService::queue_gapless_next_selected_segment(
+    std::string raw_path, formats::AudioSourceSelection selection,
+    const formats::SampleRange segment,
+    std::optional<formats::ReplayGainInfo> replay_gain_override) {
     if (raw_path.empty()) {
         return std::unexpected(invalid_config("local audition path must not be empty"));
     }
@@ -1314,6 +1305,7 @@ LocalAuditionService::queue_gapless_next_selected_segment(std::string raw_path,
                                             .buffer = {},
                                             .relocation = {},
                                             .relocated_pending_commands = 0U,
+                                            .replay_gain_override = std::move(replay_gain_override),
                                             .relocation_completion = {}});
 }
 
@@ -1328,6 +1320,7 @@ core::Result<void> LocalAuditionService::clear_gapless_next() {
                                             .buffer = {},
                                             .relocation = {},
                                             .relocated_pending_commands = 0U,
+                                            .replay_gain_override = {},
                                             .relocation_completion = {}});
 }
 
@@ -1342,6 +1335,7 @@ core::Result<void> LocalAuditionService::play() {
                                             .buffer = {},
                                             .relocation = {},
                                             .relocated_pending_commands = 0U,
+                                            .replay_gain_override = {},
                                             .relocation_completion = {}});
 }
 
@@ -1356,6 +1350,7 @@ core::Result<void> LocalAuditionService::pause() {
                                             .buffer = {},
                                             .relocation = {},
                                             .relocated_pending_commands = 0U,
+                                            .replay_gain_override = {},
                                             .relocation_completion = {}});
 }
 
@@ -1370,6 +1365,7 @@ core::Result<void> LocalAuditionService::stop() {
                                             .buffer = {},
                                             .relocation = {},
                                             .relocated_pending_commands = 0U,
+                                            .replay_gain_override = {},
                                             .relocation_completion = {}});
 }
 
@@ -1387,6 +1383,7 @@ core::Result<void> LocalAuditionService::seek_to_sample(const std::int64_t targe
                                             .buffer = {},
                                             .relocation = {},
                                             .relocated_pending_commands = 0U,
+                                            .replay_gain_override = {},
                                             .relocation_completion = {}});
 }
 
@@ -1428,6 +1425,7 @@ core::Result<void> LocalAuditionService::set_volume_percent(const int percent) {
                                             .buffer = {},
                                             .relocation = {},
                                             .relocated_pending_commands = 0U,
+                                            .replay_gain_override = {},
                                             .relocation_completion = {}});
 }
 
@@ -1448,6 +1446,7 @@ LocalAuditionService::set_buffer_config(const PlaybackBufferDurationConfig buffe
                                             .buffer = buffer_config,
                                             .relocation = {},
                                             .relocated_pending_commands = 0U,
+                                            .replay_gain_override = {},
                                             .relocation_completion = {}});
 }
 
@@ -1462,6 +1461,7 @@ core::Result<void> LocalAuditionService::refresh_output_devices() {
                                             .buffer = {},
                                             .relocation = {},
                                             .relocated_pending_commands = 0U,
+                                            .replay_gain_override = {},
                                             .relocation_completion = {}});
 }
 
@@ -1480,6 +1480,7 @@ core::Result<void> LocalAuditionService::set_output_target(std::optional<std::st
                                             .buffer = {},
                                             .relocation = {},
                                             .relocated_pending_commands = 0U,
+                                            .replay_gain_override = {},
                                             .relocation_completion = {}});
 }
 
@@ -1559,6 +1560,7 @@ core::Result<void> LocalAuditionService::clear() {
                                             .buffer = {},
                                             .relocation = {},
                                             .relocated_pending_commands = 0U,
+                                            .replay_gain_override = {},
                                             .relocation_completion = {}});
 }
 

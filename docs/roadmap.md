@@ -145,8 +145,18 @@ Reference: [metadata and artwork](metadata-and-files.md).
 
 **Proposal:** Complete the path from measurement to durable storage and playback.
 
-- [ ] Store results in a sidecar or library record when no safe writable
-  embedded mapping exists, and use those results during local playback.
+- [x] CUE sheet carriage (ADR-0139): scan results for CUE logical tracks
+  persist as foobar2000-convention `REM REPLAYGAIN_*` lines in the sheet
+  itself — routed through the write plan per sheet, published by a
+  revision-gated atomic byte-preserving rewrite — and local playback
+  consumes the sheet values ahead of the physical file's whole-file tags,
+  including across gapless takeovers.
+- [ ] Bring CUE sheet rewrites into the undo journal (content-kind schema
+  migration plus recovery/undo branches; ADR-0139 follow-up).
+- [ ] Store results in a sidecar or library record for the remaining
+  targets without a safe writable mapping (container chapters, codec
+  subsongs, unwritable formats), and use those results during local
+  playback.
 - [ ] Define and implement Opus R128 storage and playback handling.
 - [x] Add playback preamp controls (ADR-0138): separate ±20 dB preamps for
   tracks with and without loudness data, applied only while local

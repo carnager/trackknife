@@ -6,16 +6,22 @@
 #include "trackknife/core/local_sources.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <ranges>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace trackknife::formats {
 namespace {
@@ -646,6 +652,394 @@ resolve_external_cue_sheet(std::string raw_cue_path, const core::CancellationTok
                                                  .raw_source_path = source_info->raw_path,
                                                  .sample_range = *range,
                                                  .duration_ms = duration_ms});
+    }
+    return result;
+}
+
+namespace {
+
+constexpr std::array<std::string_view, 4> replay_gain_remark_names{
+    "REPLAYGAIN_ALBUM_GAIN",
+    "REPLAYGAIN_ALBUM_PEAK",
+    "REPLAYGAIN_TRACK_GAIN",
+    "REPLAYGAIN_TRACK_PEAK",
+};
+
+[[nodiscard]] bool is_replay_gain_remark_name(const std::string_view name) noexcept {
+    return std::ranges::find(replay_gain_remark_names, name) != replay_gain_remark_names.end();
+}
+
+[[nodiscard]] std::string fixed_decimal_text(const double value, const int precision) {
+    std::array<char, 32> buffer{};
+    const auto ends = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value,
+                                    std::chars_format::fixed, precision);
+    return std::string{buffer.data(), ends.ptr};
+}
+
+struct CueRewriteLine {
+    std::size_t begin{0U};
+    std::size_t content_end{0U};
+    std::size_t end{0U};
+    std::size_t leading_whitespace{0U};
+    std::ptrdiff_t file_ordinal{-1};
+    std::ptrdiff_t track_ordinal{-1};
+    std::optional<std::string> replay_gain_name;
+};
+
+[[nodiscard]] core::Result<void> validate_replay_gain_field(const CueReplayGainField& field,
+                                                            const bool gain,
+                                                            const std::string_view label) {
+    if (!field.update || !field.value) {
+        return {};
+    }
+    const auto value = *field.value;
+    if (!std::isfinite(value) || (gain ? std::abs(value) > 60.0 : value < 0.0)) {
+        return std::unexpected(
+            cue_error(core::ErrorCode::invalid_argument,
+                      "CUE ReplayGain " + std::string(label) + " value is out of range"));
+    }
+    return {};
+}
+
+// The four-name remark values one scope carries, keyed by name. Order
+// inside the sheet is deliberately not part of the proof; presence,
+// multiplicity, and exact value text are.
+[[nodiscard]] std::map<std::string, std::vector<std::string>>
+replay_gain_remark_values(const std::vector<CueMetadataField>& remarks) {
+    std::map<std::string, std::vector<std::string>> values;
+    for (const auto& remark : remarks) {
+        if (is_replay_gain_remark_name(remark.name)) {
+            values[remark.name].push_back(remark.value);
+        }
+    }
+    return values;
+}
+
+void strip_replay_gain_remarks(CueMetadata& metadata) {
+    std::erase_if(metadata.remarks, [](const CueMetadataField& remark) {
+        return is_replay_gain_remark_name(remark.name);
+    });
+}
+
+[[nodiscard]] CueSheet stripped_of_replay_gain_remarks(CueSheet sheet) {
+    strip_replay_gain_remarks(sheet.metadata);
+    for (auto& file : sheet.files) {
+        for (auto& track : file.tracks) {
+            strip_replay_gain_remarks(track.metadata);
+        }
+    }
+    return sheet;
+}
+
+void apply_expected_field(std::map<std::string, std::vector<std::string>>& expected,
+                          const std::string_view name, const CueReplayGainField& field,
+                          const bool gain) {
+    if (!field.update) {
+        return;
+    }
+    if (field.value) {
+        expected[std::string(name)] = {gain ? replay_gain_decibel_text(*field.value)
+                                            : replay_gain_peak_text(*field.value)};
+    } else {
+        expected.erase(std::string(name));
+    }
+}
+
+[[nodiscard]] core::Result<void> verify_cue_replay_gain_rewrite(const CueSheet& original,
+                                                                const std::string& rewritten,
+                                                                const CueReplayGainUpdate& update,
+                                                                const CueParseLimits& limits) {
+    const auto fail = [] {
+        return std::unexpected(cue_error(core::ErrorCode::conflict,
+                                         "CUE ReplayGain rewrite failed its preservation proof"));
+    };
+    const auto reparsed = parse_cue_sheet(rewritten, limits);
+    if (!reparsed) {
+        return fail();
+    }
+    if (stripped_of_replay_gain_remarks(original) != stripped_of_replay_gain_remarks(*reparsed)) {
+        return fail();
+    }
+
+    auto expected_album = replay_gain_remark_values(original.metadata.remarks);
+    apply_expected_field(expected_album, "REPLAYGAIN_ALBUM_GAIN", update.album_gain_db, true);
+    apply_expected_field(expected_album, "REPLAYGAIN_ALBUM_PEAK", update.album_peak, false);
+    if (expected_album != replay_gain_remark_values(reparsed->metadata.remarks)) {
+        return fail();
+    }
+
+    for (std::size_t file_index = 0U; file_index < original.files.size(); ++file_index) {
+        const auto& file = original.files[file_index];
+        for (std::size_t track_index = 0U; track_index < file.tracks.size(); ++track_index) {
+            auto expected = replay_gain_remark_values(file.tracks[track_index].metadata.remarks);
+            const auto entry = std::ranges::find_if(
+                update.tracks, [file_index, track_index](const CueTrackReplayGainUpdate& track) {
+                    return track.file_index == file_index && track.track_index == track_index;
+                });
+            if (entry != update.tracks.end()) {
+                apply_expected_field(expected, "REPLAYGAIN_TRACK_GAIN", entry->track_gain_db, true);
+                apply_expected_field(expected, "REPLAYGAIN_TRACK_PEAK", entry->track_peak, false);
+            }
+            const auto actual = replay_gain_remark_values(
+                reparsed->files[file_index].tracks[track_index].metadata.remarks);
+            if (expected != actual) {
+                return fail();
+            }
+        }
+    }
+    return {};
+}
+
+} // namespace
+
+std::string replay_gain_decibel_text(const double value) {
+    return fixed_decimal_text(value, 2) + " dB";
+}
+
+std::string replay_gain_peak_text(const double value) { return fixed_decimal_text(value, 6); }
+
+core::Result<CueReplayGainRewrite> rewrite_cue_replay_gain(const std::string_view source,
+                                                           const CueReplayGainUpdate& update,
+                                                           const CueParseLimits& limits) {
+    auto original = parse_cue_sheet(source, limits);
+    if (!original) {
+        return std::unexpected(std::move(original.error()));
+    }
+
+    if (auto checked = validate_replay_gain_field(update.album_gain_db, true, "album gain");
+        !checked) {
+        return std::unexpected(std::move(checked.error()));
+    }
+    if (auto checked = validate_replay_gain_field(update.album_peak, false, "album peak");
+        !checked) {
+        return std::unexpected(std::move(checked.error()));
+    }
+    std::set<std::pair<std::size_t, std::size_t>> seen_tracks;
+    for (const auto& track : update.tracks) {
+        if (track.file_index >= original->files.size() ||
+            track.track_index >= original->files[track.file_index].tracks.size()) {
+            return std::unexpected(cue_error(core::ErrorCode::invalid_argument,
+                                             "CUE ReplayGain update addresses a missing track"));
+        }
+        if (!seen_tracks.emplace(track.file_index, track.track_index).second) {
+            return std::unexpected(cue_error(core::ErrorCode::invalid_argument,
+                                             "CUE ReplayGain update addresses a track twice"));
+        }
+        if (auto checked = validate_replay_gain_field(track.track_gain_db, true, "track gain");
+            !checked) {
+            return std::unexpected(std::move(checked.error()));
+        }
+        if (auto checked = validate_replay_gain_field(track.track_peak, false, "track peak");
+            !checked) {
+            return std::unexpected(std::move(checked.error()));
+        }
+    }
+
+    const std::size_t bom = source.starts_with("\xEF\xBB\xBF") ? 3U : 0U;
+
+    std::vector<CueRewriteLine> lines;
+    std::optional<std::size_t> first_file_line;
+    std::map<std::pair<std::size_t, std::size_t>, std::size_t> track_lines;
+    std::map<std::pair<std::size_t, std::size_t>, std::size_t> first_index_lines;
+    std::ptrdiff_t file_ordinal = -1;
+    std::ptrdiff_t track_ordinal = -1;
+    std::size_t offset = bom;
+    while (offset < source.size()) {
+        CueRewriteLine record;
+        record.begin = offset;
+        const auto newline = source.find('\n', offset);
+        if (newline == std::string_view::npos) {
+            record.content_end = source.size();
+            record.end = source.size();
+        } else {
+            record.end = newline + 1U;
+            record.content_end =
+                newline > offset && source[newline - 1U] == '\r' ? newline - 1U : newline;
+        }
+        auto content = source.substr(record.begin, record.content_end - record.begin);
+        while (record.leading_whitespace < content.size() &&
+               (content[record.leading_whitespace] == ' ' ||
+                content[record.leading_whitespace] == '\t')) {
+            ++record.leading_whitespace;
+        }
+        const auto trimmed = trim(content);
+        if (!trimmed.empty()) {
+            const auto [raw_directive, argument] = split_first(trimmed);
+            const auto directive = uppercase_ascii(raw_directive);
+            if (directive == "FILE") {
+                ++file_ordinal;
+                track_ordinal = -1;
+                if (!first_file_line) {
+                    first_file_line = lines.size();
+                }
+            } else if (directive == "TRACK") {
+                ++track_ordinal;
+                if (file_ordinal >= 0) {
+                    track_lines.emplace(std::pair{static_cast<std::size_t>(file_ordinal),
+                                                  static_cast<std::size_t>(track_ordinal)},
+                                        lines.size());
+                }
+            } else if (directive == "INDEX") {
+                if (file_ordinal >= 0 && track_ordinal >= 0) {
+                    first_index_lines.emplace(std::pair{static_cast<std::size_t>(file_ordinal),
+                                                        static_cast<std::size_t>(track_ordinal)},
+                                              lines.size());
+                }
+            } else if (directive == "REM") {
+                const auto [name, value] = split_first(argument);
+                const auto uppercased = uppercase_ascii(name);
+                if (is_replay_gain_remark_name(uppercased)) {
+                    record.replay_gain_name = uppercased;
+                }
+            }
+        }
+        record.file_ordinal = file_ordinal;
+        record.track_ordinal = track_ordinal;
+        offset = record.end;
+        lines.push_back(std::move(record));
+    }
+
+    const auto line_terminator = [&source](const CueRewriteLine& line) -> std::string_view {
+        return std::string_view{source}.substr(line.content_end, line.end - line.content_end);
+    };
+    std::string_view default_terminator = "\n";
+    for (const auto& line : lines) {
+        if (line.end > line.content_end) {
+            default_terminator = line_terminator(line);
+            break;
+        }
+    }
+
+    std::map<std::size_t, std::string> replaced;
+    std::set<std::size_t> dropped;
+    struct PendingInsertion {
+        std::size_t anchor_line{0U};
+        bool at_end{false};
+        std::string content;
+    };
+    std::vector<PendingInsertion> insertions;
+
+    const auto plan_field = [&](const CueReplayGainField& field, const std::string_view name,
+                                const bool gain, const auto& in_scope,
+                                const std::optional<std::size_t> anchor,
+                                const std::size_t anchor_whitespace_from) {
+        if (!field.update) {
+            return;
+        }
+        std::optional<std::size_t> first_occurrence;
+        for (std::size_t index = 0U; index < lines.size(); ++index) {
+            const auto& line = lines[index];
+            if (!line.replay_gain_name || *line.replay_gain_name != name || !in_scope(line)) {
+                continue;
+            }
+            if (field.value && !first_occurrence) {
+                first_occurrence = index;
+            } else {
+                dropped.insert(index);
+            }
+        }
+        if (!field.value) {
+            return;
+        }
+        const auto value_text =
+            gain ? replay_gain_decibel_text(*field.value) : replay_gain_peak_text(*field.value);
+        auto content = "REM " + std::string(name) + " " + value_text;
+        if (first_occurrence) {
+            replaced.emplace(*first_occurrence, std::move(content));
+            return;
+        }
+        std::string indented;
+        if (anchor_whitespace_from < lines.size()) {
+            const auto& reference = lines[anchor_whitespace_from];
+            indented = std::string(source.substr(reference.begin, reference.leading_whitespace));
+        }
+        insertions.push_back(PendingInsertion{
+            .anchor_line = anchor.value_or(0U),
+            .at_end = !anchor.has_value(),
+            .content = std::move(indented) + std::move(content),
+        });
+    };
+
+    const auto album_scope = [](const CueRewriteLine& line) { return line.track_ordinal < 0; };
+    plan_field(update.album_gain_db, "REPLAYGAIN_ALBUM_GAIN", true, album_scope, first_file_line,
+               first_file_line.value_or(lines.size()));
+    plan_field(update.album_peak, "REPLAYGAIN_ALBUM_PEAK", false, album_scope, first_file_line,
+               first_file_line.value_or(lines.size()));
+    for (const auto& track : update.tracks) {
+        const auto key = std::pair{track.file_index, track.track_index};
+        const auto track_scope = [key](const CueRewriteLine& line) {
+            return line.file_ordinal >= 0 && line.track_ordinal >= 0 &&
+                   static_cast<std::size_t>(line.file_ordinal) == key.first &&
+                   static_cast<std::size_t>(line.track_ordinal) == key.second;
+        };
+        const auto index_line = first_index_lines.find(key);
+        const auto track_line = track_lines.find(key);
+        std::optional<std::size_t> anchor;
+        std::size_t whitespace_from = lines.size();
+        if (index_line != first_index_lines.end()) {
+            anchor = index_line->second;
+            whitespace_from = index_line->second;
+        } else if (track_line != track_lines.end() && track_line->second + 1U < lines.size()) {
+            anchor = track_line->second + 1U;
+            whitespace_from = track_line->second;
+        }
+        plan_field(track.track_gain_db, "REPLAYGAIN_TRACK_GAIN", true, track_scope, anchor,
+                   whitespace_from);
+        plan_field(track.track_peak, "REPLAYGAIN_TRACK_PEAK", false, track_scope, anchor,
+                   whitespace_from);
+    }
+
+    CueReplayGainRewrite result;
+    result.bytes.reserve(source.size() + insertions.size() * 48U);
+    if (bom != 0U) {
+        result.bytes.append(source.substr(0U, bom));
+    }
+    const auto emit_insertions_for = [&](const std::size_t line_index) {
+        for (const auto& insertion : insertions) {
+            if (insertion.at_end || insertion.anchor_line != line_index) {
+                continue;
+            }
+            const auto terminator =
+                line_index < lines.size() && lines[line_index].end > lines[line_index].content_end
+                    ? line_terminator(lines[line_index])
+                    : default_terminator;
+            result.bytes.append(insertion.content);
+            result.bytes.append(terminator);
+            ++result.inserted_lines;
+        }
+    };
+    for (std::size_t index = 0U; index < lines.size(); ++index) {
+        emit_insertions_for(index);
+        const auto& line = lines[index];
+        if (dropped.contains(index)) {
+            ++result.removed_lines;
+            continue;
+        }
+        const auto replacement = replaced.find(index);
+        if (replacement != replaced.end()) {
+            result.bytes.append(source.substr(line.begin, line.leading_whitespace));
+            result.bytes.append(replacement->second);
+            result.bytes.append(line_terminator(line));
+            ++result.replaced_lines;
+            continue;
+        }
+        result.bytes.append(source.substr(line.begin, line.end - line.begin));
+    }
+    for (const auto& insertion : insertions) {
+        if (!insertion.at_end) {
+            continue;
+        }
+        if (!result.bytes.empty() && result.bytes.back() != '\n') {
+            result.bytes.append(default_terminator);
+        }
+        result.bytes.append(insertion.content);
+        result.bytes.append(default_terminator);
+        ++result.inserted_lines;
+    }
+
+    if (auto proven = verify_cue_replay_gain_rewrite(*original, result.bytes, update, limits);
+        !proven) {
+        return std::unexpected(std::move(proven.error()));
     }
     return result;
 }

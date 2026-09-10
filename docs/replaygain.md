@@ -194,6 +194,14 @@ Proposed precedence:
 3. current library-only result;
 4. playlist snapshot only as an offline fallback.
 
+Implemented for CUE logical tracks (ADR-0139): the sheet's foobar2000-
+convention `REM REPLAYGAIN_*` lines are the authoritative per-track and
+album values. The Properties scan persists into the sheet through the
+write plan (revision-gated atomic byte-preserving rewrite), and local
+playback passes the sheet values as an explicit override that outranks
+the physical file's whole-file tags, including across gapless
+takeovers.
+
 A scan result should be written to the selected canonical target and then cached
 in the common `TrackRef`. A playlist may serialize the cached values for fast
 offline display, as classic FPL did, but that snapshot must not override a newer
