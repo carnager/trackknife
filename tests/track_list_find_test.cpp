@@ -90,7 +90,10 @@ void TrackListFindTest::navigatesDuplicateOccurrencesWithoutMutatingOrPlaying() 
 
 void TrackListFindTest::searchesCachedFieldsAndEscapedPaths_data() {
     QTest::addColumn<QString>("query");
-    for (const auto* text : {"Björk", "RELEASE", "collective", "2026", "07", "\\xff", "cue title"})
+    // ADR-0142: beyond the display projection, arbitrary metadata values
+    // (any provenance, any multiplicity) and the formatted duration match.
+    for (const auto* text : {"Björk", "RELEASE", "collective", "2026", "07", "\\xff", "cue title",
+                             "hidden GEM", "-6.02 db", "0:07"})
         QTest::newRow(text) << QString::fromUtf8(text);
 }
 
@@ -103,6 +106,21 @@ void TrackListFindTest::searchesCachedFieldsAndEscapedPaths() {
     row.date = "2026";
     row.track_number = "07";
     row.raw_path = std::string{"/music/raw-"} + static_cast<char>(0xff) + ".flac";
+    row.duration_ms = 7'000;
+    row.metadata.fields.push_back(metadata::MetadataField{
+        .canonical_name = "comment",
+        .native_name = "COMMENT",
+        .values = {"first note", "Hidden gem"},
+        .qualifier = {},
+        .provenance = metadata::FieldProvenance::embedded,
+    });
+    row.metadata.fields.push_back(metadata::MetadataField{
+        .canonical_name = "replaygaintrackgain",
+        .native_name = "REPLAYGAIN_TRACK_GAIN",
+        .values = {"-6.02 dB"},
+        .qualifier = {},
+        .provenance = metadata::FieldProvenance::sidecar,
+    });
     Workspace w{{track("Other"), row}};
     w.query->setText(query);
     QTRY_COMPARE(w.status->text(), QStringLiteral("Track 2 of 2"));
@@ -252,12 +270,24 @@ void TrackListFindTest::mpdQueueFindPreservesServerStateAndRejectsStaleRows() {
     QCOMPARE(w.status->text(), QStringLiteral("List changed — search again"));
     QTest::qWait(50);
     QCOMPARE(model.queueIdAt(w.view->currentIndex().row()), std::optional<std::uint32_t>{41U});
-    middle.metadata =
-        mpd::Metadata{{{"Title", "Updated remotely"}, {"Artist", "First"}, {"Artist", "Björk"}}};
+    middle.metadata = mpd::Metadata{{{"Title", "Updated remotely"},
+                                     {"Artist", "First"},
+                                     {"Artist", "Björk"},
+                                     {"Composer", "Arvo Pärt"}}};
+    // ADR-0142: arbitrary server tags, the audio format, and the
+    // formatted duration are part of the haystack.
+    middle.audio_format = "44100:16:2";
+    middle.duration = std::chrono::milliseconds{95'000};
     model.replaceTracks({first, middle});
     w.query->setText(QStringLiteral("updated remotely"));
     QTRY_COMPARE(w.status->text(), QStringLiteral("Track 2 of 2"));
     w.query->setText(QStringLiteral("BJÖRK"));
+    QTRY_COMPARE(w.status->text(), QStringLiteral("Track 2 of 2"));
+    w.query->setText(QStringLiteral("ARVO pärt"));
+    QTRY_COMPARE(w.status->text(), QStringLiteral("Track 2 of 2"));
+    w.query->setText(QStringLiteral("44100:16"));
+    QTRY_COMPARE(w.status->text(), QStringLiteral("Track 2 of 2"));
+    w.query->setText(QStringLiteral("1:35"));
     QTRY_COMPARE(w.status->text(), QStringLiteral("Track 2 of 2"));
     // An MPD URI remains exact protocol text, including literal backslashes.
     w.query->setText(QString::fromStdString(first.uri));

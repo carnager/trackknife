@@ -66,8 +66,11 @@ References: [library refresh decision](adr/0126-library-deletion-and-search-artw
   snapshot tab (ADR-0129 pattern) from MPD. The library-integrated live
   search remains the transient default. Expanding MPD album hits into
   complete releases inside the committed tab remains a follow-up.
-- [ ] Extend Find beyond cached display text to arbitrary metadata and
-  technical fields (the ADR-0125 first slice excludes them).
+- [x] Extend Find beyond cached display text (ADR-0142): every metadata
+  value at every provenance, formatted durations, MPD `audio_format` and
+  unknown protocol pairs — same bounded pipeline, with a uniform per-row
+  value cap reported as a visible limit. Local codec/bit-rate/sample-rate
+  search still needs probe-technicals retention on rows (follow-up).
 
 Keep local list changes distinct from server-owned playlist mutations.
 Removing duplicate list entries must not delete files.

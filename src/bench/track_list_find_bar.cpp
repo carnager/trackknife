@@ -2,6 +2,7 @@
 
 #include "bench/track_list_find_bar.hpp"
 
+#include "bench/bench_main_window_helpers.hpp"
 #include "bench/local_list_model.hpp"
 #include "quick/mpd_queue_model.hpp"
 #include "trackknife/core/unicode.hpp"
@@ -18,7 +19,8 @@
 #include <QtConcurrentRun>
 
 #include <algorithm>
-#include <array>
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -50,7 +52,7 @@ TrackListFindBar::TrackListFindBar(QWidget* parent) : QToolBar(tr("Find in list"
     query_->setPlaceholderText(tr("Find in current list"));
     query_->setAccessibleName(tr("Find in current list"));
     query_->setToolTip(
-        tr("Search title, artist, album, album artist, date, track number, or source path/URI"));
+        tr("Search any metadata value, the duration, the audio format, or the source path/URI"));
     query_->setClearButtonEnabled(true);
     query_->setMaxLength(1024);
     query_->setMinimumWidth(180);
@@ -247,35 +249,60 @@ void TrackListFindBar::pump() {
     const auto* remote = qobject_cast<quick::MpdQueueModel*>(model_.data());
     while (visited_ < total_ && candidates.size() < batch_row_limit && capture_time.elapsed() < 4) {
         std::vector<std::string_view> fields;
+        // Backs formatted texts (durations) referenced by fields for the
+        // remainder of this loop iteration.
+        std::vector<std::string> owned_texts;
         bool oversized = false;
+        // ADR-0142: Find matches every value a row carries, not only the
+        // cached display projection. A uniform per-row value cap keeps
+        // pathological documents an explicit limit error.
+        constexpr std::size_t row_value_limit = 1'024U;
+        const auto duration_text = [&owned_texts,
+                                    &fields](const std::optional<std::int64_t> milliseconds) {
+            if (milliseconds) {
+                owned_texts.push_back(utf8Bytes(formatTime(*milliseconds)));
+                fields.push_back(owned_texts.back());
+            }
+        };
         if (local) {
             const auto& row = local->rows()[static_cast<std::size_t>(cursor_)];
-            fields = {row.title, row.artist,       row.album,   row.album_artist,
-                      row.date,  row.track_number, row.raw_path};
+            std::size_t value_count = 0U;
+            for (const auto& field : row.metadata.fields) {
+                value_count += field.values.size();
+            }
+            oversized = value_count > row_value_limit;
+            if (!oversized) {
+                fields = {row.title,        row.artist, row.album,
+                          row.album_artist, row.date,   row.track_number};
+                for (const auto& field : row.metadata.fields) {
+                    for (const auto& value : field.values) {
+                        fields.push_back(value);
+                    }
+                }
+                duration_text(row.duration_ms);
+                fields.push_back(row.raw_path);
+            }
         } else if (remote) {
             const auto* track = remote->trackAt(cursor_);
             if (!track)
                 return;
             // Bound even a pathological number of empty/unrelated server tags.
-            oversized = track->metadata.fields().size() > 1024U;
+            oversized = track->metadata.fields().size() + track->unknown_structural_pairs.size() >
+                        row_value_limit;
             if (!oversized) {
                 for (const auto& tag : track->metadata.fields()) {
-                    constexpr std::array<std::string_view, 6> names{
-                        "Title", "Artist", "Album", "AlbumArtist", "Date", "Track"};
-                    const auto matching_name = [&tag](const std::string_view name) {
-                        return name.size() == tag.name.size() &&
-                               std::ranges::equal(name, tag.name, [](const char a, const char b) {
-                                   const auto lower = [](const char c) {
-                                       return c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c;
-                                   };
-                                   return lower(a) == lower(b);
-                               });
-                    };
-                    if (std::ranges::any_of(names, matching_name))
-                        fields.push_back(tag.value);
+                    fields.push_back(tag.value);
                 }
+                for (const auto& pair : track->unknown_structural_pairs) {
+                    fields.push_back(pair.value);
+                }
+                if (track->audio_format && !track->audio_format->empty()) {
+                    fields.push_back(*track->audio_format);
+                }
+                duration_text(track->duration ? std::optional{track->duration->count()}
+                                              : std::nullopt);
+                fields.push_back(track->uri);
             }
-            fields.push_back(track->uri);
         }
         std::size_t bytes = 0;
         for (const auto field : fields) {
