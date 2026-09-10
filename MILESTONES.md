@@ -1321,6 +1321,20 @@ quickly and correctly.
   gapless takeovers. Undo-journal parity for sheet rewrites and durable
   storage for chapters/subsongs/unwritable formats remain open.
 
+### Loudness sidecar (2026-09-10)
+
+- ADR-0141 completes work item 8's durable-storage decision for the
+  remaining logical tracks: container chapters, codec subsongs, and
+  segments persist into `<file>.tkmeta` beside the source — strict
+  versioned JSON with a bounded fail-closed codec, entries keyed by
+  decoder selection + sample range, staleness by audio size+mtime so
+  timestamp-preserving copies stay valid. The write plan routes their
+  ReplayGain there; the commit merges revision-gated and atomically and
+  deletes emptied sidecars. Probing projects fresh sidecars onto rows
+  at sidecar provenance and playback consumes them first (sidecar →
+  CUE → embedded). The explicit unwritable-format fallback and shared
+  undo-journal parity remain open.
+
 ## M8 — Parallel converter, resampler, and organized output
 
 ### Objective

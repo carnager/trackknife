@@ -159,11 +159,12 @@ Export. Other container writers and configurable export naming remain open.
 ## Needed before M5–M8
 
 1. Sidecar location/format and precedence relative to embedded metadata.
-   Partially resolved by ADR-0139: CUE logical tracks need no sidecar —
-   their ReplayGain lives in the sheet itself as foobar2000-convention
-   `REM REPLAYGAIN_*` lines, outranking the physical file's whole-file
-   tags at playback. Open scope shrinks to container chapters, codec
-   subsongs, unwritable formats, and non-loudness sidecar payloads.
+   Resolved for loudness: ADR-0139 keeps CUE ReplayGain in the sheet
+   itself (foobar2000 `REM` convention), and ADR-0141 stores every other
+   logical track's loudness in the versioned `<file>.tkmeta` sidecar,
+   with playback precedence sidecar → CUE → embedded. Open scope shrinks
+   to non-loudness sidecar payloads (typed metadata, artwork references),
+   file-operation following, and the explicit unwritable-format fallback.
 2. Portable/custom filename sanitization and Unicode normalization policy;
    `linux-v1` is fixed by ADR-0055.
 3. ReplayGain true-peak and Opus output-gain/storage policy.

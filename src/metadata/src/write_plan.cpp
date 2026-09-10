@@ -124,6 +124,19 @@ void add_cue_issue(MetadataWritePlanCueSheet& sheet, const MetadataWritePlanIssu
     });
 }
 
+void add_sidecar_issue(MetadataWritePlanSidecar& sidecar, const MetadataWritePlanIssueKind kind,
+                       core::Error error,
+                       const std::optional<std::size_t> field_index = std::nullopt,
+                       std::vector<std::size_t> item_indexes = {}) {
+    sidecar.issues.push_back(MetadataWritePlanIssue{
+        .kind = kind,
+        .error = std::move(error),
+        .field_index = field_index,
+        .item_indexes = std::move(item_indexes),
+        .blocking = true,
+    });
+}
+
 struct CueIntentRecord {
     std::size_t field_index{0U};
     std::string canonical_name;
@@ -134,6 +147,23 @@ struct CueIntentRecord {
     std::size_t track_index{0U};
     std::optional<core::LocalSourceRevision> cue_revision;
 };
+
+struct SidecarIntentRecord {
+    std::size_t field_index{0U};
+    std::string canonical_name;
+    std::size_t item_index{0U};
+    StagedMetadataPatchKind kind{StagedMetadataPatchKind::replace_values};
+    std::vector<std::string> values;
+    StagedLogicalIdentity identity;
+    std::optional<core::LocalSourceRevision> source_revision;
+};
+
+// Ordered map key for one logical identity inside a physical file.
+[[nodiscard]] std::tuple<int, int, std::int64_t, std::int64_t>
+identity_key(const StagedLogicalIdentity& identity) {
+    return {identity.stream_index.value_or(-1), identity.subsong_index.value_or(-1),
+            identity.start_sample.value_or(-1), identity.end_sample.value_or(-1)};
+}
 
 } // namespace
 
@@ -181,10 +211,20 @@ std::size_t MetadataWritePlanCueSheet::blocking_issue_count() const noexcept {
         std::ranges::count_if(issues, [](const auto& issue) { return issue.blocking; }));
 }
 
+bool MetadataWritePlanSidecar::ready() const noexcept {
+    return std::ranges::none_of(issues, [](const auto& issue) { return issue.blocking; });
+}
+
+std::size_t MetadataWritePlanSidecar::blocking_issue_count() const noexcept {
+    return static_cast<std::size_t>(
+        std::ranges::count_if(issues, [](const auto& issue) { return issue.blocking; }));
+}
+
 bool MetadataWritePlan::ready() const noexcept {
-    return (!sources.empty() || !cue_sheets.empty()) &&
+    return (!sources.empty() || !cue_sheets.empty() || !sidecars.empty()) &&
            std::ranges::all_of(sources, &MetadataWritePlanSource::ready) &&
-           std::ranges::all_of(cue_sheets, &MetadataWritePlanCueSheet::ready);
+           std::ranges::all_of(cue_sheets, &MetadataWritePlanCueSheet::ready) &&
+           std::ranges::all_of(sidecars, &MetadataWritePlanSidecar::ready);
 }
 
 std::size_t MetadataWritePlan::ready_source_count() const noexcept {
@@ -199,6 +239,9 @@ std::size_t MetadataWritePlan::blocking_issue_count() const noexcept {
     }
     for (const auto& sheet : cue_sheets) {
         count += sheet.blocking_issue_count();
+    }
+    for (const auto& sidecar : sidecars) {
+        count += sidecar.blocking_issue_count();
     }
     return count;
 }
@@ -223,6 +266,7 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
     source_positions.reserve(std::min(patches.patch_count(), selection.item_count()));
     std::vector<std::unordered_map<std::size_t, std::size_t>> change_positions;
     std::map<std::string, std::vector<CueIntentRecord>> cue_buckets;
+    std::map<std::string, std::vector<SidecarIntentRecord>> sidecar_buckets;
 
     const auto staged_patches = patches.patches();
     for (const auto& patch : staged_patches) {
@@ -247,6 +291,22 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
                 .file_index = staged_source.cue_sheet->file_index,
                 .track_index = staged_source.cue_sheet->track_index,
                 .cue_revision = staged_source.cue_sheet->cue_revision,
+            });
+            continue;
+        }
+        // ADR-0141: the same fields on a non-CUE logical track resolve to
+        // its loudness sidecar, keyed by the captured logical identity.
+        if (staged_source.logical_track && !staged_source.cue_sheet &&
+            staged_source.logical_identity &&
+            is_cue_replay_gain_field(selection.field(patch.field_index).canonical_name)) {
+            sidecar_buckets[staged_source.raw_path].push_back(SidecarIntentRecord{
+                .field_index = patch.field_index,
+                .canonical_name = selection.field(patch.field_index).canonical_name,
+                .item_index = patch.item_index,
+                .kind = patch.kind,
+                .values = patch.values,
+                .identity = *staged_source.logical_identity,
+                .source_revision = staged_source.source_revision,
             });
             continue;
         }
@@ -336,9 +396,9 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
         }
 
         const auto finalize_field =
-            [&sheet, &raw_cue_path](
-                const std::vector<const CueIntentRecord*>& intents) -> MetadataWritePlanCueField {
-            MetadataWritePlanCueField field{
+            [&sheet, &raw_cue_path](const std::vector<const CueIntentRecord*>& intents)
+            -> MetadataWritePlanLoudnessField {
+            MetadataWritePlanLoudnessField field{
                 .field_index = intents.front()->field_index,
                 .canonical_name = intents.front()->canonical_name,
                 .kind = intents.front()->kind,
@@ -426,6 +486,122 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
             }
         }
         plan.cue_sheets.push_back(std::move(sheet));
+    }
+
+    for (auto& [raw_audio_path, records] : sidecar_buckets) {
+        MetadataWritePlanSidecar sidecar{
+            .raw_audio_path = raw_audio_path,
+            .expected_revision = std::nullopt,
+            .observed_revision = std::nullopt,
+            .entries = {},
+            .issues = {},
+        };
+
+        std::optional<core::LocalSourceRevision> expected;
+        std::vector<std::size_t> missing_revision_items;
+        std::vector<std::size_t> inconsistent_revision_items;
+        for (const auto& record : records) {
+            if (!record.source_revision) {
+                missing_revision_items.push_back(record.item_index);
+            } else if (!expected) {
+                expected = record.source_revision;
+            } else if (*expected != *record.source_revision) {
+                inconsistent_revision_items.push_back(record.item_index);
+            }
+        }
+        sidecar.expected_revision = expected;
+        if (!missing_revision_items.empty()) {
+            add_sidecar_issue(sidecar, MetadataWritePlanIssueKind::missing_baseline_revision,
+                              planner_error(core::ErrorCode::conflict,
+                                            "a staged occurrence has no captured source revision",
+                                            raw_audio_path),
+                              std::nullopt, std::move(missing_revision_items));
+        }
+        if (!inconsistent_revision_items.empty()) {
+            add_sidecar_issue(sidecar, MetadataWritePlanIssueKind::inconsistent_baseline_revision,
+                              planner_error(core::ErrorCode::conflict,
+                                            "staged occurrences disagree about the source revision",
+                                            raw_audio_path),
+                              std::nullopt, std::move(inconsistent_revision_items));
+        }
+
+        const auto finalize_field =
+            [&sidecar, &raw_audio_path](const std::vector<const SidecarIntentRecord*>& intents)
+            -> MetadataWritePlanLoudnessField {
+            MetadataWritePlanLoudnessField field{
+                .field_index = intents.front()->field_index,
+                .canonical_name = intents.front()->canonical_name,
+                .kind = intents.front()->kind,
+                .values = intents.front()->values,
+                .item_indexes = {},
+            };
+            bool conflicting = false;
+            for (const auto* intent : intents) {
+                field.item_indexes.push_back(intent->item_index);
+                conflicting =
+                    conflicting || intent->kind != field.kind || intent->values != field.values;
+            }
+            if (conflicting) {
+                add_sidecar_issue(
+                    sidecar, MetadataWritePlanIssueKind::conflicting_logical_edits,
+                    planner_error(core::ErrorCode::conflict,
+                                  "staged occurrences disagree about one sidecar loudness value",
+                                  raw_audio_path),
+                    field.field_index, field.item_indexes);
+            } else if (field.kind == StagedMetadataPatchKind::replace_values &&
+                       (field.values.size() != 1U ||
+                        !valid_cue_replay_gain_value(field.canonical_name, field.values.front()))) {
+                add_sidecar_issue(sidecar, MetadataWritePlanIssueKind::unsupported_field_mapping,
+                                  planner_error(core::ErrorCode::unsupported,
+                                                "a sidecar loudness value must be a single "
+                                                "number the writer can canonicalize",
+                                                raw_audio_path),
+                                  field.field_index, field.item_indexes);
+            }
+            return field;
+        };
+
+        std::map<std::tuple<int, int, std::int64_t, std::int64_t>,
+                 std::map<std::string, std::vector<const SidecarIntentRecord*>>>
+            identity_groups;
+        for (const auto& record : records) {
+            identity_groups[identity_key(record.identity)][record.canonical_name].push_back(
+                &record);
+        }
+        for (const auto& [key, field_groups] : identity_groups) {
+            MetadataWritePlanSidecarEntry entry{
+                .identity = field_groups.begin()->second.front()->identity,
+                .occurrence_indexes = {},
+                .fields = {},
+            };
+            for (const auto& [name, intents] : field_groups) {
+                entry.fields.push_back(finalize_field(intents));
+            }
+            for (std::size_t item_index = 0U; item_index < selection.item_count(); ++item_index) {
+                const auto& source = selection.source(item_index);
+                if (source.raw_path == raw_audio_path && source.logical_identity &&
+                    identity_key(*source.logical_identity) == key) {
+                    entry.occurrence_indexes.push_back(item_index);
+                }
+            }
+            sidecar.entries.push_back(std::move(entry));
+        }
+
+        auto observed = core::observe_local_source_revision(raw_audio_path);
+        if (!observed) {
+            add_sidecar_issue(sidecar, MetadataWritePlanIssueKind::source_revalidation_failed,
+                              std::move(observed.error()));
+        } else {
+            sidecar.observed_revision = *observed;
+            if (sidecar.expected_revision && *sidecar.expected_revision != *observed) {
+                add_sidecar_issue(
+                    sidecar, MetadataWritePlanIssueKind::source_changed,
+                    planner_error(core::ErrorCode::conflict,
+                                  "the source changed after the loudness draft was captured",
+                                  raw_audio_path));
+            }
+        }
+        plan.sidecars.push_back(std::move(sidecar));
     }
 
     for (auto& source : plan.sources) {

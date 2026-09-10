@@ -169,6 +169,36 @@ core::Result<MetadataApplyResult> apply_metadata_write_plan(
         result.cue_sheets.push_back(std::move(outcome));
     }
 
+    // ADR-0141: loudness sidecars commit after the sheets, each one an
+    // independent revision-gated atomic merge.
+    result.sidecars.reserve(plan.sidecars.size());
+    for (const auto& sidecar : plan.sidecars) {
+        LoudnessSidecarApplyOutcome outcome{
+            .raw_audio_path = sidecar.raw_audio_path,
+            .state = MetadataApplySourceState::pending,
+            .commit = std::nullopt,
+            .issue = std::nullopt,
+        };
+        if (cancellation.is_cancellation_requested()) {
+            outcome.state = MetadataApplySourceState::cancelled;
+            outcome.issue = apply_error(core::ErrorCode::cancelled,
+                                        "metadata Apply was cancelled before this sidecar started",
+                                        sidecar.raw_audio_path);
+        } else {
+            auto committed = commit_loudness_sidecar(sidecar, cancellation);
+            if (committed) {
+                outcome.state = MetadataApplySourceState::committed;
+                outcome.commit = std::move(*committed);
+            } else {
+                outcome.issue = std::move(committed.error());
+                outcome.state = outcome.issue->code == core::ErrorCode::cancelled
+                                    ? MetadataApplySourceState::cancelled
+                                    : MetadataApplySourceState::failed;
+            }
+        }
+        result.sidecars.push_back(std::move(outcome));
+    }
+
     result.cancellation_requested =
         cancellation.is_cancellation_requested() || result.cancelled_source_count() > 0U;
     return result;

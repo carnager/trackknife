@@ -95,22 +95,22 @@ struct MetadataWritePlanSource {
 // ADR-0139: one staged ReplayGain value routed into a CUE sheet REM
 // line. Values stay in their staged text form; the committer parses and
 // canonicalizes them when it builds the rewrite.
-struct MetadataWritePlanCueField {
+struct MetadataWritePlanLoudnessField {
     std::size_t field_index{0U};
     std::string canonical_name;
     StagedMetadataPatchKind kind{StagedMetadataPatchKind::replace_values};
     std::vector<std::string> values;
     std::vector<std::size_t> item_indexes;
 
-    friend bool operator==(const MetadataWritePlanCueField&,
-                           const MetadataWritePlanCueField&) = default;
+    friend bool operator==(const MetadataWritePlanLoudnessField&,
+                           const MetadataWritePlanLoudnessField&) = default;
 };
 
 struct MetadataWritePlanCueTrack {
     std::size_t file_index{0U};
     std::size_t track_index{0U};
     std::vector<std::size_t> occurrence_indexes;
-    std::vector<MetadataWritePlanCueField> fields;
+    std::vector<MetadataWritePlanLoudnessField> fields;
 
     friend bool operator==(const MetadataWritePlanCueTrack&,
                            const MetadataWritePlanCueTrack&) = default;
@@ -123,7 +123,7 @@ struct MetadataWritePlanCueSheet {
     std::optional<core::LocalSourceRevision> expected_revision;
     std::optional<core::LocalSourceRevision> observed_revision;
     std::vector<MetadataWritePlanCueTrack> tracks;
-    std::vector<MetadataWritePlanCueField> album_fields;
+    std::vector<MetadataWritePlanLoudnessField> album_fields;
     std::vector<MetadataWritePlanIssue> issues;
 
     [[nodiscard]] bool ready() const noexcept;
@@ -133,10 +133,36 @@ struct MetadataWritePlanCueSheet {
                            const MetadataWritePlanCueSheet&) = default;
 };
 
+// ADR-0141: one loudness-sidecar entry gathering the staged ReplayGain
+// intents of a non-CUE logical track, keyed by its logical identity.
+struct MetadataWritePlanSidecarEntry {
+    StagedLogicalIdentity identity;
+    std::vector<std::size_t> occurrence_indexes;
+    std::vector<MetadataWritePlanLoudnessField> fields;
+
+    friend bool operator==(const MetadataWritePlanSidecarEntry&,
+                           const MetadataWritePlanSidecarEntry&) = default;
+};
+
+struct MetadataWritePlanSidecar {
+    std::string raw_audio_path;
+    std::optional<core::LocalSourceRevision> expected_revision;
+    std::optional<core::LocalSourceRevision> observed_revision;
+    std::vector<MetadataWritePlanSidecarEntry> entries;
+    std::vector<MetadataWritePlanIssue> issues;
+
+    [[nodiscard]] bool ready() const noexcept;
+    [[nodiscard]] std::size_t blocking_issue_count() const noexcept;
+
+    friend bool operator==(const MetadataWritePlanSidecar&,
+                           const MetadataWritePlanSidecar&) = default;
+};
+
 struct MetadataWritePlan {
     std::vector<MetadataWritePlanSource> sources;
     std::size_t patch_count{0U};
     std::vector<MetadataWritePlanCueSheet> cue_sheets{};
+    std::vector<MetadataWritePlanSidecar> sidecars{};
 
     [[nodiscard]] bool ready() const noexcept;
     [[nodiscard]] std::size_t ready_source_count() const noexcept;

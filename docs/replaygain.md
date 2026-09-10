@@ -202,6 +202,14 @@ playback passes the sheet values as an explicit override that outranks
 the physical file's whole-file tags, including across gapless
 takeovers.
 
+Implemented for the remaining logical tracks (ADR-0141): container
+chapters, codec subsongs, and segments persist into the versioned
+`<file>.tkmeta` loudness sidecar beside the source, keyed by decoder
+selection + sample range and staleness-checked against the audio
+file's size+mtime. Probing projects fresh sidecar values onto rows at
+sidecar provenance — the highest effective precedence — and the
+playback override consumes them ahead of CUE and embedded values.
+
 A scan result should be written to the selected canonical target and then cached
 in the common `TrackRef`. A playlist may serialize the cached values for fast
 offline display, as classic FPL did, but that snapshot must not override a newer

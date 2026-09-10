@@ -412,15 +412,28 @@ void BenchMainWindow::showMetadataProperties() {
                     .track_index = parts->track_index,
                 };
             }();
+            const auto logical = row.logical_reference.has_value() || row.segment ||
+                                 row.selection.stream_index || row.selection.subsong_index;
+            // ADR-0141: non-CUE logical occurrences carry their in-file
+            // identity so loudness drafts can resolve to the sidecar.
+            auto logical_identity =
+                logical ? std::optional{metadata::StagedLogicalIdentity{
+                              .stream_index = row.selection.stream_index,
+                              .subsong_index = row.selection.subsong_index,
+                              .start_sample = row.segment ? std::optional{row.segment->start_sample}
+                                                          : std::nullopt,
+                              .end_sample = row.segment ? row.segment->end_sample : std::nullopt,
+                          }}
+                        : std::nullopt;
             return MetadataPropertiesSource{
                 .source =
                     metadata::StagedMetadataSource{
                         .raw_path = row.raw_path,
                         .source_revision = row.source_revision,
                         .baseline = row.metadata,
-                        .logical_track = row.logical_reference.has_value() || row.segment ||
-                                         row.selection.stream_index || row.selection.subsong_index,
+                        .logical_track = logical,
                         .cue_sheet = std::move(cue_binding),
+                        .logical_identity = std::move(logical_identity),
                     },
                 .track_label = std::move(label),
                 .audio = {.selection = row.selection, .range = row.segment},
@@ -498,6 +511,13 @@ void BenchMainWindow::showMetadataProperties() {
                     continue;
                 }
                 applyCommittedCueReplayGain(*sheet.commit);
+                committed = true;
+            }
+            for (const auto& sidecar : result.sidecars) {
+                if (!sidecar.commit) {
+                    continue;
+                }
+                applyCommittedLoudnessSidecar(*sidecar.commit);
                 committed = true;
             }
             if (committed) {
@@ -938,6 +958,35 @@ void BenchMainWindow::applyCommittedCueReplayGain(
                 cue_track_logical_reference(result.raw_cue_path, track.file_index,
                                             track.track_index),
                 false, track_updates));
+        }
+    }
+}
+
+void BenchMainWindow::applyCommittedLoudnessSidecar(
+    const operations::LoudnessSidecarCommitResult& result) {
+    if (local_library_ != nullptr) {
+        local_library_->refreshLibrary();
+    }
+    for (const auto& entry : result.entries) {
+        std::vector<LocalListModel::CueReplayGainFieldUpdate> updates;
+        updates.reserve(entry.fields.size());
+        for (const auto& field : entry.fields) {
+            updates.push_back({.display_name = field.display_name,
+                               .canonical_name = field.canonical_name,
+                               .value = field.value});
+        }
+        if (updates.empty()) {
+            continue;
+        }
+        const LocalListModel::SidecarRowIdentity identity{
+            .stream_index = entry.identity.stream_index,
+            .subsong_index = entry.identity.subsong_index,
+            .start_sample = entry.identity.start_sample,
+            .end_sample = entry.identity.end_sample,
+        };
+        for (auto& tab : list_tabs_) {
+            static_cast<void>(
+                tab->model->applySidecarLoudness(result.raw_audio_path, identity, updates));
         }
     }
 }

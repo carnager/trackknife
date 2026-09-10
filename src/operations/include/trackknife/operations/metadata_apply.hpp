@@ -7,6 +7,7 @@
 #include "trackknife/core/result.hpp"
 #include "trackknife/metadata/write_plan.hpp"
 #include "trackknife/operations/cue_replay_gain_apply.hpp"
+#include "trackknife/operations/loudness_sidecar_apply.hpp"
 #include "trackknife/operations/metadata_commit.hpp"
 
 #include <cstddef>
@@ -60,9 +61,22 @@ struct CueReplayGainApplyOutcome {
                            const CueReplayGainApplyOutcome&) = default;
 };
 
+// ADR-0141: outcome of one loudness-sidecar merge, applied alongside
+// the tag sources and CUE sheets of the same plan.
+struct LoudnessSidecarApplyOutcome {
+    std::string raw_audio_path;
+    MetadataApplySourceState state{MetadataApplySourceState::pending};
+    std::optional<LoudnessSidecarCommitResult> commit;
+    std::optional<core::Error> issue;
+
+    friend bool operator==(const LoudnessSidecarApplyOutcome&,
+                           const LoudnessSidecarApplyOutcome&) = default;
+};
+
 struct MetadataApplyResult {
     std::vector<MetadataApplySourceResult> sources;
     std::vector<CueReplayGainApplyOutcome> cue_sheets{};
+    std::vector<LoudnessSidecarApplyOutcome> sidecars{};
     bool cancellation_requested{false};
 
     [[nodiscard]] std::size_t committed_source_count() const noexcept;

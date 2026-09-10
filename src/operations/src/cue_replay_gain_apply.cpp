@@ -67,7 +67,7 @@ struct FileDescriptor {
 // Converts one planned field into the rewriter's tri-state form and the
 // canonical applied text used for occurrence refresh.
 [[nodiscard]] core::Result<std::pair<formats::CueReplayGainField, CueReplayGainAppliedField>>
-convert_planned_field(const metadata::MetadataWritePlanCueField& field,
+convert_planned_field(const metadata::MetadataWritePlanLoudnessField& field,
                       const std::string& raw_cue_path) {
     CueReplayGainAppliedField applied{
         .canonical_name = field.canonical_name,

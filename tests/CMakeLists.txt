@@ -62,6 +62,13 @@ target_link_libraries(
 )
 add_test(NAME metadata-patch COMMAND trackknife_metadata_patch_tests)
 
+add_executable(trackknife_metadata_loudness_sidecar_tests metadata_loudness_sidecar_test.cpp)
+target_link_libraries(
+    trackknife_metadata_loudness_sidecar_tests
+    PRIVATE Trackknife::Metadata trackknife_project_options trackknife_project_warnings
+)
+add_test(NAME metadata-loudness-sidecar COMMAND trackknife_metadata_loudness_sidecar_tests)
+
 add_executable(trackknife_metadata_transformation_tests metadata_transformation_test.cpp)
 target_link_libraries(
     trackknife_metadata_transformation_tests

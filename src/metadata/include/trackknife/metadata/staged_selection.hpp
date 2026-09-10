@@ -42,6 +42,18 @@ struct StagedCueSheetBinding {
     friend bool operator==(const StagedCueSheetBinding&, const StagedCueSheetBinding&) = default;
 };
 
+// ADR-0141: the logical source's position inside its physical file
+// (decoder selection plus sample segment). It keys the loudness sidecar
+// entry a non-CUE logical track's ReplayGain resolves to.
+struct StagedLogicalIdentity {
+    std::optional<int> stream_index;
+    std::optional<int> subsong_index;
+    std::optional<std::int64_t> start_sample;
+    std::optional<std::int64_t> end_sample;
+
+    friend bool operator==(const StagedLogicalIdentity&, const StagedLogicalIdentity&) = default;
+};
+
 // Immutable baseline captured when a properties workspace opens. Later staged
 // patches remain sparse and refer back to this document/revision; the list
 // cache is never sufficient authority for commit.
@@ -53,6 +65,7 @@ struct StagedMetadataSource {
     // loudness tags. Ordinary physical metadata editing remains independent.
     bool logical_track{false};
     std::optional<StagedCueSheetBinding> cue_sheet{};
+    std::optional<StagedLogicalIdentity> logical_identity{};
 
     friend bool operator==(const StagedMetadataSource&, const StagedMetadataSource&) = default;
 };

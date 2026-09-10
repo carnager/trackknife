@@ -19,6 +19,7 @@
 #include "trackknife/loudness/scan.hpp"
 #include "trackknife/metadata/flac_writer.hpp"
 #include "trackknife/metadata/local_reader.hpp"
+#include "trackknife/metadata/loudness_sidecar.hpp"
 #include "trackknife/metadata/staged_patch.hpp"
 #include "trackknife/metadata/staged_selection.hpp"
 #include "trackknife/metadata/write_plan.hpp"
@@ -192,6 +193,7 @@ class BenchMainWindowTest final : public QObject {
     void musicBrainzIdentifyStagesChosenVersion();
     void musicBrainzFingerprintScanRanksAndStages();
     void replayGainScanStagesMeasuredGainsAsDrafts();
+    void loudnessSidecarProjectsOntoProbedRows();
     void replayGainScanPreservesLogicalSources_data();
     void replayGainScanPreservesLogicalSources();
     void convertDialogPlansAndConvertsSelection();
@@ -3569,6 +3571,81 @@ void BenchMainWindowTest::convertDialogPlansAndConvertsSelection() {
     mirror->setChecked(false);
     QVERIFY(directory_field->isEnabled());
     delete dialog;
+}
+
+// ADR-0141: a fresh sidecar beside the file projects onto probed rows
+// at sidecar provenance; a stale one projects nothing.
+void BenchMainWindowTest::loudnessSidecarProjectsOntoProbedRows() {
+    QTemporaryDir media;
+    QVERIFY(media.isValid());
+    const auto fresh_path = media.filePath(QStringLiteral("fresh.wav"));
+    const auto stale_path = media.filePath(QStringLiteral("stale.wav"));
+    write_wave(fresh_path, wave_sample_rate / 10U);
+    write_wave(stale_path, wave_sample_rate / 10U);
+    const auto write_sidecar = [](const QString& audio, const bool fresh) {
+        const auto encoded = QFile::encodeName(audio);
+        const std::string raw{encoded.constData(), static_cast<std::size_t>(encoded.size())};
+        auto revision = trackknife::core::observe_local_source_revision(raw);
+        QVERIFY(revision.has_value());
+        trackknife::metadata::LoudnessSidecar sidecar;
+        sidecar.source_size = fresh ? revision->size : revision->size + 1U;
+        sidecar.source_modified_seconds = revision->modification_time_seconds;
+        sidecar.source_modified_nanoseconds = revision->modification_time_nanoseconds;
+        sidecar.entries = {trackknife::metadata::LoudnessSidecarEntry{
+            .stream_index = std::nullopt,
+            .subsong_index = std::nullopt,
+            .start_sample = std::nullopt,
+            .end_sample = std::nullopt,
+            .track_gain_db = -6.02,
+            .track_peak = 1.0,
+            .album_gain_db = std::nullopt,
+            .album_peak = std::nullopt,
+        }};
+        const auto serialized = trackknife::metadata::serialize_loudness_sidecar(sidecar);
+        QVERIFY(serialized.has_value());
+        QFile output{QString::fromStdString(trackknife::metadata::loudness_sidecar_path(raw))};
+        QVERIFY(output.open(QIODevice::WriteOnly));
+        output.write(serialized->data(), static_cast<qint64>(serialized->size()));
+    };
+    write_sidecar(fresh_path, true);
+    write_sidecar(stale_path, false);
+
+    BenchMainWindow window;
+    window.show();
+    const auto fresh_encoded = QFile::encodeName(fresh_path);
+    const auto stale_encoded = QFile::encodeName(stale_path);
+    window.openLocalPaths(
+        {std::string{fresh_encoded.constData(), static_cast<std::size_t>(fresh_encoded.size())},
+         std::string{stale_encoded.constData(), static_cast<std::size_t>(stale_encoded.size())}});
+    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("bench-tabs"));
+    QVERIFY(tabs != nullptr);
+    QTRY_COMPARE(tabs->count(), 2);
+    LocalListModel* list_model = nullptr;
+    QTRY_VERIFY((list_model = [&]() -> LocalListModel* {
+                    auto* view = qobject_cast<QTableView*>(tabs->currentWidget());
+                    return view == nullptr ? nullptr : qobject_cast<LocalListModel*>(view->model());
+                }()) != nullptr);
+    QTRY_COMPARE_WITH_TIMEOUT(list_model->rowCount(), 2, 5'000);
+    QTRY_VERIFY_WITH_TIMEOUT(list_model->rows().front().probed && list_model->rows().back().probed,
+                             5'000);
+    const auto sidecar_value = [&](const trackknife::bench::LocalTrackRow& row,
+                                   const std::string_view name) -> std::optional<std::string> {
+        const auto canonical = trackknife::metadata::canonicalize_field_name(name);
+        for (const auto& field : row.metadata.fields) {
+            if (field.provenance == trackknife::metadata::FieldProvenance::sidecar &&
+                field.canonical_name == canonical && !field.values.empty()) {
+                return field.values.front();
+            }
+        }
+        return std::nullopt;
+    };
+    const auto& fresh_row = list_model->rows()[0];
+    const auto& stale_row = list_model->rows()[1];
+    QCOMPARE(sidecar_value(fresh_row, "REPLAYGAIN_TRACK_GAIN"),
+             std::optional<std::string>{"-6.02 dB"});
+    QCOMPARE(sidecar_value(fresh_row, "REPLAYGAIN_TRACK_PEAK"),
+             std::optional<std::string>{"1.000000"});
+    QVERIFY(!sidecar_value(stale_row, "REPLAYGAIN_TRACK_GAIN").has_value());
 }
 
 void BenchMainWindowTest::replayGainScanStagesMeasuredGainsAsDrafts() {

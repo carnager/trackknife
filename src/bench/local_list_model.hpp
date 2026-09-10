@@ -115,6 +115,18 @@ class LocalListModel final : public QAbstractTableModel {
     };
     std::size_t applyCueReplayGain(const std::string& reference, bool prefix_match,
                                    const std::vector<CueReplayGainFieldUpdate>& fields);
+    // ADR-0141: refreshes sidecar-provenance ReplayGain projections for
+    // the rows matching one in-file logical identity after a committed
+    // sidecar merge.
+    struct SidecarRowIdentity {
+        std::optional<int> stream_index;
+        std::optional<int> subsong_index;
+        std::optional<std::int64_t> start_sample;
+        std::optional<std::int64_t> end_sample;
+    };
+    std::size_t applySidecarLoudness(const std::string& raw_path,
+                                     const SidecarRowIdentity& identity,
+                                     const std::vector<CueReplayGainFieldUpdate>& fields);
     // Advances every in-memory occurrence of one durably relocated physical
     // source while retaining logical identities and playback selection.
     [[nodiscard]] core::Result<std::size_t>

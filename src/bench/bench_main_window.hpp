@@ -9,6 +9,7 @@
 #include "trackknife/core/local_sources.hpp"
 #include "trackknife/operations/cue_replay_gain_apply.hpp"
 #include "trackknife/operations/file_publication.hpp"
+#include "trackknife/operations/loudness_sidecar_apply.hpp"
 #include "trackknife/operations/metadata_commit.hpp"
 #include "trackknife/persistence/list_repository.hpp"
 #include "uicommon/panel_layout.hpp"
@@ -240,6 +241,7 @@ class BenchMainWindow final : public QMainWindow {
     void presentInterruptedOperations();
     void applyCommittedMetadata(const operations::MetadataCommitResult& result);
     void applyCommittedCueReplayGain(const operations::CueReplayGainCommitResult& result);
+    void applyCommittedLoudnessSidecar(const operations::LoudnessSidecarCommitResult& result);
     void applyCommittedRelocation(const operations::FilePublicationCommitResult& result);
     void applyCommittedPublicationMetadata(const operations::FilePublicationCommitResult& result,
                                            const metadata::MetadataDocument& document);

@@ -161,10 +161,18 @@ Reference: [metadata and artwork](metadata-and-files.md).
   including across gapless takeovers.
 - [ ] Bring CUE sheet rewrites into the undo journal (content-kind schema
   migration plus recovery/undo branches; ADR-0139 follow-up).
-- [ ] Store results in a sidecar or library record for the remaining
-  targets without a safe writable mapping (container chapters, codec
-  subsongs, unwritable formats), and use those results during local
-  playback.
+- [x] Loudness sidecar (ADR-0141): scan results for non-CUE logical
+  tracks (container chapters, codec subsongs, segments) persist into a
+  versioned, human-inspectable `<file>.tkmeta` beside the source —
+  routed through the write plan per file, merged by a revision-gated
+  atomic commit, staleness-checked by size+mtime — and project onto
+  probed rows at sidecar provenance, which local playback consumes
+  ahead of CUE and embedded values.
+- [ ] Offer the sidecar as an explicit fallback target for whole-file
+  tracks in unwritable formats (writer-unavailable sources currently
+  still block; the fallback must be visible, not silent).
+- [ ] Bring sidecar and CUE rewrites into the undo journal (shared
+  ADR-0139/0141 follow-up).
 - [ ] Define and implement Opus R128 storage and playback handling.
 - [x] Add playback preamp controls (ADR-0138): separate ±20 dB preamps for
   tracks with and without loudness data, applied only while local

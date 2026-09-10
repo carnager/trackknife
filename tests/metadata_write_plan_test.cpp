@@ -537,6 +537,97 @@ void routesCueReplayGainIntoSheetPlans() {
     std::filesystem::remove_all(root, fs_error);
 }
 
+// ADR-0141: ReplayGain drafts on non-CUE logical tracks resolve to a
+// per-file loudness-sidecar plan section keyed by logical identity.
+void routesNonCueLogicalLoudnessIntoSidecarPlans() {
+    using namespace trackknife::metadata;
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("trackknife-write-plan-sidecar-" + trackknife::core::StableId::random().to_string());
+    std::error_code fs_error;
+    CHECK(std::filesystem::create_directories(root, fs_error));
+    const auto audio = root / "book.m4b";
+    {
+        std::ofstream output{audio, std::ios::binary};
+        output << "audio-bytes";
+    }
+    const auto audio_revision = trackknife::core::observe_local_source_revision(audio.native());
+    CHECK(audio_revision.has_value());
+    if (!audio_revision) {
+        return;
+    }
+    const auto chapter_source = [&](const std::int64_t start, const std::int64_t end) {
+        auto result = source(audio.native(), *audio_revision, {});
+        result.logical_track = true;
+        result.logical_identity = StagedLogicalIdentity{
+            .stream_index = std::nullopt,
+            .subsong_index = std::nullopt,
+            .start_sample = start,
+            .end_sample = end,
+        };
+        return result;
+    };
+    int reader_calls = 0;
+    const auto reader = [&reader_calls](const std::string& path,
+                                        const trackknife::core::CancellationToken&) {
+        ++reader_calls;
+        return trackknife::core::Result<LocalMetadataRead>{read(path, revision(11U), {})};
+    };
+    auto selection = StagedMetadataSelection::create(
+        {chapter_source(0, 44'100), chapter_source(44'100, 88'200)});
+    CHECK(selection.has_value());
+    if (!selection) {
+        return;
+    }
+    const auto track_gain =
+        selection->ensure_missing_field("REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_TRACK_GAIN");
+    const auto album_gain =
+        selection->ensure_missing_field("REPLAYGAIN_ALBUM_GAIN", "REPLAYGAIN_ALBUM_GAIN");
+    CHECK(track_gain && album_gain);
+    if (!track_gain || !album_gain) {
+        return;
+    }
+    StagedMetadataPatchSet patches;
+    CHECK(patches.replace_values(*selection, 0U, *track_gain, {"-3.46 dB"}).has_value());
+    CHECK(patches.replace_values(*selection, 0U, *album_gain, {"-5.53 dB"}).has_value());
+    CHECK(patches.replace_values(*selection, 1U, *track_gain, {"1.25 dB"}).has_value());
+    const auto plan = build_metadata_write_plan(*selection, patches, reader);
+    CHECK(plan.has_value());
+    CHECK(reader_calls == 0);
+    if (plan) {
+        CHECK(plan->ready());
+        CHECK(plan->sources.empty());
+        CHECK(plan->cue_sheets.empty());
+        CHECK(plan->sidecars.size() == 1U);
+        if (plan->sidecars.size() == 1U) {
+            const auto& sidecar = plan->sidecars.front();
+            CHECK(sidecar.raw_audio_path == audio.native());
+            CHECK(sidecar.expected_revision == *audio_revision);
+            CHECK(sidecar.observed_revision == *audio_revision);
+            CHECK(sidecar.entries.size() == 2U);
+            CHECK(sidecar.entries.size() == 2U && sidecar.entries[0].fields.size() == 2U &&
+                  sidecar.entries[1].fields.size() == 1U);
+            CHECK(sidecar.entries.size() == 2U &&
+                  sidecar.entries[0].occurrence_indexes == std::vector<std::size_t>{0U} &&
+                  sidecar.entries[1].occurrence_indexes == std::vector<std::size_t>{1U});
+        }
+    }
+
+    // A changed audio file blocks the sidecar plan like every write.
+    {
+        std::ofstream output{audio, std::ios::binary | std::ios::app};
+        output << "!";
+    }
+    const auto stale_plan = build_metadata_write_plan(*selection, patches, reader);
+    CHECK(stale_plan && !stale_plan->ready());
+    CHECK(stale_plan && stale_plan->sidecars.size() == 1U &&
+          std::ranges::any_of(stale_plan->sidecars.front().issues, [](const auto& issue) {
+              return issue.kind == MetadataWritePlanIssueKind::source_changed;
+          }));
+
+    std::filesystem::remove_all(root, fs_error);
+}
+
 } // namespace
 
 int main() {
@@ -547,5 +638,6 @@ int main() {
     blocksUntouchedExactEmptyFlacValues();
     logicalLoudnessRequiresItsOwnStorageTarget();
     routesCueReplayGainIntoSheetPlans();
+    routesNonCueLogicalLoudnessIntoSidecarPlans();
     return failures == 0 ? 0 : 1;
 }

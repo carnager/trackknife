@@ -7,6 +7,7 @@
 #include "trackknife/formats/probe.hpp"
 #include "trackknife/metadata/flac_mapping.hpp"
 #include "trackknife/metadata/local_reader.hpp"
+#include "trackknife/metadata/loudness_sidecar.hpp"
 #include "uicommon/local_artwork.hpp"
 #include "uicommon/local_folder_tree_model.hpp"
 
@@ -354,6 +355,52 @@ cue_row(const formats::ResolvedCueSheet& sheet, const formats::ResolvedCueTrack&
     return row;
 }
 
+// ADR-0141: a fresh loudness sidecar projects onto its rows at sidecar
+// provenance — the highest effective precedence — so Properties and
+// playback see the sidecar values without any I/O at play time. Stale
+// or unreadable sidecars project nothing; the write path surfaces
+// corruption, probing never fails on it.
+void apply_loudness_sidecar_projection(
+    LocalTrackRow& fallback, std::vector<LocalTrackRow>& rows, const std::string& raw_path,
+    const std::optional<core::LocalSourceRevision>& source_revision) {
+    if (!source_revision) {
+        return;
+    }
+    const auto sidecar = metadata::read_loudness_sidecar(raw_path);
+    if (!sidecar || !*sidecar || !(*sidecar)->matches(*source_revision)) {
+        return;
+    }
+    const auto project = [&](LocalTrackRow& row) {
+        const auto start = row.segment ? std::optional{row.segment->start_sample} : std::nullopt;
+        const auto end = row.segment ? row.segment->end_sample : std::nullopt;
+        for (const auto& entry : (*sidecar)->entries) {
+            if (entry.stream_index != row.selection.stream_index ||
+                entry.subsong_index != row.selection.subsong_index || entry.start_sample != start ||
+                entry.end_sample != end) {
+                continue;
+            }
+            const auto add = [&row](const char* name, const std::optional<double>& value,
+                                    const bool gain) {
+                if (value) {
+                    append_metadata_value(row.metadata, name,
+                                          gain ? formats::replay_gain_decibel_text(*value)
+                                               : formats::replay_gain_peak_text(*value),
+                                          metadata::FieldProvenance::sidecar);
+                }
+            };
+            add("REPLAYGAIN_TRACK_GAIN", entry.track_gain_db, true);
+            add("REPLAYGAIN_TRACK_PEAK", entry.track_peak, false);
+            add("REPLAYGAIN_ALBUM_GAIN", entry.album_gain_db, true);
+            add("REPLAYGAIN_ALBUM_PEAK", entry.album_peak, false);
+            return;
+        }
+    };
+    project(fallback);
+    for (auto& row : rows) {
+        project(row);
+    }
+}
+
 } // namespace
 
 void BenchMainWindow::enqueueUnprobedRows(ListTab& tab) {
@@ -407,6 +454,8 @@ void BenchMainWindow::pumpProbeQueue() {
                     if (rows.empty()) {
                         rows = chapter_rows(*probe, document, source_revision);
                     }
+                    apply_loudness_sidecar_projection(fallback, rows, job.raw_path,
+                                                      source_revision);
                 } else {
                     fallback.raw_path = job.raw_path;
                     fallback.metadata = std::move(document);

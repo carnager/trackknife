@@ -2781,6 +2781,17 @@ void MetadataPropertiesDialog::finishWritePlan() {
                 }
             }
         }
+        for (const auto& sidecar : plan->metadata->sidecars) {
+            for (const auto& issue : sidecar.issues) {
+                if (issue.blocking) {
+                    add_row(
+                        sidecar.raw_audio_path,
+                        QStringLiteral("%1: %2").arg(
+                            display_utf8(metadata::metadata_write_plan_issue_kind_name(issue.kind)),
+                            display_utf8(issue.error.message)));
+                }
+            }
+        }
     }
     if (plan->output_paths) {
         for (const auto& issue : plan->output_paths->issues) {
@@ -3013,18 +3024,26 @@ void MetadataPropertiesDialog::finishMetadataApply() {
         return;
     }
     const auto& outcome = **result;
-    // ADR-0139: committed CUE sheets count as saved files; a sheet
-    // failure keeps the dialog open with the problem listed.
+    // ADR-0139/0141: committed CUE sheets and loudness sidecars count as
+    // saved files; any failure keeps the dialog open with the problem
+    // listed.
     const auto saved_sheets = static_cast<std::size_t>(
         std::ranges::count(outcome.cue_sheets, operations::MetadataApplySourceState::committed,
                            &operations::CueReplayGainApplyOutcome::state));
     const auto failed_sheets = static_cast<std::size_t>(
         std::ranges::count(outcome.cue_sheets, operations::MetadataApplySourceState::failed,
                            &operations::CueReplayGainApplyOutcome::state));
-    const auto stopped_sheets = outcome.cue_sheets.size() - saved_sheets - failed_sheets;
-    apply_committed_ = apply_committed_ || saved_sheets > 0U;
-    const auto saved = outcome.committed_source_count() + saved_sheets;
-    if (saved == outcome.sources.size() + outcome.cue_sheets.size()) {
+    const auto saved_sidecars = static_cast<std::size_t>(
+        std::ranges::count(outcome.sidecars, operations::MetadataApplySourceState::committed,
+                           &operations::LoudnessSidecarApplyOutcome::state));
+    const auto failed_sidecars = static_cast<std::size_t>(
+        std::ranges::count(outcome.sidecars, operations::MetadataApplySourceState::failed,
+                           &operations::LoudnessSidecarApplyOutcome::state));
+    const auto stopped_sheets = outcome.cue_sheets.size() - saved_sheets - failed_sheets +
+                                outcome.sidecars.size() - saved_sidecars - failed_sidecars;
+    apply_committed_ = apply_committed_ || saved_sheets > 0U || saved_sidecars > 0U;
+    const auto saved = outcome.committed_source_count() + saved_sheets + saved_sidecars;
+    if (saved == outcome.sources.size() + outcome.cue_sheets.size() + outcome.sidecars.size()) {
         read_only_->setText(
             QStringLiteral("Saved %1 %2")
                 .arg(saved)
@@ -3053,7 +3072,17 @@ void MetadataPropertiesDialog::finishMetadataApply() {
                 sheet.issue ? display_utf8(sheet.issue->message) : apply_state_text(sheet.state),
         });
     }
-    const auto failed = outcome.failed_source_count() + failed_sheets;
+    for (const auto& sidecar : outcome.sidecars) {
+        if (sidecar.state == operations::MetadataApplySourceState::committed) {
+            continue;
+        }
+        rows.push_back(PreparationFeedbackRow{
+            .file = QString::fromStdString(core::escape_raw_path(sidecar.raw_audio_path)),
+            .detail = sidecar.issue ? display_utf8(sidecar.issue->message)
+                                    : apply_state_text(sidecar.state),
+        });
+    }
+    const auto failed = outcome.failed_source_count() + failed_sheets + failed_sidecars;
     const auto stopped_count = outcome.cancelled_source_count() + stopped_sheets;
     const auto stopped = stopped_count > 0U && failed == 0U;
     const auto summary =

@@ -4,6 +4,7 @@
 #include "trackknife/core/stable_id.hpp"
 #include "trackknife/metadata/flac_writer.hpp"
 #include "trackknife/metadata/local_reader.hpp"
+#include "trackknife/metadata/loudness_sidecar.hpp"
 #include "trackknife/metadata/staged_patch.hpp"
 #include "trackknife/metadata/staged_selection.hpp"
 #include "trackknife/metadata/write_plan.hpp"
@@ -11,6 +12,7 @@
 #include "trackknife/operations/cue_replay_gain_apply.hpp"
 #include "trackknife/operations/file_publication.hpp"
 #include "trackknife/operations/file_publication_apply.hpp"
+#include "trackknife/operations/loudness_sidecar_apply.hpp"
 #include "trackknife/operations/metadata_apply.hpp"
 #include "trackknife/operations/metadata_commit.hpp"
 #include "trackknife/operations/output_path_preflight.hpp"
@@ -1890,7 +1892,7 @@ void commits_cue_replay_gain_sheets_atomically() {
     }
     const auto gain_field = [](std::string canonical, std::string value,
                                const std::size_t item_index) {
-        return metadata::MetadataWritePlanCueField{
+        return metadata::MetadataWritePlanLoudnessField{
             .field_index = 0U,
             .canonical_name = std::move(canonical),
             .kind = metadata::StagedMetadataPatchKind::replace_values,
@@ -1956,6 +1958,105 @@ void commits_cue_replay_gain_sheets_atomically() {
     CHECK(!stale && stale.error().code == core::ErrorCode::conflict);
 }
 
+// ADR-0141: a ready sidecar plan merges atomically beside the audio
+// file, later merges keep unrelated values, emptied sidecars vanish,
+// and a changed audio file is refused.
+void commits_loudness_sidecars_atomically() {
+    using namespace trackknife;
+    const TemporaryDirectory root;
+    const auto audio = (root.path() / "book.m4b").native();
+    {
+        std::ofstream output{audio, std::ios::binary};
+        output << "audio-bytes";
+    }
+    const auto revision = core::observe_local_source_revision(audio);
+    CHECK(revision.has_value());
+    if (!revision) {
+        return;
+    }
+    const metadata::StagedLogicalIdentity chapter{
+        .stream_index = std::nullopt,
+        .subsong_index = std::nullopt,
+        .start_sample = 0,
+        .end_sample = 44'100,
+    };
+    const auto field = [](std::string canonical, std::optional<std::string> value) {
+        return metadata::MetadataWritePlanLoudnessField{
+            .field_index = 0U,
+            .canonical_name = std::move(canonical),
+            .kind = value ? metadata::StagedMetadataPatchKind::replace_values
+                          : metadata::StagedMetadataPatchKind::remove_field,
+            .values = value ? std::vector{std::move(*value)} : std::vector<std::string>{},
+            .item_indexes = {0U},
+        };
+    };
+    const auto plan_with = [&](std::vector<metadata::MetadataWritePlanLoudnessField> fields) {
+        return metadata::MetadataWritePlanSidecar{
+            .raw_audio_path = audio,
+            .expected_revision = *revision,
+            .observed_revision = *revision,
+            .entries = {{.identity = chapter,
+                         .occurrence_indexes = {0U},
+                         .fields = std::move(fields)}},
+            .issues = {},
+        };
+    };
+
+    const auto first = operations::commit_loudness_sidecar(plan_with(
+        {field("replaygaintrackgain", "-3.46 dB"), field("replaygaintrackpeak", "0.994629")}));
+    CHECK(first.has_value());
+    if (!first) {
+        std::cerr << "sidecar commit failed: " << first.error().message << '\n';
+        return;
+    }
+    CHECK(!first->sidecar_removed);
+    CHECK(first->entries.size() == 1U);
+    CHECK(first->entries.size() == 1U && first->entries.front().fields.size() == 2U &&
+          first->entries.front().fields.front().value == "-3.46 dB");
+    auto stored = metadata::read_loudness_sidecar(audio);
+    CHECK(stored.has_value() && stored->has_value());
+    if (stored && *stored) {
+        CHECK((*stored)->matches(*revision));
+        CHECK((*stored)->entries.size() == 1U);
+        CHECK((*stored)->entries.size() == 1U &&
+              (*stored)->entries.front().track_gain_db == -3.46 &&
+              (*stored)->entries.front().track_peak == 0.994629 &&
+              (*stored)->entries.front().start_sample == 0 &&
+              (*stored)->entries.front().end_sample == 44'100);
+    }
+
+    // A later merge adds album values without disturbing track values.
+    const auto second =
+        operations::commit_loudness_sidecar(plan_with({field("replaygainalbumgain", "-5.53 dB")}));
+    CHECK(second.has_value());
+    stored = metadata::read_loudness_sidecar(audio);
+    CHECK(stored.has_value() && stored->has_value());
+    if (stored && *stored) {
+        CHECK((*stored)->entries.size() == 1U &&
+              (*stored)->entries.front().track_gain_db == -3.46 &&
+              (*stored)->entries.front().album_gain_db == -5.53);
+    }
+
+    // Removing every value deletes the sidecar entirely.
+    const auto removed = operations::commit_loudness_sidecar(plan_with(
+        {field("replaygaintrackgain", std::nullopt), field("replaygaintrackpeak", std::nullopt),
+         field("replaygainalbumgain", std::nullopt)}));
+    CHECK(removed.has_value());
+    CHECK(removed && removed->sidecar_removed);
+    stored = metadata::read_loudness_sidecar(audio);
+    CHECK(stored.has_value() && !stored->has_value());
+
+    // A changed audio file is refused before anything is written.
+    {
+        std::ofstream output{audio, std::ios::binary | std::ios::app};
+        output << "!";
+    }
+    const auto stale =
+        operations::commit_loudness_sidecar(plan_with({field("replaygaintrackgain", "-1.00 dB")}));
+    CHECK(!stale);
+    CHECK(!stale && stale.error().code == core::ErrorCode::conflict);
+}
+
 } // namespace
 
 int main(const int argc, char** argv) {
@@ -1983,6 +2084,7 @@ int main(const int argc, char** argv) {
         bounded_preparation_apply_commits_metadata_when_path_is_unchanged(fixture_directory);
         combined_apply_reuses_directories_created_by_a_rolled_back_member(fixture_directory);
         commits_cue_replay_gain_sheets_atomically();
+        commits_loudness_sidecars_atomically();
     }
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

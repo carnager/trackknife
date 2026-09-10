@@ -943,6 +943,13 @@ Proposed sidecar requirements:
 - conflict behavior when source and sidecar are changed independently;
 - opt-in export/import and cleanup.
 
+The loudness slice is decided and implemented by ADR-0141: one strict
+versioned JSON file per physical source (`<file>.tkmeta`), identity by
+decoder selection + sample range, staleness by audio size+mtime, atomic
+revision-gated merges, stale entries dropped wholesale. General
+metadata/artwork payloads, file-operation following, and export/cleanup
+remain open extensions of the same schema.
+
 Trackbench maintains no local library database for now (ADR-0058); a future
 local index may cache the same data for speed but is not the only copy when the
 user expects portable persistence.
