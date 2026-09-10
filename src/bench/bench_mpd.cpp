@@ -533,6 +533,9 @@ void BenchMainWindow::buildMpdWorkspace() {
                             for (const auto& playlist_tab : mpd_playlist_tabs_) {
                                 playlist_tab->model->acceptArtwork(token, image);
                             }
+                            for (const auto& search_tab : mpd_search_tabs_) {
+                                search_tab->model->acceptArtwork(token, image);
+                            }
                         });
                 watcher->setFuture(QtConcurrent::run([bytes] {
                     auto image = QImage::fromData(bytes);
@@ -925,6 +928,7 @@ void BenchMainWindow::buildMpdSearch() {
     mpd_search_timer_->setInterval(200);
     connect(field, &QLineEdit::textChanged, this, [this] {
         mpd_search_timer_->stop();
+        pending_mpd_search_commit_.clear();
         mpd_search_model_->replaceTracks({});
         mpd_search_status_->setText(tr("Searching…"));
         updateMpdSearchPresentation();
@@ -932,6 +936,9 @@ void BenchMainWindow::buildMpdSearch() {
             mpd_search_timer_->start();
     });
     connect(mpd_search_timer_, &QTimer::timeout, this, &BenchMainWindow::previewMpdSearch);
+    // ADR-0140: Enter keeps the finished search's hits as a durable
+    // query-keyed tab; the live surface stays the transient default.
+    connect(field, &QLineEdit::returnPressed, this, &BenchMainWindow::commitMpdSearchTab);
     connect(mpd_search_model_, &quick::MpdSearchResultModel::artworkRequested, mpd_controller_,
             &quick::MpdProbeController::loadServerLibraryArtwork);
     auto* focus_search = new QShortcut(QKeySequence(QStringLiteral("Ctrl+L")), this);
@@ -981,6 +988,12 @@ void BenchMainWindow::finishMpdSearch(const QString& query, const bool success) 
                                         : tr("Search did not complete"));
     mpd_search_tree_model_->setMore(success && mpd_controller_->hasMoreSearchResults() &&
                                     query == mpd_controller_->lastSearchQuery());
+    if (!pending_mpd_search_commit_.isEmpty() && query == pending_mpd_search_commit_) {
+        pending_mpd_search_commit_.clear();
+        if (success) {
+            commitMpdSearchTab();
+        }
+    }
 }
 
 void BenchMainWindow::activateMpdSearchResult(const QModelIndex& index, const int action,

@@ -153,6 +153,30 @@ void BenchMainWindow::initializePersistence() {
                                 action == LocalLibraryAction::replace);
                         });
                 });
+            // ADR-0140: Enter in the library search keeps the full result
+            // set as an ordinary scratch list tab.
+            connect(local_library_, &LocalLibraryPanel::searchCommitted, this,
+                    [this](const QString& query, std::vector<std::string> paths) {
+                        if (discovery_running_) {
+                            statusBar()->showMessage(
+                                QStringLiteral("A file intake is already running"), 3'000);
+                            return;
+                        }
+                        auto* destination = addListTab(
+                            persistence::ListDocument{
+                                .id = core::StableId::random(),
+                                .kind = persistence::ListKind::scratch,
+                                .name = utf8Bytes(QStringLiteral("Search: %1").arg(query)),
+                                .pinned = false,
+                                .dirty = false,
+                                .items = {},
+                            },
+                            true);
+                        schedulePersist();
+                        startDiscovery(std::move(paths),
+                                       QString::fromStdString(destination->document.id.to_string()),
+                                       -1, false);
+                    });
             refreshActiveContext();
         }
         autoConnectMpd();
@@ -605,7 +629,7 @@ bool BenchMainWindow::isMpdContext() const {
     }
     auto* current = tabs_->currentWidget();
     return (mpd_queue_view_ != nullptr && current == mpd_queue_view_) ||
-           mpdPlaylistTabForWidget(current) != nullptr;
+           mpdPlaylistTabForWidget(current) != nullptr || mpdSearchTabForWidget(current) != nullptr;
 }
 
 void BenchMainWindow::refreshActiveContext() {
@@ -741,8 +765,10 @@ void BenchMainWindow::refreshTabActions() {
         list_edit_bar_->setView(available ? tab->view : nullptr);
     if (list_find_bar_ != nullptr) {
         auto* playlist_tab = currentMpdPlaylistTab();
+        auto* search_tab = currentMpdSearchTab();
         auto* find_view = available        ? tab->view
                           : playlist_tab   ? playlist_tab->view
+                          : search_tab     ? search_tab->view
                           : isMpdContext() ? mpd_queue_view_
                                            : nullptr;
         list_find_bar_->setView(find_view);
@@ -764,6 +790,7 @@ void BenchMainWindow::refreshTabActions() {
         const auto properties_tab =
             qobject_cast<MetadataPropertiesDialog*>(tabs_->currentWidget()) != nullptr;
         close_tab_action_->setEnabled(properties_tab || currentMpdPlaylistTab() != nullptr ||
+                                      currentMpdSearchTab() != nullptr ||
                                       (available && !tab->document.pinned));
     }
 }
@@ -783,6 +810,10 @@ void BenchMainWindow::closeTabAt(const int index) {
     }
     if (auto* playlist_tab = mpdPlaylistTabForWidget(view)) {
         closeMpdPlaylistTab(playlist_tab->name);
+        return;
+    }
+    if (auto* search_tab = mpdSearchTabForWidget(view)) {
+        closeMpdSearchTab(search_tab);
         return;
     }
     auto* tab = static_cast<ListTab*>(view->property("bench-tab-pointer").value<void*>());
@@ -956,6 +987,10 @@ void BenchMainWindow::showTrackContextMenu(QTableView* view, const QPoint& posit
     tabs_->setCurrentWidget(view);
     if (auto* playlist_tab = mpdPlaylistTabForWidget(view)) {
         showMpdPlaylistTrackMenu(*playlist_tab, position);
+        return;
+    }
+    if (auto* search_tab = mpdSearchTabForWidget(view)) {
+        showMpdSearchTrackMenu(*search_tab, position);
         return;
     }
 

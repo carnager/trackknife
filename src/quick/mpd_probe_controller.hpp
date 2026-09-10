@@ -97,6 +97,9 @@ class MpdProbeController final : public QObject {
     [[nodiscard]] int outputCount() const { return output_model_.rowCount(); }
     [[nodiscard]] QAbstractItemModel* queueModel() noexcept { return &queue_model_; }
     [[nodiscard]] QAbstractItemModel* libraryModel() noexcept { return &library_model_; }
+    [[nodiscard]] std::vector<mpd::Track> libraryTracksSnapshot() const {
+        return library_model_.tracksSnapshot();
+    }
     [[nodiscard]] std::vector<mpd::AlbumSummary> libraryAlbumsSnapshot() const {
         return library_albums_;
     }

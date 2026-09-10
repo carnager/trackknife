@@ -539,9 +539,27 @@ void BenchMainWindowTest::mpdSearchProjectsControllerResults() {
     QVERIFY(QMetaObject::invokeMethod(controller, "searchFinished", Qt::DirectConnection,
                                       Q_ARG(QString, QStringLiteral("S")), Q_ARG(bool, true)));
     QTRY_VERIFY(result_model->firstResultRow() >= 0);
-    QSignalSpy notifications{controller, &quick::MpdProbeController::notificationRequested};
+    // ADR-0140: Enter commits the displayed hits as a query-keyed tab;
+    // recommitting the same query reuses it, and it closes like any tab.
+    const auto tab_count = tabs->count();
     QTest::keyClick(field, Qt::Key_Return);
-    QCOMPARE(notifications.size(), 0);
+    QTRY_COMPARE(tabs->count(), tab_count + 1);
+    auto* search_view = window.findChild<QTableView*>(QStringLiteral("bench-mpd-search-tab-view"));
+    QVERIFY(search_view != nullptr);
+    QCOMPARE(search_view->property("bench-mpd-search-query").toString(), QStringLiteral("S"));
+    QCOMPARE(tabs->tabText(tabs->indexOf(search_view)), QStringLiteral("Search: S"));
+    QCOMPARE(search_view->model()->rowCount(), 1);
+    QCOMPARE(tabs->currentWidget(), static_cast<QWidget*>(search_view));
+    tabs->setCurrentWidget(mpd_queue);
+    QTest::keyClick(field, Qt::Key_Return);
+    QTRY_COMPARE(tabs->currentWidget(), static_cast<QWidget*>(search_view));
+    QCOMPARE(tabs->count(), tab_count + 1);
+    auto* close_action = window.findChild<QAction*>(QStringLiteral("action-close-tab"));
+    QVERIFY(close_action != nullptr);
+    QVERIFY(close_action->isEnabled());
+    close_action->trigger();
+    QTRY_COMPARE(tabs->count(), tab_count);
+    tabs->setCurrentWidget(mpd_queue);
     const auto first = result_model->firstResultRow();
     QCOMPARE(result_model->index(first, 1).data().toString(), QStringLiteral("Search Result"));
     QCOMPARE(result_model->index(first, 4).data(Qt::ToolTipRole).toString(),

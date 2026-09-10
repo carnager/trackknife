@@ -62,6 +62,10 @@ class ServerLibraryTreeModel;
 class ServerLibraryTreeView;
 } // namespace trackknife::ui
 
+namespace trackknife::mpd {
+struct Track;
+} // namespace trackknife::mpd
+
 namespace trackknife::quick {
 class MpdProbeController;
 class MpdQueueModel;
@@ -120,6 +124,16 @@ class BenchMainWindow final : public QMainWindow {
         ui::TrackViewLayout view_layout;
     };
 
+    // Committed search-result tab (ADR-0140): keyed by the search query,
+    // session-only, holding the finished search's track-hit snapshot.
+    // Recommitting the same query refreshes the tab in place.
+    struct MpdSearchTab {
+        QString query;
+        quick::MpdQueueModel* model{nullptr};
+        QTableView* view{nullptr};
+        ui::TrackViewLayout view_layout;
+    };
+
     void buildPlaylistActions(QMenu* file_menu);
     void importPlaylistDialog();
     void exportPlaylistDialog();
@@ -173,6 +187,13 @@ class BenchMainWindow final : public QMainWindow {
     void refreshMpdPlaylistsSoon();
     void showMpdPlaylistSidebarMenu(const QPoint& position);
     void showMpdPlaylistTrackMenu(MpdPlaylistTab& tab, const QPoint& position);
+    [[nodiscard]] MpdSearchTab* mpdSearchTabForWidget(QWidget* widget) const;
+    [[nodiscard]] MpdSearchTab* currentMpdSearchTab() const;
+    [[nodiscard]] MpdSearchTab* mpdSearchTabForQuery(const QString& query) const;
+    void commitMpdSearchTab();
+    void openMpdSearchTab(const QString& query, std::vector<mpd::Track> tracks, bool select);
+    void closeMpdSearchTab(MpdSearchTab* tab);
+    void showMpdSearchTrackMenu(MpdSearchTab& tab, const QPoint& position);
     void addMpdPlaylistActions(QMenu* menu, const QString& name);
     void promptSaveQueueAsPlaylist();
     void promptRenameMpdPlaylist(const QString& name);
@@ -348,6 +369,10 @@ class BenchMainWindow final : public QMainWindow {
     QTabWidget* tabs_{nullptr};
     std::vector<std::unique_ptr<ListTab>> list_tabs_;
     std::vector<std::unique_ptr<MpdPlaylistTab>> mpd_playlist_tabs_;
+    std::vector<std::unique_ptr<MpdSearchTab>> mpd_search_tabs_;
+    // Enter pressed before the debounced search finished: commit this
+    // query as soon as its results arrive (ADR-0140).
+    QString pending_mpd_search_commit_;
     QListWidget* mpd_playlists_list_{nullptr};
     QMenu* mpd_playlists_menu_{nullptr};
     QTimer* mpd_playlists_refresh_timer_{nullptr};

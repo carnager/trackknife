@@ -42,9 +42,14 @@ class LocalLibraryPanel final : public QWidget {
     void stop();
     void resolveEntries(std::vector<persistence::LibraryEntry> entries,
                         std::function<void(std::vector<std::string>)> completion);
+    // ADR-0140: resolves the full result set of the current search text
+    // (matching albums' tracks first, then remaining matching tracks,
+    // deduplicated by path) and emits searchCommitted. Enter triggers it.
+    void commitSearch();
 
   signals:
     void actionRequested(std::vector<persistence::LibraryEntry> entries, LocalLibraryAction action);
+    void searchCommitted(QString query, std::vector<std::string> raw_paths);
 
   protected:
     bool eventFilter(QObject* watched, QEvent* event) override;

@@ -675,6 +675,33 @@ void LocalLibraryTest::localViewBrowsesSearchesAndOpensFiles() {
         auto* new_view = qobject_cast<QTableView*>(tabs->currentWidget());
         QVERIFY(new_view && new_view != local_view);
         QTRY_COMPARE(new_view->model()->rowCount(), 2);
+        // ADR-0140: Enter in the search field keeps the full result set as
+        // a new list tab named after the query.
+        search->setFocus();
+        QTest::keyClick(search, Qt::Key_Return);
+        QTRY_COMPARE(tabs->count(), original_tabs + 2);
+        auto* committed_view = qobject_cast<QTableView*>(tabs->currentWidget());
+        QVERIFY(committed_view != nullptr && committed_view != new_view);
+        QVERIFY(
+            tabs->tabText(tabs->currentIndex()).startsWith(QStringLiteral("Search: Test album")));
+        QTRY_COMPARE(committed_view->model()->rowCount(), 2);
+        {
+            auto* committed_model = qobject_cast<LocalListModel*>(committed_view->model());
+            QVERIFY(committed_model != nullptr);
+            QTRY_COMPARE(committed_model->rows()[0].raw_path, path);
+            QCOMPARE(committed_model->rows()[1].raw_path, second);
+        }
+        const auto committed_index = tabs->currentIndex();
+        QTimer::singleShot(0, [] {
+            if (auto* confirmation =
+                    qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+                confirmation->done(QMessageBox::Yes);
+            }
+        });
+        QVERIFY(QMetaObject::invokeMethod(tabs, "tabCloseRequested", Qt::DirectConnection,
+                                          Q_ARG(int, committed_index)));
+        QTRY_COMPARE(tabs->count(), original_tabs + 1);
+        tabs->setCurrentWidget(new_view);
         // Closing a captured destination must never redirect its pending drop.
         QVERIFY(dropFiles(new_view, mime.get(), QPoint{20, 20}));
         const auto closed_index = tabs->currentIndex();

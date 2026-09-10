@@ -60,12 +60,12 @@ References: [library refresh decision](adr/0126-library-deletion-and-search-artw
   in the current workspace (ADR-0129): sidebar list, server-keyed closable
   tabs, capability-gated server-round-trip edits, and idle-driven refresh.
   Multi-row reorder and restoring open playlist tabs remain follow-ups.
-- [ ] Committed search-result tabs in both authorities: pressing Enter in a
-  library search keeps the current hits as a durable result tab — a new
-  ordinary local list tab from the local library, a server-keyed result tab
-  (like ADR-0129 playlist tabs) from MPD. The library-integrated live search
-  remains the transient default. (The MPD side restores a removed feature;
-  the local side is new.)
+- [x] Committed search-result tabs in both authorities (ADR-0140): Enter in
+  a library search keeps the current hits as a durable result tab — a new
+  ordinary local list tab from the local library, a query-keyed session-only
+  snapshot tab (ADR-0129 pattern) from MPD. The library-integrated live
+  search remains the transient default. Expanding MPD album hits into
+  complete releases inside the committed tab remains a follow-up.
 - [ ] Extend Find beyond cached display text to arbitrary metadata and
   technical fields (the ADR-0125 first slice excludes them).
 
@@ -81,6 +81,10 @@ References: [working lists and interchange](playback-library-conversion.md#worki
 
 - [ ] Structured filters for metadata and technical properties.
 - [ ] Saved searches, followed by query-backed autoplaylists.
+- [ ] Idea: similarity-fed autoplaylists — use an online source such as
+  Last.fm similar-artist/track data to queue related songs from the local
+  index (network-gated, cached like the MusicBrainz client, never blocking
+  library queries).
 - [ ] Custom library grouping and tree expressions.
 - [ ] Searchable CUE, chapter, and subsong titles in the index.
 

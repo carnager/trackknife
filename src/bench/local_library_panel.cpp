@@ -246,6 +246,9 @@ LocalLibraryPanel::LocalLibraryPanel(std::filesystem::path database_path, QWidge
     connect(search_, &QLineEdit::textChanged, search_timer_, qOverload<>(&QTimer::start));
     connect(search_, &QLineEdit::textChanged, this, [this] { status_->setText(tr("Searching…")); });
     connect(search_timer_, &QTimer::timeout, this, &LocalLibraryPanel::reloadTree);
+    // ADR-0140: Enter keeps the current hits as a durable list tab; the
+    // live-filtered tree stays the transient default.
+    connect(search_, &QLineEdit::returnPressed, this, &LocalLibraryPanel::commitSearch);
     connect(&query_watcher_, &QFutureWatcherBase::finished, this, [this] {
         querying_ = false;
         auto outcome = query_watcher_.result();
@@ -638,6 +641,50 @@ void LocalLibraryPanel::resolveEntries(std::vector<persistence::LibraryEntry> en
                                                        : tr("Library selection loaded."));
              completion(std::move(outcome.paths));
          }});
+}
+
+void LocalLibraryPanel::commitSearch() {
+    const auto query_text = search_->text().trimmed();
+    if (query_text.isEmpty()) {
+        return;
+    }
+    status_->setText(tr("Collecting search results…"));
+    enqueue({[query = bytes(query_text),
+              cancellation = lifetime_cancellation_.token()](persistence::LocalLibrary& library) {
+                 Outcome outcome;
+                 std::unordered_set<std::string> seen;
+                 // Album-name matches first (whole matching albums), then the
+                 // remaining track-title matches — the tree's presentation order.
+                 for (const auto kind : {persistence::LibraryEntryKind::album,
+                                         persistence::LibraryEntryKind::track}) {
+                     persistence::LibraryQuery entry_query;
+                     entry_query.kind = kind;
+                     entry_query.text = query;
+                     auto paths = library.paths(entry_query, cancellation);
+                     if (!paths) {
+                         outcome.error = text(paths.error().message);
+                         return outcome;
+                     }
+                     for (auto& path : *paths) {
+                         if (seen.insert(path).second) {
+                             outcome.paths.push_back(std::move(path));
+                         }
+                     }
+                 }
+                 return outcome;
+             },
+             [this, query_text](Outcome outcome) {
+                 if (!outcome.error.isEmpty()) {
+                     status_->setText(outcome.error);
+                     return;
+                 }
+                 if (outcome.paths.empty()) {
+                     status_->setText(tr("No search results to keep."));
+                     return;
+                 }
+                 status_->setText(tr("Search kept as a new tab."));
+                 emit searchCommitted(query_text, std::move(outcome.paths));
+             }});
 }
 
 void LocalLibraryPanel::addRoot(std::string raw_path) {
