@@ -79,6 +79,9 @@ class MpdProbeController final : public QObject {
     [[nodiscard]] QString nowPlaying() const { return now_playing_; }
     [[nodiscard]] QString nowPlayingTitle() const { return now_playing_title_; }
     [[nodiscard]] QString nowPlayingDetail() const { return now_playing_detail_; }
+    [[nodiscard]] QString nowPlayingArtist() const { return now_playing_artist_; }
+    [[nodiscard]] QString nowPlayingAlbum() const { return now_playing_album_; }
+    [[nodiscard]] QString nowPlayingUri() const { return now_playing_uri_; }
     [[nodiscard]] QString outputSummary() const { return output_summary_; }
     [[nodiscard]] int queueCount() const { return queue_model_.rowCount(); }
     [[nodiscard]] bool playing() const noexcept {
@@ -247,6 +250,9 @@ class MpdProbeController final : public QObject {
     QString now_playing_{QStringLiteral("Nothing playing")};
     QString now_playing_title_{QStringLiteral("Nothing playing")};
     QString now_playing_detail_{QStringLiteral("Connect to MPD or Melody")};
+    QString now_playing_artist_;
+    QString now_playing_album_;
+    QString now_playing_uri_;
     QString output_summary_;
     QString active_output_name_{QStringLiteral("No output")};
     QString profile_id_;

@@ -73,6 +73,7 @@ struct MetadataOperationJobOutcome;
 class MusicBrainzFetchService;
 class LocalLibraryPanel;
 class MpdLibrarySearchModel;
+class MprisService;
 class TrackListFindBar;
 class LocalListEditBar;
 class PlaylistTransferBar;
@@ -294,6 +295,8 @@ class BenchMainWindow final : public QMainWindow {
     adjacentPlaybackRow(int direction);
     void refreshTransport();
     void refreshMpdTransport();
+    void buildMprisService();
+    void publishMprisState();
     void rebuildDeviceMenu();
     void configurePlaybackBuffer(const QString& profile, int capacity_ms, int start_threshold_ms);
     void showCustomPlaybackBufferDialog();
@@ -449,6 +452,7 @@ class BenchMainWindow final : public QMainWindow {
     bool applying_track_view_layout_{false};
     QHash<QString, QByteArray> restored_track_view_layouts_;
 
+    MprisService* mpris_{nullptr};
     ui::ListPersistenceService* persistence_{nullptr};
     std::filesystem::path database_path_;
     MusicBrainzFetchService* musicbrainz_service_{nullptr};

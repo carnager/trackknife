@@ -1282,6 +1282,7 @@ void BenchMainWindow::refreshMpdTransport() {
     device_button_->setToolTip(
         QStringLiteral("MPD output: %1").arg(mpd_controller_->activeOutputName()));
     device_button_->setAccessibleDescription(mpd_controller_->activeOutputName());
+    publishMprisState();
 }
 
 // "Go to Artist/Album": reveal the queue row's artist (and optionally its

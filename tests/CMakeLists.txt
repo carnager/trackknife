@@ -440,6 +440,12 @@ if(TRACKKNIFE_BUILD_UI)
     set_tests_properties(server-library-tree-model PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     qt_add_executable(trackknife_bench_main_window_tests bench_main_window_test.cpp)
+    qt_add_executable(trackknife_mpris_service_tests mpris_service_test.cpp)
+    target_link_libraries(trackknife_mpris_service_tests PRIVATE Trackknife::BenchUi Qt6::DBus
+        Qt6::Test trackknife_project_options trackknife_project_warnings)
+    add_test(NAME mpris-service COMMAND trackknife_mpris_service_tests)
+    set_tests_properties(mpris-service PROPERTIES TIMEOUT 60 ENVIRONMENT
+        "QT_QPA_PLATFORM=offscreen")
     qt_add_executable(trackknife_local_library_tests local_library_test.cpp)
     target_compile_definitions(trackknife_local_library_tests PRIVATE
         TRACKKNIFE_AUDIO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"

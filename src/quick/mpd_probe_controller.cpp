@@ -1292,6 +1292,16 @@ void MpdProbeController::applySnapshot(const std::uint64_t token, mpd::SessionSn
     now_playing_detail_ = snapshot.current_song.empty()
                               ? QStringLiteral("Queue is idle")
                               : track_detail(snapshot.current_song.front());
+    if (snapshot.current_song.empty()) {
+        now_playing_artist_.clear();
+        now_playing_album_.clear();
+        now_playing_uri_.clear();
+    } else {
+        const auto& song = snapshot.current_song.front();
+        now_playing_artist_ = from_utf8(song.metadata.first("Artist").value_or(""));
+        now_playing_album_ = from_utf8(song.metadata.first("Album").value_or(""));
+        now_playing_uri_ = from_utf8(song.uri);
+    }
     playback_state_ = snapshot.status.state;
     if (optimistic_playback_state_ && playback_state_ == *optimistic_playback_state_) {
         optimistic_playback_state_.reset();
@@ -1870,6 +1880,9 @@ void MpdProbeController::clearSessionState() {
     now_playing_ = QStringLiteral("Nothing playing");
     now_playing_title_ = QStringLiteral("Nothing playing");
     now_playing_detail_ = QStringLiteral("Connect to MPD or Melody");
+    now_playing_artist_.clear();
+    now_playing_album_.clear();
+    now_playing_uri_.clear();
     playback_state_ = mpd::PlaybackState::unknown;
     optimistic_playback_state_.reset();
     pending_playback_command_.reset();

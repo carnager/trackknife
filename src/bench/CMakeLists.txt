@@ -14,6 +14,8 @@ qt_add_library(
     bench_metadata_operations.cpp
     bench_mpd.cpp
     bench_mpd_playlists.cpp
+    mpris_service.cpp
+    mpris_service.hpp
     mpd_library_search_model.cpp
     mpd_library_search_model.hpp
     bench_track_views.cpp
@@ -64,7 +66,7 @@ target_link_libraries(
            Trackknife::Convert Trackknife::Formats Trackknife::Loudness Trackknife::Metadata Trackknife::MusicBrainz
            Trackknife::Operations Trackknife::Audio
            trackknife_project_options
-    PRIVATE Trackknife::MpdUi Trackknife::Ui Qt6::Concurrent Qt6::Network
+    PRIVATE Trackknife::MpdUi Trackknife::Ui Qt6::Concurrent Qt6::DBus Qt6::Network
             trackknife_project_warnings
 )
 target_include_directories(trackknife_bench_ui PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")

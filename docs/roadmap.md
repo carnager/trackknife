@@ -159,8 +159,11 @@ References: [ReplayGain](replaygain.md),
 
 **Proposal:** Make playback convenient while the window is in the background.
 
-- [ ] MPRIS integration.
-- [ ] Media-key control while the application is unfocused.
+- [x] MPRIS integration (ADR-0135): `org.mpris.MediaPlayer2.trackknife`
+  mirrors and steers exactly what the in-app transport is bound to — the
+  active authority — with typed metadata, position/Seeked, and volume.
+- [x] Media-key control while the application is unfocused: delivered
+  through MPRIS, which modern Linux desktops use for media keys.
 - [ ] Optional desktop notifications.
 
 Desktop controls must respect the established MPD/local playback authority

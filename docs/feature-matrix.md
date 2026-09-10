@@ -59,7 +59,7 @@ Evidence: [workspace specification](ui-workspace.md),
 | Local playback | Implemented | FFmpeg/libopenmpt sources through PipeWire, sample-range seeking, qualified gapless transitions, originating-list progression, volume, buffer profiles, and output/default/hotplug handling. Hardware-format coverage remains bounded by qualification. |
 | Local playback modes | Implemented | Repeat, track Random, Single/Consume including one-shot modes, and persistent local settings. Background progression continues in its original list. Metadata/path publication preserves row identity and advancement (ADRs 0119–0121). |
 | Album shuffle, history, and resume | Open | Album shuffle preserving track order, play counts, last played, ratings, and persisted playback-position restoration. See [roadmap 7](roadmap.md#7-listening-history-and-album-oriented-playback). |
-| MPRIS/media keys/notifications | Open | No desktop integration surface in the reviewed primary workspace. See [roadmap 6](roadmap.md#6-linux-desktop-integration). |
+| MPRIS/media keys/notifications | Partial | `org.mpris.MediaPlayer2.trackknife` exposes the active authority's transport, typed metadata, position/Seeked, and volume, and routes desktop commands (including media keys) through the same transport actions as the visible controls (ADR-0135). Optional notifications, artwork URLs, and LoopStatus/Shuffle mapping remain open. |
 
 Evidence: [MPD](mpd-client.md), [local library](local-library.md),
 [playback](playback-library-conversion.md), [transport](../src/bench/bench_transport.cpp),

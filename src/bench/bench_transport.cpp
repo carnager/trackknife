@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "bench/bench_main_window.hpp"
+#include "bench/mpris_service.hpp"
 
 #include "bench/bench_main_window_helpers.hpp"
 #include "quick/mpd_probe_controller.hpp"
@@ -161,6 +162,7 @@ BenchMainWindow::BenchMainWindow(QWidget* parent) : QMainWindow(parent) {
     transport_timer_->setInterval(transport_refresh_ms);
     connect(transport_timer_, &QTimer::timeout, this, &BenchMainWindow::refreshTransport);
     transport_timer_->start();
+    buildMprisService();
     refreshActiveContext();
     refreshTransport();
 }
@@ -1220,6 +1222,122 @@ void BenchMainWindow::refreshTransport() {
     }
     device_button_->setToolTip(audio_tooltip);
     device_button_->setAccessibleDescription(device_label);
+    publishMprisState();
+}
+
+// Desktop commands land on the exact transport actions the visible controls
+// use, so MPRIS can never steer past the active authority (ADR-0135).
+void BenchMainWindow::buildMprisService() {
+    mpris_ = new MprisService(this);
+    const auto trigger = [this](QAction* action) {
+        if (action != nullptr && action->isEnabled()) {
+            action->trigger();
+        }
+    };
+    connect(mpris_, &MprisService::playPauseRequested, this,
+            [this, trigger] { trigger(play_pause_action_); });
+    connect(mpris_, &MprisService::playRequested, this, [this, trigger] {
+        if (mpris_->currentState().status != QStringLiteral("Playing")) {
+            trigger(play_pause_action_);
+        }
+    });
+    connect(mpris_, &MprisService::pauseRequested, this, [this, trigger] {
+        if (mpris_->currentState().status == QStringLiteral("Playing")) {
+            trigger(play_pause_action_);
+        }
+    });
+    connect(mpris_, &MprisService::stopRequested, this, [this, trigger] { trigger(stop_action_); });
+    connect(mpris_, &MprisService::nextRequested, this, [this, trigger] { trigger(next_action_); });
+    connect(mpris_, &MprisService::previousRequested, this,
+            [this, trigger] { trigger(previous_action_); });
+    connect(mpris_, &MprisService::positionRequested, this, [this](const qlonglong position_ms) {
+        if (seek_ != nullptr && seek_->isEnabled()) {
+            seekToMs(position_ms);
+        }
+    });
+    connect(mpris_, &MprisService::volumeRequested, this, [this](const int volume_percent) {
+        if (volume_ != nullptr && volume_->isEnabled()) {
+            volume_->setValue(volume_percent);
+        }
+    });
+    connect(mpris_, &MprisService::raiseRequested, this, [this] {
+        showNormal();
+        raise();
+        activateWindow();
+    });
+}
+
+void BenchMainWindow::publishMprisState() {
+    if (mpris_ == nullptr) {
+        return;
+    }
+    MprisPlaybackState state;
+    if (isMpdContext()) {
+        const auto connected = mpd_controller_->connected();
+        const auto command_ready = connected && !mpd_controller_->commandBusy();
+        const auto has_queue = mpd_controller_->queueCount() > 0;
+        state.status = mpd_controller_->playing()  ? QStringLiteral("Playing")
+                       : mpd_controller_->paused() ? QStringLiteral("Paused")
+                                                   : QStringLiteral("Stopped");
+        state.track_key = mpd_controller_->nowPlayingUri();
+        if (!state.track_key.isEmpty()) {
+            state.title = mpd_controller_->nowPlayingTitle();
+            state.artist = mpd_controller_->nowPlayingArtist();
+            state.album = mpd_controller_->nowPlayingAlbum();
+        }
+        const auto duration_ms = mpd_controller_->durationMs();
+        state.length_us = duration_ms > 0 ? duration_ms * 1'000 : -1;
+        state.position_us = mpd_controller_->elapsedMs() * 1'000;
+        state.volume_percent = mpd_controller_->volume();
+        state.can_next = command_ready && has_queue;
+        state.can_previous = command_ready && has_queue;
+        state.can_play = command_ready;
+        state.can_pause = command_ready;
+        state.can_seek = command_ready && duration_ms > 0;
+    } else if (player_ != nullptr) {
+        const auto snapshot = player_->snapshot();
+        const auto active = playerActive(snapshot.state);
+        state.status = active ? QStringLiteral("Playing")
+                       : snapshot.state == audio::LocalAuditionState::paused
+                           ? QStringLiteral("Paused")
+                           : QStringLiteral("Stopped");
+        if (!snapshot.raw_path.empty()) {
+            state.track_key = QString::fromStdString(core::escape_raw_path(snapshot.raw_path));
+            const auto slash = snapshot.raw_path.find_last_of('/');
+            const auto name = slash == std::string::npos || slash + 1U >= snapshot.raw_path.size()
+                                  ? snapshot.raw_path
+                                  : snapshot.raw_path.substr(slash + 1U);
+            state.title = QString::fromStdString(core::escape_raw_path(name));
+            if (auto* tab = tabForDocument(playback_document_id_); tab != nullptr) {
+                const auto row =
+                    tab->model->rowOfSource(source_from_snapshot(snapshot), playback_row_);
+                if (row >= 0) {
+                    const auto& track = tab->model->rows()[static_cast<std::size_t>(row)];
+                    if (!track.title.empty()) {
+                        state.title = displayText(track.title);
+                    }
+                    state.artist = displayText(track.artist);
+                    state.album = displayText(track.album);
+                }
+            }
+        }
+        if (snapshot.format && snapshot.format->sample_rate > 0) {
+            state.position_us = snapshot.position_sample * 1'000'000 / snapshot.format->sample_rate;
+            if (snapshot.end_sample) {
+                state.length_us = *snapshot.end_sample * 1'000'000 / snapshot.format->sample_rate;
+            }
+        }
+        state.volume_percent = snapshot.volume_percent;
+        const bool source_ready = snapshot.format.has_value() &&
+                                  snapshot.state != audio::LocalAuditionState::loading &&
+                                  snapshot.state != audio::LocalAuditionState::failed;
+        state.can_next = adjacentPlaybackRow(1).has_value();
+        state.can_previous = adjacentPlaybackRow(-1).has_value();
+        state.can_play = source_ready && snapshot.output_target_available;
+        state.can_pause = state.can_play;
+        state.can_seek = source_ready && state.length_us > 0;
+    }
+    mpris_->publish(state);
 }
 
 } // namespace trackknife::bench

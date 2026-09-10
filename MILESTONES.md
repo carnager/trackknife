@@ -1424,6 +1424,11 @@ handoff to Local Queue playback.
    primary/multi-output rules.
 4. Add advanced playback orders, optional DSP presets, MPRIS, media keys,
    notifications, and persisted statistics as separately gated capabilities.
+   ADR-0135 delivered the MPRIS/media-key piece ahead of the milestone:
+   `org.mpris.MediaPlayer2.trackknife` mirrors the active authority's
+   transport with typed metadata, position/Seeked, and volume, and routes
+   desktop commands through the same transport actions as the visible
+   controls; notifications remain open.
 5. Configurable MPD music-root mapping (per connection profile): resolve MPD
    queue/playlist URIs to local files below the configured root so Properties,
    Convert, and ReplayGain work directly on MPD-mode selections; a database
