@@ -2,11 +2,19 @@
 
 #include "trackknife/operations/metadata_commit.hpp"
 
+#include "trackknife/formats/cue_sheet.hpp"
+#include "trackknife/formats/decoder.hpp"
 #include "trackknife/metadata/artwork_writers.hpp"
 #include "trackknife/metadata/flac_mapping.hpp"
 #include "trackknife/metadata/flac_writer.hpp"
 #include "trackknife/metadata/local_reader.hpp"
+#include "trackknife/metadata/loudness_sidecar.hpp"
 #include "trackknife/metadata/mp3_writer.hpp"
+#include "trackknife/operations/cue_replay_gain_apply.hpp"
+#include "trackknife/operations/loudness_sidecar_apply.hpp"
+
+#include <charconv>
+#include <fstream>
 
 #include <algorithm>
 #include <array>
@@ -759,10 +767,35 @@ make_artwork_journal_record(const metadata::ArtworkWritePlanSource& source_plan,
     };
 }
 
+enum class CarrierEvidenceSide;
+[[nodiscard]] core::Result<void> verify_cue_carrier(const MetadataOperationJournalRecord& record,
+                                                    const core::LocalSourceRevision& revision,
+                                                    CarrierEvidenceSide side);
+[[nodiscard]] core::Result<void>
+verify_sidecar_carrier(const MetadataOperationJournalRecord& record,
+                       const core::LocalSourceRevision& revision, CarrierEvidenceSide side);
+enum class CarrierEvidenceSide { planned, original };
+
 [[nodiscard]] core::Result<metadata::MetadataDocument>
 verify_published_content(const MetadataOperationJournalRecord& record,
                          const core::LocalSourceRevision& revision,
                          const core::CancellationToken& cancellation = {}) {
+    // ADR-0145: carrier kinds verify against their own parsers; the tag
+    // reader neither applies nor produces a document for them.
+    if (record.content_kind == MetadataOperationContentKind::cue_replay_gain) {
+        auto verified = verify_cue_carrier(record, revision, CarrierEvidenceSide::planned);
+        if (!verified) {
+            return std::unexpected(std::move(verified.error()));
+        }
+        return metadata::MetadataDocument{};
+    }
+    if (record.content_kind == MetadataOperationContentKind::loudness_sidecar) {
+        auto verified = verify_sidecar_carrier(record, revision, CarrierEvidenceSide::planned);
+        if (!verified) {
+            return std::unexpected(std::move(verified.error()));
+        }
+        return metadata::MetadataDocument{};
+    }
     auto reread = metadata::read_local_metadata(record.source_raw_path, cancellation);
     if (!reread || reread->source_revision != revision) {
         return std::unexpected(
@@ -939,6 +972,305 @@ record_terminal_failure(MetadataOperationJournal& journal,
                       prepared_revision, published_revision, failure);
 }
 
+// ADR-0145: carrier evidence for CUE-sheet and loudness-sidecar rewrites.
+// Both kinds reuse the text change rows; the carrier-internal identity
+// lives in exact_native_name.
+
+constexpr std::string_view cue_album_slug = "cue-album";
+
+[[nodiscard]] std::string cue_track_slug(const std::size_t file_index,
+                                         const std::size_t track_index) {
+    return "cue-track:" + std::to_string(file_index) + ":" + std::to_string(track_index);
+}
+
+// nullopt = invalid slug; inner nullopt = album scope.
+[[nodiscard]] std::optional<std::optional<std::pair<std::size_t, std::size_t>>>
+parse_cue_slug(const std::optional<std::string>& slug) {
+    if (!slug) {
+        return std::nullopt;
+    }
+    if (*slug == cue_album_slug) {
+        return std::optional<std::optional<std::pair<std::size_t, std::size_t>>>{
+            std::optional<std::pair<std::size_t, std::size_t>>{}};
+    }
+    constexpr std::string_view prefix{"cue-track:"};
+    if (!slug->starts_with(prefix)) {
+        return std::nullopt;
+    }
+    const auto body = std::string_view{*slug}.substr(prefix.size());
+    const auto colon = body.find(':');
+    if (colon == std::string_view::npos) {
+        return std::nullopt;
+    }
+    std::size_t file_index = 0U;
+    std::size_t track_index = 0U;
+    const auto file_text = body.substr(0U, colon);
+    const auto track_text = body.substr(colon + 1U);
+    const auto file_parsed =
+        std::from_chars(file_text.data(), file_text.data() + file_text.size(), file_index);
+    const auto track_parsed =
+        std::from_chars(track_text.data(), track_text.data() + track_text.size(), track_index);
+    if (file_parsed.ec != std::errc{} || file_parsed.ptr != file_text.data() + file_text.size() ||
+        track_parsed.ec != std::errc{} ||
+        track_parsed.ptr != track_text.data() + track_text.size()) {
+        return std::nullopt;
+    }
+    return std::optional{std::optional{std::pair{file_index, track_index}}};
+}
+
+[[nodiscard]] std::string sidecar_entry_slug(const metadata::StagedLogicalIdentity& identity) {
+    const auto part = [](const auto& value) {
+        return value ? std::to_string(*value) : std::string{"-"};
+    };
+    return "entry:" + part(identity.stream_index) + ":" + part(identity.subsong_index) + ":" +
+           part(identity.start_sample) + ":" + part(identity.end_sample);
+}
+
+[[nodiscard]] std::optional<metadata::StagedLogicalIdentity>
+parse_sidecar_slug(const std::optional<std::string>& slug) {
+    if (!slug || !slug->starts_with("entry:")) {
+        return std::nullopt;
+    }
+    std::array<std::optional<std::int64_t>, 4> parts;
+    std::string_view body = std::string_view{*slug}.substr(6U);
+    for (std::size_t index = 0U; index < parts.size(); ++index) {
+        const auto colon = body.find(':');
+        if ((index + 1U < parts.size()) == (colon == std::string_view::npos)) {
+            return std::nullopt;
+        }
+        const auto token = colon == std::string_view::npos ? body : body.substr(0U, colon);
+        if (token != "-") {
+            std::int64_t value = 0;
+            const auto parsed = std::from_chars(token.data(), token.data() + token.size(), value);
+            if (parsed.ec != std::errc{} || parsed.ptr != token.data() + token.size()) {
+                return std::nullopt;
+            }
+            parts[index] = value;
+        }
+        if (colon != std::string_view::npos) {
+            body = body.substr(colon + 1U);
+        }
+    }
+    return metadata::StagedLogicalIdentity{
+        .stream_index = parts[0] ? std::optional{static_cast<int>(*parts[0])} : std::nullopt,
+        .subsong_index = parts[1] ? std::optional{static_cast<int>(*parts[1])} : std::nullopt,
+        .start_sample = parts[2],
+        .end_sample = parts[3],
+    };
+}
+
+[[nodiscard]] std::string_view carrier_display_name(const std::string& canonical_name) {
+    if (canonical_name == "replaygaintrackgain") {
+        return "REPLAYGAIN_TRACK_GAIN";
+    }
+    if (canonical_name == "replaygaintrackpeak") {
+        return "REPLAYGAIN_TRACK_PEAK";
+    }
+    if (canonical_name == "replaygainalbumgain") {
+        return "REPLAYGAIN_ALBUM_GAIN";
+    }
+    return "REPLAYGAIN_ALBUM_PEAK";
+}
+
+[[nodiscard]] bool carrier_gain_name(const std::string& canonical_name) {
+    return canonical_name == "replaygaintrackgain" || canonical_name == "replaygainalbumgain";
+}
+
+// Canonicalizes one staged loudness value to its published carrier text.
+[[nodiscard]] core::Result<std::pair<double, std::string>>
+canonical_loudness_value(const std::string& canonical_name, const std::string& staged,
+                         const std::string& raw_path) {
+    const auto gain = carrier_gain_name(canonical_name);
+    const auto parsed = gain ? formats::parse_replay_gain_decibels(staged)
+                             : formats::parse_replay_gain_peak(staged);
+    const auto zero_peak =
+        !gain && !parsed && staged.find_first_not_of("0. \t") == std::string::npos;
+    if (!parsed && !zero_peak) {
+        return std::unexpected(operation_error(
+            core::ErrorCode::invariant,
+            "a planned loudness value stopped being parseable before commit", raw_path));
+    }
+    const auto value = parsed ? *parsed : 0.0;
+    return std::pair{value, gain ? formats::replay_gain_decibel_text(value)
+                                 : formats::replay_gain_peak_text(value)};
+}
+
+[[nodiscard]] bool carrier_evidence_matches(const std::vector<std::string>& values,
+                                            const MetadataOperationJournalChange& change,
+                                            const CarrierEvidenceSide side) {
+    if (side == CarrierEvidenceSide::planned) {
+        if (change.kind == metadata::StagedMetadataPatchKind::remove_field) {
+            return values.empty();
+        }
+        return values == change.planned_values;
+    }
+    if (!change.original_present) {
+        return values.empty();
+    }
+    return values == change.original_values;
+}
+
+[[nodiscard]] core::Result<std::string> read_carrier_bytes(const std::string& raw_path,
+                                                           const std::size_t maximum_bytes,
+                                                           const core::StableId& journal_id) {
+    std::error_code size_error;
+    const auto size = std::filesystem::file_size(std::filesystem::path{raw_path}, size_error);
+    if (size_error) {
+        return std::unexpected(operation_error(
+            core::ErrorCode::io, "the carrier file size could not be read", raw_path, journal_id));
+    }
+    if (size > maximum_bytes) {
+        return std::unexpected(operation_error(core::ErrorCode::limit_exceeded,
+                                               "the carrier file exceeds the byte limit", raw_path,
+                                               journal_id));
+    }
+    std::string bytes(static_cast<std::size_t>(size), '\0');
+    std::ifstream input{std::filesystem::path{raw_path}, std::ios::binary};
+    if (!input.read(bytes.data(), static_cast<std::streamsize>(bytes.size())) && !bytes.empty()) {
+        return std::unexpected(operation_error(
+            core::ErrorCode::io, "the carrier file could not be read", raw_path, journal_id));
+    }
+    return bytes;
+}
+
+[[nodiscard]] std::vector<std::string>
+cue_scope_values(const formats::CueSheet& sheet,
+                 const std::optional<std::pair<std::size_t, std::size_t>>& track,
+                 const std::string_view rem_name) {
+    std::vector<std::string> values;
+    const auto collect = [&values, rem_name](const formats::CueMetadata& scope) {
+        for (const auto& remark : scope.remarks) {
+            if (remark.name == rem_name) {
+                values.push_back(remark.value);
+            }
+        }
+    };
+    if (!track) {
+        collect(sheet.metadata);
+        return values;
+    }
+    if (track->first < sheet.files.size() &&
+        track->second < sheet.files[track->first].tracks.size()) {
+        collect(sheet.files[track->first].tracks[track->second].metadata);
+    }
+    return values;
+}
+
+core::Result<void> verify_cue_carrier(const MetadataOperationJournalRecord& record,
+                                      const core::LocalSourceRevision& revision,
+                                      const CarrierEvidenceSide side) {
+    auto observed = core::observe_local_source_revision(record.source_raw_path);
+    if (!observed || *observed != revision) {
+        return std::unexpected(!observed
+                                   ? std::move(observed.error())
+                                   : operation_error(core::ErrorCode::conflict,
+                                                     "the CUE carrier has an unexpected revision",
+                                                     record.source_raw_path, record.id));
+    }
+    auto bytes = read_carrier_bytes(record.source_raw_path, formats::CueParseLimits{}.source_bytes,
+                                    record.id);
+    if (!bytes) {
+        return std::unexpected(std::move(bytes.error()));
+    }
+    auto sheet = formats::parse_cue_sheet(*bytes);
+    if (!sheet) {
+        return std::unexpected(std::move(sheet.error()));
+    }
+    for (const auto& change : record.changes) {
+        const auto scope = parse_cue_slug(change.exact_native_name);
+        if (!scope) {
+            return std::unexpected(operation_error(core::ErrorCode::invariant,
+                                                   "CUE journal evidence has an invalid identity",
+                                                   record.source_raw_path, record.id));
+        }
+        const auto values = cue_scope_values(*sheet, *scope, change.property_name);
+        if (!carrier_evidence_matches(values, change, side)) {
+            return std::unexpected(operation_error(core::ErrorCode::conflict,
+                                                   "CUE carrier content failed verification",
+                                                   record.source_raw_path, record.id));
+        }
+    }
+    return {};
+}
+
+[[nodiscard]] std::vector<std::string>
+sidecar_member_values(const metadata::LoudnessSidecar& sidecar,
+                      const metadata::StagedLogicalIdentity& identity,
+                      const std::string& canonical_name) {
+    for (const auto& entry : sidecar.entries) {
+        const auto same = entry.stream_index == identity.stream_index &&
+                          entry.subsong_index == identity.subsong_index &&
+                          entry.start_sample == identity.start_sample &&
+                          entry.end_sample == identity.end_sample;
+        if (!same) {
+            continue;
+        }
+        const auto& member = canonical_name == "replaygaintrackgain"   ? entry.track_gain_db
+                             : canonical_name == "replaygaintrackpeak" ? entry.track_peak
+                             : canonical_name == "replaygainalbumgain" ? entry.album_gain_db
+                                                                       : entry.album_peak;
+        if (!member) {
+            return {};
+        }
+        return {carrier_gain_name(canonical_name) ? formats::replay_gain_decibel_text(*member)
+                                                  : formats::replay_gain_peak_text(*member)};
+    }
+    return {};
+}
+
+core::Result<void> verify_sidecar_carrier(const MetadataOperationJournalRecord& record,
+                                          const core::LocalSourceRevision& revision,
+                                          const CarrierEvidenceSide side) {
+    auto observed = core::observe_local_source_revision(record.source_raw_path);
+    if (!observed || *observed != revision) {
+        return std::unexpected(
+            !observed ? std::move(observed.error())
+                      : operation_error(core::ErrorCode::conflict,
+                                        "the sidecar carrier has an unexpected revision",
+                                        record.source_raw_path, record.id));
+    }
+    auto bytes = read_carrier_bytes(record.source_raw_path,
+                                    metadata::LoudnessSidecarLimits{}.source_bytes, record.id);
+    if (!bytes) {
+        return std::unexpected(std::move(bytes.error()));
+    }
+    auto sidecar = metadata::parse_loudness_sidecar(*bytes);
+    if (!sidecar) {
+        return std::unexpected(std::move(sidecar.error()));
+    }
+    for (const auto& change : record.changes) {
+        const auto identity = parse_sidecar_slug(change.exact_native_name);
+        if (!identity) {
+            return std::unexpected(operation_error(
+                core::ErrorCode::invariant, "sidecar journal evidence has an invalid identity",
+                record.source_raw_path, record.id));
+        }
+        const auto values = sidecar_member_values(*sidecar, *identity, change.canonical_name);
+        if (!carrier_evidence_matches(values, change, side)) {
+            return std::unexpected(operation_error(core::ErrorCode::conflict,
+                                                   "sidecar carrier content failed verification",
+                                                   record.source_raw_path, record.id));
+        }
+    }
+    return {};
+}
+
+[[nodiscard]] MetadataOperationJournalChange
+carrier_change(const metadata::MetadataWritePlanLoudnessField& field, std::string identity_slug,
+               std::vector<std::string> original_values, std::vector<std::string> planned_values) {
+    return MetadataOperationJournalChange{
+        .field_index = field.field_index,
+        .canonical_name = field.canonical_name,
+        .property_name = std::string(carrier_display_name(field.canonical_name)),
+        .original_present = !original_values.empty(),
+        .original_values = std::move(original_values),
+        .kind = field.kind,
+        .planned_values = std::move(planned_values),
+        .item_indexes = field.item_indexes,
+        .exact_native_name = std::move(identity_slug),
+    };
+}
+
 [[nodiscard]] core::Result<MetadataCommitResult>
 verified_commit_result(const MetadataOperationJournalRecord& record,
                        const core::LocalSourceRevision& published_revision,
@@ -951,6 +1283,7 @@ verified_commit_result(const MetadataOperationJournalRecord& record,
         .published_revision = published_revision,
         .document = std::move(document),
         .occurrence_indexes = record.occurrence_indexes,
+        .content_kind = record.content_kind,
     };
 }
 
@@ -975,6 +1308,22 @@ verified_commit_result(const MetadataOperationJournalRecord& record,
 [[nodiscard]] core::Result<metadata::MetadataDocument>
 verify_original_content(const MetadataOperationJournalRecord& record,
                         const core::CancellationToken& cancellation = {}) {
+    if (record.content_kind == MetadataOperationContentKind::cue_replay_gain) {
+        auto verified =
+            verify_cue_carrier(record, record.expected_revision, CarrierEvidenceSide::original);
+        if (!verified) {
+            return std::unexpected(std::move(verified.error()));
+        }
+        return metadata::MetadataDocument{};
+    }
+    if (record.content_kind == MetadataOperationContentKind::loudness_sidecar) {
+        auto verified =
+            verify_sidecar_carrier(record, record.expected_revision, CarrierEvidenceSide::original);
+        if (!verified) {
+            return std::unexpected(std::move(verified.error()));
+        }
+        return metadata::MetadataDocument{};
+    }
     auto reread = metadata::read_local_metadata(record.source_raw_path, cancellation);
     if (!reread || reread->source_revision != record.expected_revision) {
         return std::unexpected(!reread
@@ -1532,6 +1881,95 @@ finish_metadata_undo(MetadataOperationBackupRecord backup, MetadataOperationJour
     return result;
 }
 
+// ADR-0145: writes a rewritten carrier to the journal's prepared sibling;
+// failures terminate the planned record with cleaned debris.
+[[nodiscard]] core::Result<core::LocalSourceRevision>
+write_prepared_carrier_bytes(const MetadataOperationJournalRecord& record, const std::string& bytes,
+                             MetadataOperationJournal& journal) {
+    const auto fail = [&record,
+                       &journal](core::Error failure,
+                                 const bool restored) -> core::Result<core::LocalSourceRevision> {
+        auto terminal = record_terminal_failure(journal, record, State::planned, std::nullopt,
+                                                std::nullopt, failure, restored);
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(std::move(failure));
+    };
+    Descriptor prepared{
+        ::open(record.prepared_raw_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600)};
+    if (!prepared.valid()) {
+        return fail(system_error("creating the prepared carrier failed", errno,
+                                 record.source_raw_path, record.id),
+                    true);
+    }
+    std::size_t written = 0U;
+    while (written < bytes.size()) {
+        const auto count = ::write(prepared.get(), bytes.data() + written, bytes.size() - written);
+        if (count < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            auto failure = system_error("writing the prepared carrier failed", errno,
+                                        record.source_raw_path, record.id);
+            const bool restored = ::unlink(record.prepared_raw_path.c_str()) == 0;
+            return fail(std::move(failure), restored);
+        }
+        written += static_cast<std::size_t>(count);
+    }
+    if (::fsync(prepared.get()) != 0) {
+        auto failure = system_error("syncing the prepared carrier failed", errno,
+                                    record.source_raw_path, record.id);
+        const bool restored = ::unlink(record.prepared_raw_path.c_str()) == 0;
+        return fail(std::move(failure), restored);
+    }
+    auto revision = core::observe_local_source_revision(record.prepared_raw_path);
+    if (!revision) {
+        const bool restored = ::unlink(record.prepared_raw_path.c_str()) == 0;
+        return fail(std::move(revision.error()), restored);
+    }
+    return *revision;
+}
+
+// ADR-0145: sidecar creation stays outside the journal — nothing
+// pre-existing is at risk and the publish is one atomic rename.
+[[nodiscard]] core::Result<void> publish_created_carrier_bytes(const std::string& raw_path,
+                                                               const std::string& bytes) {
+    const auto prepared_path = raw_path + ".tk-prepared-" + core::StableId::random().to_string();
+    Descriptor prepared{
+        ::open(prepared_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644)};
+    if (!prepared.valid()) {
+        return std::unexpected(
+            system_error("creating the prepared carrier failed", errno, raw_path));
+    }
+    std::size_t written = 0U;
+    while (written < bytes.size()) {
+        const auto count = ::write(prepared.get(), bytes.data() + written, bytes.size() - written);
+        if (count < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            const auto failure =
+                system_error("writing the prepared carrier failed", errno, raw_path);
+            ::unlink(prepared_path.c_str());
+            return std::unexpected(failure);
+        }
+        written += static_cast<std::size_t>(count);
+    }
+    if (::fsync(prepared.get()) != 0) {
+        const auto failure = system_error("syncing the prepared carrier failed", errno, raw_path);
+        ::unlink(prepared_path.c_str());
+        return std::unexpected(failure);
+    }
+    if (std::rename(prepared_path.c_str(), raw_path.c_str()) != 0) {
+        const auto failure = system_error("publishing the created carrier failed", errno, raw_path);
+        ::unlink(prepared_path.c_str());
+        return std::unexpected(failure);
+    }
+    static_cast<void>(fsync_parent(raw_path, raw_path, core::StableId{}));
+    return {};
+}
+
 } // namespace
 
 core::Result<MetadataCommitResult>
@@ -1729,6 +2167,393 @@ commit_artwork_source(const metadata::ArtworkWritePlanSource& source_plan,
                                           *source_attributes, prepared->prepared_revision,
                                           prepared->document, journal, dependent_state_committer,
                                           cancellation);
+}
+
+core::Result<CueReplayGainCommitResult>
+commit_cue_replay_gain_sheet(const metadata::MetadataWritePlanCueSheet& sheet_plan,
+                             MetadataOperationJournal& journal,
+                             const MetadataDependentStateCommitter& dependent_state_committer,
+                             const core::CancellationToken& cancellation) {
+    const auto& raw_cue_path = sheet_plan.raw_cue_path;
+    if (cancellation.is_cancellation_requested()) {
+        return std::unexpected(cancelled(raw_cue_path));
+    }
+    if (!dependent_state_committer || raw_cue_path.empty() ||
+        raw_cue_path.find('\0') != std::string::npos || !sheet_plan.ready() ||
+        !sheet_plan.expected_revision || !sheet_plan.observed_revision ||
+        *sheet_plan.expected_revision != *sheet_plan.observed_revision ||
+        (sheet_plan.tracks.empty() && sheet_plan.album_fields.empty())) {
+        return std::unexpected(operation_error(
+            core::ErrorCode::invalid_argument,
+            "CUE ReplayGain commit requires a ready revision-bound plan and state committer",
+            raw_cue_path));
+    }
+    auto process_lock =
+        acquire_process_lock(*sheet_plan.observed_revision, cancellation, raw_cue_path);
+    if (!process_lock) {
+        return std::unexpected(std::move(process_lock.error()));
+    }
+    auto source_descriptor = open_and_lock_file(raw_cue_path, cancellation, raw_cue_path);
+    if (!source_descriptor) {
+        return std::unexpected(std::move(source_descriptor.error()));
+    }
+    auto source_status = require_direct_single_link_source(*source_descriptor, raw_cue_path,
+                                                           *sheet_plan.observed_revision);
+    if (!source_status) {
+        return std::unexpected(std::move(source_status.error()));
+    }
+    auto source_attributes = read_extended_attributes(*source_descriptor, raw_cue_path);
+    if (!source_attributes) {
+        return std::unexpected(std::move(source_attributes.error()));
+    }
+    const auto journal_id = core::StableId::random();
+    auto bytes =
+        read_carrier_bytes(raw_cue_path, formats::CueParseLimits{}.source_bytes, journal_id);
+    if (!bytes) {
+        return std::unexpected(std::move(bytes.error()));
+    }
+    auto sheet = formats::parse_cue_sheet(*bytes);
+    if (!sheet) {
+        return std::unexpected(std::move(sheet.error()));
+    }
+
+    formats::CueReplayGainUpdate update;
+    CueReplayGainCommitResult result{
+        .raw_cue_path = raw_cue_path,
+        .previous_revision = *sheet_plan.expected_revision,
+        .published_revision = {},
+        .album_fields = {},
+        .tracks = {},
+    };
+    MetadataOperationJournalRecord record;
+    record.id = journal_id;
+    record.source_raw_path = raw_cue_path;
+    const auto [prepared_path, backup_path] = sibling_paths(raw_cue_path, journal_id);
+    record.prepared_raw_path = prepared_path;
+    record.backup_raw_path = backup_path;
+    record.expected_revision = *sheet_plan.expected_revision;
+    record.content_kind = MetadataOperationContentKind::cue_replay_gain;
+
+    const auto convert_field = [&](const metadata::MetadataWritePlanLoudnessField& field,
+                                   const std::optional<std::pair<std::size_t, std::size_t>>& track)
+        -> core::Result<std::pair<formats::CueReplayGainField, CueReplayGainAppliedField>> {
+        CueReplayGainAppliedField applied{
+            .canonical_name = field.canonical_name,
+            .display_name = std::string(carrier_display_name(field.canonical_name)),
+            .value = std::nullopt,
+        };
+        formats::CueReplayGainField carrier{.update = true, .value = std::nullopt};
+        std::vector<std::string> planned;
+        if (field.kind != metadata::StagedMetadataPatchKind::remove_field) {
+            if (field.values.size() != 1U) {
+                return std::unexpected(operation_error(
+                    core::ErrorCode::invariant,
+                    "a planned CUE ReplayGain replacement must carry exactly one value",
+                    raw_cue_path, journal_id));
+            }
+            auto value =
+                canonical_loudness_value(field.canonical_name, field.values.front(), raw_cue_path);
+            if (!value) {
+                return std::unexpected(std::move(value.error()));
+            }
+            carrier.value = value->first;
+            applied.value = value->second;
+            planned = {value->second};
+        }
+        const auto slug =
+            track ? cue_track_slug(track->first, track->second) : std::string{cue_album_slug};
+        record.changes.push_back(carrier_change(
+            field, slug,
+            cue_scope_values(*sheet, track, carrier_display_name(field.canonical_name)),
+            std::move(planned)));
+        return std::pair{carrier, std::move(applied)};
+    };
+
+    for (const auto& field : sheet_plan.album_fields) {
+        auto converted = convert_field(field, std::nullopt);
+        if (!converted) {
+            return std::unexpected(std::move(converted.error()));
+        }
+        (field.canonical_name == "replaygainalbumgain" ? update.album_gain_db : update.album_peak) =
+            converted->first;
+        result.album_fields.push_back(std::move(converted->second));
+        record.occurrence_indexes.insert(record.occurrence_indexes.end(),
+                                         field.item_indexes.begin(), field.item_indexes.end());
+    }
+    for (const auto& track : sheet_plan.tracks) {
+        formats::CueTrackReplayGainUpdate track_update{
+            .file_index = track.file_index,
+            .track_index = track.track_index,
+            .track_gain_db = {},
+            .track_peak = {},
+        };
+        CueReplayGainAppliedTrack applied{
+            .file_index = track.file_index,
+            .track_index = track.track_index,
+            .occurrence_indexes = track.occurrence_indexes,
+            .fields = {},
+        };
+        for (const auto& field : track.fields) {
+            auto converted = convert_field(field, std::pair{track.file_index, track.track_index});
+            if (!converted) {
+                return std::unexpected(std::move(converted.error()));
+            }
+            (field.canonical_name == "replaygaintrackgain" ? track_update.track_gain_db
+                                                           : track_update.track_peak) =
+                converted->first;
+            applied.fields.push_back(std::move(converted->second));
+        }
+        update.tracks.push_back(track_update);
+        result.tracks.push_back(std::move(applied));
+        record.occurrence_indexes.insert(record.occurrence_indexes.end(),
+                                         track.occurrence_indexes.begin(),
+                                         track.occurrence_indexes.end());
+    }
+    std::ranges::sort(record.occurrence_indexes);
+    record.occurrence_indexes.erase(
+        std::unique(record.occurrence_indexes.begin(), record.occurrence_indexes.end()),
+        record.occurrence_indexes.end());
+
+    auto created = journal.create(record);
+    if (!created) {
+        return std::unexpected(std::move(created.error()));
+    }
+    auto rewritten = formats::rewrite_cue_replay_gain(*bytes, update);
+    if (!rewritten) {
+        const auto& failure = rewritten.error();
+        auto terminal = record_terminal_failure(journal, record, State::planned, std::nullopt,
+                                                std::nullopt, failure, true);
+        if (!terminal) {
+            return std::unexpected(std::move(terminal.error()));
+        }
+        return std::unexpected(failure);
+    }
+    auto prepared_revision = write_prepared_carrier_bytes(record, rewritten->bytes, journal);
+    if (!prepared_revision) {
+        return std::unexpected(std::move(prepared_revision.error()));
+    }
+    auto published = publish_prepared_metadata_copy(
+        record, *source_descriptor, *source_status, *source_attributes, *prepared_revision, {},
+        journal, dependent_state_committer, cancellation);
+    if (!published) {
+        return std::unexpected(std::move(published.error()));
+    }
+    result.published_revision = published->published_revision;
+    return result;
+}
+
+core::Result<LoudnessSidecarCommitResult>
+commit_loudness_sidecar(const metadata::MetadataWritePlanSidecar& sidecar_plan,
+                        MetadataOperationJournal& journal,
+                        const MetadataDependentStateCommitter& dependent_state_committer,
+                        const core::CancellationToken& cancellation) {
+    const auto& raw_audio_path = sidecar_plan.raw_audio_path;
+    if (cancellation.is_cancellation_requested()) {
+        return std::unexpected(cancelled(raw_audio_path));
+    }
+    if (!dependent_state_committer || raw_audio_path.empty() ||
+        raw_audio_path.find('\0') != std::string::npos || !sidecar_plan.ready() ||
+        !sidecar_plan.expected_revision || !sidecar_plan.observed_revision ||
+        *sidecar_plan.expected_revision != *sidecar_plan.observed_revision ||
+        sidecar_plan.entries.empty()) {
+        return std::unexpected(operation_error(
+            core::ErrorCode::invalid_argument,
+            "loudness sidecar commit requires a ready revision-bound plan and state committer",
+            raw_audio_path));
+    }
+    auto fresh_audio = core::observe_local_source_revision(raw_audio_path);
+    if (!fresh_audio) {
+        return std::unexpected(std::move(fresh_audio.error()));
+    }
+    if (*fresh_audio != *sidecar_plan.expected_revision) {
+        return std::unexpected(operation_error(
+            core::ErrorCode::conflict, "the source changed after its loudness draft was captured",
+            raw_audio_path));
+    }
+
+    LoudnessSidecarCommitResult result{
+        .raw_audio_path = raw_audio_path,
+        .sidecar_raw_path = metadata::loudness_sidecar_path(raw_audio_path),
+        .audio_revision = *sidecar_plan.expected_revision,
+        .sidecar_removed = false,
+        .entries = {},
+    };
+    auto sidecar_revision = optional_revision(result.sidecar_raw_path);
+    if (!sidecar_revision) {
+        return std::unexpected(std::move(sidecar_revision.error()));
+    }
+
+    std::optional<ProcessSourceLock> process_lock;
+    std::optional<Descriptor> sidecar_descriptor;
+    std::optional<struct stat> sidecar_status;
+    std::optional<ExtendedAttributeListing> sidecar_attributes;
+    std::optional<metadata::LoudnessSidecar> pre_image;
+    if (*sidecar_revision) {
+        auto lock = acquire_process_lock(**sidecar_revision, cancellation, result.sidecar_raw_path);
+        if (!lock) {
+            return std::unexpected(std::move(lock.error()));
+        }
+        process_lock.emplace(std::move(*lock));
+        auto descriptor =
+            open_and_lock_file(result.sidecar_raw_path, cancellation, result.sidecar_raw_path);
+        if (!descriptor) {
+            return std::unexpected(std::move(descriptor.error()));
+        }
+        auto status = require_direct_single_link_source(*descriptor, result.sidecar_raw_path,
+                                                        **sidecar_revision);
+        if (!status) {
+            return std::unexpected(std::move(status.error()));
+        }
+        auto attributes = read_extended_attributes(*descriptor, result.sidecar_raw_path);
+        if (!attributes) {
+            return std::unexpected(std::move(attributes.error()));
+        }
+        auto existing = metadata::read_loudness_sidecar(raw_audio_path);
+        if (!existing) {
+            return std::unexpected(std::move(existing.error()));
+        }
+        if (!*existing) {
+            return std::unexpected(operation_error(core::ErrorCode::conflict,
+                                                   "the loudness sidecar vanished while locked",
+                                                   result.sidecar_raw_path));
+        }
+        sidecar_descriptor.emplace(std::move(*descriptor));
+        sidecar_status = *status;
+        sidecar_attributes = std::move(*attributes);
+        pre_image = std::move(**existing);
+    }
+
+    // The merge starts from the pre-image only while it still describes
+    // the current audio bytes; stale entries drop wholesale (ADR-0141).
+    metadata::LoudnessSidecar merged;
+    if (pre_image && pre_image->matches(*sidecar_plan.expected_revision)) {
+        merged = *pre_image;
+    }
+    merged.source_size = sidecar_plan.expected_revision->size;
+    merged.source_modified_seconds = sidecar_plan.expected_revision->modification_time_seconds;
+    merged.source_modified_nanoseconds =
+        sidecar_plan.expected_revision->modification_time_nanoseconds;
+
+    const auto journal_id = core::StableId::random();
+    MetadataOperationJournalRecord record;
+    record.id = journal_id;
+    record.source_raw_path = result.sidecar_raw_path;
+    const auto [prepared_path, backup_path] = sibling_paths(result.sidecar_raw_path, journal_id);
+    record.prepared_raw_path = prepared_path;
+    record.backup_raw_path = backup_path;
+    record.content_kind = MetadataOperationContentKind::loudness_sidecar;
+    if (*sidecar_revision) {
+        record.expected_revision = **sidecar_revision;
+    }
+
+    for (const auto& planned : sidecar_plan.entries) {
+        auto target = metadata::LoudnessSidecarEntry{
+            .stream_index = planned.identity.stream_index,
+            .subsong_index = planned.identity.subsong_index,
+            .start_sample = planned.identity.start_sample,
+            .end_sample = planned.identity.end_sample,
+            .track_gain_db = std::nullopt,
+            .track_peak = std::nullopt,
+            .album_gain_db = std::nullopt,
+            .album_peak = std::nullopt,
+        };
+        auto found = std::ranges::find_if(merged.entries,
+                                          [&target](const metadata::LoudnessSidecarEntry& entry) {
+                                              return entry.same_identity(target);
+                                          });
+        if (found == merged.entries.end()) {
+            merged.entries.push_back(target);
+            found = std::prev(merged.entries.end());
+        }
+        LoudnessSidecarAppliedEntry applied{
+            .identity = planned.identity,
+            .occurrence_indexes = planned.occurrence_indexes,
+            .fields = {},
+        };
+        for (const auto& field : planned.fields) {
+            auto* member = field.canonical_name == "replaygaintrackgain"   ? &found->track_gain_db
+                           : field.canonical_name == "replaygaintrackpeak" ? &found->track_peak
+                           : field.canonical_name == "replaygainalbumgain" ? &found->album_gain_db
+                                                                           : &found->album_peak;
+            CueReplayGainAppliedField applied_field{
+                .canonical_name = field.canonical_name,
+                .display_name = std::string(carrier_display_name(field.canonical_name)),
+                .value = std::nullopt,
+            };
+            std::vector<std::string> planned_values;
+            if (field.kind == metadata::StagedMetadataPatchKind::remove_field) {
+                member->reset();
+            } else {
+                if (field.values.size() != 1U) {
+                    return std::unexpected(operation_error(
+                        core::ErrorCode::invariant,
+                        "a planned sidecar replacement must carry exactly one value",
+                        raw_audio_path, journal_id));
+                }
+                auto value = canonical_loudness_value(field.canonical_name, field.values.front(),
+                                                      raw_audio_path);
+                if (!value) {
+                    return std::unexpected(std::move(value.error()));
+                }
+                *member = value->first;
+                applied_field.value = value->second;
+                planned_values = {value->second};
+            }
+            record.changes.push_back(carrier_change(
+                field, sidecar_entry_slug(planned.identity),
+                pre_image
+                    ? sidecar_member_values(*pre_image, planned.identity, field.canonical_name)
+                    : std::vector<std::string>{},
+                std::move(planned_values)));
+            applied.fields.push_back(std::move(applied_field));
+        }
+        if (found->empty()) {
+            merged.entries.erase(found);
+        }
+        record.occurrence_indexes.insert(record.occurrence_indexes.end(),
+                                         planned.occurrence_indexes.begin(),
+                                         planned.occurrence_indexes.end());
+        result.entries.push_back(std::move(applied));
+    }
+    std::ranges::sort(record.occurrence_indexes);
+    record.occurrence_indexes.erase(
+        std::unique(record.occurrence_indexes.begin(), record.occurrence_indexes.end()),
+        record.occurrence_indexes.end());
+
+    auto serialized = metadata::serialize_loudness_sidecar(merged);
+    if (!serialized) {
+        return std::unexpected(std::move(serialized.error()));
+    }
+
+    if (!*sidecar_revision) {
+        // ADR-0145: creation stays a direct atomic publish — there is no
+        // pre-image to protect and nothing for recovery or undo to do.
+        if (merged.entries.empty()) {
+            result.sidecar_removed = true;
+            return result;
+        }
+        auto created = publish_created_carrier_bytes(result.sidecar_raw_path, *serialized);
+        if (!created) {
+            return std::unexpected(std::move(created.error()));
+        }
+        return result;
+    }
+
+    auto created = journal.create(record);
+    if (!created) {
+        return std::unexpected(std::move(created.error()));
+    }
+    auto prepared_revision = write_prepared_carrier_bytes(record, *serialized, journal);
+    if (!prepared_revision) {
+        return std::unexpected(std::move(prepared_revision.error()));
+    }
+    auto published = publish_prepared_metadata_copy(
+        record, *sidecar_descriptor, *sidecar_status, *sidecar_attributes, *prepared_revision, {},
+        journal, dependent_state_committer, cancellation);
+    if (!published) {
+        return std::unexpected(std::move(published.error()));
+    }
+    return result;
 }
 
 core::Result<std::vector<MetadataRecoveryResult>>

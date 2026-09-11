@@ -144,6 +144,11 @@ run_metadata_operation_job(const std::filesystem::path& database_path,
                 .context = {},
             });
         }
+        // ADR-0145: recovered carrier publications carry no tag document;
+        // the files are the source of truth and re-project on probing.
+        if (result.content_kind != operations::MetadataOperationContentKind::text_fields) {
+            return {};
+        }
         auto refreshed = persistence_service->refreshLocalMetadataAndWait(metadata_refresh(result));
         if (!refreshed) {
             return std::unexpected(std::move(refreshed.error()));
@@ -481,6 +486,12 @@ void BenchMainWindow::showMetadataProperties() {
                                 .context = {},
                             });
                         }
+                        // ADR-0145: carrier commits have no tag document;
+                        // their rows refresh through the apply observers.
+                        if (result.content_kind !=
+                            operations::MetadataOperationContentKind::text_fields) {
+                            return {};
+                        }
                         auto refreshed = persistence_service->refreshLocalMetadataAndWait(
                             metadata_refresh(result));
                         return refreshed ? core::Result<void>{}
@@ -492,6 +503,17 @@ void BenchMainWindow::showMetadataProperties() {
                                                const core::CancellationToken& source_cancellation) {
                             return operations::commit_flac_metadata_source(
                                 source, journal, dependent, source_cancellation);
+                        },
+                        [&journal, &dependent](const metadata::MetadataWritePlanCueSheet& sheet,
+                                               const core::CancellationToken& sheet_cancellation) {
+                            return operations::commit_cue_replay_gain_sheet(
+                                sheet, journal, dependent, sheet_cancellation);
+                        },
+                        [&journal,
+                         &dependent](const metadata::MetadataWritePlanSidecar& sidecar,
+                                     const core::CancellationToken& sidecar_cancellation) {
+                            return operations::commit_loudness_sidecar(sidecar, journal, dependent,
+                                                                       sidecar_cancellation);
                         },
                         progress, cancellation,
                         operations::MetadataApplyOptions{.maximum_parallelism = 2U});

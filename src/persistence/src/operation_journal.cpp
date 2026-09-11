@@ -293,7 +293,7 @@ read_optional_revision(sqlite3_stmt* statement, const int first) {
 
 [[nodiscard]] bool valid_content_kind(const int value) {
     return value >= static_cast<int>(ContentKind::text_fields) &&
-           value <= static_cast<int>(ContentKind::embedded_artwork);
+           value <= static_cast<int>(ContentKind::loudness_sidecar);
 }
 
 [[nodiscard]] bool valid_backup_state(const int value) {
@@ -412,10 +412,11 @@ read_optional_revision(sqlite3_stmt* statement, const int first) {
         record.prepared_raw_path == record.backup_raw_path || record.occurrence_indexes.empty()) {
         return std::unexpected(invalid_record("Invalid metadata-operation journal structure"));
     }
-    const bool text_record = record.content_kind == ContentKind::text_fields;
+    // ADR-0145: the CUE and sidecar carrier kinds share the text kind's
+    // change-row evidence shape.
     const bool artwork_record = record.content_kind == ContentKind::embedded_artwork;
-    if ((!text_record && !artwork_record) ||
-        (text_record && (record.changes.empty() || record.artwork)) ||
+    if (!valid_content_kind(static_cast<int>(record.content_kind)) ||
+        (!artwork_record && (record.changes.empty() || record.artwork)) ||
         (artwork_record && (!record.changes.empty() || !record.artwork))) {
         return std::unexpected(invalid_record("Invalid metadata-operation content evidence"));
     }
@@ -463,6 +464,11 @@ read_optional_revision(sqlite3_stmt* statement, const int first) {
         !add_text(text_bytes, record.backup_raw_path.size())) {
         return std::unexpected(invalid_record("Metadata-operation journal text exceeds its limit"));
     }
+    // ADR-0145: carrier kinds address one field per (identity slug,
+    // canonical name) pair; several entries legitimately share one staged
+    // field index, and one slug carries several canonical names.
+    const bool carrier_kind = record.content_kind == ContentKind::cue_replay_gain ||
+                              record.content_kind == ContentKind::loudness_sidecar;
     for (const auto& change : record.changes) {
         if (change.canonical_name.empty() || change.property_name.empty() ||
             (change.exact_native_name &&
@@ -471,11 +477,13 @@ read_optional_revision(sqlite3_stmt* statement, const int first) {
                   *change.exact_native_name)) ||
             change.item_indexes.empty() ||
             (!change.original_present && !change.original_values.empty()) ||
-            !field_indexes.insert(change.field_index).second ||
+            (carrier_kind && !change.exact_native_name) ||
+            (!carrier_kind && !field_indexes.insert(change.field_index).second) ||
             !addressed_names
-                 .insert(change.exact_native_name
-                             ? std::string{"native:"} + *change.exact_native_name
-                             : std::string{"logical:"} + change.canonical_name)
+                 .insert((change.exact_native_name
+                              ? std::string{"native:"} + *change.exact_native_name
+                              : std::string{"logical:"} + change.canonical_name) +
+                         (carrier_kind ? "|" + change.canonical_name : std::string{}))
                  .second ||
             change.original_values.size() > maximum_values_per_change ||
             change.planned_values.size() > maximum_values_per_change ||

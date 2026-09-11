@@ -29,6 +29,10 @@ enum class MetadataOperationJournalState : std::uint8_t {
 enum class MetadataOperationContentKind : std::uint8_t {
     text_fields,
     embedded_artwork,
+    // ADR-0145: carrier rewrites share the text evidence shape, with the
+    // carrier-internal identity encoded in each change's exact_native_name.
+    cue_replay_gain,
+    loudness_sidecar,
 };
 
 // The file-mutation journal reaches `complete` before its exact old inode can

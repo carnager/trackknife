@@ -94,6 +94,12 @@ struct MetadataApplyOptions {
 
 using MetadataApplySourceCommitter = std::function<core::Result<MetadataCommitResult>(
     const metadata::MetadataWritePlanSource&, const core::CancellationToken&)>;
+// ADR-0145: carrier commits are journaled too, so the caller owns their
+// journal and dependent-state wiring exactly like the tag committer's.
+using CueSheetApplyCommitter = std::function<core::Result<CueReplayGainCommitResult>(
+    const metadata::MetadataWritePlanCueSheet&, const core::CancellationToken&)>;
+using LoudnessSidecarApplyCommitter = std::function<core::Result<LoudnessSidecarCommitResult>(
+    const metadata::MetadataWritePlanSidecar&, const core::CancellationToken&)>;
 using MetadataApplyProgressCallback = std::function<void(const MetadataApplyProgress&)>;
 
 // Applies an entirely ready immutable plan on a bounded worker pool. Runtime
@@ -103,6 +109,8 @@ using MetadataApplyProgressCallback = std::function<void(const MetadataApplyProg
 // committer may be invoked concurrently and the progress callback is serialized.
 [[nodiscard]] core::Result<MetadataApplyResult> apply_metadata_write_plan(
     const metadata::MetadataWritePlan& plan, const MetadataApplySourceCommitter& committer,
+    const CueSheetApplyCommitter& cue_committer,
+    const LoudnessSidecarApplyCommitter& sidecar_committer,
     const MetadataApplyProgressCallback& progress = {},
     const core::CancellationToken& cancellation = {}, const MetadataApplyOptions& options = {});
 

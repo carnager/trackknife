@@ -176,8 +176,13 @@ Reference: [metadata and artwork](metadata-and-files.md).
   (WAV/AIFF/APE/…) diverts into the whole-file sidecar entry during the
   planner's reader pass; other fields keep the visible writer block, and
   the outcome stays visible through provenance and the apply summary.
-- [ ] Bring sidecar and CUE rewrites into the undo journal (shared
-  ADR-0139/0141 follow-up).
+- [x] Journal parity for carrier rewrites (ADR-0145): CUE-sheet and
+  existing-sidecar mutations run the full ADR-0059 lifecycle — journaled
+  states, crash recovery (roll-forward with carrier-content verification,
+  prepublication-debris rollback), retained undoable byte pre-images, and
+  reconciliation reporting. Emptied sidecars publish as empty documents
+  instead of vanishing; sidecar creation stays a direct atomic publish by
+  explicit argument (no pre-image at risk).
 - [ ] Define and implement Opus R128 storage and playback handling.
 - [x] Add playback preamp controls (ADR-0138): separate ±20 dB preamps for
   tracks with and without loudness data, applied only while local

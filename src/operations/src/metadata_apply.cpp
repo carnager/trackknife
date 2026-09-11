@@ -46,13 +46,16 @@ std::size_t MetadataApplyResult::cancelled_source_count() const noexcept {
 
 core::Result<MetadataApplyResult> apply_metadata_write_plan(
     const metadata::MetadataWritePlan& plan, const MetadataApplySourceCommitter& committer,
+    const CueSheetApplyCommitter& cue_committer,
+    const LoudnessSidecarApplyCommitter& sidecar_committer,
     const MetadataApplyProgressCallback& progress, const core::CancellationToken& cancellation,
     const MetadataApplyOptions& options) {
-    if (!plan.ready() || !committer || options.maximum_parallelism == 0U ||
+    if (!plan.ready() || !committer || (!plan.cue_sheets.empty() && !cue_committer) ||
+        (!plan.sidecars.empty() && !sidecar_committer) || options.maximum_parallelism == 0U ||
         options.maximum_parallelism > maximum_apply_parallelism) {
         return std::unexpected(apply_error(
             core::ErrorCode::invalid_argument,
-            "metadata Apply requires an entirely ready plan, a committer, and 1–8 workers"));
+            "metadata Apply requires an entirely ready plan, committers, and 1–8 workers"));
     }
 
     MetadataApplyResult result;
@@ -155,7 +158,7 @@ core::Result<MetadataApplyResult> apply_metadata_write_plan(
                 core::ErrorCode::cancelled,
                 "metadata Apply was cancelled before this CUE sheet started", sheet.raw_cue_path);
         } else {
-            auto committed = commit_cue_replay_gain_sheet(sheet, cancellation);
+            auto committed = cue_committer(sheet, cancellation);
             if (committed) {
                 outcome.state = MetadataApplySourceState::committed;
                 outcome.commit = std::move(*committed);
@@ -185,7 +188,7 @@ core::Result<MetadataApplyResult> apply_metadata_write_plan(
                                         "metadata Apply was cancelled before this sidecar started",
                                         sidecar.raw_audio_path);
         } else {
-            auto committed = commit_loudness_sidecar(sidecar, cancellation);
+            auto committed = sidecar_committer(sidecar, cancellation);
             if (committed) {
                 outcome.state = MetadataApplySourceState::committed;
                 outcome.commit = std::move(*committed);

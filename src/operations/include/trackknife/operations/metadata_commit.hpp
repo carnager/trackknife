@@ -24,8 +24,11 @@ struct MetadataCommitResult {
     std::string backup_raw_path;
     core::LocalSourceRevision previous_revision;
     core::LocalSourceRevision published_revision;
+    // Empty for carrier kinds (ADR-0145); consumers dispatch on
+    // content_kind before treating this as a tag document.
     metadata::MetadataDocument document;
     std::vector<std::size_t> occurrence_indexes;
+    MetadataOperationContentKind content_kind{MetadataOperationContentKind::text_fields};
 
     friend bool operator==(const MetadataCommitResult&, const MetadataCommitResult&) = default;
 };

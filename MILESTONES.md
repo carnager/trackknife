@@ -1348,6 +1348,22 @@ quickly and correctly.
   not divert, and writable formats keep using ordinary tags. Undo-
   journal parity remains the shared ADR-0139/0141 follow-up.
 
+### Journal parity for carrier rewrites (2026-09-11)
+
+- ADR-0145 retires that shared follow-up: CUE-sheet rewrites and merges
+  over an existing loudness sidecar now run the complete ADR-0059
+  journal lifecycle — the shared publish sequence (flock, hard-link
+  backup, rename, fsync discipline), crash recovery that rolls forward
+  with per-carrier content verification and rolls back prepublication
+  debris, retained undoable byte pre-images (RENAME_EXCHANGE undo,
+  verified against original evidence captured from the parsed
+  pre-image), and reconciliation reporting. Evidence reuses the text
+  change rows with the carrier identity in `exact_native_name`; schema
+  version 29 widens the persisted content kinds by rebuilding the
+  journal table without disturbing its children. Emptied sidecars now
+  publish as empty documents instead of vanishing; sidecar creation
+  stays a direct atomic publish because no pre-image is at risk.
+
 ## M8 — Parallel converter, resampler, and organized output
 
 ### Objective

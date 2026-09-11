@@ -6,9 +6,7 @@ add_library(
     trackknife_operations STATIC
     src/artwork_apply.cpp
     src/artwork_export.cpp
-    src/cue_replay_gain_apply.cpp
     src/file_publication.cpp
-    src/loudness_sidecar_apply.cpp
     src/file_publication_apply.cpp
     src/file_publication_journal.cpp
     src/metadata_apply.cpp

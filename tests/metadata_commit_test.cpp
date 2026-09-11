@@ -2,6 +2,7 @@
 
 #include "trackknife/core/cancellation.hpp"
 #include "trackknife/core/stable_id.hpp"
+#include "trackknife/formats/cue_sheet.hpp"
 #include "trackknife/metadata/flac_writer.hpp"
 #include "trackknife/metadata/local_reader.hpp"
 #include "trackknife/metadata/loudness_sidecar.hpp"
@@ -1326,6 +1327,7 @@ void batch_apply_commits_real_sources_and_reports_partial_results(
                 },
                 cancellation);
         },
+        {}, {},
         [&progress](const operations::MetadataApplyProgress& update) {
             progress.push_back(update);
         },
@@ -1370,7 +1372,8 @@ void batch_apply_commits_real_sources_and_reports_partial_results(
                 .document = {},
                 .occurrence_indexes = source_plan.occurrence_indexes,
             };
-        });
+        },
+        {}, {});
     CHECK(partial && partial->sources.size() == 3U && partial->committed_source_count() == 2U &&
           partial->failed_source_count() == 1U && partial->sources[1].issue &&
           partial->sources[1].issue->message == "injected source failure");
@@ -1407,7 +1410,8 @@ void batch_apply_cancellation_stops_new_source_admission() {
                     .context = {},
                 });
             },
-            {}, cancellation.token(), operations::MetadataApplyOptions{.maximum_parallelism = 2U});
+            {}, {}, {}, cancellation.token(),
+            operations::MetadataApplyOptions{.maximum_parallelism = 2U});
     });
     while (admitted.load(std::memory_order_relaxed) < 2U) {
         std::this_thread::sleep_for(std::chrono::milliseconds{1});
@@ -1919,12 +1923,25 @@ void commits_cue_replay_gain_sheets_atomically() {
         .album_fields = {gain_field("replaygainalbumgain", "-5.53 dB", 0U)},
         .issues = {},
     };
-    const auto committed = operations::commit_cue_replay_gain_sheet(plan);
+    auto journal = open_journal(root, "cue.sqlite3");
+    if (!journal) {
+        return;
+    }
+    std::size_t dependent_calls = 0U;
+    const auto dependent =
+        [&dependent_calls](const operations::MetadataCommitResult& result) -> core::Result<void> {
+        ++dependent_calls;
+        CHECK(result.content_kind == operations::MetadataOperationContentKind::cue_replay_gain);
+        CHECK(result.document == metadata::MetadataDocument{});
+        return {};
+    };
+    const auto committed = operations::commit_cue_replay_gain_sheet(plan, *journal, dependent);
     CHECK(committed.has_value());
     if (!committed) {
         std::cerr << "cue commit failed: " << committed.error().message << '\n';
         return;
     }
+    CHECK(dependent_calls == 1U);
     CHECK(committed->raw_cue_path == cue.native());
     CHECK(committed->previous_revision == *revision);
     CHECK(committed->album_fields.size() == 1U);
@@ -1952,15 +1969,59 @@ void commits_cue_replay_gain_sheets_atomically() {
                        "    INDEX 01 00:01:00\n");
     }
 
-    // The stale pre-commit plan no longer matches the published sheet.
-    const auto stale = operations::commit_cue_replay_gain_sheet(plan);
-    CHECK(!stale);
-    CHECK(!stale && stale.error().code == core::ErrorCode::conflict);
+    // ADR-0145: the operation is journaled to completion with a retained
+    // undoable byte pre-image beside the sheet.
+    const auto incomplete = journal->load_incomplete();
+    CHECK(incomplete.has_value() && incomplete->empty());
+    const auto backups = journal->load_backups();
+    CHECK(backups.has_value());
+    CHECK(backups && backups->size() == 1U);
+    if (backups && backups->size() == 1U) {
+        const auto& backup = backups->front();
+        CHECK(backup.state == operations::MetadataOperationBackupState::retained);
+        CHECK(backup.operation.content_kind ==
+              operations::MetadataOperationContentKind::cue_replay_gain);
+        const auto backup_revision =
+            core::observe_local_source_revision(backup.operation.backup_raw_path);
+        CHECK(backup_revision.has_value());
+        CHECK(backup_revision && *backup_revision == *revision);
+
+        // Undo restores the byte-identical pre-image (skipped on
+        // filesystems without RENAME_EXCHANGE).
+        auto undone = operations::undo_flac_metadata_operation(
+            backup.operation.id, *journal,
+            [](const operations::MetadataCommitResult&) -> core::Result<void> { return {}; });
+        if (!undone && undone.error().code == core::ErrorCode::unsupported) {
+            return;
+        }
+        CHECK(undone.has_value());
+        std::ifstream restored_input{cue, std::ios::binary};
+        const std::string restored{std::istreambuf_iterator<char>{restored_input},
+                                   std::istreambuf_iterator<char>{}};
+        CHECK(restored == "PERFORMER \"AA\"\n"
+                          "FILE \"disc.flac\" WAVE\n"
+                          "  TRACK 01 AUDIO\n"
+                          "    INDEX 01 00:00:00\n"
+                          "  TRACK 02 AUDIO\n"
+                          "    INDEX 01 00:01:00\n");
+        // The stale pre-commit plan no longer... after undo the sheet is
+        // back at the expected revision content but with a fresh mtime;
+        // a re-commit must gate on the exact revision.
+        const auto after_undo = core::observe_local_source_revision(cue.native());
+        CHECK(after_undo.has_value());
+        if (after_undo && *after_undo != *revision) {
+            const auto stale = operations::commit_cue_replay_gain_sheet(
+                plan, *journal,
+                [](const operations::MetadataCommitResult&) -> core::Result<void> { return {}; });
+            CHECK(!stale);
+        }
+    }
 }
 
-// ADR-0141: a ready sidecar plan merges atomically beside the audio
-// file, later merges keep unrelated values, emptied sidecars vanish,
-// and a changed audio file is refused.
+// ADR-0141/0145: a ready sidecar plan merges beside the audio file
+// (journaled over an existing sidecar, direct on creation), later
+// merges keep unrelated values, emptied sidecars become empty
+// journaled documents, and a changed audio file is refused.
 void commits_loudness_sidecars_atomically() {
     using namespace trackknife;
     const TemporaryDirectory root;
@@ -2002,8 +2063,20 @@ void commits_loudness_sidecars_atomically() {
         };
     };
 
-    const auto first = operations::commit_loudness_sidecar(plan_with(
-        {field("replaygaintrackgain", "-3.46 dB"), field("replaygaintrackpeak", "0.994629")}));
+    auto journal = open_journal(root, "sidecar.sqlite3");
+    if (!journal) {
+        return;
+    }
+    const auto dependent =
+        [](const operations::MetadataCommitResult& result) -> core::Result<void> {
+        CHECK(result.content_kind == operations::MetadataOperationContentKind::loudness_sidecar);
+        return {};
+    };
+    // Creation of a missing sidecar stays outside the journal (ADR-0145).
+    const auto first =
+        operations::commit_loudness_sidecar(plan_with({field("replaygaintrackgain", "-3.46 dB"),
+                                                       field("replaygaintrackpeak", "0.994629")}),
+                                            *journal, dependent);
     CHECK(first.has_value());
     if (!first) {
         std::cerr << "sidecar commit failed: " << first.error().message << '\n';
@@ -2026,8 +2099,13 @@ void commits_loudness_sidecars_atomically() {
     }
 
     // A later merge adds album values without disturbing track values.
-    const auto second =
-        operations::commit_loudness_sidecar(plan_with({field("replaygainalbumgain", "-5.53 dB")}));
+    const auto created_incomplete = journal->load_incomplete();
+    CHECK(created_incomplete.has_value() && created_incomplete->empty());
+    const auto created_backups = journal->load_backups();
+    CHECK(created_backups.has_value() && created_backups->empty());
+
+    const auto second = operations::commit_loudness_sidecar(
+        plan_with({field("replaygainalbumgain", "-5.53 dB")}), *journal, dependent);
     CHECK(second.has_value());
     stored = metadata::read_loudness_sidecar(audio);
     CHECK(stored.has_value() && stored->has_value());
@@ -2037,22 +2115,34 @@ void commits_loudness_sidecars_atomically() {
               (*stored)->entries.front().album_gain_db == -5.53);
     }
 
-    // Removing every value deletes the sidecar entirely.
-    const auto removed = operations::commit_loudness_sidecar(plan_with(
-        {field("replaygaintrackgain", std::nullopt), field("replaygaintrackpeak", std::nullopt),
-         field("replaygainalbumgain", std::nullopt)}));
+    // ADR-0145: the merge over the existing sidecar is journaled with a
+    // retained undoable backup.
+    const auto merge_backups = journal->load_backups();
+    CHECK(merge_backups.has_value() && merge_backups->size() == 1U);
+    CHECK(merge_backups && merge_backups->size() == 1U &&
+          merge_backups->front().operation.content_kind ==
+              operations::MetadataOperationContentKind::loudness_sidecar);
+
+    // Removing every value publishes an empty-entries document instead
+    // of deleting (ADR-0145); the mutation stays journaled and undoable.
+    const auto removed =
+        operations::commit_loudness_sidecar(plan_with({field("replaygaintrackgain", std::nullopt),
+                                                       field("replaygaintrackpeak", std::nullopt),
+                                                       field("replaygainalbumgain", std::nullopt)}),
+                                            *journal, dependent);
     CHECK(removed.has_value());
-    CHECK(removed && removed->sidecar_removed);
+    CHECK(removed && !removed->sidecar_removed);
     stored = metadata::read_loudness_sidecar(audio);
-    CHECK(stored.has_value() && !stored->has_value());
+    CHECK(stored.has_value() && stored->has_value());
+    CHECK(stored && *stored && (*stored)->entries.empty());
 
     // A changed audio file is refused before anything is written.
     {
         std::ofstream output{audio, std::ios::binary | std::ios::app};
         output << "!";
     }
-    const auto stale =
-        operations::commit_loudness_sidecar(plan_with({field("replaygaintrackgain", "-1.00 dB")}));
+    const auto stale = operations::commit_loudness_sidecar(
+        plan_with({field("replaygaintrackgain", "-1.00 dB")}), *journal, dependent);
     CHECK(!stale);
     CHECK(!stale && stale.error().code == core::ErrorCode::conflict);
 }
@@ -2105,6 +2195,10 @@ void diverted_unwritable_loudness_reaches_the_sidecar() {
     CHECK(plan->sources.empty());
     CHECK(plan->sidecars.size() == 1U);
 
+    auto journal = open_journal(root, "diverted.sqlite3");
+    if (!journal) {
+        return;
+    }
     const auto applied = operations::apply_metadata_write_plan(
         *plan,
         [](const metadata::MetadataWritePlanSource& source,
@@ -2114,6 +2208,14 @@ void diverted_unwritable_loudness_reaches_the_sidecar() {
                 .message = "no tag source should remain in a fully diverted plan",
                 .context = {{.key = "path", .value = source.raw_path}},
             });
+        },
+        {},
+        [&journal](const metadata::MetadataWritePlanSidecar& sidecar,
+                   const core::CancellationToken& sidecar_cancellation) {
+            return operations::commit_loudness_sidecar(
+                sidecar, *journal,
+                [](const operations::MetadataCommitResult&) -> core::Result<void> { return {}; },
+                sidecar_cancellation);
         });
     CHECK(applied.has_value());
     CHECK(applied && applied->sources.empty());
@@ -2133,6 +2235,179 @@ void diverted_unwritable_loudness_reaches_the_sidecar() {
     const auto after = core::observe_local_source_revision(wav);
     CHECK(after.has_value());
     CHECK(after && *after == baseline->source_revision);
+}
+
+// ADR-0145: an interrupted CUE publication (crash after rename, before
+// the journal transitions) rolls forward through the carrier verifier,
+// and sidecar prepublication debris rolls back cleanly.
+void recovers_interrupted_carrier_publications() {
+    using namespace trackknife;
+    const TemporaryDirectory root;
+    auto journal = open_journal(root, "carrier-recovery.sqlite3");
+    if (!journal) {
+        return;
+    }
+
+    // --- CUE roll-forward ---
+    const auto cue = (root.path() / "album.cue").native();
+    const std::string original_sheet = "FILE \"disc.flac\" WAVE\n"
+                                       "TRACK 01 AUDIO\n"
+                                       "INDEX 01 00:00:00\n";
+    {
+        std::ofstream output{cue, std::ios::binary};
+        output << original_sheet;
+    }
+    const auto cue_revision = core::observe_local_source_revision(cue);
+    CHECK(cue_revision.has_value());
+    if (!cue_revision) {
+        return;
+    }
+    const auto cue_id = core::StableId::random();
+    const auto cue_stem = ".trackknife-" + cue_id.to_string() + ".metadata-";
+    operations::MetadataOperationJournalRecord cue_record;
+    cue_record.id = cue_id;
+    cue_record.source_raw_path = cue;
+    cue_record.prepared_raw_path = (root.path() / (cue_stem + "prepared")).native();
+    cue_record.backup_raw_path = (root.path() / (cue_stem + "backup")).native();
+    cue_record.expected_revision = *cue_revision;
+    cue_record.content_kind = operations::MetadataOperationContentKind::cue_replay_gain;
+    cue_record.occurrence_indexes = {0U};
+    cue_record.changes.push_back(operations::MetadataOperationJournalChange{
+        .field_index = 0U,
+        .canonical_name = "replaygaintrackgain",
+        .property_name = "REPLAYGAIN_TRACK_GAIN",
+        .original_present = false,
+        .original_values = {},
+        .kind = metadata::StagedMetadataPatchKind::replace_values,
+        .planned_values = {"-6.02 dB"},
+        .item_indexes = {0U},
+        .exact_native_name = "cue-track:0:0",
+    });
+    CHECK(journal->create(cue_record).has_value());
+    const auto rewritten = formats::rewrite_cue_replay_gain(
+        original_sheet, {.album_gain_db = {},
+                         .album_peak = {},
+                         .tracks = {{.file_index = 0U,
+                                     .track_index = 0U,
+                                     .track_gain_db = {.update = true, .value = -6.02},
+                                     .track_peak = {}}}});
+    CHECK(rewritten.has_value());
+    if (!rewritten) {
+        return;
+    }
+    {
+        std::ofstream output{cue_record.prepared_raw_path, std::ios::binary};
+        output << rewritten->bytes;
+    }
+    const auto prepared_revision =
+        core::observe_local_source_revision(cue_record.prepared_raw_path);
+    CHECK(prepared_revision.has_value());
+    CHECK(journal
+              ->transition(cue_record.id,
+                           operations::MetadataOperationJournalTransition{
+                               .expected_state = State::planned,
+                               .state = State::prepared,
+                               .prepared_revision = *prepared_revision,
+                               .published_revision = std::nullopt,
+                               .failure = std::nullopt,
+                           })
+              .has_value());
+    CHECK(::link(cue_record.source_raw_path.c_str(), cue_record.backup_raw_path.c_str()) == 0);
+    CHECK(::rename(cue_record.prepared_raw_path.c_str(), cue_record.source_raw_path.c_str()) == 0);
+
+    // --- Sidecar prepublication debris ---
+    const auto audio = (root.path() / "take.wav").native();
+    {
+        std::ofstream output{audio, std::ios::binary};
+        output << "audio-bytes";
+    }
+    const auto sidecar_path = metadata::loudness_sidecar_path(audio);
+    metadata::LoudnessSidecar sidecar_document;
+    sidecar_document.source_size = 11U;
+    sidecar_document.entries = {metadata::LoudnessSidecarEntry{
+        .stream_index = std::nullopt,
+        .subsong_index = std::nullopt,
+        .start_sample = std::nullopt,
+        .end_sample = std::nullopt,
+        .track_gain_db = -6.02,
+        .track_peak = std::nullopt,
+        .album_gain_db = std::nullopt,
+        .album_peak = std::nullopt,
+    }};
+    const auto serialized = metadata::serialize_loudness_sidecar(sidecar_document);
+    CHECK(serialized.has_value());
+    {
+        std::ofstream output{sidecar_path, std::ios::binary};
+        output << *serialized;
+    }
+    const auto sidecar_revision = core::observe_local_source_revision(sidecar_path);
+    CHECK(sidecar_revision.has_value());
+    if (!sidecar_revision) {
+        return;
+    }
+    const auto sidecar_id = core::StableId::random();
+    const auto sidecar_stem = ".trackknife-" + sidecar_id.to_string() + ".metadata-";
+    operations::MetadataOperationJournalRecord sidecar_record;
+    sidecar_record.id = sidecar_id;
+    sidecar_record.source_raw_path = sidecar_path;
+    sidecar_record.prepared_raw_path = (root.path() / (sidecar_stem + "prepared")).native();
+    sidecar_record.backup_raw_path = (root.path() / (sidecar_stem + "backup")).native();
+    sidecar_record.expected_revision = *sidecar_revision;
+    sidecar_record.content_kind = operations::MetadataOperationContentKind::loudness_sidecar;
+    sidecar_record.occurrence_indexes = {0U};
+    sidecar_record.changes.push_back(operations::MetadataOperationJournalChange{
+        .field_index = 0U,
+        .canonical_name = "replaygaintrackpeak",
+        .property_name = "REPLAYGAIN_TRACK_PEAK",
+        .original_present = false,
+        .original_values = {},
+        .kind = metadata::StagedMetadataPatchKind::replace_values,
+        .planned_values = {"1.000000"},
+        .item_indexes = {0U},
+        .exact_native_name = "entry:-:-:-:-",
+    });
+    CHECK(journal->create(sidecar_record).has_value());
+    // Debris: the prepared copy was written but nothing was published.
+    {
+        std::ofstream output{sidecar_record.prepared_raw_path, std::ios::binary};
+        output << *serialized;
+    }
+
+    std::size_t callbacks = 0U;
+    const auto recovered = operations::recover_metadata_operations(
+        *journal,
+        [&callbacks](const operations::MetadataCommitResult& result) -> core::Result<void> {
+            ++callbacks;
+            CHECK(result.content_kind == operations::MetadataOperationContentKind::cue_replay_gain);
+            return {};
+        });
+    if (!recovered) {
+        std::cerr << recovered.error().message << '\n';
+    }
+    CHECK(recovered.has_value() && recovered->size() == 2U);
+    if (recovered) {
+        for (const auto& outcome : *recovered) {
+            if (outcome.journal_id == cue_id) {
+                CHECK(outcome.outcome == operations::MetadataRecoveryOutcome::completed);
+            } else {
+                CHECK(outcome.outcome == operations::MetadataRecoveryOutcome::rolled_back);
+            }
+        }
+    }
+    CHECK(callbacks == 1U);
+    const auto cue_loaded = journal->load(cue_id);
+    CHECK(cue_loaded.has_value() && cue_loaded->has_value() &&
+          (**cue_loaded).state == State::complete);
+    CHECK(std::filesystem::exists(cue_record.backup_raw_path));
+    const auto sidecar_loaded = journal->load(sidecar_id);
+    CHECK(sidecar_loaded.has_value() && sidecar_loaded->has_value() &&
+          (**sidecar_loaded).state == State::rolled_back);
+    CHECK(!std::filesystem::exists(sidecar_record.prepared_raw_path));
+    // The published sheet carries the planned REM line.
+    std::ifstream input{cue, std::ios::binary};
+    const std::string published_sheet{std::istreambuf_iterator<char>{input},
+                                      std::istreambuf_iterator<char>{}};
+    CHECK(published_sheet.find("REM REPLAYGAIN_TRACK_GAIN -6.02 dB") != std::string::npos);
 }
 
 } // namespace
@@ -2164,6 +2439,7 @@ int main(const int argc, char** argv) {
         commits_cue_replay_gain_sheets_atomically();
         commits_loudness_sidecars_atomically();
         diverted_unwritable_loudness_reaches_the_sidecar();
+        recovers_interrupted_carrier_publications();
     }
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -22,7 +22,7 @@
 namespace trackknife::persistence {
 namespace {
 
-constexpr unsigned current_schema_version = 28U;
+constexpr unsigned current_schema_version = 29U;
 constexpr std::size_t maximum_documents = 1'024U;
 constexpr std::size_t maximum_items_per_document = 1'000'000U;
 constexpr std::size_t maximum_fields_per_item = 4'096U;
@@ -877,6 +877,38 @@ read_optional_revision(sqlite3_stmt* statement, const int first,
             "CREATE INDEX local_library_album ON local_library_tracks(album_key,disc,track);"
             "CREATE INDEX local_library_root ON local_library_tracks(root,seen);"
             "UPDATE schema_version SET version = 28;";
+        if (auto result = execute(database, migration); !result) {
+            rollback();
+            return result;
+        }
+    }
+    if (version <= 28) {
+        // ADR-0145: widen the operation-journal content kinds for CUE and
+        // sidecar rewrites. SQLite cannot relax a CHECK, so the table is
+        // rebuilt. The old table must be dropped rather than renamed:
+        // RENAME rewrites the child tables' REFERENCES clauses, while
+        // dropping and renaming the replacement into place leaves them
+        // pointing at "operation_journal" throughout (foreign keys are
+        // off on the migration connection).
+        constexpr auto migration =
+            "DROP INDEX operation_journal_state;"
+            "CREATE TABLE operation_journal_v29 ("
+            "id TEXT PRIMARY KEY NOT NULL, kind INTEGER NOT NULL CHECK(kind = 0), "
+            "state INTEGER NOT NULL CHECK(state BETWEEN 0 AND 5), "
+            "source_path BLOB NOT NULL, prepared_path BLOB NOT NULL, backup_path BLOB NOT NULL, "
+            "expected_device BLOB NOT NULL, expected_inode BLOB NOT NULL, "
+            "expected_size BLOB NOT NULL, expected_mtime_seconds BLOB NOT NULL, "
+            "expected_mtime_nanoseconds BLOB NOT NULL, prepared_device BLOB, "
+            "prepared_inode BLOB, prepared_size BLOB, prepared_mtime_seconds BLOB, "
+            "prepared_mtime_nanoseconds BLOB, published_device BLOB, published_inode BLOB, "
+            "published_size BLOB, published_mtime_seconds BLOB, "
+            "published_mtime_nanoseconds BLOB, error_code INTEGER, error_message BLOB, "
+            "content_kind INTEGER NOT NULL DEFAULT 0 CHECK(content_kind BETWEEN 0 AND 3));"
+            "INSERT INTO operation_journal_v29 SELECT * FROM operation_journal;"
+            "DROP TABLE operation_journal;"
+            "ALTER TABLE operation_journal_v29 RENAME TO operation_journal;"
+            "CREATE INDEX operation_journal_state ON operation_journal(state);"
+            "UPDATE schema_version SET version = 29;";
         if (auto result = execute(database, migration); !result) {
             rollback();
             return result;

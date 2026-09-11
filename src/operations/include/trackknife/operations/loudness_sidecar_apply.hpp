@@ -40,12 +40,16 @@ struct LoudnessSidecarCommitResult {
 // Executes one ready loudness-sidecar plan (ADR-0141): revision-gated
 // on the audio file's capture evidence, read-merge-write against the
 // existing sidecar (an unparseable sidecar is a conflict, never
-// clobbered; stale entries are dropped wholesale), published via
-// prepared temp + fsync + atomic rename + parent fsync — or deleted
-// when nothing remains. Runs on a bounded mutation worker. Undo-journal
-// parity shares the ADR-0139 follow-up.
+// clobbered; stale entries are dropped wholesale). Merges over an
+// existing sidecar run the full ADR-0059 journal lifecycle (ADR-0145),
+// publishing an empty-entries document instead of deleting when the
+// merge empties it; creation of a missing sidecar stays a direct
+// atomic publish because there is no pre-image to protect. Runs on a
+// bounded mutation worker.
 [[nodiscard]] core::Result<LoudnessSidecarCommitResult>
 commit_loudness_sidecar(const metadata::MetadataWritePlanSidecar& sidecar_plan,
+                        MetadataOperationJournal& journal,
+                        const MetadataDependentStateCommitter& dependent_state_committer,
                         const core::CancellationToken& cancellation = {});
 
 } // namespace trackknife::operations

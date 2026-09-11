@@ -6,6 +6,7 @@
 #include "trackknife/core/local_sources.hpp"
 #include "trackknife/core/result.hpp"
 #include "trackknife/metadata/write_plan.hpp"
+#include "trackknife/operations/metadata_commit.hpp"
 
 #include <cstddef>
 #include <optional>
@@ -48,14 +49,17 @@ struct CueReplayGainCommitResult {
                            const CueReplayGainCommitResult&) = default;
 };
 
-// Executes one ready CUE-sheet ReplayGain plan (ADR-0139): revision-gated
-// against the draft-capture evidence, rewritten through the proven
-// byte-preserving REM rewriter, published via prepared temp + fsync +
-// atomic in-place rename + parent fsync. Runs on a bounded mutation
-// worker, never the UI thread. Undo-journal parity is a tracked
-// ADR-0139 follow-up.
+// Executes one ready CUE-sheet ReplayGain plan (ADR-0139) through the
+// full ADR-0059 journal lifecycle (ADR-0145): revision-gated against
+// the draft-capture evidence, rewritten through the proven
+// byte-preserving REM rewriter, prepared at the journal's sibling
+// path, published with a retained undoable backup, and recovered after
+// crashes like every other journaled mutation. Runs on a bounded
+// mutation worker, never the UI thread.
 [[nodiscard]] core::Result<CueReplayGainCommitResult>
 commit_cue_replay_gain_sheet(const metadata::MetadataWritePlanCueSheet& sheet_plan,
+                             MetadataOperationJournal& journal,
+                             const MetadataDependentStateCommitter& dependent_state_committer,
                              const core::CancellationToken& cancellation = {});
 
 } // namespace trackknife::operations

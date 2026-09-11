@@ -1504,7 +1504,7 @@ void BenchMainWindowTest::metadataApplyCancellationPreservesDraftForFreshPreview
                                 .context = {},
                             });
                         },
-                        progress, cancellation,
+                        {}, {}, progress, cancellation,
                         operations::MetadataApplyOptions{.maximum_parallelism = 2U});
                 }};
         },
@@ -4107,7 +4107,7 @@ void BenchMainWindowTest::artworkFetchesCoverArtFromArchiveAndAddsFront() {
                                 },
                                 source_cancellation);
                         },
-                        progress, cancellation);
+                        {}, {}, progress, cancellation);
                 }};
         },
         [&tags_observed](const operations::MetadataApplyResult& result) { tags_observed = result; },
