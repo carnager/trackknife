@@ -225,6 +225,14 @@ Reference: [M9](../MILESTONES.md#m9--melody-endpoint-and-advanced-listening-mpd-
 - [ ] Restore the last playback position without assuming automatic playback.
 - [ ] Shuffle albums while preserving track order inside each album.
 - [ ] Use listening statistics in views such as unplayed albums.
+- [ ] Autoplay: when the list or queue ends, optionally continue with
+  similar tracks instead of stopping — similarity from an online source
+  (Last.fm similar artists/tracks first; source pluggable), mapped onto
+  the local index or the connected server's library, never external
+  streams. Strictly opt-in, network-gated, cached like the MusicBrainz
+  client, and clearly marked in the queue so appended tracks are
+  distinguishable from user choices. Related: the similarity-fed
+  autoplaylist idea in [Area 2](#2-library-filters-and-saved-searches).
 
 Statistics should follow stable track identity through file operations.
 Writing them into audio tags requires explicit opt-in. Current Random playback
