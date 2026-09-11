@@ -1228,7 +1228,7 @@ core::Result<void> LocalAuditionService::load_selected_and_play(
                                             .buffer = {},
                                             .relocation = {},
                                             .relocated_pending_commands = 0U,
-                                            .replay_gain_override = std::move(replay_gain_override),
+                                            .replay_gain_override = replay_gain_override,
                                             .relocation_completion = {}});
 }
 
@@ -1254,7 +1254,7 @@ core::Result<void> LocalAuditionService::load_selected_segment_and_play(
                                             .buffer = {},
                                             .relocation = {},
                                             .relocated_pending_commands = 0U,
-                                            .replay_gain_override = std::move(replay_gain_override),
+                                            .replay_gain_override = replay_gain_override,
                                             .relocation_completion = {}});
 }
 
@@ -1278,7 +1278,7 @@ core::Result<void> LocalAuditionService::queue_gapless_next_selected(
                                             .buffer = {},
                                             .relocation = {},
                                             .relocated_pending_commands = 0U,
-                                            .replay_gain_override = std::move(replay_gain_override),
+                                            .replay_gain_override = replay_gain_override,
                                             .relocation_completion = {}});
 }
 
@@ -1305,7 +1305,7 @@ core::Result<void> LocalAuditionService::queue_gapless_next_selected_segment(
                                             .buffer = {},
                                             .relocation = {},
                                             .relocated_pending_commands = 0U,
-                                            .replay_gain_override = std::move(replay_gain_override),
+                                            .replay_gain_override = replay_gain_override,
                                             .relocation_completion = {}});
 }
 

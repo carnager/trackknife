@@ -185,12 +185,18 @@ void TrackListFindBar::findNext(const bool backwards) {
 }
 
 bool TrackListFindBar::eventFilter(QObject* watched, QEvent* event) {
-    if (watched == view_ && !isHidden() && event->type() == QEvent::KeyPress &&
+    // Destruction-time events (Hide, FocusOut, ChildRemoved) reach this filter
+    // while the watched view is mid-teardown; comparing against the typed
+    // QPointer then downcasts a partially destroyed object. Only key presses
+    // matter here, so gate on the event type before touching the pointers.
+    if (event->type() != QEvent::KeyPress)
+        return QToolBar::eventFilter(watched, event);
+    if (watched == view_ && !isHidden() &&
         static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {
         dismiss();
         return true;
     }
-    if (watched == query_ && event->type() == QEvent::KeyPress) {
+    if (watched == query_) {
         const auto* key = static_cast<QKeyEvent*>(event);
         if (key->key() == Qt::Key_Escape) {
             dismiss();

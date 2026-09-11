@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <sys/stat.h>
+#include <system_error>
 #include <unistd.h>
 
 namespace trackknife::lists {
@@ -109,7 +110,8 @@ struct Descriptor {
     }
 };
 core::Error ioError(std::string message) {
-    return error(core::ErrorCode::io, std::move(message) + ": " + std::strerror(errno));
+    return error(core::ErrorCode::io,
+                 std::move(message) + ": " + std::generic_category().message(errno));
 }
 } // namespace
 

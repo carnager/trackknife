@@ -6990,6 +6990,8 @@ void BenchMainWindowTest::localPlaybackModesAdvance() {
         return false;
     };
     QTRY_VERIFY(find_view());
+    if (view == nullptr)
+        QFAIL("local list view not found");
     auto* model = qobject_cast<LocalListModel*>(view->model());
     const auto trigger = [&](const QString& name, const int count) {
         auto* action = window.findChild<QAction*>(QStringLiteral("action-local-%1").arg(name));

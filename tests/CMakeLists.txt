@@ -473,12 +473,6 @@ if(TRACKKNIFE_BUILD_UI)
     add_test(NAME local-library COMMAND trackknife_local_library_tests)
     set_tests_properties(local-library PROPERTIES TIMEOUT 60 ENVIRONMENT
         "QT_QPA_PLATFORM=offscreen;LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
-    if(TRACKKNIFE_ENABLE_THREAD_SANITIZER)
-        target_sources(
-            trackknife_bench_main_window_tests
-            PRIVATE tsan_qt_thread_join.cpp
-        )
-    endif()
     target_compile_definitions(
         trackknife_bench_main_window_tests
         PRIVATE TRACKKNIFE_AUDIO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio"

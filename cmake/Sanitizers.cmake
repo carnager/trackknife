@@ -20,6 +20,14 @@ function(trackknife_enable_sanitizers target)
         target_compile_definitions(${target} INTERFACE TRACKKNIFE_THREAD_SANITIZER=1)
         target_compile_options(${target} INTERFACE -fsanitize=thread -fno-omit-frame-pointer)
         target_link_options(${target} INTERFACE -fsanitize=thread -fno-omit-frame-pointer)
+        # ThreadSanitizer lacks a pthread_clockjoin_np interceptor
+        # (llvm/llvm-project#146683) while Qt >= 6.9 joins threads through it,
+        # which crashes the sanitizer's thread registry on pthread-id reuse.
+        # Link a forwarding shim into every executable (and only executables,
+        # so archives never carry duplicate definitions).
+        target_sources(${target}
+            INTERFACE
+                $<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:${PROJECT_SOURCE_DIR}/src/tsan_clockjoin_shim.cpp>)
     else()
         target_compile_options(${target} INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer)
         target_link_options(${target} INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer)

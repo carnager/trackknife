@@ -438,7 +438,7 @@ void BenchMainWindow::showMetadataProperties() {
                         .baseline = row.metadata,
                         .logical_track = logical,
                         .cue_sheet = std::move(cue_binding),
-                        .logical_identity = std::move(logical_identity),
+                        .logical_identity = logical_identity,
                     },
                 .track_label = std::move(label),
                 .audio = {.selection = row.selection, .range = row.segment},

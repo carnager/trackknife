@@ -442,7 +442,7 @@ core::Result<LoudnessSidecar> parse_loudness_sidecar(const std::string_view sour
                                                   "sidecar entries duplicate one identity"));
                             }
                         }
-                        sidecar.entries.push_back(std::move(*entry));
+                        sidecar.entries.push_back(*entry);
                     }
                 } else {
                     return std::unexpected(

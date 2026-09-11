@@ -852,7 +852,7 @@ void MetadataPropertiesDialog::captureSources() {
                 snapshot->source.logical_track || snapshot->audio.range ||
                 snapshot->audio.selection.stream_index || snapshot->audio.selection.subsong_index;
             sources_.push_back(std::move(snapshot->source));
-            audio_sources_->push_back(std::move(snapshot->audio));
+            audio_sources_->push_back(snapshot->audio);
             track_labels_.push_back(std::move(snapshot->track_label));
         }
         ++capture_index_;

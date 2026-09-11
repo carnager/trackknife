@@ -23,8 +23,16 @@ Recent work on `main` you must not regress:
 
 ## Task 1 — sanitizer and static-analysis validation (do this first)
 
-`README.md` and `docs/README.md` state that clang-tidy and full sanitizer
-validation remain to be rerun for the current continuation point. Run:
+Status 2026-09-11: done. asan, tsan, and tidy presets each pass the full
+63-test suite. Findings fixed: a UBSan vptr violation in the find bar's
+event filter during widget teardown, clang-tidy performance/analyzer
+warnings across the new ReplayGain code, and a thread-unsafe strerror in
+the M3U8 reader. The tsan preset now links `src/tsan_clockjoin_shim.cpp`
+into every executable (replacing the bench-test-only
+`tests/tsan_qt_thread_join.cpp`) because ThreadSanitizer still lacks a
+pthread_clockjoin_np interceptor (llvm/llvm-project#146683).
+
+Original instructions follow. Run:
 
 1. `cmake --preset asan && cmake --build --preset asan && ctest --preset asan`
 2. `cmake --preset tsan && cmake --build --preset tsan && ctest --preset tsan`

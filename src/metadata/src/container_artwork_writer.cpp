@@ -179,7 +179,7 @@ apic_frames(TagLib::ID3v2::Tag* tag) {
             }
             rebuilt.append(covers[index]);
         }
-        covers = std::move(rebuilt);
+        covers = rebuilt;
         break;
     }
     case ArtworkWritePlanIntentKind::add:

@@ -163,11 +163,11 @@ local_replay_gain_override(const LocalListModel& model, const int row) {
 [[nodiscard]] core::Result<void>
 load_and_play(audio::LocalAuditionService& player, const LocalTrackSource& source,
               std::optional<formats::ReplayGainInfo> replay_gain_override = {}) {
-    return source.segment ? player.load_selected_segment_and_play(source.raw_path, source.selection,
-                                                                  *source.segment,
-                                                                  std::move(replay_gain_override))
-                          : player.load_selected_and_play(source.raw_path, source.selection,
-                                                          std::move(replay_gain_override));
+    return source.segment
+               ? player.load_selected_segment_and_play(source.raw_path, source.selection,
+                                                       *source.segment, replay_gain_override)
+               : player.load_selected_and_play(source.raw_path, source.selection,
+                                               replay_gain_override);
 }
 
 [[nodiscard]] core::Result<void>
@@ -175,10 +175,9 @@ queue_gapless(audio::LocalAuditionService& player, const LocalTrackSource& sourc
               std::optional<formats::ReplayGainInfo> replay_gain_override = {}) {
     return source.segment
                ? player.queue_gapless_next_selected_segment(source.raw_path, source.selection,
-                                                            *source.segment,
-                                                            std::move(replay_gain_override))
+                                                            *source.segment, replay_gain_override)
                : player.queue_gapless_next_selected(source.raw_path, source.selection,
-                                                    std::move(replay_gain_override));
+                                                    replay_gain_override);
 }
 
 [[nodiscard]] LocalTrackSource source_from_snapshot(const audio::LocalAuditionSnapshot& snapshot) {
@@ -1218,8 +1217,7 @@ void BenchMainWindow::refreshTransport() {
                 auto override_info = tab != nullptr
                                          ? local_replay_gain_override(*tab->model, next->first)
                                          : std::nullopt;
-                if (auto result = queue_gapless(*player_, *desired, std::move(override_info));
-                    result) {
+                if (auto result = queue_gapless(*player_, *desired, override_info); result) {
                     if (tab != nullptr) {
                         requested_playback_index_ = tab->model->index(next->first, 0);
                     }
@@ -1380,7 +1378,7 @@ void BenchMainWindow::refreshTransport() {
 // use, so MPRIS can never steer past the active authority (ADR-0135).
 void BenchMainWindow::buildMprisService() {
     mpris_ = new MprisService(this);
-    const auto trigger = [this](QAction* action) {
+    const auto trigger = [](QAction* action) {
         if (action != nullptr && action->isEnabled()) {
             action->trigger();
         }

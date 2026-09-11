@@ -171,6 +171,7 @@ void LocalListEditTest::editsPreserveOccurrencesAndUndo() {
 }
 void LocalListEditTest::asynchronousCancellationAndStaleSnapshots() {
     std::vector<LocalTrackRow> rows;
+    rows.reserve(10'000);
     for (int i = 0; i < 10'000; ++i)
         rows.push_back(row(std::to_string(10'000 - i), "/" + std::to_string(i)));
     Workspace workspace{rows};

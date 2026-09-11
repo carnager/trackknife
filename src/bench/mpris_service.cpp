@@ -16,7 +16,6 @@ namespace trackknife::bench {
 namespace {
 constexpr auto mpris_object_path = "/org/mpris/MediaPlayer2";
 constexpr auto player_interface = "org.mpris.MediaPlayer2.Player";
-constexpr auto root_interface = "org.mpris.MediaPlayer2";
 
 // A track id must be a valid, per-track-stable object path; hashing the raw
 // key keeps arbitrary path/URI bytes out of the D-Bus path grammar.
@@ -140,8 +139,7 @@ class MprisPlayerAdaptor final : public QDBusAbstractAdaptor {
 
 MprisService::MprisService(QObject* parent) : QObject(parent) {
     new MprisRootAdaptor(this);
-    auto* player = new MprisPlayerAdaptor(this);
-    static_cast<void>(player);
+    new MprisPlayerAdaptor(this);
 
     auto bus = QDBusConnection::sessionBus();
     if (!bus.isConnected()) {

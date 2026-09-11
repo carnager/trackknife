@@ -543,7 +543,7 @@ LocalPlayback::queue_next_selected(std::string raw_path, formats::AudioSourceSel
                                    core::CancellationToken cancellation,
                                    std::optional<formats::ReplayGainInfo> replay_gain_override) {
     return queue_next_selected_segment(std::move(raw_path), selection, formats::SampleRange{},
-                                       std::move(cancellation), std::move(replay_gain_override));
+                                       std::move(cancellation), replay_gain_override);
 }
 
 core::Result<void> LocalPlayback::queue_next_segment(std::string raw_path,
@@ -598,7 +598,7 @@ core::Result<void> LocalPlayback::queue_next_selected_segment(
         });
     }
     playback.next_decoder = std::move(*decoder);
-    playback.next_replay_gain_override = std::move(replay_gain_override);
+    playback.next_replay_gain_override = replay_gain_override;
     return {};
 }
 
