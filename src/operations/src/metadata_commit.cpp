@@ -2470,7 +2470,10 @@ commit_loudness_sidecar(const metadata::MetadataWritePlanSidecar& sidecar_plan,
             .occurrence_indexes = planned.occurrence_indexes,
             .fields = {},
         };
+        bool wrote_peak = false;
         for (const auto& field : planned.fields) {
+            const auto is_peak = field.canonical_name == "replaygaintrackpeak" ||
+                                 field.canonical_name == "replaygainalbumpeak";
             auto* member = field.canonical_name == "replaygaintrackgain"   ? &found->track_gain_db
                            : field.canonical_name == "replaygaintrackpeak" ? &found->track_peak
                            : field.canonical_name == "replaygainalbumgain" ? &found->album_gain_db
@@ -2498,6 +2501,7 @@ commit_loudness_sidecar(const metadata::MetadataWritePlanSidecar& sidecar_plan,
                 *member = value->first;
                 applied_field.value = value->second;
                 planned_values = {value->second};
+                wrote_peak = wrote_peak || is_peak;
             }
             record.changes.push_back(carrier_change(
                 field, sidecar_entry_slug(planned.identity),
@@ -2506,6 +2510,14 @@ commit_loudness_sidecar(const metadata::MetadataWritePlanSidecar& sidecar_plan,
                     : std::vector<std::string>{},
                 std::move(planned_values)));
             applied.fields.push_back(std::move(applied_field));
+        }
+        // ADR-0148: freshly written peaks carry the plan's peak kind; an
+        // entry whose peaks are all gone has no kind to describe.
+        if (wrote_peak) {
+            found->true_peak = planned.true_peak;
+        }
+        if (!found->track_peak && !found->album_peak) {
+            found->true_peak = false;
         }
         if (found->empty()) {
             merged.entries.erase(found);

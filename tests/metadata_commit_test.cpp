@@ -2051,14 +2051,16 @@ void commits_loudness_sidecars_atomically() {
             .item_indexes = {0U},
         };
     };
-    const auto plan_with = [&](std::vector<metadata::MetadataWritePlanLoudnessField> fields) {
+    const auto plan_with = [&](std::vector<metadata::MetadataWritePlanLoudnessField> fields,
+                               const bool true_peak = false) {
         return metadata::MetadataWritePlanSidecar{
             .raw_audio_path = audio,
             .expected_revision = *revision,
             .observed_revision = *revision,
             .entries = {{.identity = chapter,
                          .occurrence_indexes = {0U},
-                         .fields = std::move(fields)}},
+                         .fields = std::move(fields),
+                         .true_peak = true_peak}},
             .issues = {},
         };
     };
@@ -2075,7 +2077,8 @@ void commits_loudness_sidecars_atomically() {
     // Creation of a missing sidecar stays outside the journal (ADR-0145).
     const auto first =
         operations::commit_loudness_sidecar(plan_with({field("replaygaintrackgain", "-3.46 dB"),
-                                                       field("replaygaintrackpeak", "0.994629")}),
+                                                       field("replaygaintrackpeak", "0.994629")},
+                                                      true),
                                             *journal, dependent);
     CHECK(first.has_value());
     if (!first) {
@@ -2096,6 +2099,8 @@ void commits_loudness_sidecars_atomically() {
               (*stored)->entries.front().track_peak == 0.994629 &&
               (*stored)->entries.front().start_sample == 0 &&
               (*stored)->entries.front().end_sample == 44'100);
+        // ADR-0148: the plan's peak kind reaches the stored entry.
+        CHECK((*stored)->entries.size() == 1U && (*stored)->entries.front().true_peak);
     }
 
     // A later merge adds album values without disturbing track values.
@@ -2113,6 +2118,9 @@ void commits_loudness_sidecars_atomically() {
         CHECK((*stored)->entries.size() == 1U &&
               (*stored)->entries.front().track_gain_db == -3.46 &&
               (*stored)->entries.front().album_gain_db == -5.53);
+        // ADR-0148: a merge that writes no peak leaves the recorded
+        // kind of the existing peaks alone.
+        CHECK((*stored)->entries.size() == 1U && (*stored)->entries.front().true_peak);
     }
 
     // ADR-0145: the merge over the existing sidecar is journaled with a
@@ -2122,6 +2130,18 @@ void commits_loudness_sidecars_atomically() {
     CHECK(merge_backups && merge_backups->size() == 1U &&
           merge_backups->front().operation.content_kind ==
               operations::MetadataOperationContentKind::loudness_sidecar);
+
+    // ADR-0148: removing the last peak also removes the kind.
+    const auto peakless = operations::commit_loudness_sidecar(
+        plan_with({field("replaygaintrackpeak", std::nullopt)}), *journal, dependent);
+    CHECK(peakless.has_value());
+    stored = metadata::read_loudness_sidecar(audio);
+    CHECK(stored.has_value() && stored->has_value());
+    if (stored && *stored) {
+        CHECK((*stored)->entries.size() == 1U && !(*stored)->entries.front().track_peak &&
+              !(*stored)->entries.front().true_peak &&
+              (*stored)->entries.front().track_gain_db == -3.46);
+    }
 
     // Removing every value publishes an empty-entries document instead
     // of deleting (ADR-0145); the mutation stays journaled and undoable.

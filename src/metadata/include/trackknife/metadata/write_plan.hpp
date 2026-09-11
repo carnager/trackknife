@@ -139,6 +139,8 @@ struct MetadataWritePlanSidecarEntry {
     StagedLogicalIdentity identity;
     std::vector<std::size_t> occurrence_indexes;
     std::vector<MetadataWritePlanLoudnessField> fields;
+    // ADR-0148: the peak values in this entry are oversampled true peaks.
+    bool true_peak{false};
 
     friend bool operator==(const MetadataWritePlanSidecarEntry&,
                            const MetadataWritePlanSidecarEntry&) = default;
@@ -179,6 +181,8 @@ using MetadataWritePlanReader = std::function<core::Result<LocalMetadataRead>(
 // sidecar, writable or not — the "never modify audio files" preference.
 struct MetadataWritePlanOptions {
     bool sidecar_loudness{false};
+    // ADR-0148: planned sidecar peak values were measured as true peaks.
+    bool true_peak_loudness{false};
 
     friend bool operator==(const MetadataWritePlanOptions&,
                            const MetadataWritePlanOptions&) = default;

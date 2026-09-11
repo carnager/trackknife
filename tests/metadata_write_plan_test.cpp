@@ -729,6 +729,17 @@ void divertsUnwritableWholeFileLoudnessToSidecars() {
     CHECK(policy && policy->sidecars.size() == 1U &&
           policy->sidecars.front().entries.size() == 1U &&
           policy->sidecars.front().entries.front().identity == StagedLogicalIdentity{});
+    CHECK(policy && policy->sidecars.size() == 1U &&
+          !policy->sidecars.front().entries.front().true_peak);
+
+    // ADR-0148: the true-peak policy stamps every planned sidecar entry.
+    const auto true_peak_policy =
+        build_metadata_write_plan(*selection, loudness_only, writable_reader, {},
+                                  {.sidecar_loudness = true, .true_peak_loudness = true});
+    CHECK(true_peak_policy.has_value());
+    CHECK(true_peak_policy && true_peak_policy->sidecars.size() == 1U &&
+          true_peak_policy->sidecars.front().entries.size() == 1U &&
+          true_peak_policy->sidecars.front().entries.front().true_peak);
     std::filesystem::remove_all(root, fs_error);
 }
 

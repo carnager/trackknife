@@ -314,6 +314,17 @@ template <typename Integer>
                            : std::move(parsed.error()));
             }
             (key == "track_peak" ? entry.track_peak : entry.album_peak) = *parsed;
+        } else if (key == "peak_kind") {
+            const auto* kind = std::get_if<std::string>(&member.value);
+            if (kind == nullptr || *kind != "true_peak") {
+                return std::unexpected(
+                    kind != nullptr
+                        ? sidecar_error(core::ErrorCode::invalid_argument,
+                                        "sidecar peak_kind \"" + *kind + "\" is not supported")
+                        : sidecar_error(core::ErrorCode::invalid_argument,
+                                        "sidecar peak_kind must be a string"));
+            }
+            entry.true_peak = true;
         } else {
             return std::unexpected(
                 sidecar_error(core::ErrorCode::unsupported,
@@ -327,6 +338,10 @@ template <typename Integer>
     if (entry.empty()) {
         return std::unexpected(sidecar_error(core::ErrorCode::invalid_argument,
                                              "sidecar entry carries no loudness values"));
+    }
+    if (entry.true_peak && !entry.track_peak && !entry.album_peak) {
+        return std::unexpected(sidecar_error(core::ErrorCode::invalid_argument,
+                                             "sidecar peak_kind requires a peak value"));
     }
     return entry;
 }
@@ -477,6 +492,10 @@ core::Result<std::string> serialize_loudness_sidecar(const LoudnessSidecar& side
             return std::unexpected(sidecar_error(core::ErrorCode::invalid_argument,
                                                  "sidecar entry value is out of range"));
         }
+        if (entry.true_peak && !entry.track_peak && !entry.album_peak) {
+            return std::unexpected(sidecar_error(core::ErrorCode::invalid_argument,
+                                                 "sidecar peak_kind requires a peak value"));
+        }
     }
 
     std::string output;
@@ -533,6 +552,10 @@ core::Result<std::string> serialize_loudness_sidecar(const LoudnessSidecar& side
         if (entry.album_peak) {
             member("album_peak");
             append_number(output, *entry.album_peak);
+        }
+        if (entry.true_peak) {
+            member("peak_kind");
+            output += "\"true_peak\"";
         }
         output += '}';
     }

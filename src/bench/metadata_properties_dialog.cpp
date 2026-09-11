@@ -270,6 +270,21 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
         QSettings{}.setValue(QStringLiteral("replaygain/sidecar-only"), enabled);
     });
     side_layout->addWidget(replaygain_sidecar_only_);
+    // ADR-0148: default stays the ReplayGain 2.0 sample peak; opting in
+    // stores the oversampled true peak in the same REPLAYGAIN_*_PEAK
+    // fields, the way foobar2000 and loudgain do.
+    replaygain_true_peak_ =
+        new QCheckBox(QStringLiteral("True peak as ReplayGain peak"), side_panel);
+    replaygain_true_peak_->setObjectName(QStringLiteral("bench-replaygain-true-peak"));
+    replaygain_true_peak_->setToolTip(
+        QStringLiteral("Propose the oversampled inter-sample peak instead of the sample peak in "
+                       "REPLAYGAIN_TRACK_PEAK and REPLAYGAIN_ALBUM_PEAK"));
+    replaygain_true_peak_->setChecked(
+        QSettings{}.value(QStringLiteral("replaygain/true-peak"), false).toBool());
+    connect(replaygain_true_peak_, &QCheckBox::toggled, this, [](const bool enabled) {
+        QSettings{}.setValue(QStringLiteral("replaygain/true-peak"), enabled);
+    });
+    side_layout->addWidget(replaygain_true_peak_);
     // ADR-0147: per-track view of where each effective loudness value
     // comes from — draft, sidecar, CUE segment, or embedded tags.
     replaygain_provenance_button_ =
@@ -2441,10 +2456,13 @@ void MetadataPropertiesDialog::startReplayGainScan(std::vector<std::size_t> forc
     auto draft = grid_model_->patches();
     const std::shared_ptr<const std::vector<MetadataPropertiesAudioSource>> audio_sources{
         audio_sources_};
+    // ADR-0148: captured before the worker starts; widgets stay on the UI
+    // thread.
+    const bool true_peak = replaygain_true_peak_ != nullptr && replaygain_true_peak_->isChecked();
     replaygain_watcher_.setFuture(QtConcurrent::run([selection = std::move(selection),
                                                      draft = std::move(draft),
                                                      items = std::move(items), audio_sources,
-                                                     grouping, completed, cancellation] {
+                                                     grouping, completed, cancellation, true_peak] {
         auto outcome = std::make_shared<ReplayGainScanOutcome>();
         auto documents =
             metadata::materialize_metadata_draft(*selection, draft, items, cancellation);
@@ -2500,6 +2518,15 @@ void MetadataPropertiesDialog::startReplayGainScan(std::vector<std::size_t> forc
             return fixed_text(value, 2) + " dB";
         };
         const auto peak_text = [fixed_text](const double value) { return fixed_text(value, 6); };
+        // ADR-0148: the policy decides which measured peak becomes the
+        // proposal; a missing true peak falls back to the sample peak.
+        const auto track_peak_value = [true_peak](const loudness::TrackLoudness& loudness) {
+            return true_peak ? loudness.true_peak.value_or(loudness.sample_peak)
+                             : loudness.sample_peak;
+        };
+        const auto album_peak_value = [true_peak](const loudness::LoudnessAlbumScan& album) {
+            return true_peak ? album.true_peak.value_or(album.sample_peak) : album.sample_peak;
+        };
         const auto lufs_text = [fixed_text](const double value) { return fixed_text(value, 2); };
         std::map<std::string, const loudness::LoudnessAlbumScan*> albums;
         for (const auto& album : scan->albums) {
@@ -2571,14 +2598,16 @@ void MetadataPropertiesDialog::startReplayGainScan(std::vector<std::size_t> forc
                                 : QString{},
                        analyzed ? display_utf8(decibel_text(track.loudness->track_gain_db()))
                                 : QString{},
-                       analyzed ? display_utf8(peak_text(track.loudness->sample_peak))
+                       analyzed ? display_utf8(peak_text(track_peak_value(*track.loudness)))
                                 : QString{},
                        csv_field(display_utf8(
                            scan_items[position].album_key.value_or(std::string{}))),
                        album_scan ? display_utf8(decibel_text(*album_scan->album_gain_db()))
                                   : QString{},
-                       album_scan ? display_utf8(peak_text(album_scan->sample_peak)) : QString{},
+                       album_scan ? display_utf8(peak_text(album_peak_value(*album_scan)))
+                                  : QString{},
                        status_text,
+                       true_peak ? QStringLiteral("true_peak") : QStringLiteral("sample"),
                    }
                        .join(QLatin1Char(','));
             if (track.state != loudness::LoudnessScanState::analyzed || !track.loudness) {
@@ -2612,9 +2641,12 @@ void MetadataPropertiesDialog::startReplayGainScan(std::vector<std::size_t> forc
             std::string rationale = "Measured ";
             rationale += lufs_text(track.loudness->integrated_lufs);
             rationale += " LUFS integrated (EBU R128)";
+            if (true_peak) {
+                rationale += "; true peak";
+            }
             propose(item, "REPLAYGAIN_TRACK_GAIN", decibel_text(track.loudness->track_gain_db()),
                     rationale);
-            propose(item, "REPLAYGAIN_TRACK_PEAK", peak_text(track.loudness->sample_peak),
+            propose(item, "REPLAYGAIN_TRACK_PEAK", peak_text(track_peak_value(*track.loudness)),
                     rationale);
             const auto& key = scan_items[position].album_key;
             if (key) {
@@ -2623,10 +2655,13 @@ void MetadataPropertiesDialog::startReplayGainScan(std::vector<std::size_t> forc
                     std::string album_rationale = "Album programme measured ";
                     album_rationale += lufs_text(*album->second->integrated_lufs);
                     album_rationale += " LUFS integrated (EBU R128)";
+                    if (true_peak) {
+                        album_rationale += "; true peak";
+                    }
                     propose(item, "REPLAYGAIN_ALBUM_GAIN",
                             decibel_text(*album->second->album_gain_db()), album_rationale);
-                    propose(item, "REPLAYGAIN_ALBUM_PEAK", peak_text(album->second->sample_peak),
-                            album_rationale);
+                    propose(item, "REPLAYGAIN_ALBUM_PEAK",
+                            peak_text(album_peak_value(*album->second)), album_rationale);
                 }
             }
             proposals.items.push_back(std::move(item));
@@ -2700,7 +2735,7 @@ void MetadataPropertiesDialog::exportReplayGainResults() {
     }
     QString body = QStringLiteral(
         "track,file,integrated_lufs,track_gain_db,track_peak,album_key,album_gain_db,"
-        "album_peak,status\n");
+        "album_peak,status,peak_kind\n");
     body += replaygain_export_rows_.join(QLatin1Char('\n'));
     body += QLatin1Char('\n');
     const auto bytes = body.toUtf8();
@@ -2872,7 +2907,9 @@ void MetadataPropertiesDialog::startWritePlan() {
     const auto cancellation = write_plan_cancellation_.token();
     const metadata::MetadataWritePlanOptions plan_options{
         .sidecar_loudness =
-            replaygain_sidecar_only_ != nullptr && replaygain_sidecar_only_->isChecked()};
+            replaygain_sidecar_only_ != nullptr && replaygain_sidecar_only_->isChecked(),
+        .true_peak_loudness =
+            replaygain_true_peak_ != nullptr && replaygain_true_peak_->isChecked()};
     write_plan_running_ = true;
     updateWritePlanButton();
     read_only_->setText(QStringLiteral("Checking files…"));

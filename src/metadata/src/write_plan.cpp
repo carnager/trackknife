@@ -579,6 +579,7 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
                 .identity = field_groups.begin()->second.front()->identity,
                 .occurrence_indexes = {},
                 .fields = {},
+                .true_peak = options.true_peak_loudness,
             };
             for (const auto& [name, intents] : field_groups) {
                 entry.fields.push_back(finalize_field(intents));
@@ -838,6 +839,7 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
                         .identity = {},
                         .occurrence_indexes = source.occurrence_indexes,
                         .fields = std::move(diverted),
+                        .true_peak = options.true_peak_loudness,
                     });
                 } else {
                     whole_file->fields.insert(whole_file->fields.end(),

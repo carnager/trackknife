@@ -167,7 +167,10 @@ Export. Other container writers and configurable export naming remain open.
    file-operation following, and the explicit unwritable-format fallback.
 2. Portable/custom filename sanitization and Unicode normalization policy;
    `linux-v1` is fixed by ADR-0055.
-3. ReplayGain true-peak and Opus output-gain/storage policy.
+3. Opus output-gain/storage policy. The true-peak half is resolved by
+   ADR-0148: sample peak stays the default, an opt-in policy proposes
+   the oversampled true peak in `REPLAYGAIN_*_PEAK`, and sidecar plus
+   CSV export record the peak kind.
 4. Initial exact read/write/preservation claims per local format.
 5. Converter's shipped codec/device presets, resampler quality settings, and
    source-root inference UX.

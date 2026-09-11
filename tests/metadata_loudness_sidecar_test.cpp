@@ -38,9 +38,10 @@ using trackknife::metadata::LoudnessSidecarEntry;
             .start_sample = 0,
             .end_sample = 8'820'000,
             .track_gain_db = -3.46,
-            .track_peak = 0.994629,
+            .track_peak = 1.041372,
             .album_gain_db = -5.53,
-            .album_peak = 0.994629,
+            .album_peak = 1.041372,
+            .true_peak = true,
         },
         LoudnessSidecarEntry{
             .stream_index = 0,
@@ -82,6 +83,22 @@ void roundTripsEveryFieldExactly() {
     CHECK(original.matches(matching));
     matching.size = 1U;
     CHECK(!original.matches(matching));
+
+    // ADR-0148: a peak kind with no peak value is unserializable, not
+    // silently dropped.
+    auto kind_without_peak = sample_sidecar();
+    kind_without_peak.entries = {LoudnessSidecarEntry{
+        .stream_index = std::nullopt,
+        .subsong_index = std::nullopt,
+        .start_sample = std::nullopt,
+        .end_sample = std::nullopt,
+        .track_gain_db = -1.0,
+        .track_peak = std::nullopt,
+        .album_gain_db = std::nullopt,
+        .album_peak = std::nullopt,
+        .true_peak = true,
+    }};
+    CHECK(!trackknife::metadata::serialize_loudness_sidecar(kind_without_peak));
 }
 
 void failsClosedOnUnknownContent() {
@@ -120,6 +137,42 @@ void failsClosedOnUnknownContent() {
 
     const auto not_json = trackknife::metadata::parse_loudness_sidecar("REM GENRE Ambient");
     CHECK(!not_json);
+
+    // ADR-0148: only the one known peak kind is accepted, and it needs a
+    // peak value to describe.
+    const auto unknown_peak_kind = trackknife::metadata::parse_loudness_sidecar(
+        R"({"tkmeta": 1, "source": {"size": 1, "modified_seconds": 1,)"
+        R"( "modified_nanoseconds": 0}, "loudness": {"entries": [)"
+        R"({"track_peak": 0.5, "peak_kind": "loud"}]}})");
+    CHECK(!unknown_peak_kind);
+
+    const auto non_string_peak_kind = trackknife::metadata::parse_loudness_sidecar(
+        R"({"tkmeta": 1, "source": {"size": 1, "modified_seconds": 1,)"
+        R"( "modified_nanoseconds": 0}, "loudness": {"entries": [)"
+        R"({"track_peak": 0.5, "peak_kind": 1}]}})");
+    CHECK(!non_string_peak_kind);
+
+    const auto kind_without_peak = trackknife::metadata::parse_loudness_sidecar(
+        R"({"tkmeta": 1, "source": {"size": 1, "modified_seconds": 1,)"
+        R"( "modified_nanoseconds": 0}, "loudness": {"entries": [)"
+        R"({"track_gain_db": -1.0, "peak_kind": "true_peak"}]}})");
+    CHECK(!kind_without_peak);
+
+    const auto true_peak_entry = trackknife::metadata::parse_loudness_sidecar(
+        R"({"tkmeta": 1, "source": {"size": 1, "modified_seconds": 1,)"
+        R"( "modified_nanoseconds": 0}, "loudness": {"entries": [)"
+        R"({"track_peak": 1.25, "peak_kind": "true_peak"}]}})");
+    CHECK(true_peak_entry.has_value());
+    CHECK(true_peak_entry && true_peak_entry->entries.size() == 1U &&
+          true_peak_entry->entries.front().true_peak);
+
+    // Absence keeps the pre-ADR-0148 meaning: sample peak.
+    const auto sample_peak_entry = trackknife::metadata::parse_loudness_sidecar(
+        R"({"tkmeta": 1, "source": {"size": 1, "modified_seconds": 1,)"
+        R"( "modified_nanoseconds": 0}, "loudness": {"entries": [)"
+        R"({"track_peak": 0.5}]}})");
+    CHECK(sample_peak_entry.has_value());
+    CHECK(sample_peak_entry && !sample_peak_entry->entries.front().true_peak);
 }
 
 void readsFilesAndTreatsAbsenceAsEmpty() {

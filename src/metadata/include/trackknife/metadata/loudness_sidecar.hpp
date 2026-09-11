@@ -24,6 +24,10 @@ struct LoudnessSidecarEntry {
     std::optional<double> track_peak;
     std::optional<double> album_gain_db;
     std::optional<double> album_peak;
+    // ADR-0148: true when the peak values are oversampled true peaks
+    // rather than sample peaks. Serialized only when set, so sample-peak
+    // sidecars keep their existing bytes.
+    bool true_peak{false};
 
     [[nodiscard]] bool same_identity(const LoudnessSidecarEntry& other) const noexcept {
         return stream_index == other.stream_index && subsong_index == other.subsong_index &&

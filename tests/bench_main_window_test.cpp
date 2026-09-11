@@ -195,6 +195,7 @@ class BenchMainWindowTest final : public QObject {
     void musicBrainzIdentifyStagesChosenVersion();
     void musicBrainzFingerprintScanRanksAndStages();
     void replayGainScanStagesMeasuredGainsAsDrafts();
+    void replayGainScanUsesTruePeakWhenOptedIn();
     void loudnessSidecarProjectsOntoProbedRows();
     void desktopNotificationsNotifyBackgroundTrackChanges();
     void replayGainScanPreservesLogicalSources_data();
@@ -1616,7 +1617,7 @@ void BenchMainWindowTest::metadataDialogLayoutsPersistAsynchronously() {
                      QStringLiteral("bench-metadata-content-splitter"))) != nullptr);
     QTRY_VERIFY((first_metadata = first->findChild<QSplitter*>(
                      QStringLiteral("bench-metadata-splitter"))) != nullptr);
-    first->resize(930, 570);
+    first->resize(930, 640);
     first_content->setSizes({610, 300});
     first_metadata->setSizes({125, 405});
 
@@ -1646,7 +1647,7 @@ void BenchMainWindowTest::metadataDialogLayoutsPersistAsynchronously() {
                      QStringLiteral("bench-metadata-content-splitter"))) != nullptr);
     QTRY_VERIFY((second_metadata = second->findChild<QSplitter*>(
                      QStringLiteral("bench-metadata-splitter"))) != nullptr);
-    QTRY_COMPARE(second->height(), 570);
+    QTRY_COMPARE(second->height(), 640);
     QTRY_COMPARE(
         second_content->saveState(),
         saved_states.value(QStringLiteral("workspace/metadata-properties-content-splitter-v1")));
@@ -3816,9 +3817,10 @@ void BenchMainWindowTest::replayGainScanStagesMeasuredGainsAsDrafts() {
     const auto csv = QString::fromUtf8(exported.readAll());
     QVERIFY(csv.startsWith(QStringLiteral(
         "track,file,integrated_lufs,track_gain_db,track_peak,album_key,album_gain_db,"
-        "album_peak,status")));
+        "album_peak,status,peak_kind")));
     QVERIFY(csv.contains(loud_gain.front()));
-    QVERIFY(csv.contains(QStringLiteral("analyzed")));
+    // ADR-0148: the default policy exports sample peaks.
+    QVERIFY(csv.contains(QStringLiteral("analyzed,sample")));
     QCOMPARE(csv.count(QLatin1Char('\n')), 3);
 
     // ADR-0147: the provenance view marks the unsaved scan values as
@@ -3838,6 +3840,77 @@ void BenchMainWindowTest::replayGainScanStagesMeasuredGainsAsDrafts() {
              QStringLiteral("%1 · draft").arg(loud_gain.front()));
 
     // Closing would rightly demand draft confirmation; tear down directly.
+    delete properties;
+}
+
+// ADR-0148: opting in routes the oversampled true peak into the
+// REPLAYGAIN_*_PEAK drafts and the export names the peak kind.
+void BenchMainWindowTest::replayGainScanUsesTruePeakWhenOptedIn() {
+    QTemporaryDir media;
+    QVERIFY(media.isValid());
+    const auto path = media.filePath(QStringLiteral("tone.wav"));
+    write_sine_wav_fixture(path, 0.5);
+    const auto encoded = QFile::encodeName(path);
+    const std::vector sources{MetadataPropertiesSource{
+        .source =
+            metadata::StagedMetadataSource{
+                .raw_path =
+                    std::string{encoded.constData(), static_cast<std::size_t>(encoded.size())},
+                .source_revision = std::nullopt,
+                .baseline = metadata::MetadataDocument{},
+            },
+        .track_label = QStringLiteral("Tone"),
+    }};
+    auto* properties = new MetadataPropertiesDialog(
+        sources.size(),
+        [sources](const std::size_t index) -> std::optional<MetadataPropertiesSource> {
+            return index < sources.size() ? std::optional{sources[index]} : std::nullopt;
+        },
+        {}, {}, {});
+    properties->show();
+
+    QTableView* files = nullptr;
+    QTRY_VERIFY((files = properties->findChild<QTableView*>(
+                     QStringLiteral("bench-metadata-files"))) != nullptr);
+    auto* grid_model = qobject_cast<MetadataGridModel*>(files->model());
+    auto* scan = properties->findChild<QPushButton*>(QStringLiteral("bench-replaygain-scan"));
+    auto* true_peak =
+        properties->findChild<QCheckBox*>(QStringLiteral("bench-replaygain-true-peak"));
+    QVERIFY(grid_model != nullptr);
+    QVERIFY(scan != nullptr);
+    QVERIFY(true_peak != nullptr);
+    QVERIFY(!true_peak->isChecked());
+    true_peak->setChecked(true);
+    files->selectAll();
+    QTRY_VERIFY(scan->isEnabled());
+    QTest::mouseClick(scan, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(grid_model->patches().patch_count() >= 2U, 15'000);
+
+    // A clean sine's true peak barely exceeds its sample peak; the draft
+    // must still be the plausible linear amplitude.
+    const auto peak_column = grid_model->fieldColumn(QStringLiteral("REPLAYGAIN_TRACK_PEAK"));
+    QVERIFY(peak_column.has_value());
+    const auto peak_values =
+        grid_model->index(0, *peak_column).data(metadata_cell_values_role).toStringList();
+    QCOMPARE(peak_values.size(), 1);
+    const auto peak = peak_values.front().toDouble();
+    QVERIFY(peak > 0.45 && peak < 0.6);
+
+    QTemporaryDir export_directory;
+    QVERIFY(export_directory.isValid());
+    const auto export_path = export_directory.filePath(QStringLiteral("results.csv"));
+    properties->setProperty("trackknife-replaygain-export-path", export_path);
+    auto* status = properties->findChild<QLabel*>(QStringLiteral("bench-metadata-read-only"));
+    QVERIFY(status != nullptr);
+    emit status->linkActivated(QStringLiteral("export-replaygain"));
+    QFile exported{export_path};
+    QVERIFY(exported.open(QIODevice::ReadOnly));
+    const auto csv = QString::fromUtf8(exported.readAll());
+    QVERIFY(csv.contains(QStringLiteral("analyzed,true_peak")));
+
+    // The setting is sticky; restore the default so later dialogs scan
+    // sample peaks again.
+    true_peak->setChecked(false);
     delete properties;
 }
 

@@ -314,6 +314,7 @@ class MetadataPropertiesDialog final : public QDialog {
     QComboBox* replaygain_grouping_{nullptr};
     QLineEdit* replaygain_expression_{nullptr};
     QCheckBox* replaygain_sidecar_only_{nullptr};
+    QCheckBox* replaygain_true_peak_{nullptr};
     QPushButton* replaygain_provenance_button_{nullptr};
     std::vector<std::size_t> replaygain_retry_items_;
     QStringList replaygain_export_rows_;

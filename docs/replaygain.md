@@ -101,6 +101,13 @@ calculate standards-compliant true peak. The UI must not label a sample peak as
 true peak. For lossy codecs, decoder variation can affect peak estimates; record
 decoder provenance where reproducibility matters.
 
+Implemented policy (ADR-0148): every scan measures both peaks; the persisted
+"True peak as ReplayGain peak" option decides which one the
+`REPLAYGAIN_*_PEAK` proposals carry (sample peak by default). Sidecar entries
+record the choice through an optional `peak_kind` member and the CSV export
+appends a `peak_kind` column; embedded tags and CUE `REM` lines carry only the
+value because no interoperable peak-kind convention exists.
+
 ## Track and album modes
 
 Expose these operations clearly:

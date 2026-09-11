@@ -187,9 +187,12 @@ Reference: [metadata and artwork](metadata-and-files.md).
 - [x] Add playback preamp controls (ADR-0138): separate ±20 dB preamps for
   tracks with and without loudness data, applied only while local
   ReplayGain is active, persisted, and inherited by every loaded source.
-- [ ] Decide and implement the true-peak policy (standards-compliant true
-  peak alongside the cheap sample peak, with the peak type recorded); this is
-  an open pre-M5–M8 decision in [open-decisions](open-decisions.md).
+- [x] True-peak policy (ADR-0148): an opt-in "True peak as ReplayGain
+  peak" checkbox proposes the oversampled true peak in the standard
+  `REPLAYGAIN_*_PEAK` fields (sample peak stays the interoperable
+  default); sidecar entries record the peak kind via an optional
+  `peak_kind` member and the CSV export names it in a `peak_kind`
+  column.
 - [x] Result workflow (ADR-0146): a persisted "Store in sidecar only"
   policy routes loudness on every non-CUE source into the sidecar even
   for writable formats; failed or cancelled measurements re-run through
