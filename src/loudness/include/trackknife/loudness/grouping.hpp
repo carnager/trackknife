@@ -27,6 +27,10 @@ enum class LoudnessGroupingMode : std::uint8_t {
     // A tkfmt-1 expression evaluated per file; equal non-empty results
     // group, an empty result stays track-only.
     format_expression,
+    // ADR-0146: like release, but the tag fallback key strips a trailing
+    // disc designator from the album text so "Album (Disc 1)" and
+    // "Album CD2" measure as one programme.
+    release_merged_discs,
 };
 
 struct LoudnessGrouping {
@@ -35,6 +39,12 @@ struct LoudnessGrouping {
 
     friend bool operator==(const LoudnessGrouping&, const LoudnessGrouping&) = default;
 };
+
+// ADR-0146: removes one trailing disc designator from an album text —
+// "(Disc 2)", "[CD 1]", "- Disc 3", "Vol. 2", "CD2" and the like,
+// case-insensitively with arabic numbering. Conservative: when removal
+// would empty the text, the original is returned unchanged.
+[[nodiscard]] std::string strip_disc_designator(std::string_view album);
 
 // Assigns one optional album key per document, aligned with the input.
 // Pure and deterministic: the result feeds LoudnessScanItem::album_key.

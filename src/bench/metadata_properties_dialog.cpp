@@ -49,6 +49,7 @@
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
@@ -243,6 +244,7 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
     replaygain_grouping_->setObjectName(QStringLiteral("bench-replaygain-grouping"));
     replaygain_grouping_->setAccessibleName(QStringLiteral("ReplayGain album grouping"));
     replaygain_grouping_->addItem(QStringLiteral("Album by release"));
+    replaygain_grouping_->addItem(QStringLiteral("Album merging discs"));
     replaygain_grouping_->addItem(QStringLiteral("Selection as one album"));
     replaygain_grouping_->addItem(QStringLiteral("Track gains only"));
     replaygain_grouping_->addItem(QStringLiteral("Group by expression"));
@@ -253,6 +255,19 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
     replaygain_expression_->setPlaceholderText(QStringLiteral("tkfmt-1, e.g. %album%"));
     replaygain_expression_->hide();
     side_layout->addWidget(replaygain_expression_);
+    // ADR-0146: the "never modify audio files" policy. CUE tracks keep
+    // their sheet either way.
+    replaygain_sidecar_only_ = new QCheckBox(QStringLiteral("Store in sidecar only"), side_panel);
+    replaygain_sidecar_only_->setObjectName(QStringLiteral("bench-replaygain-sidecar-only"));
+    replaygain_sidecar_only_->setToolTip(
+        QStringLiteral("Write loudness into .tkmeta sidecars instead of audio-file tags, even "
+                       "for writable formats; CUE tracks keep their sheet"));
+    replaygain_sidecar_only_->setChecked(
+        QSettings{}.value(QStringLiteral("replaygain/sidecar-only"), false).toBool());
+    connect(replaygain_sidecar_only_, &QCheckBox::toggled, this, [](const bool enabled) {
+        QSettings{}.setValue(QStringLiteral("replaygain/sidecar-only"), enabled);
+    });
+    side_layout->addWidget(replaygain_sidecar_only_);
     output_profile_status_ = new QLabel(QStringLiteral("Loading output profiles…"), side_panel);
     output_profile_status_->setObjectName(QStringLiteral("bench-output-profile-status"));
     output_profile_status_->setWordWrap(true);
@@ -508,6 +523,9 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
         if (link == QStringLiteral("cancel-replaygain")) {
             replaygain_cancellation_.request_cancellation();
         }
+        if (link == QStringLiteral("retry-replaygain") && !replaygain_retry_items_.empty()) {
+            startReplayGainScan(replaygain_retry_items_);
+        }
     });
     connect(redo_button_, &QPushButton::clicked, this, [this] {
         if (grid_model_ != nullptr) {
@@ -534,9 +552,9 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
     connect(&replaygain_watcher_, &QFutureWatcherBase::finished, this,
             &MetadataPropertiesDialog::finishReplayGainScan);
     connect(replaygain_scan_button_, &QPushButton::clicked, this,
-            &MetadataPropertiesDialog::startReplayGainScan);
+            [this] { startReplayGainScan(); });
     connect(replaygain_grouping_, &QComboBox::currentIndexChanged, this,
-            [this](const int index) { replaygain_expression_->setVisible(index == 3); });
+            [this](const int index) { replaygain_expression_->setVisible(index == 4); });
     connect(&proposal_watcher_, &QFutureWatcherBase::finished, this,
             &MetadataPropertiesDialog::finishProposals);
     connect(transform_button_, &QPushButton::clicked, this, [this] {
@@ -2064,7 +2082,7 @@ void MetadataPropertiesDialog::finishProposals() {
     }
     loaded_field_count_ = grid_model_->selection().field_count();
     updateSelectionProjection();
-    showStickyStatus(
+    auto staged_status =
         QStringLiteral("Staged %1 %2 across %3 %4 from %5 · review the colored values, "
                        "then Apply")
             .arg(preview.cells.size())
@@ -2073,7 +2091,12 @@ void MetadataPropertiesDialog::finishProposals() {
             .arg(preview.changed_item_count)
             .arg(pluralized(preview.changed_item_count, QStringLiteral("file"),
                             QStringLiteral("files")))
-            .arg(display_utf8(preview.chain.name)));
+            .arg(display_utf8(preview.chain.name));
+    if (!replaygain_retry_items_.empty()) {
+        staged_status += QStringLiteral(" · <a href=\"retry-replaygain\">Retry %1 failed</a>")
+                             .arg(replaygain_retry_items_.size());
+    }
+    showStickyStatus(staged_status);
     stageAutomaticTransformations();
 }
 
@@ -2332,12 +2355,15 @@ bool MetadataPropertiesDialog::stageTransformationPreservingSelection(
     return true;
 }
 
-void MetadataPropertiesDialog::startReplayGainScan() {
+void MetadataPropertiesDialog::startReplayGainScan(std::vector<std::size_t> forced_items) {
     if (grid_model_ == nullptr || replaygain_running_ || proposal_running_ || apply_running_ ||
         write_plan_running_) {
         return;
     }
-    auto items = selectedItemIndexes();
+    auto items = std::move(forced_items);
+    if (items.empty()) {
+        items = selectedItemIndexes();
+    }
     if (items.empty()) {
         items.reserve(grid_model_->selection().item_count());
         for (std::size_t item_index = 0U; item_index < grid_model_->selection().item_count();
@@ -2354,9 +2380,12 @@ void MetadataPropertiesDialog::startReplayGainScan() {
         grouping.mode = loudness::LoudnessGroupingMode::release;
         break;
     case 1:
-        grouping.mode = loudness::LoudnessGroupingMode::selection_album;
+        grouping.mode = loudness::LoudnessGroupingMode::release_merged_discs;
         break;
     case 2:
+        grouping.mode = loudness::LoudnessGroupingMode::selection_album;
+        break;
+    case 3:
         grouping.mode = loudness::LoudnessGroupingMode::track;
         break;
     default:
@@ -2369,6 +2398,7 @@ void MetadataPropertiesDialog::startReplayGainScan() {
         }
         break;
     }
+    replaygain_retry_items_.clear();
 
     replaygain_running_ = true;
     replaygain_cancellation_ = core::CancellationSource{};
@@ -2493,6 +2523,12 @@ void MetadataPropertiesDialog::startReplayGainScan() {
                         .detail = display_utf8(track.issue->message),
                     });
                 }
+                // ADR-0146: measurement failures and cancellations can be
+                // retried; structurally unmeasurable tracks cannot.
+                if (track.state == loudness::LoudnessScanState::failed ||
+                    track.state == loudness::LoudnessScanState::cancelled) {
+                    outcome->retry_items.push_back(track.item_index);
+                }
                 continue;
             }
             if (!track.loudness->measurable()) {
@@ -2546,6 +2582,7 @@ void MetadataPropertiesDialog::finishReplayGainScan() {
         read_only_->setText(QStringLiteral("No ReplayGain values staged · %1").arg(message));
         return;
     }
+    replaygain_retry_items_ = outcome->retry_items;
     if (!outcome->problems.empty()) {
         showPreparationFeedback(
             QStringLiteral("ReplayGain scan problems"),
@@ -2556,8 +2593,14 @@ void MetadataPropertiesDialog::finishReplayGainScan() {
             std::vector<PreparationFeedbackRow>{outcome->problems});
     }
     if (outcome->proposals->items.empty()) {
-        read_only_->setText(
-            QStringLiteral("No ReplayGain values staged · nothing measurable in the selection"));
+        if (!replaygain_retry_items_.empty()) {
+            showStickyStatus(QStringLiteral("No ReplayGain values staged · "
+                                            "<a href=\"retry-replaygain\">Retry %1 failed</a>")
+                                 .arg(replaygain_retry_items_.size()));
+        } else {
+            read_only_->setText(QStringLiteral(
+                "No ReplayGain values staged · nothing measurable in the selection"));
+        }
         return;
     }
     applyMusicBrainzProposals(std::move(*outcome->proposals));
@@ -2641,86 +2684,89 @@ void MetadataPropertiesDialog::startWritePlan() {
     write_plan_cancellation_ = core::CancellationSource{};
     const auto selection = grid_model_->sharedSelection();
     const auto cancellation = write_plan_cancellation_.token();
+    const metadata::MetadataWritePlanOptions plan_options{
+        .sidecar_loudness =
+            replaygain_sidecar_only_ != nullptr && replaygain_sidecar_only_->isChecked()};
     write_plan_running_ = true;
     updateWritePlanButton();
     read_only_->setText(QStringLiteral("Checking files…"));
-    write_plan_watcher_.setFuture(
-        QtConcurrent::run([selection, draft = std::move(draft), items = std::move(items),
-                           operation_selection, output_layout = std::move(output_layout),
-                           destination = std::move(destination), cancellation]() mutable {
-            // WYSIWYG apply: the plan writes exactly the staged draft.
-            // Automatic scripts already staged their edits into the grid.
-            const auto metadata_context_change_count =
-                operation_selection.save_tags ? draft.patch_count() : 0U;
-            std::optional<metadata::MetadataWritePlan> metadata_plan;
-            if (operation_selection.save_tags && !draft.empty()) {
-                auto revalidated =
-                    metadata::revalidate_metadata_write_plan(*selection, draft, cancellation);
-                if (!revalidated) {
-                    return std::make_shared<WritePlanResult>(
-                        std::unexpected(std::move(revalidated.error())));
-                }
-                metadata_plan = std::move(*revalidated);
+    write_plan_watcher_.setFuture(QtConcurrent::run([selection, draft = std::move(draft),
+                                                     items = std::move(items), operation_selection,
+                                                     output_layout = std::move(output_layout),
+                                                     destination = std::move(destination),
+                                                     cancellation, plan_options]() mutable {
+        // WYSIWYG apply: the plan writes exactly the staged draft.
+        // Automatic scripts already staged their edits into the grid.
+        const auto metadata_context_change_count =
+            operation_selection.save_tags ? draft.patch_count() : 0U;
+        std::optional<metadata::MetadataWritePlan> metadata_plan;
+        if (operation_selection.save_tags && !draft.empty()) {
+            auto revalidated = metadata::revalidate_metadata_write_plan(*selection, draft,
+                                                                        cancellation, plan_options);
+            if (!revalidated) {
+                return std::make_shared<WritePlanResult>(
+                    std::unexpected(std::move(revalidated.error())));
             }
+            metadata_plan = std::move(*revalidated);
+        }
 
-            std::optional<operations::OutputPathPlan> path_plan;
-            std::optional<operations::OutputPathPreflight> path_preflight;
-            if (operation_selection.rename_files || operation_selection.move_files) {
-                const metadata::StagedMetadataPatchSet actual_source_tags;
-                const auto& naming_selection = *selection;
-                const auto& naming_context =
-                    operation_selection.save_tags ? draft : actual_source_tags;
-                auto documents = metadata::materialize_metadata_draft(
-                    naming_selection, naming_context, items, cancellation);
-                if (!documents) {
-                    return std::make_shared<WritePlanResult>(
-                        std::unexpected(std::move(documents.error())));
-                }
-                std::vector<operations::OutputPathPlanningItem> planning_items;
-                planning_items.reserve(items.size());
-                for (std::size_t position = 0U; position < items.size(); ++position) {
-                    const auto item_index = items[position];
-                    const auto& source = naming_selection.source(item_index);
-                    if (!source.source_revision) {
-                        return std::make_shared<WritePlanResult>(std::unexpected(core::Error{
-                            .code = core::ErrorCode::conflict,
-                            .message = "File path planning requires a fresh source revision "
-                                       "for every selected track",
-                            .context = {{.key = "item", .value = std::to_string(item_index)}},
-                        }));
-                    }
-                    planning_items.push_back(operations::OutputPathPlanningItem{
-                        .item_index = item_index,
-                        .source_raw_path = source.raw_path,
-                        .source_revision = *source.source_revision,
-                        .final_metadata = std::move((*documents)[position]),
-                    });
-                }
-                auto planned = operations::plan_output_paths(
-                    planning_items,
-                    operations::OutputPathOperationSelection{
-                        .rename_files = operation_selection.rename_files,
-                        .move_files = operation_selection.move_files,
-                    },
-                    std::move(*output_layout), std::move(destination), {}, cancellation);
-                if (!planned) {
-                    return std::make_shared<WritePlanResult>(
-                        std::unexpected(std::move(planned.error())));
-                }
-                path_plan = std::move(*planned);
-                if (path_plan->ready()) {
-                    auto checked = operations::preflight_output_paths(*path_plan, cancellation);
-                    if (!checked) {
-                        return std::make_shared<WritePlanResult>(
-                            std::unexpected(std::move(checked.error())));
-                    }
-                    path_preflight = std::move(*checked);
-                }
+        std::optional<operations::OutputPathPlan> path_plan;
+        std::optional<operations::OutputPathPreflight> path_preflight;
+        if (operation_selection.rename_files || operation_selection.move_files) {
+            const metadata::StagedMetadataPatchSet actual_source_tags;
+            const auto& naming_selection = *selection;
+            const auto& naming_context = operation_selection.save_tags ? draft : actual_source_tags;
+            auto documents = metadata::materialize_metadata_draft(naming_selection, naming_context,
+                                                                  items, cancellation);
+            if (!documents) {
+                return std::make_shared<WritePlanResult>(
+                    std::unexpected(std::move(documents.error())));
             }
-            return std::make_shared<WritePlanResult>(operations::assemble_preparation_plan(
-                operation_selection, metadata_context_change_count, std::move(metadata_plan),
-                std::move(path_plan), std::move(path_preflight)));
-        }));
+            std::vector<operations::OutputPathPlanningItem> planning_items;
+            planning_items.reserve(items.size());
+            for (std::size_t position = 0U; position < items.size(); ++position) {
+                const auto item_index = items[position];
+                const auto& source = naming_selection.source(item_index);
+                if (!source.source_revision) {
+                    return std::make_shared<WritePlanResult>(std::unexpected(core::Error{
+                        .code = core::ErrorCode::conflict,
+                        .message = "File path planning requires a fresh source revision "
+                                   "for every selected track",
+                        .context = {{.key = "item", .value = std::to_string(item_index)}},
+                    }));
+                }
+                planning_items.push_back(operations::OutputPathPlanningItem{
+                    .item_index = item_index,
+                    .source_raw_path = source.raw_path,
+                    .source_revision = *source.source_revision,
+                    .final_metadata = std::move((*documents)[position]),
+                });
+            }
+            auto planned = operations::plan_output_paths(
+                planning_items,
+                operations::OutputPathOperationSelection{
+                    .rename_files = operation_selection.rename_files,
+                    .move_files = operation_selection.move_files,
+                },
+                std::move(*output_layout), std::move(destination), {}, cancellation);
+            if (!planned) {
+                return std::make_shared<WritePlanResult>(
+                    std::unexpected(std::move(planned.error())));
+            }
+            path_plan = std::move(*planned);
+            if (path_plan->ready()) {
+                auto checked = operations::preflight_output_paths(*path_plan, cancellation);
+                if (!checked) {
+                    return std::make_shared<WritePlanResult>(
+                        std::unexpected(std::move(checked.error())));
+                }
+                path_preflight = std::move(*checked);
+            }
+        }
+        return std::make_shared<WritePlanResult>(operations::assemble_preparation_plan(
+            operation_selection, metadata_context_change_count, std::move(metadata_plan),
+            std::move(path_plan), std::move(path_preflight)));
+    }));
 }
 
 void MetadataPropertiesDialog::finishWritePlan() {

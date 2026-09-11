@@ -5,6 +5,9 @@
 #include "trackknife/titleformat/compiler.hpp"
 #include "trackknife/titleformat/evaluator.hpp"
 
+#include <algorithm>
+#include <array>
+#include <cstddef>
 #include <string_view>
 #include <utility>
 
@@ -52,7 +55,8 @@ class GroupingEvaluationContext final : public titleformat::EvaluationContext {
     const metadata::MetadataDocument& document_;
 };
 
-[[nodiscard]] std::optional<std::string> release_key(const metadata::MetadataDocument& document) {
+[[nodiscard]] std::optional<std::string> release_key(const metadata::MetadataDocument& document,
+                                                     const bool merge_discs = false) {
     if (const auto release_id = document.first_effective_value("musicbrainzalbumid");
         release_id && !release_id->empty()) {
         return "mbid:" + *release_id;
@@ -65,10 +69,104 @@ class GroupingEvaluationContext final : public titleformat::EvaluationContext {
     if (!artist || artist->empty()) {
         artist = document.first_effective_value("artist");
     }
-    return "tag:" + *album + '\x1F' + artist.value_or(std::string{});
+    return "tag:" + (merge_discs ? strip_disc_designator(*album) : *album) + '\x1F' +
+           artist.value_or(std::string{});
+}
+
+[[nodiscard]] bool designator_space(const char character) noexcept {
+    return character == ' ' || character == '\t';
+}
+
+[[nodiscard]] char lower_ascii(const char character) noexcept {
+    return character >= 'A' && character <= 'Z' ? static_cast<char>(character - 'A' + 'a')
+                                                : character;
+}
+
+// Consumes "<designator word><separators?><digits>" from the end of a
+// trimmed view; empty result means no match.
+[[nodiscard]] std::size_t disc_designator_length(const std::string_view text) {
+    auto remaining = text;
+    while (!remaining.empty() && designator_space(remaining.back())) {
+        remaining.remove_suffix(1U);
+    }
+    std::size_t digits = 0U;
+    while (!remaining.empty() && remaining.back() >= '0' && remaining.back() <= '9' &&
+           digits < 4U) {
+        remaining.remove_suffix(1U);
+        ++digits;
+    }
+    if (digits == 0U) {
+        return 0U;
+    }
+    while (!remaining.empty() &&
+           (designator_space(remaining.back()) || remaining.back() == '.' ||
+            remaining.back() == '#' || remaining.back() == '-' || remaining.back() == '_')) {
+        remaining.remove_suffix(1U);
+    }
+    std::string word;
+    while (!remaining.empty() && ((remaining.back() >= 'a' && remaining.back() <= 'z') ||
+                                  (remaining.back() >= 'A' && remaining.back() <= 'Z'))) {
+        word.insert(word.begin(), lower_ascii(remaining.back()));
+        remaining.remove_suffix(1U);
+    }
+    constexpr std::array<std::string_view, 7> designators{"disc",   "disk", "cd", "vol",
+                                                          "volume", "part", "pt"};
+    if (std::ranges::find(designators, word) == designators.end()) {
+        return 0U;
+    }
+    return text.size() - remaining.size();
 }
 
 } // namespace
+
+std::string strip_disc_designator(const std::string_view album) {
+    auto trimmed = album;
+    while (!trimmed.empty() && designator_space(trimmed.back())) {
+        trimmed.remove_suffix(1U);
+    }
+    auto stripped = trimmed;
+    if (!stripped.empty() && (stripped.back() == ')' || stripped.back() == ']')) {
+        const auto open = stripped.back() == ')' ? '(' : '[';
+        const auto open_position = stripped.rfind(open);
+        if (open_position == std::string_view::npos) {
+            return std::string{album};
+        }
+        const auto inner =
+            stripped.substr(open_position + 1U, stripped.size() - open_position - 2U);
+        auto inner_trimmed = inner;
+        while (!inner_trimmed.empty() && designator_space(inner_trimmed.front())) {
+            inner_trimmed.remove_prefix(1U);
+        }
+        if (disc_designator_length(inner_trimmed) != inner_trimmed.size() ||
+            inner_trimmed.empty()) {
+            return std::string{album};
+        }
+        stripped = stripped.substr(0U, open_position);
+    } else {
+        const auto designator = disc_designator_length(stripped);
+        if (designator == 0U) {
+            return std::string{album};
+        }
+        const auto boundary = stripped.size() - designator;
+        // The designator must not be the whole text and must follow a
+        // separator boundary, never split a word.
+        if (boundary == 0U) {
+            return std::string{album};
+        }
+        const auto before = stripped[boundary - 1U];
+        if (!designator_space(before) && before != '-' && before != ':' && before != ',' &&
+            before != '/') {
+            return std::string{album};
+        }
+        stripped = stripped.substr(0U, boundary);
+    }
+    while (!stripped.empty() &&
+           (designator_space(stripped.back()) || stripped.back() == '-' || stripped.back() == ':' ||
+            stripped.back() == ',' || stripped.back() == '/')) {
+        stripped.remove_suffix(1U);
+    }
+    return stripped.empty() ? std::string{album} : std::string{stripped};
+}
 
 core::Result<std::vector<std::optional<std::string>>>
 assign_loudness_groups(const LoudnessGrouping& grouping,
@@ -92,6 +190,11 @@ assign_loudness_groups(const LoudnessGrouping& grouping,
     case LoudnessGroupingMode::release:
         for (std::size_t index = 0U; index < documents.size(); ++index) {
             keys[index] = release_key(*documents[index]);
+        }
+        return keys;
+    case LoudnessGroupingMode::release_merged_discs:
+        for (std::size_t index = 0U; index < documents.size(); ++index) {
+            keys[index] = release_key(*documents[index], true);
         }
         return keys;
     case LoudnessGroupingMode::format_expression: {

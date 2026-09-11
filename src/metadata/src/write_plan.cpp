@@ -248,7 +248,8 @@ std::size_t MetadataWritePlan::blocking_issue_count() const noexcept {
 
 core::Result<MetadataWritePlan> build_metadata_write_plan(
     const StagedMetadataSelection& selection, const StagedMetadataPatchSet& patches,
-    const MetadataWritePlanReader& reader, const core::CancellationToken& cancellation) {
+    const MetadataWritePlanReader& reader, const core::CancellationToken& cancellation,
+    const MetadataWritePlanOptions& options) {
     if (cancellation.is_cancellation_requested()) {
         return cancelled();
     }
@@ -296,16 +297,21 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
         }
         // ADR-0141: the same fields on a non-CUE logical track resolve to
         // its loudness sidecar, keyed by the captured logical identity.
-        if (staged_source.logical_track && !staged_source.cue_sheet &&
-            staged_source.logical_identity &&
-            is_cue_replay_gain_field(selection.field(patch.field_index).canonical_name)) {
+        // ADR-0146: the sidecar-only policy widens the ADR-0141 routing to
+        // every non-CUE source; whole-file drafts use the empty identity.
+        const auto sidecar_target =
+            !staged_source.cue_sheet &&
+            is_cue_replay_gain_field(selection.field(patch.field_index).canonical_name) &&
+            (options.sidecar_loudness ||
+             (staged_source.logical_track && staged_source.logical_identity));
+        if (sidecar_target) {
             sidecar_buckets[staged_source.raw_path].push_back(SidecarIntentRecord{
                 .field_index = patch.field_index,
                 .canonical_name = selection.field(patch.field_index).canonical_name,
                 .item_index = patch.item_index,
                 .kind = patch.kind,
                 .values = patch.values,
-                .identity = *staged_source.logical_identity,
+                .identity = staged_source.logical_identity.value_or(StagedLogicalIdentity{}),
                 .source_revision = staged_source.source_revision,
             });
             continue;
@@ -957,16 +963,15 @@ core::Result<MetadataWritePlan> build_metadata_write_plan(
     return plan;
 }
 
-core::Result<MetadataWritePlan>
-revalidate_metadata_write_plan(const StagedMetadataSelection& selection,
-                               const StagedMetadataPatchSet& patches,
-                               const core::CancellationToken& cancellation) {
+core::Result<MetadataWritePlan> revalidate_metadata_write_plan(
+    const StagedMetadataSelection& selection, const StagedMetadataPatchSet& patches,
+    const core::CancellationToken& cancellation, const MetadataWritePlanOptions& options) {
     return build_metadata_write_plan(
         selection, patches,
         [](const std::string& raw_path, const core::CancellationToken& token) {
             return read_local_metadata(raw_path, token);
         },
-        cancellation);
+        cancellation, options);
 }
 
 } // namespace trackknife::metadata

@@ -1364,6 +1364,18 @@ quickly and correctly.
   publish as empty documents instead of vanishing; sidecar creation
   stays a direct atomic publish because no pre-image is at risk.
 
+### Result workflow (2026-09-11)
+
+- ADR-0146 covers the workflow half of the result-review surface: a
+  persisted "Store in sidecar only" policy diverts loudness on every
+  non-CUE source into the sidecar even for writable formats (CUE
+  tracks keep their sheet), failed or cancelled measurements re-run
+  through a "Retry N failed" status link (structurally unmeasurable
+  tracks excluded), and an "Album merging discs" grouping mode strips
+  trailing disc designators from the album fallback key so
+  "Album (Disc 1)"/"Album CD2" measure as one programme. Export and a
+  loudness provenance inspection view remain open.
+
 ## M8 — Parallel converter, resampler, and organized output
 
 ### Objective

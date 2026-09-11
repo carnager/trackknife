@@ -174,19 +174,29 @@ struct MetadataWritePlan {
 using MetadataWritePlanReader = std::function<core::Result<LocalMetadataRead>(
     const std::string&, const core::CancellationToken&)>;
 
+// ADR-0146: caller policy for the plan. sidecar_loudness routes staged
+// conventional ReplayGain on every non-CUE source into the loudness
+// sidecar, writable or not — the "never modify audio files" preference.
+struct MetadataWritePlanOptions {
+    bool sidecar_loudness{false};
+
+    friend bool operator==(const MetadataWritePlanOptions&,
+                           const MetadataWritePlanOptions&) = default;
+};
+
 // Builds one immutable preview from a staged snapshot. The reader is invoked
 // once per distinct raw path on the caller's worker thread. Per-source read,
 // revision, capability, and logical-merge failures become visible blockers;
 // cancellation and invalid planner input remain top-level errors.
 [[nodiscard]] core::Result<MetadataWritePlan> build_metadata_write_plan(
     const StagedMetadataSelection& selection, const StagedMetadataPatchSet& patches,
-    const MetadataWritePlanReader& reader, const core::CancellationToken& cancellation = {});
+    const MetadataWritePlanReader& reader, const core::CancellationToken& cancellation = {},
+    const MetadataWritePlanOptions& options = {});
 
 // Production convenience using the active bounded local metadata reader.
 // Callers must dispatch this synchronous filesystem work off the UI thread.
-[[nodiscard]] core::Result<MetadataWritePlan>
-revalidate_metadata_write_plan(const StagedMetadataSelection& selection,
-                               const StagedMetadataPatchSet& patches,
-                               const core::CancellationToken& cancellation = {});
+[[nodiscard]] core::Result<MetadataWritePlan> revalidate_metadata_write_plan(
+    const StagedMetadataSelection& selection, const StagedMetadataPatchSet& patches,
+    const core::CancellationToken& cancellation = {}, const MetadataWritePlanOptions& options = {});
 
 } // namespace trackknife::metadata

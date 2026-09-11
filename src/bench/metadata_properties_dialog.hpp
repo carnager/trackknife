@@ -207,7 +207,7 @@ class MetadataPropertiesDialog final : public QDialog {
     };
     [[nodiscard]] std::optional<AutomaticChainPlan> combinedAutomaticChain() const;
     void startIdentify();
-    void startReplayGainScan();
+    void startReplayGainScan(std::vector<std::size_t> forced_items = {});
     [[nodiscard]] bool
     stageTransformationPreservingSelection(const metadata::MetadataTransformationPreview& preview,
                                            const QStringList& step_sources = {});
@@ -255,6 +255,9 @@ class MetadataPropertiesDialog final : public QDialog {
     struct ReplayGainScanOutcome {
         core::Result<metadata::MetadataProposalSet> proposals{metadata::MetadataProposalSet{}};
         std::vector<PreparationFeedbackRow> problems;
+        // ADR-0146: items whose measurement failed or was cancelled and
+        // can be re-run; structurally unmeasurable tracks are excluded.
+        std::vector<std::size_t> retry_items;
     };
     QFutureWatcher<std::shared_ptr<ReplayGainScanOutcome>> replaygain_watcher_;
     MetadataPropertiesSourceReader source_reader_;
@@ -305,6 +308,8 @@ class MetadataPropertiesDialog final : public QDialog {
     QPushButton* replaygain_scan_button_{nullptr};
     QComboBox* replaygain_grouping_{nullptr};
     QLineEdit* replaygain_expression_{nullptr};
+    QCheckBox* replaygain_sidecar_only_{nullptr};
+    std::vector<std::size_t> replaygain_retry_items_;
     QComboBox* output_layout_combo_{nullptr};
     QLineEdit* output_layout_name_{nullptr};
     QLineEdit* output_directory_expression_{nullptr};

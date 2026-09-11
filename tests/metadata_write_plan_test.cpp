@@ -633,14 +633,30 @@ void routesNonCueLogicalLoudnessIntoSidecarPlans() {
 // keeps the visible writer block, and writable formats are untouched.
 void divertsUnwritableWholeFileLoudnessToSidecars() {
     using namespace trackknife::metadata;
-    const auto unwritable_reader = [](const std::string& path,
-                                      const trackknife::core::CancellationToken&) {
+    // The sidecar section observes the real path, so the source must
+    // exist on disk with the staged revision.
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("trackknife-write-plan-policy-" + trackknife::core::StableId::random().to_string());
+    std::error_code fs_error;
+    CHECK(std::filesystem::create_directories(root, fs_error));
+    const auto wav = (root / "take.wav").native();
+    {
+        std::ofstream output{wav, std::ios::binary};
+        output << "audio-bytes";
+    }
+    const auto real_revision = trackknife::core::observe_local_source_revision(wav);
+    CHECK(real_revision.has_value());
+    if (!real_revision) {
+        return;
+    }
+    const auto unwritable_reader = [&real_revision](const std::string& path,
+                                                    const trackknife::core::CancellationToken&) {
         return trackknife::core::Result<LocalMetadataRead>{
-            read(path, revision(51U), {}, false, false)};
+            read(path, *real_revision, {}, false, false)};
     };
-    auto selection =
-        StagedMetadataSelection::create({source("/music/take.wav", revision(51U), {}),
-                                         source("/music/take.wav", revision(51U), {})});
+    auto selection = StagedMetadataSelection::create(
+        {source(wav, *real_revision, {}), source(wav, *real_revision, {})});
     CHECK(selection.has_value());
     if (!selection) {
         return;
@@ -666,9 +682,9 @@ void divertsUnwritableWholeFileLoudnessToSidecars() {
         CHECK(diverted->sidecars.size() == 1U);
         if (diverted->sidecars.size() == 1U) {
             const auto& sidecar = diverted->sidecars.front();
-            CHECK(sidecar.raw_audio_path == "/music/take.wav");
-            CHECK(sidecar.expected_revision == revision(51U));
-            CHECK(sidecar.observed_revision == revision(51U));
+            CHECK(sidecar.raw_audio_path == wav);
+            CHECK(sidecar.expected_revision == *real_revision);
+            CHECK(sidecar.observed_revision == *real_revision);
             CHECK(sidecar.entries.size() == 1U);
             const std::vector<std::size_t> both_occurrences{0U, 1U};
             CHECK(sidecar.entries.size() == 1U &&
@@ -694,15 +710,26 @@ void divertsUnwritableWholeFileLoudnessToSidecars() {
     }
 
     // Writable adapters keep ReplayGain in ordinary tags.
-    const auto writable_reader = [](const std::string& path,
-                                    const trackknife::core::CancellationToken&) {
-        auto result = read(path, revision(51U), {});
+    const auto writable_reader = [&real_revision](const std::string& path,
+                                                  const trackknife::core::CancellationToken&) {
+        auto result = read(path, *real_revision, {});
         result.adapter_name = "taglib-flac-v1";
         return trackknife::core::Result<LocalMetadataRead>{std::move(result)};
     };
     const auto tagged = build_metadata_write_plan(*selection, loudness_only, writable_reader);
     CHECK(tagged.has_value());
     CHECK(tagged && tagged->ready() && tagged->sources.size() == 1U && tagged->sidecars.empty());
+
+    // ADR-0146: the sidecar-only policy diverts loudness even on
+    // writable formats, as a whole-file entry.
+    const auto policy = build_metadata_write_plan(*selection, loudness_only, writable_reader, {},
+                                                  {.sidecar_loudness = true});
+    CHECK(policy.has_value());
+    CHECK(policy && policy->ready() && policy->sources.empty() && policy->sidecars.size() == 1U);
+    CHECK(policy && policy->sidecars.size() == 1U &&
+          policy->sidecars.front().entries.size() == 1U &&
+          policy->sidecars.front().entries.front().identity == StagedLogicalIdentity{});
+    std::filesystem::remove_all(root, fs_error);
 }
 
 } // namespace

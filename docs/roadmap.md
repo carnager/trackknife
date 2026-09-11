@@ -190,9 +190,14 @@ Reference: [metadata and artwork](metadata-and-files.md).
 - [ ] Decide and implement the true-peak policy (standards-compliant true
   peak alongside the cheap sample peak, with the peak type recorded); this is
   an open pre-M5–M8 decision in [open-decisions](open-decisions.md).
-- [ ] Complete the result-review surface: export results, retry failures,
-  provenance inspection, embedded-versus-sidecar target switching, and better
-  multi-disc grouping presets.
+- [x] Result workflow (ADR-0146): a persisted "Store in sidecar only"
+  policy routes loudness on every non-CUE source into the sidecar even
+  for writable formats; failed or cancelled measurements re-run through
+  a "Retry N failed" status link; and an "Album merging discs" grouping
+  mode strips trailing disc designators so "Album (Disc 1)"/"Album CD2"
+  measure as one programme.
+- [ ] Remaining result-review surface: export scan results and a
+  per-track loudness provenance inspection view.
 The [correctness prerequisite](#correctness-prerequisite) covers logical-track
 scan propagation. Measurement, grouping, visible draft proposals, and ordinary
 local playback gain modes already exist; this work completes storage and

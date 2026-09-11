@@ -479,6 +479,47 @@ void groupingModesAssignDeterministicKeys() {
                .has_value());
 }
 
+// ADR-0146: the disc-merging release mode strips one trailing disc
+// designator from the album fallback key; MusicBrainz ids stay exact.
+void discMergedGroupingStripsDesignators() {
+    using trackknife::loudness::strip_disc_designator;
+    CHECK(strip_disc_designator("Album (Disc 1)") == "Album");
+    CHECK(strip_disc_designator("Album [CD 2]") == "Album");
+    CHECK(strip_disc_designator("Album - Disc 3") == "Album");
+    CHECK(strip_disc_designator("Album CD2") == "Album");
+    CHECK(strip_disc_designator("Album, Part 1") == "Album");
+    CHECK(strip_disc_designator("Album Vol. 2") == "Album");
+    CHECK(strip_disc_designator("Album (disc 12)  ") == "Album");
+    // Conservative: no designator word, embedded numbers, or standalone
+    // designators keep the original text.
+    CHECK(strip_disc_designator("Blink-182") == "Blink-182");
+    CHECK(strip_disc_designator("1999") == "1999");
+    CHECK(strip_disc_designator("Album (2CD)") == "Album (2CD)");
+    CHECK(strip_disc_designator("Disc 1") == "Disc 1");
+    CHECK(strip_disc_designator("Album (Live)") == "Album (Live)");
+
+    const auto disc_one = document_with({{"ALBUM", "Alpha (Disc 1)"}, {"ALBUMARTIST", "Band"}});
+    const auto disc_two = document_with({{"ALBUM", "Alpha CD2"}, {"ALBUMARTIST", "Band"}});
+    const auto other = document_with({{"ALBUM", "Beta"}, {"ALBUMARTIST", "Band"}});
+    const std::array<const trackknife::metadata::MetadataDocument*, 3> documents{&disc_one,
+                                                                                 &disc_two, &other};
+    const auto merged = trackknife::loudness::assign_loudness_groups(
+        {.mode = trackknife::loudness::LoudnessGroupingMode::release_merged_discs,
+         .expression = {}},
+        documents);
+    CHECK(merged.has_value());
+    if (merged) {
+        CHECK((*merged)[0].has_value());
+        CHECK((*merged)[0] == (*merged)[1]);
+        CHECK((*merged)[2] != (*merged)[0]);
+    }
+    // The plain release mode keeps the discs separate.
+    const auto split = trackknife::loudness::assign_loudness_groups(
+        {.mode = trackknife::loudness::LoudnessGroupingMode::release, .expression = {}}, documents);
+    CHECK(split.has_value());
+    CHECK(split && (*split)[0] != (*split)[1]);
+}
+
 } // namespace
 
 int main(const int argc, char** argv) {
@@ -490,6 +531,7 @@ int main(const int argc, char** argv) {
     parallelScanMatchesDirectAnalysisAndReducesAlbums();
     cancelledScanStopsCleanly();
     groupingModesAssignDeterministicKeys();
+    discMergedGroupingStripsDesignators();
     if (argc == 2) {
         decodedFixtureAnalyzesAndShortMaterialIsUnmeasurable(std::filesystem::path{argv[1]});
     }

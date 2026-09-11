@@ -215,6 +215,11 @@ adapter cannot take a safe tag write (WAV, AIFF, APE, …) divert their
 conventional ReplayGain into the same sidecar as a whole-file entry
 during planning; other staged fields keep the visible writer block.
 
+Implemented as an explicit policy (ADR-0146): the persisted "Store in
+sidecar only" checkbox makes the sidecar the loudness target for every
+non-CUE local source, writable or not — the "never modify audio files"
+preference. CUE tracks keep their sheet in every mode.
+
 A scan result should be written to the selected canonical target and then cached
 in the common `TrackRef`. A playlist may serialize the cached values for fast
 offline display, as classic FPL did, but that snapshot must not override a newer

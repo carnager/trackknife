@@ -3876,7 +3876,7 @@ void BenchMainWindowTest::replayGainScanPreservesLogicalSources() {
     auto* scan = properties->findChild<QPushButton*>(QStringLiteral("bench-replaygain-scan"));
     auto* grouping = properties->findChild<QComboBox*>(QStringLiteral("bench-replaygain-grouping"));
     QVERIFY(scan != nullptr && grouping != nullptr);
-    grouping->setCurrentIndex(1);
+    grouping->setCurrentIndex(2);
     files->selectAll();
     QTRY_VERIFY(scan->isEnabled());
     scan->click();
@@ -3904,7 +3904,7 @@ void BenchMainWindowTest::replayGainScanPreservesLogicalSources() {
     QVERIFY(grid->undo());
     QCOMPARE(grid->patches().patch_count(), 0U);
     files->selectRow(1);
-    grouping->setCurrentIndex(2);
+    grouping->setCurrentIndex(3);
     QTRY_VERIFY(scan->isEnabled());
     scan->click();
     QTRY_COMPARE_WITH_TIMEOUT(grid->patches().patch_count(), 2U, 15'000);
