@@ -1376,6 +1376,17 @@ quickly and correctly.
   "Album (Disc 1)"/"Album CD2" measure as one programme. Export and a
   loudness provenance inspection view remain open.
 
+### Export and provenance view (2026-09-11)
+
+- ADR-0147 completes the result-review surface: the scan worker
+  retains one CSV row per measured item (title, path, LUFS, gains,
+  peaks, album key, outcome state) and an "Export results" status link
+  saves them atomically as UTF-8 CSV — a snapshot of the measurement,
+  independent of later draft edits. A "Loudness sources…" button opens
+  a read-only per-track table showing each effective `REPLAYGAIN_*`
+  value with its origin (draft, sidecar, CUE segment, embedded), a
+  pure projection of the staged selection and patch set with no I/O.
+
 ## M8 — Parallel converter, resampler, and organized output
 
 ### Objective

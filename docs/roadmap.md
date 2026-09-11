@@ -196,8 +196,12 @@ Reference: [metadata and artwork](metadata-and-files.md).
   a "Retry N failed" status link; and an "Album merging discs" grouping
   mode strips trailing disc designators so "Album (Disc 1)"/"Album CD2"
   measure as one programme.
-- [ ] Remaining result-review surface: export scan results and a
-  per-track loudness provenance inspection view.
+- [x] Export and provenance (ADR-0147): scan results export as CSV
+  through a status link (a snapshot of the measurement, independent of
+  later draft edits), and a "Loudness sources…" view shows each track's
+  effective ReplayGain values with their origin — draft, sidecar, CUE
+  segment, or embedded — making the storage precedence tangible. The
+  result-review surface is complete.
 The [correctness prerequisite](#correctness-prerequisite) covers logical-track
 scan propagation. Measurement, grouping, visible draft proposals, and ordinary
 local playback gain modes already exist; this work completes storage and

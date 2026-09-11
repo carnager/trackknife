@@ -49,6 +49,7 @@
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSaveFile>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -58,6 +59,7 @@
 #include <QStyledItemDelegate>
 #include <QTabWidget>
 #include <QTableView>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QTreeView>
@@ -268,6 +270,15 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
         QSettings{}.setValue(QStringLiteral("replaygain/sidecar-only"), enabled);
     });
     side_layout->addWidget(replaygain_sidecar_only_);
+    // ADR-0147: per-track view of where each effective loudness value
+    // comes from — draft, sidecar, CUE segment, or embedded tags.
+    replaygain_provenance_button_ =
+        new QPushButton(QStringLiteral("Loudness sources…"), side_panel);
+    replaygain_provenance_button_->setObjectName(QStringLiteral("bench-replaygain-provenance"));
+    replaygain_provenance_button_->setEnabled(false);
+    connect(replaygain_provenance_button_, &QPushButton::clicked, this,
+            &MetadataPropertiesDialog::showLoudnessProvenance);
+    side_layout->addWidget(replaygain_provenance_button_);
     output_profile_status_ = new QLabel(QStringLiteral("Loading output profiles…"), side_panel);
     output_profile_status_->setObjectName(QStringLiteral("bench-output-profile-status"));
     output_profile_status_->setWordWrap(true);
@@ -525,6 +536,9 @@ MetadataPropertiesDialog::MetadataPropertiesDialog(
         }
         if (link == QStringLiteral("retry-replaygain") && !replaygain_retry_items_.empty()) {
             startReplayGainScan(replaygain_retry_items_);
+        }
+        if (link == QStringLiteral("export-replaygain") && !replaygain_export_rows_.isEmpty()) {
+            exportReplayGainResults();
         }
     });
     connect(redo_button_, &QPushButton::clicked, this, [this] {
@@ -1340,6 +1354,9 @@ void MetadataPropertiesDialog::updateTransformationButton() {
     }
     if (replaygain_scan_button_ != nullptr) {
         replaygain_scan_button_->setEnabled(enabled && !proposal_running_ && !replaygain_running_);
+        if (replaygain_provenance_button_ != nullptr) {
+            replaygain_provenance_button_->setEnabled(grid_model_ != nullptr);
+        }
     }
     if (transformation_list_ != nullptr) {
         transformation_list_->setEnabled(!transformation_catalog_loading_ &&
@@ -2092,10 +2109,7 @@ void MetadataPropertiesDialog::finishProposals() {
             .arg(pluralized(preview.changed_item_count, QStringLiteral("file"),
                             QStringLiteral("files")))
             .arg(display_utf8(preview.chain.name));
-    if (!replaygain_retry_items_.empty()) {
-        staged_status += QStringLiteral(" · <a href=\"retry-replaygain\">Retry %1 failed</a>")
-                             .arg(replaygain_retry_items_.size());
-    }
+    staged_status += replayGainStatusLinks();
     showStickyStatus(staged_status);
     stageAutomaticTransformations();
 }
@@ -2514,8 +2528,59 @@ void MetadataPropertiesDialog::startReplayGainScan(std::vector<std::size_t> forc
                 .rationale = std::move(rationale),
             });
         };
+        // ADR-0147: one CSV data row per measured item, snapshotting the
+        // measurement independent of later draft edits.
+        const auto csv_field = [](QString value) {
+            if (value.contains(QLatin1Char(',')) || value.contains(QLatin1Char('"')) ||
+                value.contains(QLatin1Char('\n'))) {
+                value.replace(QLatin1Char('"'), QStringLiteral("\"\""));
+                value = QLatin1Char('"') + value + QLatin1Char('"');
+            }
+            return value;
+        };
         for (std::size_t position = 0U; position < scan->tracks.size(); ++position) {
             const auto& track = scan->tracks[position];
+            const auto analyzed = track.state == loudness::LoudnessScanState::analyzed &&
+                                  track.loudness && track.loudness->measurable();
+            const auto* album_scan = [&]() -> const loudness::LoudnessAlbumScan* {
+                const auto& album_key = scan_items[position].album_key;
+                if (!album_key) {
+                    return nullptr;
+                }
+                const auto found = albums.find(*album_key);
+                return found == albums.end() || !found->second->integrated_lufs ? nullptr
+                                                                                : found->second;
+            }();
+            const auto status_text = analyzed ? QStringLiteral("analyzed")
+                                     : track.state == loudness::LoudnessScanState::failed
+                                         ? QStringLiteral("failed")
+                                     : track.state == loudness::LoudnessScanState::cancelled
+                                         ? QStringLiteral("cancelled")
+                                     : track.state == loudness::LoudnessScanState::analyzed
+                                         ? QStringLiteral("unmeasurable")
+                                         : QStringLiteral("pending");
+            const auto document_title =
+                position < documents->size()
+                    ? (*documents)[position].first_effective_value("title").value_or(std::string{})
+                    : std::string{};
+            outcome->export_rows
+                << QStringList{
+                       csv_field(display_utf8(document_title)),
+                       csv_field(QString::fromStdString(core::escape_raw_path(track.raw_path))),
+                       analyzed ? display_utf8(lufs_text(track.loudness->integrated_lufs))
+                                : QString{},
+                       analyzed ? display_utf8(decibel_text(track.loudness->track_gain_db()))
+                                : QString{},
+                       analyzed ? display_utf8(peak_text(track.loudness->sample_peak))
+                                : QString{},
+                       csv_field(display_utf8(
+                           scan_items[position].album_key.value_or(std::string{}))),
+                       album_scan ? display_utf8(decibel_text(*album_scan->album_gain_db()))
+                                  : QString{},
+                       album_scan ? display_utf8(peak_text(album_scan->sample_peak)) : QString{},
+                       status_text,
+                   }
+                       .join(QLatin1Char(','));
             if (track.state != loudness::LoudnessScanState::analyzed || !track.loudness) {
                 if (track.issue) {
                     outcome->problems.push_back(PreparationFeedbackRow{
@@ -2583,6 +2648,7 @@ void MetadataPropertiesDialog::finishReplayGainScan() {
         return;
     }
     replaygain_retry_items_ = outcome->retry_items;
+    replaygain_export_rows_ = outcome->export_rows;
     if (!outcome->problems.empty()) {
         showPreparationFeedback(
             QStringLiteral("ReplayGain scan problems"),
@@ -2593,17 +2659,137 @@ void MetadataPropertiesDialog::finishReplayGainScan() {
             std::vector<PreparationFeedbackRow>{outcome->problems});
     }
     if (outcome->proposals->items.empty()) {
-        if (!replaygain_retry_items_.empty()) {
-            showStickyStatus(QStringLiteral("No ReplayGain values staged · "
-                                            "<a href=\"retry-replaygain\">Retry %1 failed</a>")
-                                 .arg(replaygain_retry_items_.size()));
-        } else {
-            read_only_->setText(QStringLiteral(
-                "No ReplayGain values staged · nothing measurable in the selection"));
-        }
+        showStickyStatus(QStringLiteral("No ReplayGain values staged · nothing measurable in "
+                                        "the selection%1")
+                             .arg(replayGainStatusLinks()));
         return;
     }
     applyMusicBrainzProposals(std::move(*outcome->proposals));
+}
+
+QString MetadataPropertiesDialog::replayGainStatusLinks() const {
+    QString links;
+    if (!replaygain_retry_items_.empty()) {
+        links += QStringLiteral(" · <a href=\"retry-replaygain\">Retry %1 failed</a>")
+                     .arg(replaygain_retry_items_.size());
+    }
+    if (!replaygain_export_rows_.isEmpty()) {
+        links += QStringLiteral(" · <a href=\"export-replaygain\">Export results</a>");
+    }
+    return links;
+}
+
+void MetadataPropertiesDialog::exportReplayGainResults() {
+    if (replaygain_export_rows_.isEmpty()) {
+        return;
+    }
+    // Test seam: an explicit path skips the file dialog.
+    auto path = property("trackknife-replaygain-export-path").toString();
+    if (path.isEmpty()) {
+        path = QFileDialog::getSaveFileName(this, QStringLiteral("Export ReplayGain results"),
+                                            QStringLiteral("replaygain-results.csv"),
+                                            QStringLiteral("CSV files (*.csv)"));
+    }
+    if (path.isEmpty()) {
+        return;
+    }
+    QSaveFile output{path};
+    if (!output.open(QIODevice::WriteOnly)) {
+        showStickyStatus(QStringLiteral("Export failed · %1").arg(output.errorString()));
+        return;
+    }
+    QString body = QStringLiteral(
+        "track,file,integrated_lufs,track_gain_db,track_peak,album_key,album_gain_db,"
+        "album_peak,status\n");
+    body += replaygain_export_rows_.join(QLatin1Char('\n'));
+    body += QLatin1Char('\n');
+    const auto bytes = body.toUtf8();
+    if (output.write(bytes) != bytes.size() || !output.commit()) {
+        showStickyStatus(QStringLiteral("Export failed · %1").arg(output.errorString()));
+        return;
+    }
+    const auto row_count = static_cast<std::size_t>(replaygain_export_rows_.size());
+    showStickyStatus(QStringLiteral("Exported %1 %2 to %3%4")
+                         .arg(row_count)
+                         .arg(pluralized(row_count, QStringLiteral("row"), QStringLiteral("rows")))
+                         .arg(path.toHtmlEscaped())
+                         .arg(replayGainStatusLinks()));
+}
+
+void MetadataPropertiesDialog::showLoudnessProvenance() {
+    if (grid_model_ == nullptr) {
+        return;
+    }
+    auto items = selectedItemIndexes();
+    if (items.empty()) {
+        items.reserve(grid_model_->selection().item_count());
+        for (std::size_t item_index = 0U; item_index < grid_model_->selection().item_count();
+             ++item_index) {
+            items.push_back(item_index);
+        }
+    }
+    if (items.empty()) {
+        return;
+    }
+    const auto& selection = grid_model_->selection();
+    const auto patches = grid_model_->patches();
+    constexpr std::array<std::pair<std::string_view, std::string_view>, 4> loudness_fields{{
+        {"replaygaintrackgain", "Track gain"},
+        {"replaygaintrackpeak", "Track peak"},
+        {"replaygainalbumgain", "Album gain"},
+        {"replaygainalbumpeak", "Album peak"},
+    }};
+
+    auto* dialog = new QDialog(this);
+    dialog->setObjectName(QStringLiteral("bench-replaygain-provenance-dialog"));
+    dialog->setWindowTitle(QStringLiteral("Loudness sources"));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    auto* layout = new QVBoxLayout(dialog);
+    auto* table = new QTableWidget(static_cast<int>(items.size()),
+                                   static_cast<int>(loudness_fields.size()) + 1, dialog);
+    table->setObjectName(QStringLiteral("bench-replaygain-provenance-table"));
+    QStringList headers{QStringLiteral("Track")};
+    for (const auto& [canonical, header] : loudness_fields) {
+        headers << QString::fromUtf8(header.data(), static_cast<qsizetype>(header.size()));
+    }
+    table->setHorizontalHeaderLabels(headers);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionMode(QAbstractItemView::NoSelection);
+    table->verticalHeader()->hide();
+    table->setWordWrap(false);
+    for (int row = 0; row < static_cast<int>(items.size()); ++row) {
+        const auto item_index = items[static_cast<std::size_t>(row)];
+        table->setItem(row, 0,
+                       new QTableWidgetItem(grid_model_->trackLabel(static_cast<int>(item_index))));
+        for (int column = 0; column < static_cast<int>(loudness_fields.size()); ++column) {
+            const auto& canonical = loudness_fields[static_cast<std::size_t>(column)].first;
+            QString cell_text = QStringLiteral("—");
+            if (const auto field_index = selection.field_index(canonical)) {
+                if (const auto* patch = patches.patch(item_index, *field_index)) {
+                    cell_text =
+                        patch->kind == metadata::StagedMetadataPatchKind::remove_field
+                            ? QStringLiteral("removed · draft")
+                            : QStringLiteral("%1 · draft")
+                                  .arg(display_utf8(patch->values.empty() ? std::string{}
+                                                                          : patch->values.front()));
+                } else if (const auto* cell = selection.cell(item_index, *field_index);
+                           cell != nullptr && !cell->values.empty()) {
+                    cell_text = QStringLiteral("%1 · %2").arg(
+                        display_utf8(cell->values.front()),
+                        display_utf8(
+                            std::string{metadata::field_provenance_name(cell->provenance)}));
+                }
+            }
+            table->setItem(row, column + 1, new QTableWidgetItem(cell_text));
+        }
+    }
+    table->resizeColumnsToContents();
+    layout->addWidget(table);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+    layout->addWidget(buttons);
+    dialog->resize(640, 320);
+    dialog->show();
 }
 
 void MetadataPropertiesDialog::applyMusicBrainzProposals(metadata::MetadataProposalSet proposals) {

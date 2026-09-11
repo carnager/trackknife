@@ -78,6 +78,7 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTableView>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
@@ -3801,6 +3802,41 @@ void BenchMainWindowTest::replayGainScanStagesMeasuredGainsAsDrafts() {
     // Staging inserted new columns; the file selection must survive so the
     // fields pane keeps projecting the selection instead of going blank.
     QCOMPARE(files->selectionModel()->selectedRows().size(), 2);
+
+    // ADR-0147: the measurement exports as CSV through the status link.
+    QTemporaryDir export_directory;
+    QVERIFY(export_directory.isValid());
+    const auto export_path = export_directory.filePath(QStringLiteral("results.csv"));
+    properties->setProperty("trackknife-replaygain-export-path", export_path);
+    auto* status = properties->findChild<QLabel*>(QStringLiteral("bench-metadata-read-only"));
+    QVERIFY(status != nullptr);
+    emit status->linkActivated(QStringLiteral("export-replaygain"));
+    QFile exported{export_path};
+    QVERIFY(exported.open(QIODevice::ReadOnly));
+    const auto csv = QString::fromUtf8(exported.readAll());
+    QVERIFY(csv.startsWith(QStringLiteral(
+        "track,file,integrated_lufs,track_gain_db,track_peak,album_key,album_gain_db,"
+        "album_peak,status")));
+    QVERIFY(csv.contains(loud_gain.front()));
+    QVERIFY(csv.contains(QStringLiteral("analyzed")));
+    QCOMPARE(csv.count(QLatin1Char('\n')), 3);
+
+    // ADR-0147: the provenance view marks the unsaved scan values as
+    // drafts, one row per track.
+    auto* provenance_button =
+        properties->findChild<QPushButton*>(QStringLiteral("bench-replaygain-provenance"));
+    QVERIFY(provenance_button != nullptr);
+    QVERIFY(provenance_button->isEnabled());
+    provenance_button->click();
+    QTableWidget* provenance_table = nullptr;
+    QTRY_VERIFY((provenance_table = properties->findChild<QTableWidget*>(
+                     QStringLiteral("bench-replaygain-provenance-table"))) != nullptr);
+    QCOMPARE(provenance_table->rowCount(), 2);
+    QCOMPARE(provenance_table->columnCount(), 5);
+    QVERIFY(provenance_table->item(0, 1) != nullptr);
+    QCOMPARE(provenance_table->item(0, 1)->text(),
+             QStringLiteral("%1 · draft").arg(loud_gain.front()));
+
     // Closing would rightly demand draft confirmation; tear down directly.
     delete properties;
 }
