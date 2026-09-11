@@ -183,7 +183,14 @@ Reference: [metadata and artwork](metadata-and-files.md).
   reconciliation reporting. Emptied sidecars publish as empty documents
   instead of vanishing; sidecar creation stays a direct atomic publish by
   explicit argument (no pre-image at risk).
-- [ ] Define and implement Opus R128 storage and playback handling.
+- [x] Opus R128 (ADR-0149): the decoder reads RFC 7845 `R128_TRACK_GAIN`/
+  `R128_ALBUM_GAIN` Q7.8 comments (relative to the output gain libopus
+  already applies) and lifts them 5 dB onto the ReplayGain 2.0 scale,
+  preferring them over `REPLAYGAIN_*` remnants; scans stage Q7.8 R128
+  proposals for Opus tag writes (no peaks — the RFC defines none) while
+  the sidecar-only policy keeps conventional fields; the provenance view
+  shows the two R128 columns. Output-gain rewriting stays a future
+  expert operation.
 - [x] Add playback preamp controls (ADR-0138): separate ±20 dB preamps for
   tracks with and without loudness data, applied only while local
   ReplayGain is active, persisted, and inherited by every loaded source.

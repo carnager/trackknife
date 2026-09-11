@@ -46,6 +46,9 @@ struct LoudnessTrackScan {
     std::string raw_path;
     LoudnessScanState state{LoudnessScanState::pending};
     std::optional<TrackLoudness> loudness;
+    // ADR-0149: the decoded stream is Opus, so tag proposals must use the
+    // RFC 7845 R128 convention instead of REPLAYGAIN_* fields.
+    bool opus{false};
     // Observed before decoding and re-verified afterwards; application must
     // gate on this so results never reach a changed source.
     std::optional<core::LocalSourceRevision> source_revision;

@@ -27,6 +27,7 @@ struct ItemOutcome {
     std::optional<TrackLoudness> loudness;
     std::optional<core::LocalSourceRevision> revision;
     std::optional<core::Error> issue;
+    bool opus{false};
 };
 
 [[nodiscard]] ItemOutcome analyze_item(const LoudnessScanItem& item,
@@ -47,6 +48,7 @@ struct ItemOutcome {
         outcome.issue = std::move(decoder.error());
         return outcome;
     }
+    outcome.opus = decoder->opus_stream();
     const auto& format = decoder->output_format();
     auto analyzer =
         LoudnessAnalyzer::create(format.sample_rate, format.channels, options.measure_true_peak);
@@ -181,6 +183,7 @@ core::Result<LoudnessScanResult> scan_loudness(const std::span<const LoudnessSca
                 track.state = LoudnessScanState::analyzed;
                 track.loudness = outcome.loudness;
                 track.source_revision = outcome.revision;
+                track.opus = outcome.opus;
                 analyzers[position] = std::move(outcome.analyzer);
             }
             report(position, track.state, true);

@@ -167,10 +167,12 @@ Export. Other container writers and configurable export naming remain open.
    file-operation following, and the explicit unwritable-format fallback.
 2. Portable/custom filename sanitization and Unicode normalization policy;
    `linux-v1` is fixed by ADR-0055.
-3. Opus output-gain/storage policy. The true-peak half is resolved by
-   ADR-0148: sample peak stays the default, an opt-in policy proposes
-   the oversampled true peak in `REPLAYGAIN_*_PEAK`, and sidecar plus
-   CSV export record the peak kind.
+3. Resolved. The true-peak half by ADR-0148 (sample peak stays the
+   default, an opt-in policy proposes the oversampled true peak in
+   `REPLAYGAIN_*_PEAK`, sidecar plus CSV export record the peak kind);
+   the Opus storage half by ADR-0149 (RFC 7845 Q7.8 R128 comments with
+   a constant 5 dB reference shift). Only rewriting the `OpusHead`
+   output gain itself remains future expert-operation work.
 4. Initial exact read/write/preservation claims per local format.
 5. Converter's shipped codec/device presets, resampler quality settings, and
    source-root inference UX.

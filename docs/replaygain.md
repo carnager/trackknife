@@ -255,8 +255,11 @@ Do not copy gain fields blindly between formats, especially Opus. RFC 7845 says
 `R128_TRACK_GAIN`/`R128_ALBUM_GAIN` are Q7.8 dB values relative to the Opus
 header output gain and must be applied in addition to it; changing output gain
 requires updating/removing the comments. Its normalization reference differs
-from naive ReplayGain-tag assumptions. Implement one explicit Opus policy after
-interoperability tests.
+from naive ReplayGain-tag assumptions. ADR-0149 fixes the policy: Trackbench
+writes and reads the RFC's Q7.8 comments (relative to the output gain the
+decoder already applies) and converts between the −23 LUFS R128 reference and
+the −18 LUFS ReplayGain scale with a constant 5 dB shift. Output-gain
+rewriting remains a separate expert operation.
 
 For all formats, metadata writes preserve audio essence and unrelated data.
 Sidecar fallback must be offered when an embedded mapping is risky, lossy, or
@@ -309,9 +312,10 @@ Automatic choosing Track under Random and Album otherwise. Album falls back
 to Track; missing/invalid gain is unity. The worker applies fresh embedded
 values per decoded source, including gapless continuations, and limits gain
 using a matching known sample peak. Off preserves PCM exactly. Mode changes
-apply as already buffered audio drains. Sidecar/library-only playback gain,
-Opus R128 normalization, user preamps, and the additional processing modes
-specified above remain future work.
+apply as already buffered audio drains. Sidecar playback gain landed with
+ADR-0141, preamps with ADR-0138, and Opus R128 normalization with ADR-0149
+(Q7.8 comments lifted 5 dB onto the ReplayGain scale, no peak clamp). The
+additional processing modes specified above remain future work.
 
 ## Conversion and permanent gain
 

@@ -7,6 +7,7 @@
 #include "trackknife/core/stable_id.hpp"
 #include <set>
 #include <taglib/flacfile.h>
+#include <taglib/opusfile.h>
 #include <taglib/tpropertymap.h>
 
 #include <algorithm>
@@ -595,6 +596,70 @@ void playbackOrderVisitsOccurrencesAndWraps() {
     CHECK(order.adjacent(1, false).has_value());
 }
 
+// ADR-0149: Opus loudness reads RFC 7845 R128 comments — Q7.8 integers
+// referenced to -23 LUFS — lifted 5 dB onto the ReplayGain 2.0 scale,
+// preferred over REPLAYGAIN_* remnants, with strict integer parsing.
+void opusR128TagsLiftToReplayGainReference(const std::filesystem::path& fixtures,
+                                           const std::filesystem::path& root) {
+    using namespace trackknife;
+    CHECK(formats::parse_r128_gain_decibels("-1536") == -6.0);
+    CHECK(formats::parse_r128_gain_decibels("+256") == 1.0);
+    CHECK(!formats::parse_r128_gain_decibels("40000").has_value());
+    CHECK(!formats::parse_r128_gain_decibels("1.5").has_value());
+    CHECK(!formats::parse_r128_gain_decibels("-6 dB").has_value());
+    CHECK(!formats::parse_r128_gain_decibels("").has_value());
+    CHECK(formats::r128_gain_text(-5.0) == "-1280");
+    CHECK(formats::r128_gain_text(1.0) == "256");
+    CHECK(formats::r128_gain_text(500.0) == "32767");
+
+    const auto bytes = decode_base64_file(fixtures / "loudness-tone-opus.b64");
+    CHECK(bytes.has_value());
+    if (!bytes) {
+        return;
+    }
+    const auto write = [&](const std::filesystem::path& path,
+                           const std::vector<std::pair<const char*, const char*>>& tags) {
+        {
+            std::ofstream file{path, std::ios::binary};
+            file.write(reinterpret_cast<const char*>(bytes->data()),
+                       static_cast<std::streamsize>(bytes->size()));
+        }
+        TagLib::Ogg::Opus::File file{path.c_str()};
+        auto properties = file.properties();
+        for (const auto& [name, value] : tags) {
+            properties.replace(name, TagLib::String{value});
+        }
+        file.setProperties(properties);
+        CHECK(file.save());
+    };
+
+    // R128 owns the result when present; -1280 is -5 dB at -23 LUFS,
+    // exactly 0 dB on the ReplayGain scale, and no peak exists.
+    const auto tagged = root / "r128.opus";
+    write(tagged, {{"R128_TRACK_GAIN", "-1280"},
+                   {"R128_ALBUM_GAIN", "256"},
+                   {"REPLAYGAIN_TRACK_GAIN", "+3.00 dB"}});
+    auto decoder = formats::AudioDecoder::open(tagged.native());
+    CHECK(decoder.has_value());
+    if (decoder) {
+        CHECK(decoder->opus_stream());
+        const auto gain = decoder->replay_gain();
+        CHECK(gain.track_gain_db == 0.0);
+        CHECK(gain.album_gain_db == 6.0);
+        CHECK(!gain.track_peak.has_value());
+        CHECK(!gain.album_peak.has_value());
+    }
+
+    // Without valid R128 values the lenient REPLAYGAIN_* reading remains.
+    const auto fallback = root / "r128-fallback.opus";
+    write(fallback, {{"R128_TRACK_GAIN", "not-a-number"}, {"REPLAYGAIN_TRACK_GAIN", "+3.00 dB"}});
+    auto fallback_decoder = formats::AudioDecoder::open(fallback.native());
+    CHECK(fallback_decoder.has_value());
+    if (fallback_decoder) {
+        CHECK(fallback_decoder->replay_gain().track_gain_db == 3.0);
+    }
+}
+
 void replayGainUsesRealTagsAndChangesAtGaplessBoundary(const std::filesystem::path& fixtures,
                                                        const std::filesystem::path& root) {
     using namespace trackknife;
@@ -852,6 +917,7 @@ int main(const int argc, char** argv) {
     chainsSegmentsOfOnePhysicalSource(path);
     if (argc == 2) {
         chainsSelectedCodecSubsongs(argv[1], root);
+        opusR128TagsLiftToReplayGainReference(argv[1], root);
         replayGainUsesRealTagsAndChangesAtGaplessBoundary(argv[1], root);
         replayGainOverrideOutranksTagsAcrossTakeover(argv[1], root);
     }

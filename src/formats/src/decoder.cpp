@@ -499,6 +499,28 @@ std::optional<double> parse_replay_gain_peak(const std::string_view value) noexc
     return parse_replay_gain_number(value, false);
 }
 
+std::optional<double> parse_r128_gain_decibels(const std::string_view value) noexcept {
+    const auto* begin = value.data();
+    const auto* end = value.data() + value.size();
+    if (begin != end && *begin == '+') {
+        ++begin;
+    }
+    int parsed{};
+    const auto ends = std::from_chars(begin, end, parsed);
+    if (ends.ec != std::errc{} || ends.ptr != end) {
+        return std::nullopt;
+    }
+    if (parsed < -32'768 || parsed > 32'767) {
+        return std::nullopt;
+    }
+    return static_cast<double>(parsed) / 256.0;
+}
+
+std::string r128_gain_text(const double r128_decibels) {
+    const auto scaled = std::llround(r128_decibels * 256.0);
+    return std::to_string(std::clamp<long long>(scaled, -32'768LL, 32'767LL));
+}
+
 ReplayGainInfo AudioDecoder::replay_gain() const noexcept {
     const auto& decoder = *implementation_;
     const auto* stream = decoder.format->streams[static_cast<unsigned>(decoder.stream_index)];
@@ -516,6 +538,36 @@ ReplayGainInfo AudioDecoder::replay_gain() const noexcept {
         return av_dict_get(stream->metadata, key, nullptr, 0) != nullptr ||
                av_dict_get(decoder.format->metadata, key, nullptr, 0) != nullptr;
     };
+    // ADR-0149: Opus loudness lives in RFC 7845 R128 comments — Q7.8 dB
+    // relative to the output gain libopus already applied, referenced to
+    // -23 LUFS. When present they own the result; REPLAYGAIN_* remnants
+    // on the same file are ignored rather than mixed. No peak exists.
+    if (stream->codecpar->codec_id == AV_CODEC_ID_OPUS) {
+        const auto r128 = [&](const char* key) -> std::optional<double> {
+            const auto* entry = av_dict_get(stream->metadata, key, nullptr, 0);
+            if (entry == nullptr) {
+                entry = av_dict_get(decoder.format->metadata, key, nullptr, 0);
+            }
+            if (entry == nullptr) {
+                return std::nullopt;
+            }
+            const auto parsed = parse_r128_gain_decibels(entry->value);
+            if (!parsed) {
+                return std::nullopt;
+            }
+            return *parsed + opus_r128_reference_shift_db;
+        };
+        const auto track = r128("R128_TRACK_GAIN");
+        const auto album = r128("R128_ALBUM_GAIN");
+        if (track || album) {
+            return ReplayGainInfo{
+                .track_gain_db = track,
+                .track_peak = std::nullopt,
+                .album_gain_db = album,
+                .album_peak = std::nullopt,
+            };
+        }
+    }
     ReplayGainInfo result{
         .track_gain_db = number("REPLAYGAIN_TRACK_GAIN", true),
         .track_peak = number("REPLAYGAIN_TRACK_PEAK", false),
@@ -551,6 +603,12 @@ ReplayGainInfo AudioDecoder::replay_gain() const noexcept {
         }
     }
     return result;
+}
+
+bool AudioDecoder::opus_stream() const noexcept {
+    const auto& decoder = *implementation_;
+    return decoder.format->streams[static_cast<unsigned>(decoder.stream_index)]
+               ->codecpar->codec_id == AV_CODEC_ID_OPUS;
 }
 
 const PcmFormat& AudioDecoder::output_format() const noexcept { return implementation_->output; }

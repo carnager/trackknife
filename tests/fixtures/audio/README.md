@@ -382,3 +382,20 @@ exactly, the `ftyp` and `mdat` boxes to stay byte-identical, and the
 decoded PCM to be unchanged through a prepared-copy tag write; freeform
 `----:com.apple.iTunes:NAME` items are created by the writer under test,
 not stored in the fixture.
+
+`loudness-tone-opus.b64` is a 0.6 s 48 kHz mono 997 Hz sine at half
+amplitude encoded with libopus at 64 kb/s (long enough for one gated
+loudness block), tagged title/artist, generated with FFmpeg n9.0.1:
+
+```sh
+ffmpeg -f lavfi -i "sine=frequency=997:sample_rate=48000:duration=0.6" \
+  -af "volume=0.5" -c:a libopus -b:a 64k -bitexact \
+  -metadata title="Loudness tone" -metadata artist="Trackknife Fixtures" \
+  loudness-tone.opus
+```
+
+The binary SHA-256 is
+`eefe0e497467a1fbed30f2a73e1c2003185b8c6ead20fff237e11429f8bb690f`.
+ADR-0149 tests scan it to assert R128 Q7.8 proposals and write
+`R128_TRACK_GAIN`/`R128_ALBUM_GAIN` comments onto materialized copies to
+assert the decoder's -23 to -18 LUFS reference lift.

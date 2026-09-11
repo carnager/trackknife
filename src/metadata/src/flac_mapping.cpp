@@ -79,6 +79,11 @@ constexpr std::array conventional_mappings{
     ConventionalMapping{"replaygaintrackpeak", "REPLAYGAIN_TRACK_PEAK"},
     ConventionalMapping{"replaygainalbumgain", "REPLAYGAIN_ALBUM_GAIN"},
     ConventionalMapping{"replaygainalbumpeak", "REPLAYGAIN_ALBUM_PEAK"},
+    // RFC 7845 Opus R128 loudness comments (ADR-0149): one logical
+    // identity each, matching the canonical names the write-plan storage
+    // guards already use.
+    ConventionalMapping{"r128trackgain", "R128_TRACK_GAIN"},
+    ConventionalMapping{"r128albumgain", "R128_ALBUM_GAIN"},
 };
 
 [[nodiscard]] core::Error mapping_error(std::string message, const std::string_view name) {

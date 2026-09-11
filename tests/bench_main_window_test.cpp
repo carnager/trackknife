@@ -196,6 +196,7 @@ class BenchMainWindowTest final : public QObject {
     void musicBrainzFingerprintScanRanksAndStages();
     void replayGainScanStagesMeasuredGainsAsDrafts();
     void replayGainScanUsesTruePeakWhenOptedIn();
+    void replayGainScanStagesR128ForOpusTags();
     void loudnessSidecarProjectsOntoProbedRows();
     void desktopNotificationsNotifyBackgroundTrackChanges();
     void replayGainScanPreservesLogicalSources_data();
@@ -3834,7 +3835,7 @@ void BenchMainWindowTest::replayGainScanStagesMeasuredGainsAsDrafts() {
     QTRY_VERIFY((provenance_table = properties->findChild<QTableWidget*>(
                      QStringLiteral("bench-replaygain-provenance-table"))) != nullptr);
     QCOMPARE(provenance_table->rowCount(), 2);
-    QCOMPARE(provenance_table->columnCount(), 5);
+    QCOMPARE(provenance_table->columnCount(), 7);
     QVERIFY(provenance_table->item(0, 1) != nullptr);
     QCOMPARE(provenance_table->item(0, 1)->text(),
              QStringLiteral("%1 · draft").arg(loud_gain.front()));
@@ -3911,6 +3912,82 @@ void BenchMainWindowTest::replayGainScanUsesTruePeakWhenOptedIn() {
     // The setting is sticky; restore the default so later dialogs scan
     // sample peaks again.
     true_peak->setChecked(false);
+    delete properties;
+}
+
+// ADR-0149: measured Opus sources stage RFC 7845 R128 Q7.8 comments for
+// tag writes; the sidecar-only policy outranks that and keeps the
+// conventional -18 LUFS fields because the audio file is never touched.
+void BenchMainWindowTest::replayGainScanStagesR128ForOpusTags() {
+    QTemporaryDir media;
+    QVERIFY(media.isValid());
+    const auto path = media.filePath(QStringLiteral("tone.opus"));
+    QVERIFY(materialize_audio_fixture(QStringLiteral("loudness-tone-opus.b64"), path));
+    const auto encoded = QFile::encodeName(path);
+    const std::vector sources{MetadataPropertiesSource{
+        .source =
+            metadata::StagedMetadataSource{
+                .raw_path =
+                    std::string{encoded.constData(), static_cast<std::size_t>(encoded.size())},
+                .source_revision = std::nullopt,
+                .baseline = metadata::MetadataDocument{},
+            },
+        .track_label = QStringLiteral("Opus tone"),
+    }};
+    auto* properties = new MetadataPropertiesDialog(
+        sources.size(),
+        [sources](const std::size_t index) -> std::optional<MetadataPropertiesSource> {
+            return index < sources.size() ? std::optional{sources[index]} : std::nullopt;
+        },
+        {}, {}, {});
+    properties->show();
+
+    QTableView* files = nullptr;
+    QTRY_VERIFY((files = properties->findChild<QTableView*>(
+                     QStringLiteral("bench-metadata-files"))) != nullptr);
+    auto* grid_model = qobject_cast<MetadataGridModel*>(files->model());
+    auto* scan = properties->findChild<QPushButton*>(QStringLiteral("bench-replaygain-scan"));
+    auto* sidecar_only =
+        properties->findChild<QCheckBox*>(QStringLiteral("bench-replaygain-sidecar-only"));
+    QVERIFY(grid_model != nullptr);
+    QVERIFY(scan != nullptr);
+    QVERIFY(sidecar_only != nullptr);
+    QVERIFY(!sidecar_only->isChecked());
+    files->selectAll();
+    QTRY_VERIFY(scan->isEnabled());
+    QTest::mouseClick(scan, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(grid_model->patches().patch_count() >= 1U, 15'000);
+
+    const auto r128_column = grid_model->fieldColumn(QStringLiteral("R128_TRACK_GAIN"));
+    QVERIFY(r128_column.has_value());
+    const auto r128_values =
+        grid_model->index(0, *r128_column).data(metadata_cell_values_role).toStringList();
+    QCOMPARE(r128_values.size(), 1);
+    // A strict Q7.8 integer, and one the reader lifts back into a sane
+    // ReplayGain-scale gain for this quiet tone.
+    bool integral = false;
+    const auto q78 = r128_values.front().toInt(&integral);
+    QVERIFY(integral);
+    const auto lifted = q78 / 256.0 + 5.0;
+    QVERIFY(lifted > -20.0 && lifted < 20.0);
+    // RFC 7845 defines no peak field.
+    QVERIFY(!grid_model->fieldColumn(QStringLiteral("REPLAYGAIN_TRACK_PEAK")).has_value());
+    QVERIFY(!grid_model->fieldColumn(QStringLiteral("REPLAYGAIN_TRACK_GAIN")).has_value());
+
+    // Under the sidecar-only policy the same file stages conventional
+    // fields for the Trackbench-owned carrier.
+    sidecar_only->setChecked(true);
+    QTest::mouseClick(scan, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        grid_model->fieldColumn(QStringLiteral("REPLAYGAIN_TRACK_GAIN")).has_value(), 15'000);
+    const auto conventional_column =
+        grid_model->fieldColumn(QStringLiteral("REPLAYGAIN_TRACK_GAIN"));
+    const auto conventional =
+        grid_model->index(0, *conventional_column).data(metadata_cell_values_role).toStringList();
+    QCOMPARE(conventional.size(), 1);
+    QVERIFY(conventional.front().endsWith(QStringLiteral(" dB")));
+
+    sidecar_only->setChecked(false);
     delete properties;
 }
 

@@ -30,6 +30,18 @@ struct ReplayGainInfo {
 [[nodiscard]] std::optional<double> parse_replay_gain_decibels(std::string_view value) noexcept;
 [[nodiscard]] std::optional<double> parse_replay_gain_peak(std::string_view value) noexcept;
 
+// RFC 7845 R128 loudness for Opus: R128_TRACK_GAIN/R128_ALBUM_GAIN hold a
+// Q7.8 fixed-point decibel value (signed 16-bit integer, dB = value / 256)
+// relative to the OpusHead output gain and referenced to -23 LUFS.
+// ReplayGain 2.0 normalizes 5 dB higher (ADR-0149).
+inline constexpr double opus_r128_reference_shift_db = 5.0;
+// Strict integer parse of the Q7.8 comment value into RFC-referenced
+// decibels; anything but an exact in-range integer is rejected.
+[[nodiscard]] std::optional<double> parse_r128_gain_decibels(std::string_view value) noexcept;
+// Formats RFC-referenced decibels as the Q7.8 comment value, clamped to
+// the signed 16-bit domain.
+[[nodiscard]] std::string r128_gain_text(double r128_decibels);
+
 struct PcmFormat {
     int sample_rate{0};
     int channels{0};
@@ -87,6 +99,9 @@ class AudioDecoder final {
 
     // Fresh container/selected-stream values; does not apply gain to decoded PCM.
     [[nodiscard]] ReplayGainInfo replay_gain() const noexcept;
+    // The selected stream decodes as Opus and therefore carries loudness
+    // via RFC 7845 R128 comments rather than REPLAYGAIN_* tags (ADR-0149).
+    [[nodiscard]] bool opus_stream() const noexcept;
     [[nodiscard]] const PcmFormat& output_format() const noexcept;
     [[nodiscard]] std::optional<std::int64_t> duration_samples() const noexcept;
     [[nodiscard]] const SampleRange& sample_range() const noexcept;

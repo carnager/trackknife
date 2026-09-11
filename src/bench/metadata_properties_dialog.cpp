@@ -11,6 +11,7 @@
 #include "bench/metadata_transformation_dialog.hpp"
 #include "bench/metadata_transformation_preview_model.hpp"
 #include "bench/preparation_feedback_dialog.hpp"
+#include "trackknife/formats/decoder.hpp"
 #include "trackknife/loudness/grouping.hpp"
 #include "trackknife/loudness/scan.hpp"
 #include "trackknife/metadata/draft_document.hpp"
@@ -2456,13 +2457,16 @@ void MetadataPropertiesDialog::startReplayGainScan(std::vector<std::size_t> forc
     auto draft = grid_model_->patches();
     const std::shared_ptr<const std::vector<MetadataPropertiesAudioSource>> audio_sources{
         audio_sources_};
-    // ADR-0148: captured before the worker starts; widgets stay on the UI
-    // thread.
+    // ADR-0148/0149: captured before the worker starts; widgets stay on
+    // the UI thread.
     const bool true_peak = replaygain_true_peak_ != nullptr && replaygain_true_peak_->isChecked();
+    const bool sidecar_only =
+        replaygain_sidecar_only_ != nullptr && replaygain_sidecar_only_->isChecked();
     replaygain_watcher_.setFuture(QtConcurrent::run([selection = std::move(selection),
                                                      draft = std::move(draft),
                                                      items = std::move(items), audio_sources,
-                                                     grouping, completed, cancellation, true_peak] {
+                                                     grouping, completed, cancellation, true_peak,
+                                                     sidecar_only] {
         auto outcome = std::make_shared<ReplayGainScanOutcome>();
         auto documents =
             metadata::materialize_metadata_draft(*selection, draft, items, cancellation);
@@ -2638,16 +2642,32 @@ void MetadataPropertiesDialog::startReplayGainScan(std::vector<std::size_t> forc
                 .fields = {},
                 .artwork = {},
             };
+            // ADR-0149: Opus tag writes speak RFC 7845 — Q7.8 R128 comments
+            // at the -23 LUFS reference, no peaks. The sidecar-only policy
+            // outranks this: the sidecar is Trackbench-owned and keeps the
+            // conventional -18 LUFS fields regardless of format.
+            const auto use_r128 = track.opus && !sidecar_only;
+            const auto r128_text = [](const double replaygain_db) {
+                return formats::r128_gain_text(replaygain_db -
+                                               formats::opus_r128_reference_shift_db);
+            };
             std::string rationale = "Measured ";
             rationale += lufs_text(track.loudness->integrated_lufs);
             rationale += " LUFS integrated (EBU R128)";
-            if (true_peak) {
+            if (use_r128) {
+                rationale += "; Q7.8 at -23 LUFS (RFC 7845)";
+            } else if (true_peak) {
                 rationale += "; true peak";
             }
-            propose(item, "REPLAYGAIN_TRACK_GAIN", decibel_text(track.loudness->track_gain_db()),
-                    rationale);
-            propose(item, "REPLAYGAIN_TRACK_PEAK", peak_text(track_peak_value(*track.loudness)),
-                    rationale);
+            if (use_r128) {
+                propose(item, "R128_TRACK_GAIN", r128_text(track.loudness->track_gain_db()),
+                        rationale);
+            } else {
+                propose(item, "REPLAYGAIN_TRACK_GAIN",
+                        decibel_text(track.loudness->track_gain_db()), rationale);
+                propose(item, "REPLAYGAIN_TRACK_PEAK", peak_text(track_peak_value(*track.loudness)),
+                        rationale);
+            }
             const auto& key = scan_items[position].album_key;
             if (key) {
                 const auto album = albums.find(*key);
@@ -2655,13 +2675,20 @@ void MetadataPropertiesDialog::startReplayGainScan(std::vector<std::size_t> forc
                     std::string album_rationale = "Album programme measured ";
                     album_rationale += lufs_text(*album->second->integrated_lufs);
                     album_rationale += " LUFS integrated (EBU R128)";
-                    if (true_peak) {
+                    if (use_r128) {
+                        album_rationale += "; Q7.8 at -23 LUFS (RFC 7845)";
+                    } else if (true_peak) {
                         album_rationale += "; true peak";
                     }
-                    propose(item, "REPLAYGAIN_ALBUM_GAIN",
-                            decibel_text(*album->second->album_gain_db()), album_rationale);
-                    propose(item, "REPLAYGAIN_ALBUM_PEAK",
-                            peak_text(album_peak_value(*album->second)), album_rationale);
+                    if (use_r128) {
+                        propose(item, "R128_ALBUM_GAIN", r128_text(*album->second->album_gain_db()),
+                                album_rationale);
+                    } else {
+                        propose(item, "REPLAYGAIN_ALBUM_GAIN",
+                                decibel_text(*album->second->album_gain_db()), album_rationale);
+                        propose(item, "REPLAYGAIN_ALBUM_PEAK",
+                                peak_text(album_peak_value(*album->second)), album_rationale);
+                    }
                 }
             }
             proposals.items.push_back(std::move(item));
@@ -2768,11 +2795,13 @@ void MetadataPropertiesDialog::showLoudnessProvenance() {
     }
     const auto& selection = grid_model_->selection();
     const auto patches = grid_model_->patches();
-    constexpr std::array<std::pair<std::string_view, std::string_view>, 4> loudness_fields{{
+    constexpr std::array<std::pair<std::string_view, std::string_view>, 6> loudness_fields{{
         {"replaygaintrackgain", "Track gain"},
         {"replaygaintrackpeak", "Track peak"},
         {"replaygainalbumgain", "Album gain"},
         {"replaygainalbumpeak", "Album peak"},
+        {"r128trackgain", "R128 track"},
+        {"r128albumgain", "R128 album"},
     }};
 
     auto* dialog = new QDialog(this);
