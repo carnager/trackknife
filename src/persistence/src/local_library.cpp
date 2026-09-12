@@ -374,24 +374,6 @@ struct Technicals {
     std::int64_t duration_ms{-1};
 };
 
-int bits_from_sample_format(const std::string& format) {
-    // FFmpeg spells float formats without a width; everything else
-    // carries its bit depth as digits ("s16", "s32p", "u8").
-    if (format.starts_with("dbl")) {
-        return 64;
-    }
-    if (format.starts_with("flt")) {
-        return 32;
-    }
-    int result = 0;
-    for (const char character : format) {
-        if (character >= '0' && character <= '9') {
-            result = result * 10 + (character - '0');
-        }
-    }
-    return result;
-}
-
 Technicals technicals_from(const formats::MediaProbe& probe) {
     Technicals result;
     result.duration_ms = probe.duration_ms.value_or(-1);
@@ -405,7 +387,7 @@ Technicals technicals_from(const formats::MediaProbe& probe) {
     }
     result.codec = found->codec_name;
     result.sample_rate = found->sample_rate;
-    result.bits = bits_from_sample_format(found->sample_format);
+    result.bits = formats::bits_per_sample_hint(found->sample_format);
     result.channels = found->channels;
     return result;
 }

@@ -12,6 +12,7 @@
 #include "bench/metadata_transformation_preview_model.hpp"
 #include "bench/preparation_feedback_dialog.hpp"
 #include "trackknife/formats/decoder.hpp"
+#include "trackknife/formats/probe.hpp"
 #include "trackknife/loudness/grouping.hpp"
 #include "trackknife/loudness/scan.hpp"
 #include "trackknife/metadata/draft_document.hpp"
@@ -769,6 +770,10 @@ MetadataPropertiesDialog::~MetadataPropertiesDialog() {
     if (replaygain_running_) {
         replaygain_watcher_.waitForFinished();
     }
+    technical_cancellation_.request_cancellation();
+    if (technical_probing_) {
+        technical_watcher_.waitForFinished();
+    }
 }
 
 void MetadataPropertiesDialog::setArtworkMutationServices(
@@ -946,7 +951,12 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
     metadata_splitter_->setObjectName(QStringLiteral("bench-metadata-splitter"));
     metadata_splitter_->setChildrenCollapsible(false);
 
-    file_list_ = new QTableView(metadata_splitter_);
+    auto* files_pane = new QWidget(metadata_splitter_);
+    files_pane->setObjectName(QStringLiteral("bench-metadata-files-pane"));
+    auto* files_pane_layout = new QVBoxLayout(files_pane);
+    files_pane_layout->setContentsMargins(0, 0, 0, 0);
+    files_pane_layout->setSpacing(2);
+    file_list_ = new QTableView(files_pane);
     file_list_->setObjectName(QStringLiteral("bench-metadata-files"));
     file_list_->setAccessibleName(QStringLiteral("Files included in metadata edit"));
     grid_model_ = new MetadataGridModel(std::move(selection), std::move(track_labels_), file_list_);
@@ -975,6 +985,14 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
                     file_list_->hideColumn(column);
                 }
             });
+    files_pane_layout->addWidget(file_list_, 1);
+    // ADR-0152: read-only technical summary for the selected files, fed
+    // by the bounded background prober.
+    technical_status_ = new QLabel(files_pane);
+    technical_status_->setObjectName(QStringLiteral("bench-metadata-technical"));
+    technical_status_->setWordWrap(true);
+    technical_status_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    files_pane_layout->addWidget(technical_status_);
 
     fields_ = new QTableView(metadata_splitter_);
     fields_->setObjectName(QStringLiteral("bench-metadata-fields"));
@@ -1107,6 +1125,15 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
     connect(file_list_->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this] {
         scheduleSelectionProjection();
         scheduleOutputLayoutExample();
+        updateTechnicalSummary();
+    });
+    connect(&technical_watcher_, &QFutureWatcherBase::finished, this, [this] {
+        technical_probing_ = false;
+        auto outcome = technical_watcher_.result();
+        technical_pending_.erase(outcome.first);
+        technical_cache_[outcome.first] = std::move(outcome.second);
+        pumpTechnicalQueue();
+        updateTechnicalSummary();
     });
     connect(fields_->selectionModel(), &QItemSelectionModel::currentChanged, this, [this] {
         updateFieldButtons();
@@ -1157,6 +1184,7 @@ void MetadataPropertiesDialog::buildGrid(metadata::StagedMetadataSelection selec
     updateFieldButtons();
     updateTransformationButton();
     stageAutomaticTransformations();
+    updateTechnicalSummary();
 
     root_layout_->removeWidget(loading_);
     loading_->deleteLater();
@@ -3827,6 +3855,216 @@ void MetadataPropertiesDialog::closeEvent(QCloseEvent* event) {
     } else {
         event->ignore();
     }
+}
+
+void MetadataPropertiesDialog::pumpTechnicalQueue() {
+    if (technical_probing_ || technical_queue_.empty()) {
+        return;
+    }
+    const auto path = technical_queue_.front();
+    technical_queue_.pop_front();
+    technical_probing_ = true;
+    technical_watcher_.setFuture(
+        QtConcurrent::run([path, token = technical_cancellation_.token()]()
+                              -> std::pair<std::string, std::optional<TechnicalInfo>> {
+            auto probe = formats::probe_local_media(path, token);
+            if (!probe || !probe->best_audio_stream) {
+                return {path, std::nullopt};
+            }
+            const auto found = std::ranges::find(probe->audio_streams, *probe->best_audio_stream,
+                                                 &formats::AudioStreamInfo::stream_index);
+            if (found == probe->audio_streams.end()) {
+                return {path, std::nullopt};
+            }
+            TechnicalInfo info;
+            info.codec = found->codec_name;
+            info.sample_rate = found->sample_rate;
+            info.bits = formats::bits_per_sample_hint(found->sample_format);
+            info.channels = found->channels;
+            info.bit_rate = found->bit_rate > 0 ? found->bit_rate : probe->bit_rate;
+            info.duration_ms = probe->duration_ms.value_or(-1);
+            return {path, info};
+        }));
+}
+
+void MetadataPropertiesDialog::updateTechnicalSummary() {
+    if (technical_status_ == nullptr || grid_model_ == nullptr) {
+        return;
+    }
+    auto items = selectedItemIndexes();
+    const auto& selection = grid_model_->selection();
+    if (items.empty()) {
+        items.reserve(selection.item_count());
+        for (std::size_t item_index = 0U; item_index < selection.item_count(); ++item_index) {
+            items.push_back(item_index);
+        }
+    }
+    if (items.empty()) {
+        technical_status_->clear();
+        return;
+    }
+    std::vector<std::string> paths;
+    std::set<std::string> seen;
+    for (const auto item : items) {
+        const auto& raw = selection.source(item).raw_path;
+        if (seen.insert(raw).second) {
+            paths.push_back(raw);
+        }
+    }
+    constexpr std::size_t maximum_probes = 512U;
+    for (const auto& path : paths) {
+        if (technical_cache_.contains(path) || technical_pending_.contains(path)) {
+            continue;
+        }
+        if (technical_cache_.size() + technical_pending_.size() >= maximum_probes) {
+            technical_truncated_ = true;
+            break;
+        }
+        technical_queue_.push_back(path);
+        technical_pending_.insert(path);
+    }
+    pumpTechnicalQueue();
+
+    // Aggregate over analyzed paths: agreement shows the value,
+    // disagreement shows "mixed", unknowns stay silent (ADR-0152).
+    const auto merge_text = [](std::optional<std::string>& slot, bool& mixed,
+                               const std::string& value) {
+        if (value.empty()) {
+            return;
+        }
+        if (!slot) {
+            slot = value;
+        } else if (*slot != value) {
+            mixed = true;
+        }
+    };
+    const auto merge_number = [](std::optional<std::int64_t>& slot, bool& mixed,
+                                 const std::int64_t value) {
+        if (value <= 0) {
+            return;
+        }
+        if (!slot) {
+            slot = value;
+        } else if (*slot != value) {
+            mixed = true;
+        }
+    };
+    std::optional<std::string> codec;
+    std::optional<std::int64_t> sample_rate;
+    std::optional<std::int64_t> bits;
+    std::optional<std::int64_t> channels;
+    std::optional<std::int64_t> bit_rate;
+    bool codec_mixed = false;
+    bool rate_mixed = false;
+    bool bits_mixed = false;
+    bool channels_mixed = false;
+    bool bit_rate_mixed = false;
+    std::size_t analyzing = 0U;
+    std::size_t failed = 0U;
+    for (const auto& path : paths) {
+        const auto found = technical_cache_.find(path);
+        if (found == technical_cache_.end()) {
+            if (technical_pending_.contains(path)) {
+                ++analyzing;
+            }
+            continue;
+        }
+        if (!found->second) {
+            ++failed;
+            continue;
+        }
+        const auto& info = *found->second;
+        merge_text(codec, codec_mixed, info.codec);
+        merge_number(sample_rate, rate_mixed, info.sample_rate);
+        merge_number(bits, bits_mixed, info.bits);
+        merge_number(channels, channels_mixed, info.channels);
+        merge_number(bit_rate, bit_rate_mixed, info.bit_rate);
+    }
+
+    // Duration sums per selected item once every involved path is known:
+    // logical tracks convert their sample range at the stream's rate.
+    bool duration_known = analyzing == 0U && failed == 0U;
+    std::int64_t total_ms = 0;
+    if (duration_known) {
+        for (const auto item : items) {
+            const auto found = technical_cache_.find(selection.source(item).raw_path);
+            if (found == technical_cache_.end() || !found->second) {
+                duration_known = false;
+                break;
+            }
+            const auto& info = *found->second;
+            const auto& audio = (*audio_sources_)[item];
+            const auto start_ms = [&]() -> std::int64_t {
+                if (!audio.range || info.sample_rate <= 0) {
+                    return 0;
+                }
+                return (audio.range->start_sample / info.sample_rate) * 1'000 +
+                       ((audio.range->start_sample % info.sample_rate) * 1'000) / info.sample_rate;
+            }();
+            if (audio.range && audio.range->end_sample && info.sample_rate > 0) {
+                const auto samples = *audio.range->end_sample - audio.range->start_sample;
+                total_ms += (samples / info.sample_rate) * 1'000 +
+                            ((samples % info.sample_rate) * 1'000) / info.sample_rate;
+            } else if (info.duration_ms >= 0) {
+                total_ms += std::max<std::int64_t>(info.duration_ms - start_ms, 0);
+            } else {
+                duration_known = false;
+                break;
+            }
+        }
+    }
+
+    QStringList parts;
+    if (items.size() > 1U) {
+        parts << tr("%1 tracks").arg(items.size());
+    }
+    if (codec_mixed) {
+        parts << tr("mixed codecs");
+    } else if (codec) {
+        parts << QString::fromStdString(*codec).toUpper();
+    }
+    if (rate_mixed) {
+        parts << tr("mixed rates");
+    } else if (sample_rate) {
+        parts << tr("%1 Hz").arg(*sample_rate);
+    }
+    if (bits_mixed) {
+        parts << tr("mixed depths");
+    } else if (bits) {
+        parts << tr("%1 bit").arg(*bits);
+    }
+    if (channels_mixed) {
+        parts << tr("mixed channels");
+    } else if (channels) {
+        parts << tr("%1 ch").arg(*channels);
+    }
+    if (bit_rate_mixed) {
+        parts << tr("mixed bitrates");
+    } else if (bit_rate) {
+        parts << tr("%1 kbit/s").arg((*bit_rate + 500) / 1'000);
+    }
+    if (duration_known) {
+        const auto seconds = total_ms / 1'000;
+        const auto text = seconds >= 3'600
+                              ? QStringLiteral("%1:%2:%3")
+                                    .arg(seconds / 3'600)
+                                    .arg((seconds % 3'600) / 60, 2, 10, QLatin1Char('0'))
+                                    .arg(seconds % 60, 2, 10, QLatin1Char('0'))
+                              : QStringLiteral("%1:%2")
+                                    .arg(seconds / 60)
+                                    .arg(seconds % 60, 2, 10, QLatin1Char('0'));
+        parts << (items.size() > 1U ? tr("total %1").arg(text) : text);
+    }
+    if (analyzing > 0U) {
+        parts << tr("analyzing %1…").arg(analyzing);
+    }
+    if (failed > 0U) {
+        parts << tr("%1 unreadable").arg(failed);
+    }
+    if (technical_truncated_) {
+        parts << tr("first %1 files").arg(maximum_probes);
+    }
+    technical_status_->setText(parts.join(QStringLiteral(" · ")));
 }
 
 } // namespace trackknife::bench

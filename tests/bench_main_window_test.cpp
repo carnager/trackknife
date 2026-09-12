@@ -197,6 +197,7 @@ class BenchMainWindowTest final : public QObject {
     void replayGainScanStagesMeasuredGainsAsDrafts();
     void replayGainScanUsesTruePeakWhenOptedIn();
     void replayGainScanStagesR128ForOpusTags();
+    void propertiesShowTechnicalSummary();
     void loudnessSidecarProjectsOntoProbedRows();
     void desktopNotificationsNotifyBackgroundTrackChanges();
     void replayGainScanPreservesLogicalSources_data();
@@ -3988,6 +3989,66 @@ void BenchMainWindowTest::replayGainScanStagesR128ForOpusTags() {
     QVERIFY(conventional.front().endsWith(QStringLiteral(" dB")));
 
     sidecar_only->setChecked(false);
+    delete properties;
+}
+
+// ADR-0152: the read-only technical summary under the file list probes
+// the selected files in the background and aggregates codec, rate,
+// depth, channels, bitrate, and duration; disagreement shows "mixed".
+void BenchMainWindowTest::propertiesShowTechnicalSummary() {
+    QTemporaryDir media;
+    QVERIFY(media.isValid());
+    const auto flac_path = media.filePath(QStringLiteral("tone.flac"));
+    const auto opus_path = media.filePath(QStringLiteral("tone.opus"));
+    QVERIFY(materialize_audio_fixture(QStringLiteral("tagged-tone-flac.b64"), flac_path));
+    QVERIFY(materialize_audio_fixture(QStringLiteral("loudness-tone-opus.b64"), opus_path));
+    const auto make_source = [](const QString& path, const QString& label) {
+        const auto encoded = QFile::encodeName(path);
+        return MetadataPropertiesSource{
+            .source =
+                metadata::StagedMetadataSource{
+                    .raw_path =
+                        std::string{encoded.constData(), static_cast<std::size_t>(encoded.size())},
+                    .source_revision = std::nullopt,
+                    .baseline = metadata::MetadataDocument{},
+                },
+            .track_label = label,
+        };
+    };
+    const std::vector sources{make_source(flac_path, QStringLiteral("Flac")),
+                              make_source(opus_path, QStringLiteral("Opus"))};
+    auto* properties = new MetadataPropertiesDialog(
+        sources.size(),
+        [sources](const std::size_t index) -> std::optional<MetadataPropertiesSource> {
+            return index < sources.size() ? std::optional{sources[index]} : std::nullopt;
+        },
+        {}, {}, {});
+    properties->show();
+
+    QLabel* technical = nullptr;
+    QTRY_VERIFY((technical = properties->findChild<QLabel*>(
+                     QStringLiteral("bench-metadata-technical"))) != nullptr);
+    // The whole selection mixes a 44.1 kHz FLAC with a 48 kHz Opus file.
+    QTRY_VERIFY_WITH_TIMEOUT(!technical->text().isEmpty() &&
+                                 !technical->text().contains(QStringLiteral("analyzing")),
+                             15'000);
+    QVERIFY(technical->text().contains(QStringLiteral("2 tracks")));
+    QVERIFY(technical->text().contains(QStringLiteral("mixed codecs")));
+    QVERIFY(technical->text().contains(QStringLiteral("mixed rates")));
+    QVERIFY(technical->text().contains(QStringLiteral("total ")));
+
+    // A single selection shows that file's concrete values.
+    QTableView* files = nullptr;
+    QTRY_VERIFY((files = properties->findChild<QTableView*>(
+                     QStringLiteral("bench-metadata-files"))) != nullptr);
+    files->selectionModel()->select(files->model()->index(0, 0),
+                                    QItemSelectionModel::ClearAndSelect |
+                                        QItemSelectionModel::Rows);
+    QTRY_VERIFY_WITH_TIMEOUT(technical->text().contains(QStringLiteral("FLAC")) &&
+                                 technical->text().contains(QStringLiteral("44100 Hz")),
+                             15'000);
+    QVERIFY(technical->text().contains(QStringLiteral("16 bit")));
+    QVERIFY(!technical->text().contains(QStringLiteral("mixed")));
     delete properties;
 }
 

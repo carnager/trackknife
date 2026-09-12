@@ -23,6 +23,22 @@ extern "C" {
 #include <string>
 
 namespace trackknife::formats {
+
+int bits_per_sample_hint(const std::string_view sample_format) {
+    if (sample_format.starts_with("dbl")) {
+        return 64;
+    }
+    if (sample_format.starts_with("flt")) {
+        return 32;
+    }
+    int result = 0;
+    for (const char character : sample_format) {
+        if (character >= '0' && character <= '9') {
+            result = result * 10 + (character - '0');
+        }
+    }
+    return result;
+}
 namespace {
 
 struct FormatCloser {

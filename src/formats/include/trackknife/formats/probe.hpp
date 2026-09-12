@@ -27,6 +27,12 @@ struct AudioStreamInfo {
     friend bool operator==(const AudioStreamInfo&, const AudioStreamInfo&) = default;
 };
 
+// Bit depth implied by an FFmpeg sample-format name: float formats map
+// to their storage width, everything else carries digits ("s16", "u8").
+// Zero means unknown (ADR-0152; shared by the library scan and the
+// Properties technical summary).
+[[nodiscard]] int bits_per_sample_hint(std::string_view sample_format);
+
 struct ProbedTag {
     // Exactly as the demuxer reports it; no case folding or vocabulary
     // mapping happens at this boundary.

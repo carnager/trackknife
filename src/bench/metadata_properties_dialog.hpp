@@ -20,10 +20,13 @@
 #include <QStringList>
 
 #include <cstddef>
+#include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -340,8 +343,29 @@ class MetadataPropertiesDialog final : public QDialog {
     QPushButton* apply_stop_button_{nullptr};
     MetadataGridModel* grid_model_{nullptr};
     MetadataAggregateModel* aggregate_model_{nullptr};
+    // ADR-0152: read-only technical summary under the file list, fed by a
+    // bounded background prober with a dialog-lifetime path cache.
+    struct TechnicalInfo {
+        std::string codec;
+        int sample_rate{0};
+        int bits{0};
+        int channels{0};
+        std::int64_t bit_rate{0};
+        std::int64_t duration_ms{-1};
+    };
+    void updateTechnicalSummary();
+    void pumpTechnicalQueue();
+
     QTableView* fields_{nullptr};
     QTableView* file_list_{nullptr};
+    QLabel* technical_status_{nullptr};
+    std::map<std::string, std::optional<TechnicalInfo>> technical_cache_;
+    std::deque<std::string> technical_queue_;
+    std::set<std::string> technical_pending_;
+    bool technical_probing_{false};
+    bool technical_truncated_{false};
+    QFutureWatcher<std::pair<std::string, std::optional<TechnicalInfo>>> technical_watcher_;
+    core::CancellationSource technical_cancellation_;
     QTabWidget* metadata_sections_{nullptr};
     MetadataArtworkSection* artwork_section_{nullptr};
     QSplitter* content_splitter_{nullptr};
