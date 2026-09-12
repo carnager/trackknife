@@ -127,6 +127,7 @@ class LocalLibraryTest final : public QObject {
     void deletionCleanupPagesWithoutChangingWorkingLists();
     void albumIdentityKeepsEditionsSeparate();
     void metadataAndMovesFollowTheListTransaction();
+    void scanRetainsFieldRowsAndTechnicals();
     void migrationRoundTrip();
     void scansOnlyOnRefresh_data();
     void scansOnlyOnRefresh();
@@ -459,19 +460,98 @@ void LocalLibraryTest::metadataAndMovesFollowTheListTransaction() {
     QCOMPARE(repository->load_all()->front().items.front().source_reference, outside);
 }
 
+// ADR-0150: the scan retains every bounded tag value in the field table
+// (original bytes beside the normalized form) and the probed technical
+// properties as typed columns; the reindex-once revision prefix backfills
+// rows written before migration 30 on the next Refresh.
+void LocalLibraryTest::scanRetainsFieldRowsAndTechnicals() {
+    QTemporaryDir temporary;
+    const std::filesystem::path base{temporary.path().toStdString()};
+    const auto root = base / "music";
+    const auto path = fixture(root, "01.flac", "Substrate song");
+    QVERIFY(!path.empty());
+    {
+        TagLib::FLAC::File file{path.c_str()};
+        auto properties = file.properties();
+        properties.replace("GENRE", TagLib::String{"Jazz", TagLib::String::UTF8});
+        properties.insert("GENRE", TagLib::String{"BEBOP", TagLib::String::UTF8});
+        properties.replace("REPLAYGAIN_TRACK_GAIN", TagLib::String{"-6.02 dB"});
+        file.setProperties(properties);
+        QVERIFY(file.save());
+    }
+    auto library = persistence::LocalLibrary::open(base / "state.sqlite");
+    QVERIFY(library);
+    QVERIFY(library->add_root(root.native()).has_value());
+    persistence::LibraryScanProgress progress;
+    QVERIFY(library->scan({}, progress).has_value());
+    QCOMPARE(progress.indexed.load(), 1U);
+
+    sqlite3* db = nullptr;
+    QCOMPARE(sqlite3_open((base / "state.sqlite").c_str(), &db), SQLITE_OK);
+    const auto rows = [db](const char* sql) {
+        sqlite3_stmt* statement = nullptr;
+        QList<QByteArray> values;
+        if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) == SQLITE_OK) {
+            while (sqlite3_step(statement) == SQLITE_ROW) {
+                values.push_back(
+                    QByteArray{static_cast<const char*>(sqlite3_column_blob(statement, 0)),
+                               sqlite3_column_bytes(statement, 0)});
+            }
+        }
+        sqlite3_finalize(statement);
+        return values;
+    };
+    // Multi-value field rows keep demuxer order and original spelling.
+    QCOMPARE(rows("SELECT value FROM local_library_fields WHERE canonical_name='genre' "
+                  "ORDER BY position"),
+             (QList<QByteArray>{"Jazz", "BEBOP"}));
+    QCOMPARE(rows("SELECT value_lower FROM local_library_fields WHERE canonical_name='genre' "
+                  "ORDER BY position"),
+             (QList<QByteArray>{"jazz", "bebop"}));
+    QCOMPARE(rows("SELECT value FROM local_library_fields "
+                  "WHERE canonical_name='replaygaintrackgain'"),
+             (QList<QByteArray>{"-6.02 dB"}));
+    // Technical columns come from the probe the scan already runs.
+    QCOMPARE(rows("SELECT codec_name FROM local_library_tracks"), (QList<QByteArray>{"flac"}));
+    QVERIFY(!rows("SELECT sample_rate FROM local_library_tracks WHERE sample_rate>0").isEmpty());
+    QVERIFY(!rows("SELECT bits FROM local_library_tracks WHERE bits=16").isEmpty());
+    QVERIFY(!rows("SELECT channels FROM local_library_tracks WHERE channels>0").isEmpty());
+    QVERIFY(!rows("SELECT duration_ms FROM local_library_tracks WHERE duration_ms>0").isEmpty());
+
+    // A pre-migration row (old revision format, no field rows) reindexes on
+    // the next Refresh even though the file itself is unchanged.
+    QCOMPARE(sqlite3_exec(db,
+                          "UPDATE local_library_tracks SET revision=substr(revision,3);"
+                          "DELETE FROM local_library_fields",
+                          nullptr, nullptr, nullptr),
+             SQLITE_OK);
+    sqlite3_close(db);
+    persistence::LibraryScanProgress backfill;
+    QVERIFY(library->scan({}, backfill).has_value());
+    QCOMPARE(backfill.indexed.load(), 1U);
+    QCOMPARE(sqlite3_open((base / "state.sqlite").c_str(), &db), SQLITE_OK);
+    QCOMPARE(rows("SELECT value FROM local_library_fields WHERE canonical_name='genre' "
+                  "ORDER BY position"),
+             (QList<QByteArray>{"Jazz", "BEBOP"}));
+    sqlite3_close(db);
+}
+
 void LocalLibraryTest::migrationRoundTrip() {
     QTemporaryDir temporary;
     const auto database = (std::filesystem::path{temporary.path().toStdString()} / "state.sqlite");
     {
         auto repository = persistence::ListRepository::open(database);
         QVERIFY(repository);
-        QCOMPARE(*repository->schema_version(), 29U);
+        QCOMPARE(*repository->schema_version(), 30U);
     }
     sqlite3* db = nullptr;
     QCOMPARE(sqlite3_open(database.c_str(), &db), SQLITE_OK);
-    for (const auto* direction : {"down", "up"}) {
-        QFile migration{QStringLiteral(TRACKKNIFE_MIGRATION_DIR "/0028_local_library.%1.sql")
-                            .arg(QString::fromLatin1(direction))};
+    // Down in reverse order, up in forward order: the ADR-0150 field table
+    // references the track table, so 0030 must unwind before 0028.
+    for (const auto* name : {"0030_library_query_index.down", "0028_local_library.down",
+                             "0028_local_library.up", "0030_library_query_index.up"}) {
+        QFile migration{
+            QStringLiteral(TRACKKNIFE_MIGRATION_DIR "/%1.sql").arg(QString::fromLatin1(name))};
         QVERIFY(migration.open(QIODevice::ReadOnly));
         QCOMPARE(sqlite3_exec(db, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr), SQLITE_OK);
         QCOMPARE(sqlite3_exec(db, migration.readAll().constData(), nullptr, nullptr, nullptr),

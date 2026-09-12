@@ -22,7 +22,7 @@
 namespace trackknife::persistence {
 namespace {
 
-constexpr unsigned current_schema_version = 29U;
+constexpr unsigned current_schema_version = 30U;
 constexpr std::size_t maximum_documents = 1'024U;
 constexpr std::size_t maximum_items_per_document = 1'000'000U;
 constexpr std::size_t maximum_fields_per_item = 4'096U;
@@ -909,6 +909,29 @@ read_optional_revision(sqlite3_stmt* statement, const int first,
             "ALTER TABLE operation_journal_v29 RENAME TO operation_journal;"
             "CREATE INDEX operation_journal_state ON operation_journal(state);"
             "UPDATE schema_version SET version = 29;";
+        if (auto result = execute(database, migration); !result) {
+            rollback();
+            return result;
+        }
+    }
+    if (version <= 29) {
+        // ADR-0150: query substrate for the tkq-1 dialect — a bounded
+        // per-value field table plus retained probe technicals. DDL-only;
+        // existing rows repopulate on their next explicit Refresh.
+        constexpr auto migration =
+            "CREATE TABLE local_library_fields (raw_path BLOB NOT NULL "
+            "REFERENCES local_library_tracks(raw_path) ON DELETE CASCADE, "
+            "canonical_name TEXT NOT NULL, position INTEGER NOT NULL, "
+            "value BLOB NOT NULL, value_lower BLOB NOT NULL, "
+            "PRIMARY KEY (raw_path, canonical_name, position));"
+            "CREATE INDEX local_library_fields_lookup ON "
+            "local_library_fields(canonical_name, value_lower);"
+            "ALTER TABLE local_library_tracks ADD COLUMN codec_name TEXT NOT NULL DEFAULT '';"
+            "ALTER TABLE local_library_tracks ADD COLUMN sample_rate INTEGER NOT NULL DEFAULT 0;"
+            "ALTER TABLE local_library_tracks ADD COLUMN bits INTEGER NOT NULL DEFAULT 0;"
+            "ALTER TABLE local_library_tracks ADD COLUMN channels INTEGER NOT NULL DEFAULT 0;"
+            "ALTER TABLE local_library_tracks ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT -1;"
+            "UPDATE schema_version SET version = 30;";
         if (auto result = execute(database, migration); !result) {
             rollback();
             return result;

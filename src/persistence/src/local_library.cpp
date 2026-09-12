@@ -18,6 +18,7 @@
 #include <cerrno>
 #include <charconv>
 #include <functional>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -66,6 +67,10 @@ class Statement {
         check(sqlite3_bind_blob64(value_, index, value.data(), value.size(), SQLITE_TRANSIENT));
     }
     void number(int index, sqlite3_int64 value) { check(sqlite3_bind_int64(value_, index, value)); }
+    void reset() {
+        check(sqlite3_reset(value_));
+        check(sqlite3_clear_bindings(value_));
+    }
     bool next() {
         const auto result = sqlite3_step(value_);
         if (result == SQLITE_ROW) {
@@ -200,7 +205,10 @@ bool contained(const std::string& path, const std::string& root) {
 }
 
 std::string revision_key(const core::LocalSourceRevision& revision) {
-    return std::to_string(revision.device) + ':' + std::to_string(revision.inode) + ':' +
+    // The "2:" prefix versions the indexed representation itself: rows
+    // written before migration 30 (ADR-0150) mismatch once and reindex on
+    // the next Refresh, backfilling field rows and technical columns.
+    return "2:" + std::to_string(revision.device) + ':' + std::to_string(revision.inode) + ':' +
            std::to_string(revision.size) + ':' +
            std::to_string(revision.modification_time_seconds) + ':' +
            std::to_string(revision.modification_time_nanoseconds);
@@ -212,12 +220,19 @@ std::string revision_key(const core::LocalSourceRevision& revision) {
 bool confirmed_missing(const std::string& raw_path, const std::string& revision,
                        const std::string& root) {
     std::uint64_t device = 0;
-    const auto separator = revision.find(':');
-    if (separator == std::string::npos) {
+    // Rows written since ADR-0150 carry a leading representation-version
+    // component; the device follows it. Pre-migration rows start with the
+    // device directly.
+    std::string_view text{revision};
+    if (text.starts_with("2:")) {
+        text.remove_prefix(2U);
+    }
+    const auto separator = text.find(':');
+    if (separator == std::string_view::npos) {
         return false;
     }
-    const auto parsed = std::from_chars(revision.data(), revision.data() + separator, device);
-    if (parsed.ec != std::errc{} || parsed.ptr != revision.data() + separator) {
+    const auto parsed = std::from_chars(text.data(), text.data() + separator, device);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + separator) {
         return false;
     }
     struct stat state{};
@@ -343,6 +358,99 @@ std::string album_key(const Tags& tags, const std::string& path) {
     return std::to_string(tags.artist.size()) + ':' + tags.artist +
            std::to_string(tags.album.size()) + ':' + tags.album + ':' +
            core::escape_raw_path(std::filesystem::path{path}.parent_path().native());
+}
+
+// ADR-0150: technical properties retained from the probe the scan
+// already runs, as typed queryable columns.
+struct Technicals {
+    std::string codec;
+    int sample_rate{0};
+    int bits{0};
+    int channels{0};
+    std::int64_t duration_ms{-1};
+};
+
+int bits_from_sample_format(const std::string& format) {
+    // FFmpeg spells float formats without a width; everything else
+    // carries its bit depth as digits ("s16", "s32p", "u8").
+    if (format.starts_with("dbl")) {
+        return 64;
+    }
+    if (format.starts_with("flt")) {
+        return 32;
+    }
+    int result = 0;
+    for (const char character : format) {
+        if (character >= '0' && character <= '9') {
+            result = result * 10 + (character - '0');
+        }
+    }
+    return result;
+}
+
+Technicals technicals_from(const formats::MediaProbe& probe) {
+    Technicals result;
+    result.duration_ms = probe.duration_ms.value_or(-1);
+    if (!probe.best_audio_stream) {
+        return result;
+    }
+    const auto found = std::ranges::find(probe.audio_streams, *probe.best_audio_stream,
+                                         &formats::AudioStreamInfo::stream_index);
+    if (found == probe.audio_streams.end()) {
+        return result;
+    }
+    result.codec = found->codec_name;
+    result.sample_rate = found->sample_rate;
+    result.bits = bits_from_sample_format(found->sample_format);
+    result.channels = found->channels;
+    return result;
+}
+
+// ADR-0150: one bounded row per tag value, original bytes beside the
+// normalized form, replaced wholesale inside the caller's transaction.
+constexpr std::size_t maximum_field_names = 64U;
+constexpr std::size_t maximum_field_values = 32U;
+constexpr std::size_t maximum_field_value_bytes = 2'048U;
+
+void write_field_rows(sqlite3* db, const std::string& raw_path,
+                      const metadata::MetadataDocument& document) {
+    {
+        Statement remove{db, "DELETE FROM local_library_fields WHERE raw_path=?"};
+        remove.blob(1, raw_path);
+        remove.next();
+    }
+    Statement insert{db, "INSERT OR IGNORE INTO local_library_fields"
+                         "(raw_path,canonical_name,position,value,value_lower) "
+                         "VALUES(?,?,?,?,?)"};
+    std::map<std::string, int> positions;
+    for (const auto& field : document.fields) {
+        if (field.canonical_name.empty()) {
+            continue;
+        }
+        auto position = positions.find(field.canonical_name);
+        if (position == positions.end()) {
+            if (positions.size() >= maximum_field_names) {
+                continue;
+            }
+            position = positions.emplace(field.canonical_name, 0).first;
+        }
+        for (const auto& value : field.values) {
+            if (position->second >= static_cast<int>(maximum_field_values)) {
+                break;
+            }
+            if (value.empty() || value.size() > maximum_field_value_bytes) {
+                continue;
+            }
+            insert.reset();
+            insert.blob(1, raw_path);
+            insert.text(2, field.canonical_name);
+            insert.number(3, position->second);
+            insert.blob(4, value);
+            insert.blob(5, lower(value));
+            insert.next();
+            ++position->second;
+        }
+    }
 }
 
 void bind_tags(Statement& statement, int start, const Tags& tags, const std::string& path) {
@@ -666,6 +774,8 @@ core::Result<LibraryScanResult> LocalLibrary::scan(const core::CancellationToken
                     unchanged = previous.next() && previous.bytes(0) == revision;
                 }
                 std::optional<Tags> tags;
+                metadata::MetadataDocument document;
+                Technicals technicals;
                 if (!unchanged) {
                     auto probe = formats::probe_local_media(raw, cancellation);
                     if (!probe || !probe->best_audio_stream) {
@@ -673,7 +783,7 @@ core::Result<LibraryScanResult> LocalLibrary::scan(const core::CancellationToken
                         complete = false;
                         continue;
                     }
-                    metadata::MetadataDocument document;
+                    technicals = technicals_from(*probe);
                     const auto read = metadata::read_local_metadata(raw, cancellation);
                     if (read) {
                         document = read->document;
@@ -718,19 +828,30 @@ core::Result<LibraryScanResult> LocalLibrary::scan(const core::CancellationToken
                         db,
                         "INSERT INTO "
                         "local_library_tracks(raw_path,root,revision,title,artist,album,album_key,"
-                        "release_id,date,disc,track,search_track,search_album,available,seen) "
-                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1,?) ON CONFLICT(raw_path) DO UPDATE SET "
+                        "release_id,date,disc,track,search_track,search_album,available,seen,"
+                        "codec_name,sample_rate,bits,channels,duration_ms) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?) "
+                        "ON CONFLICT(raw_path) DO UPDATE SET "
                         "root=excluded.root,revision=excluded.revision,title=excluded.title,artist="
                         "excluded.artist,album=excluded.album,album_key=excluded.album_key,"
                         "release_id=excluded.release_id,date=excluded.date,disc=excluded.disc,"
                         "track=excluded.track,search_track=excluded.search_track,search_album="
-                        "excluded.search_album,available=1,seen=excluded.seen"};
+                        "excluded.search_album,available=1,seen=excluded.seen,"
+                        "codec_name=excluded.codec_name,sample_rate=excluded.sample_rate,"
+                        "bits=excluded.bits,channels=excluded.channels,"
+                        "duration_ms=excluded.duration_ms"};
                     upsert.blob(1, raw);
                     upsert.blob(2, root.raw_path);
                     upsert.text(3, revision);
                     bind_tags(upsert, 4, *tags, raw);
                     upsert.text(14, generation);
+                    upsert.text(15, technicals.codec);
+                    upsert.number(16, technicals.sample_rate);
+                    upsert.number(17, technicals.bits);
+                    upsert.number(18, technicals.channels);
+                    upsert.number(19, technicals.duration_ms);
                     upsert.next();
+                    write_field_rows(db, raw, document);
                     ++progress.indexed;
                 } else {
                     Statement touch{db, "UPDATE local_library_tracks SET available=1,seen=? WHERE "
@@ -816,6 +937,31 @@ core::Result<void> refresh_library_source(sqlite3* db, const std::string& source
             remove.blob(1, target);
             remove.next();
         }
+        // ADR-0150: field rows reference the track row, and the rename below
+        // would strand them (enforced foreign keys reject an updated parent
+        // key with surviving children). Carry a move's rows across in memory;
+        // a tag commit rebuilds them from the fresh document afterwards.
+        struct FieldRow {
+            std::string canonical_name;
+            int position;
+            std::string value;
+            std::string value_lower;
+        };
+        std::vector<FieldRow> retained;
+        if (document == nullptr) {
+            Statement select{db, "SELECT canonical_name,position,value,value_lower FROM "
+                                 "local_library_fields WHERE raw_path=?"};
+            select.blob(1, source);
+            while (select.next()) {
+                retained.push_back({select.bytes(0), static_cast<int>(select.number(1)),
+                                    select.bytes(2), select.bytes(3)});
+            }
+        }
+        {
+            Statement remove{db, "DELETE FROM local_library_fields WHERE raw_path=?"};
+            remove.blob(1, source);
+            remove.next();
+        }
         Statement update{
             db,
             "UPDATE local_library_tracks SET "
@@ -828,6 +974,22 @@ core::Result<void> refresh_library_source(sqlite3* db, const std::string& source
         update.blob(13, root);
         update.blob(14, source);
         update.next();
+        if (document != nullptr) {
+            write_field_rows(db, target, *document);
+        } else if (!retained.empty()) {
+            Statement insert{db, "INSERT OR IGNORE INTO local_library_fields"
+                                 "(raw_path,canonical_name,position,value,value_lower) "
+                                 "VALUES(?,?,?,?,?)"};
+            for (const auto& row : retained) {
+                insert.reset();
+                insert.blob(1, target);
+                insert.text(2, row.canonical_name);
+                insert.number(3, row.position);
+                insert.blob(4, row.value);
+                insert.blob(5, row.value_lower);
+                insert.next();
+            }
+        }
         return true;
     });
     if (!result) {
