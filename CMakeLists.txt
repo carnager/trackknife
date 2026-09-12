@@ -55,6 +55,7 @@ endif()
 
 add_subdirectory(src/core)
 add_subdirectory(src/titleformat)
+add_subdirectory(src/query)
 add_subdirectory(src/metadata)
 add_subdirectory(src/operations)
 add_subdirectory(src/persistence)

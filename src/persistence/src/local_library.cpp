@@ -466,6 +466,445 @@ void bind_tags(Statement& statement, int start, const Tags& tags, const std::str
     statement.text(start, lower(tags.artist + ' ' + tags.album));
 }
 
+// --- ADR-0150: tkq filter planner and candidate evaluation ---
+
+// One SQL parameter with its binding affinity: value_lower and raw_path
+// are BLOB columns, canonical names are TEXT.
+struct FilterBinding {
+    enum class Kind : std::uint8_t { text, blob } kind{Kind::text};
+    std::string value;
+};
+
+struct FilterClause {
+    std::string sql;
+    std::vector<FilterBinding> bindings;
+};
+
+// Technical pseudo-fields resolve to typed columns; everything else goes
+// through the generic field table.
+[[nodiscard]] const char* technical_column(const std::string& canonical) {
+    if (canonical == "codec") {
+        return "codec_name";
+    }
+    if (canonical == "samplerate") {
+        return "sample_rate";
+    }
+    if (canonical == "bitspersample") {
+        return "bits";
+    }
+    if (canonical == "channels") {
+        return "channels";
+    }
+    if (canonical == "lengthms") {
+        return "duration_ms";
+    }
+    return nullptr;
+}
+
+[[nodiscard]] std::string canonical_query_field(const std::string& field) {
+    return metadata::canonicalize_field_name(field);
+}
+
+// Translates one predicate to SQL against alias t, or nullopt when the
+// predicate needs per-row evaluation (tkfmt expressions).
+[[nodiscard]] std::optional<FilterClause>
+translate_predicate(const query::TkqPredicate& predicate) {
+    using query::TkqComparison;
+    using query::TkqOperandKind;
+    FilterClause clause;
+    if (predicate.operand == TkqOperandKind::expression) {
+        return std::nullopt;
+    }
+    if (predicate.operand == TkqOperandKind::any_field) {
+        // Every word occurs in the denormalized search text or any field value.
+        std::string sql;
+        for (const auto& word : predicate.words) {
+            if (!sql.empty()) {
+                sql += " AND ";
+            }
+            sql += "(instr(t.search_track,?)>0 OR EXISTS(SELECT 1 FROM local_library_fields f "
+                   "WHERE f.raw_path=t.raw_path AND instr(f.value_lower,?)>0))";
+            clause.bindings.push_back({FilterBinding::Kind::text, word});
+            clause.bindings.push_back({FilterBinding::Kind::blob, word});
+        }
+        clause.sql = "(" + sql + ")";
+        return clause;
+    }
+    const auto canonical = canonical_query_field(predicate.field);
+    if (const auto* column = technical_column(canonical)) {
+        const auto qualified = std::string{"t."} + column;
+        switch (predicate.comparison) {
+        case TkqComparison::is:
+            clause.sql = "(" + qualified + "=?)";
+            clause.bindings.push_back({FilterBinding::Kind::text, predicate.normalized});
+            return clause;
+        case TkqComparison::has: {
+            std::string sql;
+            for (const auto& word : predicate.words) {
+                if (!sql.empty()) {
+                    sql += " AND ";
+                }
+                sql += "instr(" + qualified + ",?)>0";
+                clause.bindings.push_back({FilterBinding::Kind::text, word});
+            }
+            clause.sql = "(" + sql + ")";
+            return clause;
+        }
+        case TkqComparison::greater:
+        case TkqComparison::less:
+        case TkqComparison::equal: {
+            const auto* comparator = predicate.comparison == TkqComparison::greater ? ">"
+                                     : predicate.comparison == TkqComparison::less  ? "<"
+                                                                                    : "=";
+            clause.sql = "(" + qualified + comparator + std::to_string(predicate.number) + ")";
+            return clause;
+        }
+        case TkqComparison::present:
+            clause.sql = canonical == "codec"      ? "(" + qualified + "<>'')"
+                         : canonical == "lengthms" ? "(" + qualified + ">=0)"
+                                                   : "(" + qualified + ">0)";
+            return clause;
+        case TkqComparison::missing:
+            clause.sql = canonical == "codec"      ? "(" + qualified + "='')"
+                         : canonical == "lengthms" ? "(" + qualified + "<0)"
+                                                   : "(" + qualified + "<=0)";
+            return clause;
+        }
+        return std::nullopt;
+    }
+    if (canonical == "date" && (predicate.comparison == TkqComparison::greater ||
+                                predicate.comparison == TkqComparison::less ||
+                                predicate.comparison == TkqComparison::equal)) {
+        const auto* comparator = predicate.comparison == TkqComparison::greater ? ">"
+                                 : predicate.comparison == TkqComparison::less  ? "<"
+                                                                                : "=";
+        clause.sql = "(t.date<>'' AND CAST(substr(t.date,1,4) AS INTEGER)" +
+                     std::string{comparator} + std::to_string(predicate.number) + ")";
+        return clause;
+    }
+    constexpr auto exists_head = "EXISTS(SELECT 1 FROM local_library_fields f WHERE "
+                                 "f.raw_path=t.raw_path AND f.canonical_name=?";
+    switch (predicate.comparison) {
+    case TkqComparison::is:
+        clause.sql = std::string{"("} + exists_head + " AND f.value_lower=?))";
+        clause.bindings.push_back({FilterBinding::Kind::text, canonical});
+        clause.bindings.push_back({FilterBinding::Kind::blob, predicate.normalized});
+        break;
+    case TkqComparison::has: {
+        std::string sql;
+        for (const auto& word : predicate.words) {
+            if (!sql.empty()) {
+                sql += " AND ";
+            }
+            sql += std::string{exists_head} + " AND instr(f.value_lower,?)>0)";
+            clause.bindings.push_back({FilterBinding::Kind::text, canonical});
+            clause.bindings.push_back({FilterBinding::Kind::blob, word});
+        }
+        clause.sql = "(" + sql + ")";
+        break;
+    }
+    case TkqComparison::greater:
+    case TkqComparison::less:
+    case TkqComparison::equal: {
+        const auto* comparator = predicate.comparison == TkqComparison::greater ? ">"
+                                 : predicate.comparison == TkqComparison::less  ? "<"
+                                                                                : "=";
+        clause.sql = std::string{"("} + exists_head + " AND CAST(f.value_lower AS INTEGER)" +
+                     comparator + std::to_string(predicate.number) + "))";
+        clause.bindings.push_back({FilterBinding::Kind::text, canonical});
+        break;
+    }
+    case TkqComparison::present:
+        clause.sql = std::string{"("} + exists_head + "))";
+        clause.bindings.push_back({FilterBinding::Kind::text, canonical});
+        break;
+    case TkqComparison::missing:
+        clause.sql = std::string{"(NOT "} + exists_head + "))";
+        clause.bindings.push_back({FilterBinding::Kind::text, canonical});
+        break;
+    }
+    return clause;
+}
+
+[[nodiscard]] std::optional<FilterClause> translate_node(const query::CompiledTkq& compiled,
+                                                         const std::size_t index) {
+    const auto& node = compiled.nodes[index];
+    switch (node.kind) {
+    case query::TkqNodeKind::predicate:
+        return translate_predicate(compiled.predicates[node.predicate_index]);
+    case query::TkqNodeKind::not_node: {
+        auto inner = translate_node(compiled, node.children.front());
+        if (!inner) {
+            return std::nullopt;
+        }
+        inner->sql = "(NOT " + inner->sql + ")";
+        return inner;
+    }
+    case query::TkqNodeKind::and_node:
+    case query::TkqNodeKind::or_node: {
+        FilterClause clause;
+        const auto* joiner = node.kind == query::TkqNodeKind::and_node ? " AND " : " OR ";
+        std::string sql;
+        for (const auto child : node.children) {
+            auto translated = translate_node(compiled, child);
+            if (!translated) {
+                return std::nullopt;
+            }
+            if (!sql.empty()) {
+                sql += joiner;
+            }
+            sql += translated->sql;
+            clause.bindings.insert(clause.bindings.end(),
+                                   std::make_move_iterator(translated->bindings.begin()),
+                                   std::make_move_iterator(translated->bindings.end()));
+        }
+        clause.sql = "(" + sql + ")";
+        return clause;
+    }
+    }
+    return std::nullopt;
+}
+
+// A candidate row with everything per-row evaluation and sorting need.
+struct FilterRow {
+    std::string raw_path;
+    std::string title;
+    std::string artist;
+    std::string album;
+    std::string album_key;
+    std::string date;
+    std::string search_track;
+    int disc{0};
+    int track{0};
+    std::string codec_name;
+    std::int64_t sample_rate{0};
+    std::int64_t bits{0};
+    std::int64_t channels{0};
+    std::int64_t duration_ms{-1};
+    // canonical name -> values in order, original beside normalized.
+    std::map<std::string, std::vector<std::pair<std::string, std::string>>> fields;
+};
+
+class FilterRowContext final : public titleformat::EvaluationContext {
+  public:
+    FilterRowContext(const FilterRow& row, const titleformat::FormatContextKind kind)
+        : row_(row), kind_(kind) {}
+    titleformat::FormatContextKind kind() const noexcept override { return kind_; }
+    std::optional<std::string> resolveField(std::string_view name) const override {
+        const auto canonical = metadata::canonicalize_field_name(name);
+        const auto found = row_.fields.find(canonical);
+        if (found != row_.fields.end() && !found->second.empty()) {
+            return found->second.front().first;
+        }
+        // The track row keeps display fallbacks even when the tag is absent.
+        if (canonical == "title") {
+            return row_.title;
+        }
+        if (canonical == "artist" || canonical == "albumartist") {
+            return row_.artist;
+        }
+        if (canonical == "album") {
+            return row_.album;
+        }
+        return std::nullopt;
+    }
+    std::optional<MetadataValues> resolveMetadata(std::string_view name) const override {
+        const auto canonical = metadata::canonicalize_field_name(name);
+        const auto found = row_.fields.find(canonical);
+        if (found == row_.fields.end()) {
+            return std::nullopt;
+        }
+        MetadataValues values;
+        values.reserve(found->second.size());
+        for (const auto& [original, normalized] : found->second) {
+            static_cast<void>(normalized);
+            values.push_back(original);
+        }
+        return values;
+    }
+    std::optional<std::string> resolveTechnicalInfo(std::string_view name) const override {
+        const auto canonical = metadata::canonicalize_field_name(name);
+        if (canonical == "codec") {
+            return row_.codec_name.empty() ? std::nullopt : std::optional{row_.codec_name};
+        }
+        if (canonical == "samplerate" && row_.sample_rate > 0) {
+            return std::to_string(row_.sample_rate);
+        }
+        if (canonical == "bitspersample" && row_.bits > 0) {
+            return std::to_string(row_.bits);
+        }
+        if (canonical == "channels" && row_.channels > 0) {
+            return std::to_string(row_.channels);
+        }
+        if (canonical == "lengthms" && row_.duration_ms >= 0) {
+            return std::to_string(row_.duration_ms);
+        }
+        return std::nullopt;
+    }
+
+  private:
+    const FilterRow& row_;
+    titleformat::FormatContextKind kind_;
+};
+
+[[nodiscard]] std::optional<std::int64_t> leading_integer(const std::string& text) {
+    std::int64_t value = 0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr == text.data()) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+[[nodiscard]] bool compare_number(const std::int64_t value, const query::TkqComparison comparison,
+                                  const std::int64_t operand) {
+    switch (comparison) {
+    case query::TkqComparison::greater:
+        return value > operand;
+    case query::TkqComparison::less:
+        return value < operand;
+    default:
+        return value == operand;
+    }
+}
+
+[[nodiscard]] bool evaluate_text_comparison(const std::string& normalized_text,
+                                            const query::TkqPredicate& predicate) {
+    using query::TkqComparison;
+    switch (predicate.comparison) {
+    case TkqComparison::is:
+        return normalized_text == predicate.normalized;
+    case TkqComparison::has:
+        return std::ranges::all_of(predicate.words, [&](const std::string& word) {
+            return normalized_text.find(word) != std::string::npos;
+        });
+    case TkqComparison::present:
+        return !normalized_text.empty();
+    case TkqComparison::missing:
+        return normalized_text.empty();
+    case TkqComparison::greater:
+    case TkqComparison::less:
+    case TkqComparison::equal: {
+        const auto value = leading_integer(normalized_text);
+        return value && compare_number(*value, predicate.comparison, predicate.number);
+    }
+    }
+    return false;
+}
+
+[[nodiscard]] bool evaluate_predicate(const query::CompiledTkq& compiled,
+                                      const query::TkqPredicate& predicate, const FilterRow& row,
+                                      const core::CancellationToken& cancellation) {
+    using query::TkqComparison;
+    using query::TkqOperandKind;
+    if (predicate.operand == TkqOperandKind::expression) {
+        const FilterRowContext context{row, titleformat::FormatContextKind::grouping};
+        titleformat::EvaluationOptions options;
+        options.cancellation = cancellation;
+        const auto value =
+            titleformat::evaluate(compiled.programs[predicate.program_index], context, options);
+        if (!value) {
+            return false;
+        }
+        return evaluate_text_comparison(lower(value->text), predicate);
+    }
+    if (predicate.operand == TkqOperandKind::any_field) {
+        return std::ranges::all_of(predicate.words, [&](const std::string& word) {
+            if (row.search_track.find(word) != std::string::npos) {
+                return true;
+            }
+            for (const auto& [name, values] : row.fields) {
+                static_cast<void>(name);
+                for (const auto& [original, normalized] : values) {
+                    static_cast<void>(original);
+                    if (normalized.find(word) != std::string::npos) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        });
+    }
+    const auto canonical = canonical_query_field(predicate.field);
+    if (technical_column(canonical) != nullptr) {
+        if (canonical == "codec") {
+            return evaluate_text_comparison(row.codec_name, predicate);
+        }
+        const auto value = canonical == "samplerate"      ? row.sample_rate
+                           : canonical == "bitspersample" ? row.bits
+                           : canonical == "channels"      ? row.channels
+                                                          : row.duration_ms;
+        const auto present = canonical == "lengthms" ? value >= 0 : value > 0;
+        switch (predicate.comparison) {
+        case TkqComparison::present:
+            return present;
+        case TkqComparison::missing:
+            return !present;
+        case TkqComparison::is:
+        case TkqComparison::has:
+            return present && evaluate_text_comparison(std::to_string(value), predicate);
+        default:
+            return present && compare_number(value, predicate.comparison, predicate.number);
+        }
+    }
+    if (canonical == "date" && (predicate.comparison == TkqComparison::greater ||
+                                predicate.comparison == TkqComparison::less ||
+                                predicate.comparison == TkqComparison::equal)) {
+        const auto year = leading_integer(row.date);
+        return year && compare_number(*year, predicate.comparison, predicate.number);
+    }
+    const auto found = row.fields.find(canonical);
+    switch (predicate.comparison) {
+    case TkqComparison::present:
+        return found != row.fields.end();
+    case TkqComparison::missing:
+        return found == row.fields.end();
+    case TkqComparison::is:
+        return found != row.fields.end() &&
+               std::ranges::any_of(found->second, [&](const auto& value) {
+                   return value.second == predicate.normalized;
+               });
+    case TkqComparison::has:
+        return found != row.fields.end() &&
+               std::ranges::all_of(predicate.words, [&](const std::string& word) {
+                   return std::ranges::any_of(found->second, [&](const auto& value) {
+                       return value.second.find(word) != std::string::npos;
+                   });
+               });
+    case TkqComparison::greater:
+    case TkqComparison::less:
+    case TkqComparison::equal:
+        return found != row.fields.end() &&
+               std::ranges::any_of(found->second, [&](const auto& value) {
+                   const auto number = leading_integer(value.second);
+                   return number && compare_number(*number, predicate.comparison, predicate.number);
+               });
+    }
+    return false;
+}
+
+[[nodiscard]] bool evaluate_node(const query::CompiledTkq& compiled, const std::size_t index,
+                                 const FilterRow& row,
+                                 const core::CancellationToken& cancellation) {
+    const auto& node = compiled.nodes[index];
+    switch (node.kind) {
+    case query::TkqNodeKind::predicate:
+        return evaluate_predicate(compiled, compiled.predicates[node.predicate_index], row,
+                                  cancellation);
+    case query::TkqNodeKind::not_node:
+        return !evaluate_node(compiled, node.children.front(), row, cancellation);
+    case query::TkqNodeKind::and_node:
+        return std::ranges::all_of(node.children, [&](const std::size_t child) {
+            return evaluate_node(compiled, child, row, cancellation);
+        });
+    case query::TkqNodeKind::or_node:
+        return std::ranges::any_of(node.children, [&](const std::size_t child) {
+            return evaluate_node(compiled, child, row, cancellation);
+        });
+    }
+    return false;
+}
+
 std::vector<LibraryRoot> read_roots(sqlite3* db) {
     Statement query{db,
                     "SELECT raw_path,available,error FROM local_library_roots ORDER BY raw_path"};
@@ -678,6 +1117,250 @@ LocalLibrary::paths(const LibraryQuery& query, const core::CancellationToken& ca
                      core::ErrorCode::limit_exceeded);
             }
             result.push_back(statement.bytes(0));
+        }
+        return result;
+    });
+}
+
+namespace {
+
+constexpr auto filter_columns =
+    "t.raw_path,t.title,t.artist,t.album,t.album_key,t.date,t.search_track,t.disc,t.track,"
+    "t.codec_name,t.sample_rate,t.bits,t.channels,t.duration_ms";
+constexpr auto filter_order = " ORDER BY t.artist COLLATE NOCASE,t.album_key,t.disc,t.track,"
+                              "t.title COLLATE NOCASE,t.raw_path";
+constexpr std::size_t filter_match_cap = 100'000U;
+
+struct FilterPlan {
+    std::optional<FilterClause> pushed;
+    bool residual{false};
+};
+
+[[nodiscard]] FilterPlan plan_filter(const query::CompiledTkq& compiled) {
+    FilterPlan plan;
+    if (compiled.match_all) {
+        return plan;
+    }
+    if (auto whole = translate_node(compiled, compiled.root)) {
+        plan.pushed = std::move(whole);
+        return plan;
+    }
+    plan.residual = true;
+    // Pushable AND-conjuncts still pre-filter the candidate stream; the
+    // full tree re-evaluates per row, so pushing is purely an optimization.
+    const auto& root = compiled.nodes[compiled.root];
+    if (root.kind == query::TkqNodeKind::and_node) {
+        FilterClause partial;
+        std::string sql;
+        for (const auto child : root.children) {
+            auto translated = translate_node(compiled, child);
+            if (!translated) {
+                continue;
+            }
+            if (!sql.empty()) {
+                sql += " AND ";
+            }
+            sql += translated->sql;
+            partial.bindings.insert(partial.bindings.end(),
+                                    std::make_move_iterator(translated->bindings.begin()),
+                                    std::make_move_iterator(translated->bindings.end()));
+        }
+        if (!sql.empty()) {
+            partial.sql = "(" + sql + ")";
+            plan.pushed = std::move(partial);
+        }
+    }
+    return plan;
+}
+
+void bind_clause(Statement& statement, const FilterClause& clause) {
+    int index = 1;
+    for (const auto& binding : clause.bindings) {
+        if (binding.kind == FilterBinding::Kind::blob) {
+            statement.blob(index++, binding.value);
+        } else {
+            statement.text(index++, binding.value);
+        }
+    }
+}
+
+[[nodiscard]] std::string filter_where(const FilterPlan& plan) {
+    std::string where = " WHERE t.available=1";
+    if (plan.pushed) {
+        where += " AND " + plan.pushed->sql;
+    }
+    return where;
+}
+
+void load_field_rows(Statement& statement, const std::string& raw_path, FilterRow& row) {
+    statement.reset();
+    statement.blob(1, raw_path);
+    while (statement.next()) {
+        row.fields[statement.bytes(0)].emplace_back(statement.bytes(1), statement.bytes(2));
+    }
+}
+
+// Materializes the bounded match set in the default library order,
+// evaluating residual predicates per row; sorting happens afterwards.
+[[nodiscard]] std::vector<FilterRow>
+collect_filter_matches(sqlite3* db, const query::CompiledTkq& compiled, const FilterPlan& plan,
+                       const core::CancellationToken& cancellation) {
+    const auto need_rows = plan.residual || compiled.sort.has_value();
+    Statement select{db, std::string{"SELECT "} + filter_columns + " FROM local_library_tracks t" +
+                             filter_where(plan) + filter_order};
+    if (plan.pushed) {
+        bind_clause(select, *plan.pushed);
+    }
+    Statement fields{db, "SELECT canonical_name,value,value_lower FROM local_library_fields "
+                         "WHERE raw_path=? ORDER BY canonical_name,position"};
+    std::vector<FilterRow> matches;
+    while (select.next()) {
+        if (cancellation.is_cancellation_requested()) {
+            fail("Library query cancelled", core::ErrorCode::cancelled);
+        }
+        FilterRow row;
+        row.raw_path = select.bytes(0);
+        row.title = select.bytes(1);
+        row.artist = select.bytes(2);
+        row.album = select.bytes(3);
+        row.album_key = select.bytes(4);
+        row.date = select.bytes(5);
+        row.search_track = select.bytes(6);
+        row.disc = static_cast<int>(select.number(7));
+        row.track = static_cast<int>(select.number(8));
+        row.codec_name = select.bytes(9);
+        row.sample_rate = select.number(10);
+        row.bits = select.number(11);
+        row.channels = select.number(12);
+        row.duration_ms = select.number(13);
+        if (need_rows) {
+            load_field_rows(fields, row.raw_path, row);
+        }
+        if (plan.residual && !evaluate_node(compiled, compiled.root, row, cancellation)) {
+            continue;
+        }
+        if (matches.size() == filter_match_cap) {
+            fail("The query matches more than 100000 files; narrow it",
+                 core::ErrorCode::limit_exceeded);
+        }
+        matches.push_back(std::move(row));
+    }
+    if (compiled.sort) {
+        struct Keyed {
+            std::string key;
+            std::size_t position;
+        };
+        std::vector<Keyed> keyed;
+        keyed.reserve(matches.size());
+        for (std::size_t position = 0U; position < matches.size(); ++position) {
+            const FilterRowContext context{matches[position], titleformat::FormatContextKind::sort};
+            titleformat::EvaluationOptions options;
+            options.cancellation = cancellation;
+            auto value = titleformat::evaluate(compiled.sort->program, context, options);
+            if (!value) {
+                throw value.error();
+            }
+            keyed.push_back({lower(value->text), position});
+        }
+        const auto descending = compiled.sort->direction == query::TkqSortDirection::descending;
+        // Stable over the default library order, so equal keys keep the
+        // deterministic raw_path-terminated ordering as their tiebreaker.
+        std::ranges::stable_sort(keyed, [descending](const Keyed& left, const Keyed& right) {
+            return descending ? right.key < left.key : left.key < right.key;
+        });
+        std::vector<FilterRow> sorted;
+        sorted.reserve(matches.size());
+        for (const auto& entry : keyed) {
+            sorted.push_back(std::move(matches[entry.position]));
+        }
+        matches = std::move(sorted);
+    }
+    return matches;
+}
+
+[[nodiscard]] LibraryEntry filter_entry(const FilterRow& row) {
+    LibraryEntry entry{
+        LibraryEntryKind::track, row.raw_path, row.title, row.artist, row.album, 1U, 1U, row.track};
+    entry.label = format_label(entry, true);
+    return entry;
+}
+
+} // namespace
+
+core::Result<LibraryPage> LocalLibrary::filter(const query::CompiledTkq& compiled,
+                                               const std::size_t offset, const std::size_t limit,
+                                               const core::CancellationToken& cancellation) const {
+    return checked([&] {
+        auto* db = implementation_->db;
+        QueryCancellation guard{db, cancellation};
+        const auto plan = plan_filter(compiled);
+        const auto page_limit = std::clamp<std::size_t>(limit, 1U, 200U);
+        LibraryPage page;
+        if (!plan.residual && !compiled.sort) {
+            // Fully indexable and unsorted: page in SQL like ordinary queries.
+            Statement statement{db, std::string{"SELECT "} + filter_columns +
+                                        " FROM local_library_tracks t" + filter_where(plan) +
+                                        filter_order + " LIMIT " + std::to_string(page_limit + 1U) +
+                                        " OFFSET " +
+                                        std::to_string(std::min<std::size_t>(offset, 1'000'000U))};
+            if (plan.pushed) {
+                bind_clause(statement, *plan.pushed);
+            }
+            while (statement.next()) {
+                if (page.entries.size() == page_limit) {
+                    page.more = true;
+                    break;
+                }
+                FilterRow row;
+                row.raw_path = statement.bytes(0);
+                row.title = statement.bytes(1);
+                row.artist = statement.bytes(2);
+                row.album = statement.bytes(3);
+                row.track = static_cast<int>(statement.number(8));
+                page.entries.push_back(filter_entry(row));
+            }
+            return page;
+        }
+        const auto matches = collect_filter_matches(db, compiled, plan, cancellation);
+        for (auto position = offset; position < matches.size(); ++position) {
+            if (page.entries.size() == page_limit) {
+                page.more = true;
+                break;
+            }
+            page.entries.push_back(filter_entry(matches[position]));
+        }
+        return page;
+    });
+}
+
+core::Result<std::vector<std::string>>
+LocalLibrary::filter_paths(const query::CompiledTkq& compiled,
+                           const core::CancellationToken& cancellation) const {
+    return checked([&] {
+        auto* db = implementation_->db;
+        QueryCancellation guard{db, cancellation};
+        const auto plan = plan_filter(compiled);
+        if (!plan.residual && !compiled.sort) {
+            Statement statement{db, std::string{"SELECT t.raw_path FROM local_library_tracks t"} +
+                                        filter_where(plan) + filter_order + " LIMIT 100001"};
+            if (plan.pushed) {
+                bind_clause(statement, *plan.pushed);
+            }
+            std::vector<std::string> result;
+            while (statement.next()) {
+                if (result.size() == filter_match_cap) {
+                    fail("The query matches more than 100000 files; narrow it",
+                         core::ErrorCode::limit_exceeded);
+                }
+                result.push_back(statement.bytes(0));
+            }
+            return result;
+        }
+        const auto matches = collect_filter_matches(db, compiled, plan, cancellation);
+        std::vector<std::string> result;
+        result.reserve(matches.size());
+        for (const auto& row : matches) {
+            result.push_back(row.raw_path);
         }
         return result;
     });

@@ -6,6 +6,7 @@
 #include "trackknife/core/local_sources.hpp"
 #include "trackknife/core/result.hpp"
 #include "trackknife/metadata/document.hpp"
+#include "trackknife/query/tkq.hpp"
 
 #include <atomic>
 #include <filesystem>
@@ -81,6 +82,16 @@ class LocalLibrary final {
                                     const core::CancellationToken& cancellation = {}) const;
     core::Result<std::vector<std::string>>
     paths(const LibraryQuery& query, const core::CancellationToken& cancellation = {}) const;
+    // ADR-0150: structured tkq evaluation over the cached index only.
+    // Indexable predicates push down into SQL; tkfmt expression predicates
+    // evaluate per candidate row. A sort clause materializes the match set
+    // (bounded like paths) before paging.
+    core::Result<LibraryPage> filter(const query::CompiledTkq& compiled, std::size_t offset,
+                                     std::size_t limit,
+                                     const core::CancellationToken& cancellation = {}) const;
+    core::Result<std::vector<std::string>>
+    filter_paths(const query::CompiledTkq& compiled,
+                 const core::CancellationToken& cancellation = {}) const;
     core::Result<std::optional<std::string>>
     artwork_source(const std::string& album_key,
                    const core::CancellationToken& cancellation = {}) const;

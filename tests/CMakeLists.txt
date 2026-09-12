@@ -69,6 +69,24 @@ target_link_libraries(
 )
 add_test(NAME metadata-loudness-sidecar COMMAND trackknife_metadata_loudness_sidecar_tests)
 
+add_executable(trackknife_query_tkq_tests query_tkq_test.cpp)
+target_link_libraries(
+    trackknife_query_tkq_tests
+    PRIVATE Trackknife::Query trackknife_project_options trackknife_project_warnings
+)
+add_test(NAME query-tkq COMMAND trackknife_query_tkq_tests)
+
+add_executable(trackknife_local_library_filter_tests local_library_filter_test.cpp)
+target_link_libraries(
+    trackknife_local_library_filter_tests
+    PRIVATE Trackknife::Persistence Trackknife::Query PkgConfig::TAGLIB
+            trackknife_project_options trackknife_project_warnings
+)
+add_test(NAME local-library-filter COMMAND trackknife_local_library_filter_tests
+         "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio")
+set_tests_properties(local-library-filter PROPERTIES TIMEOUT 60 ENVIRONMENT
+    "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
+
 add_executable(trackknife_metadata_transformation_tests metadata_transformation_test.cpp)
 target_link_libraries(
     trackknife_metadata_transformation_tests
