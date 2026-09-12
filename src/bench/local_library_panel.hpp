@@ -16,6 +16,7 @@
 
 #include <deque>
 #include <functional>
+#include <memory>
 
 class QDialog;
 class QLabel;
@@ -76,6 +77,8 @@ class LocalLibraryPanel final : public QWidget {
     void pump();
     void reloadTree();
     void loadChildren(const QPersistentModelIndex& parent, persistence::LibraryQuery query);
+    void loadFilterChildren(const QPersistentModelIndex& parent,
+                            std::shared_ptr<const query::CompiledTkq> compiled);
     void activate(const QModelIndex& index);
     void requestAction(const QModelIndex& index, LocalLibraryAction action);
     void showContextMenu(const QPoint& position);
@@ -106,6 +109,8 @@ class LocalLibraryPanel final : public QWidget {
     core::CancellationSource scan_cancellation_;
     std::shared_ptr<persistence::LibraryScanProgress> progress_;
     QLineEdit* search_{nullptr};
+    QToolButton* query_toggle_{nullptr};
+    QLabel* query_error_{nullptr};
     QTreeView* tree_{nullptr};
     QStandardItemModel* model_{nullptr};
     QLabel* status_{nullptr};

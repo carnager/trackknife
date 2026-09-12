@@ -82,7 +82,12 @@ References: [working lists and interchange](playback-library-conversion.md#worki
 
 **Proposal:** Extend artist/album browsing into useful collection views.
 
-- [ ] Structured filters for metadata and technical properties.
+- [x] Structured filters (ADR-0150): the `tkq-1` dialect — foobar-inspired
+  keyword surface, own normative spec — evaluates over a widened index
+  (every tag value plus probed codec/sample-rate/bits/channels/duration)
+  behind an explicit query toggle in the library panel; committed queries
+  keep their results as ADR-0140 snapshot tabs. Old index rows backfill on
+  their next Refresh.
 - [ ] Saved searches, followed by query-backed autoplaylists.
 - [ ] Idea: similarity-fed autoplaylists — use an online source such as
   Last.fm similar-artist/track data to queue related songs from the local

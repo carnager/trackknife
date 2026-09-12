@@ -91,7 +91,10 @@ existing declarative track-view engine, metadata reader, and local transport.
 
 The index catalogs physical audio files. Chapter/subsong expansion still happens
 when opening a source; separate indexed searches of those logical titles and
-external cue-sheet titles are not included. Advanced filters, autoplaylists,
+external cue-sheet titles are not included. Structured tkq filters (ADR-0150)
+evaluate over the migration-30 field table and technical columns; index rows
+written before that migration carry them only after their next explicit
+Refresh. Saved searches, autoplaylists,
 custom library-tree expressions, and an artwork grid remain future work.
 Album cover thumbnails are available in the current tree and search results.
 

@@ -187,11 +187,12 @@ Export. Other container writers and configurable export naming remain open.
 ## Deferred
 
 - Resolved by ADR-0115: the user requested an optional local library over chosen
-  folders. Deeper local queries, autoplaylists, and logical-track indexing remain
+  folders. Structured tkq queries are decided and implemented (ADR-0150);
+  saved searches, autoplaylists, and logical-track indexing remain
   future work.
 - Cross-authority conveniences: opening a mapped server item as an explicit
   local source and offering an explicit MPD database update after publication.
-- Deeper query/autoplaylist language.
+- Autoplaylist semantics atop tkq-1 (the dialect itself is decided; ADR-0150).
 - Plugin ABI/distribution.
 - A transactional Melody import/upload protocol and destination adapter; no
   such extension is currently claimed.

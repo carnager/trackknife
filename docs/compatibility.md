@@ -57,10 +57,15 @@ Consequences:
 
 ## Search/query syntax
 
-Foobar-style query syntax is deferred rather than a compatibility requirement.
-MPD's advertised search/filter behavior serves the initial client. Any later
-query language in either authority needs its own versioned specification;
-formatting expressions and queries remain different languages.
+Foobar-style query syntax is not a compatibility requirement. MPD's advertised
+search/filter behavior serves the MPD authority. Local structured queries are
+`tkq-1` (ADR-0150): Trackknife's own versioned dialect with a foobar-inspired
+keyword surface, specified normatively in
+[query-language.md](query-language.md). Persisted queries follow the same
+contract as formatting expressions — exact source plus dialect, dialect
+version, and compiler schema. Formatting expressions and queries remain
+different languages; a query may embed `tkfmt-1` for sort keys and expression
+predicates.
 
 ## Metadata and workflow parity
 

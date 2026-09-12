@@ -131,6 +131,7 @@ class LocalLibraryTest final : public QObject {
     void migrationRoundTrip();
     void scansOnlyOnRefresh_data();
     void scansOnlyOnRefresh();
+    void queryModeFiltersAndCommitsResults();
     void localViewBrowsesSearchesAndOpensFiles();
     void dragResolvesUnloadedPagesAndRawPaths();
     void trackNumbersAppearInTreeAndSearch();
@@ -488,7 +489,9 @@ void LocalLibraryTest::scanRetainsFieldRowsAndTechnicals() {
 
     sqlite3* db = nullptr;
     QCOMPARE(sqlite3_open((base / "state.sqlite").c_str(), &db), SQLITE_OK);
-    const auto rows = [db](const char* sql) {
+    // Captured by reference: the backfill section below closes and
+    // reopens the connection.
+    const auto rows = [&db](const char* sql) {
         sqlite3_stmt* statement = nullptr;
         QList<QByteArray> values;
         if (sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) == SQLITE_OK) {
@@ -631,6 +634,82 @@ void LocalLibraryTest::scansOnlyOnRefresh() {
     QVERIFY(panel.property("scanning").toBool());
     QTRY_VERIFY(!panel.property("scanning").toBool());
     QCOMPARE(library->paths(tracks())->size(), 2U);
+    panel.stop();
+}
+
+// ADR-0150: the query toggle switches the search field into tkq —
+// structured results in the tree, inline diagnostics for malformed
+// queries (never a silent word search), and Enter committing the
+// filtered result set through the ADR-0140 snapshot-tab path.
+void LocalLibraryTest::queryModeFiltersAndCommitsResults() {
+    QTemporaryDir temporary;
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, temporary.path());
+    QCoreApplication::setOrganizationName(QStringLiteral("TrackknifeLibraryTests"));
+    QCoreApplication::setApplicationName(QStringLiteral("LocalLibraryQuery"));
+    QSettings{}.clear();
+    const std::filesystem::path base{temporary.path().toStdString()};
+    const auto root = base / "music";
+    const auto jazz = fixture(root, "01.flac", "Alpha");
+    const auto rock = fixture(root, "02.flac", "Beta");
+    QVERIFY(!jazz.empty() && !rock.empty());
+    const auto tag_genre = [](const std::string& path, const char* genre) {
+        TagLib::FLAC::File file{path.c_str()};
+        auto properties = file.properties();
+        properties.replace("GENRE", TagLib::String{genre});
+        file.setProperties(properties);
+        QVERIFY(file.save());
+    };
+    tag_genre(jazz, "Jazz");
+    tag_genre(rock, "Rock");
+    const auto database = base / "state.sqlite";
+    auto library = persistence::LocalLibrary::open(database);
+    QVERIFY(library && library->add_root(root.native()));
+    persistence::LibraryScanProgress progress;
+    QVERIFY(library->scan({}, progress).has_value());
+    QCOMPARE(progress.indexed.load(), 2U);
+
+    LocalLibraryPanel panel{database};
+    panel.show();
+    auto* search = panel.findChild<QLineEdit*>(QStringLiteral("local-library-search"));
+    auto* toggle = panel.findChild<QToolButton*>(QStringLiteral("local-library-query-toggle"));
+    auto* error = panel.findChild<QLabel*>(QStringLiteral("local-library-query-error"));
+    auto* tree = panel.findChild<QTreeView*>();
+    QVERIFY(search != nullptr && toggle != nullptr && error != nullptr && tree != nullptr);
+    QVERIFY(!toggle->isChecked());
+    toggle->setChecked(true);
+
+    QSignalSpy committed{&panel, &LocalLibraryPanel::searchCommitted};
+    search->setText(QStringLiteral("genre IS jazz"));
+    auto* model = tree->model();
+    QTRY_VERIFY(model->rowCount() == 1 &&
+                model->data(model->index(0, 0)).toString() == QStringLiteral("Tracks"));
+    const auto group = model->index(0, 0);
+    QTRY_COMPARE(model->rowCount(group), 1);
+    QVERIFY(model->data(model->index(0, 0, group)).toString().contains(QStringLiteral("Alpha")));
+    QVERIFY(!error->isVisible());
+
+    // Malformed structure is a visible diagnostic, not a word search.
+    search->setText(QStringLiteral("genre HAS"));
+    QTRY_VERIFY(error->isVisible());
+    QVERIFY(!error->text().isEmpty());
+
+    // A valid query commits its full filtered result set.
+    search->setText(QStringLiteral("genre IS rock OR genre IS jazz"));
+    QTRY_VERIFY(!error->isVisible());
+    QTRY_VERIFY(model->rowCount() == 1 && model->rowCount(model->index(0, 0)) == 2);
+    QTest::keyClick(search, Qt::Key_Return);
+    QTRY_COMPARE(committed.size(), 1);
+    const auto arguments = committed.takeFirst();
+    QCOMPARE(arguments.at(0).toString(), QStringLiteral("genre IS rock OR genre IS jazz"));
+    const auto paths = arguments.at(1).value<std::vector<std::string>>();
+    QCOMPARE(paths.size(), 2U);
+
+    // Off again: the plain word search is untouched and the sticky
+    // setting resets for later tests.
+    toggle->setChecked(false);
+    search->setText(QStringLiteral("Alpha"));
+    QTRY_VERIFY(model->rowCount() == 2);
     panel.stop();
 }
 

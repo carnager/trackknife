@@ -18,6 +18,7 @@
 #include <QMenu>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QSettings>
 #include <QStandardItemModel>
 #include <QStyle>
 #include <QTimer>
@@ -140,12 +141,41 @@ LocalLibraryPanel::LocalLibraryPanel(std::filesystem::path database_path, QWidge
     layout->setContentsMargins(4, 4, 4, 4);
     layout->setSpacing(4);
     auto* tools = new QHBoxLayout;
+    auto* search_row = new QHBoxLayout;
     search_ = new QLineEdit(this);
     search_->setObjectName(QStringLiteral("local-library-search"));
     search_->setPlaceholderText(tr("Search albums and tracks"));
     search_->setClearButtonEnabled(true);
     search_->setAccessibleName(tr("Search local library"));
-    layout->addWidget(search_);
+    search_row->addWidget(search_, 1);
+    // ADR-0150: the explicit query toggle switches the field into the tkq
+    // dialect; word search stays byte-for-byte what it was when off, and a
+    // malformed query is an inline error, never a silent word search.
+    query_toggle_ = new QToolButton(this);
+    query_toggle_->setObjectName(QStringLiteral("local-library-query-toggle"));
+    query_toggle_->setText(tr("Query"));
+    query_toggle_->setCheckable(true);
+    query_toggle_->setToolTip(
+        tr("Interpret the search as a tkq query, e.g. genre HAS jazz AND date GREATER 1990"));
+    query_toggle_->setChecked(
+        QSettings{}.value(QStringLiteral("library/query-mode"), false).toBool());
+    connect(query_toggle_, &QToolButton::toggled, this, [this](const bool enabled) {
+        QSettings{}.setValue(QStringLiteral("library/query-mode"), enabled);
+        search_->setPlaceholderText(enabled ? tr("tkq query, e.g. genre HAS jazz")
+                                            : tr("Search albums and tracks"));
+        query_error_->hide();
+        reloadTree();
+    });
+    search_row->addWidget(query_toggle_);
+    layout->addLayout(search_row);
+    query_error_ = new QLabel(this);
+    query_error_->setObjectName(QStringLiteral("local-library-query-error"));
+    query_error_->setWordWrap(true);
+    query_error_->hide();
+    layout->addWidget(query_error_);
+    if (query_toggle_->isChecked()) {
+        search_->setPlaceholderText(tr("tkq query, e.g. genre HAS jazz"));
+    }
     auto* folders = new QToolButton(this);
     folders->setObjectName(QStringLiteral("local-library-folders"));
     folders->setText(tr("Folders…"));
@@ -394,7 +424,31 @@ void LocalLibraryPanel::reloadTree() {
     model_->clear();
     const auto query_text = bytes(search_->text().trimmed());
     if (query_text.empty()) {
+        if (query_error_ != nullptr) {
+            query_error_->hide();
+        }
         loadChildren({}, {});
+        return;
+    }
+    // ADR-0150: in query mode the text compiles as tkq; a malformed query
+    // is a visible error and never degrades into the word search below.
+    if (query_toggle_ != nullptr && query_toggle_->isChecked()) {
+        auto compiled = query::compile_tkq(query_text);
+        if (!compiled) {
+            query_error_->setText(text(compiled.error().message));
+            query_error_->show();
+            status_->setText(tr("Invalid query"));
+            return;
+        }
+        query_error_->hide();
+        auto* group = new QStandardItem(tr("Tracks"));
+        group->setEditable(false);
+        group->setDragEnabled(false);
+        group->setData(true, loaded_role);
+        model_->appendRow(group);
+        loadFilterChildren(QPersistentModelIndex{group->index()},
+                           std::make_shared<query::CompiledTkq>(std::move(*compiled)));
+        tree_->expand(group->index());
         return;
     }
     for (const auto kind :
@@ -499,6 +553,63 @@ void LocalLibraryPanel::loadChildren(const QPersistentModelIndex& parent,
                  more->setDragEnabled(false);
                  more->setData(true, more_role);
                  more->setData(QVariant::fromValue(query), query_role);
+                 target->appendRow(more);
+             } else if (target->rowCount() == 0) {
+                 auto* empty = new QStandardItem(tr("No matches"));
+                 empty->setEnabled(false);
+                 target->appendRow(empty);
+             }
+         },
+         true});
+}
+
+void LocalLibraryPanel::loadFilterChildren(const QPersistentModelIndex& parent,
+                                           std::shared_ptr<const query::CompiledTkq> compiled) {
+    const auto generation = generation_;
+    enqueue(
+        {[compiled, cancellation = view_cancellation_.token()](persistence::LocalLibrary& library) {
+             Outcome outcome;
+             auto result = library.filter(*compiled, 0U, 200U, cancellation);
+             if (result) {
+                 outcome.page = std::move(*result);
+             } else {
+                 outcome.error = text(result.error().message);
+             }
+             return outcome;
+         },
+         [this, parent, generation](Outcome outcome) {
+             if (generation != generation_ || !parent.isValid()) {
+                 return;
+             }
+             auto* target = model_->itemFromIndex(parent);
+             if (target == nullptr) {
+                 return;
+             }
+             if (!outcome.error.isEmpty()) {
+                 status_->setText(outcome.error);
+                 return;
+             }
+             if (!scanning_ && status_->text() == tr("Searching…")) {
+                 status_->setText(tr("Query results"));
+             }
+             for (const auto& entry : outcome.page.entries) {
+                 auto label = text(entry.label);
+                 auto* item = new QStandardItem(label);
+                 item->setEditable(false);
+                 item->setDragEnabled(true);
+                 item->setDropEnabled(false);
+                 item->setIcon(QIcon::fromTheme(QStringLiteral("audio-x-generic")));
+                 item->setData(QVariant::fromValue(entry), entry_role);
+                 item->setToolTip(pathLabel(entry.key));
+                 target->appendRow(item);
+             }
+             if (outcome.page.more) {
+                 // Package-1 paging: the tree shows the first page; Enter
+                 // keeps the complete bounded result set as a tab.
+                 auto* more = new QStandardItem(
+                     tr("Showing the first %1 matches — press Enter to keep them all")
+                         .arg(outcome.page.entries.size()));
+                 more->setEnabled(false);
                  target->appendRow(more);
              } else if (target->rowCount() == 0) {
                  auto* empty = new QStandardItem(tr("No matches"));
@@ -649,6 +760,43 @@ void LocalLibraryPanel::commitSearch() {
         return;
     }
     status_->setText(tr("Collecting search results…"));
+    // ADR-0150: a committed query resolves through the structured filter;
+    // the resulting tab is the same ADR-0140 snapshot as a word search.
+    if (query_toggle_ != nullptr && query_toggle_->isChecked()) {
+        auto compiled = query::compile_tkq(bytes(query_text));
+        if (!compiled) {
+            query_error_->setText(text(compiled.error().message));
+            query_error_->show();
+            status_->setText(tr("Invalid query"));
+            return;
+        }
+        query_error_->hide();
+        enqueue(
+            {[shared = std::make_shared<query::CompiledTkq>(std::move(*compiled)),
+              cancellation = lifetime_cancellation_.token()](persistence::LocalLibrary& library) {
+                 Outcome outcome;
+                 auto paths = library.filter_paths(*shared, cancellation);
+                 if (paths) {
+                     outcome.paths = std::move(*paths);
+                 } else {
+                     outcome.error = text(paths.error().message);
+                 }
+                 return outcome;
+             },
+             [this, query_text](Outcome outcome) {
+                 if (!outcome.error.isEmpty()) {
+                     status_->setText(outcome.error);
+                     return;
+                 }
+                 if (outcome.paths.empty()) {
+                     status_->setText(tr("No search results to keep."));
+                     return;
+                 }
+                 status_->setText(tr("Search kept as a new tab."));
+                 emit searchCommitted(query_text, std::move(outcome.paths));
+             }});
+        return;
+    }
     enqueue({[query = bytes(query_text),
               cancellation = lifetime_cancellation_.token()](persistence::LocalLibrary& library) {
                  Outcome outcome;
