@@ -17,11 +17,15 @@
 #include <array>
 #include <cerrno>
 #include <charconv>
+#include <condition_variable>
+#include <deque>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 namespace trackknife::persistence {
@@ -997,6 +1001,10 @@ core::Result<LocalLibrary> LocalLibrary::open(const std::filesystem::path& path)
         }
         sqlite3_busy_timeout(impl->db, 5000);
         execute(impl->db, "PRAGMA foreign_keys=ON");
+        // ADR-0151: the index is a WAL-mode cache; NORMAL risks only the
+        // final commit on power loss and removes the per-file fsync that
+        // dominated large scans. The journals keep synchronous=FULL.
+        execute(impl->db, "PRAGMA synchronous=NORMAL");
         return LocalLibrary{std::move(impl)};
     });
 }
@@ -1382,6 +1390,189 @@ LocalLibrary::artwork_source(const std::string& album_key,
     });
 }
 
+namespace {
+
+// ADR-0151: the expensive per-file preparation (probe, metadata read,
+// tag/technical extraction) runs on a bounded worker pool; the walk and
+// every database commit stay on the scan thread.
+struct PreparedFile {
+    std::string raw_path;
+    std::string root;
+    std::string revision;
+    core::LocalSourceRevision before{};
+    Tags tags;
+    metadata::MetadataDocument document;
+    Technicals technicals;
+    bool failed{false};
+};
+
+struct ScanRequest {
+    std::string raw_path;
+    std::string root;
+    std::string revision;
+    core::LocalSourceRevision before{};
+};
+
+class PreparationPipeline {
+  public:
+    PreparationPipeline(const std::size_t worker_count, core::CancellationToken cancellation)
+        : cancellation_(std::move(cancellation)), capacity_(worker_count * 2U) {
+        workers_.reserve(worker_count);
+        for (std::size_t index = 0U; index < worker_count; ++index) {
+            workers_.emplace_back([this] { work(); });
+        }
+    }
+    ~PreparationPipeline() {
+        {
+            const std::scoped_lock lock{mutex_};
+            input_closed_ = true;
+            abandoned_ = true;
+        }
+        request_ready_.notify_all();
+        result_ready_.notify_all();
+        for (auto& worker : workers_) {
+            worker.join();
+        }
+    }
+    PreparationPipeline(const PreparationPipeline&) = delete;
+    PreparationPipeline& operator=(const PreparationPipeline&) = delete;
+
+    // Blocks while both queues are full so in-flight memory stays bounded;
+    // returns false once cancellation is requested.
+    [[nodiscard]] bool submit(ScanRequest request) {
+        std::unique_lock lock{mutex_};
+        while (requests_.size() >= capacity_ && results_.size() >= capacity_) {
+            if (cancelled()) {
+                return false;
+            }
+            request_taken_.wait_for(lock, std::chrono::milliseconds(100));
+        }
+        if (cancelled()) {
+            return false;
+        }
+        requests_.push_back(std::move(request));
+        ++in_flight_;
+        lock.unlock();
+        request_ready_.notify_one();
+        return true;
+    }
+
+    void finish_input() {
+        {
+            const std::scoped_lock lock{mutex_};
+            input_closed_ = true;
+        }
+        request_ready_.notify_all();
+    }
+
+    // Non-blocking drain while the walk continues.
+    [[nodiscard]] std::optional<PreparedFile> try_next() {
+        const std::scoped_lock lock{mutex_};
+        if (results_.empty()) {
+            return std::nullopt;
+        }
+        auto result = std::move(results_.front());
+        results_.pop_front();
+        --in_flight_;
+        request_taken_.notify_all();
+        return result;
+    }
+
+    // Blocking drain after finish_input(); nullopt when the pipeline is
+    // empty or cancellation was requested.
+    [[nodiscard]] std::optional<PreparedFile> next() {
+        std::unique_lock lock{mutex_};
+        while (results_.empty()) {
+            if (cancelled() || (requests_.empty() && in_flight_ == 0U && input_closed_)) {
+                return std::nullopt;
+            }
+            result_ready_.wait_for(lock, std::chrono::milliseconds(100));
+        }
+        auto result = std::move(results_.front());
+        results_.pop_front();
+        --in_flight_;
+        request_taken_.notify_all();
+        return result;
+    }
+
+  private:
+    [[nodiscard]] bool cancelled() const {
+        return abandoned_ || cancellation_.is_cancellation_requested();
+    }
+
+    void work() {
+        while (true) {
+            ScanRequest request;
+            {
+                std::unique_lock lock{mutex_};
+                while (requests_.empty()) {
+                    if (cancelled() || input_closed_) {
+                        return;
+                    }
+                    request_ready_.wait_for(lock, std::chrono::milliseconds(100));
+                }
+                if (cancelled()) {
+                    return;
+                }
+                request = std::move(requests_.front());
+                requests_.pop_front();
+            }
+            PreparedFile prepared;
+            prepared.raw_path = std::move(request.raw_path);
+            prepared.root = std::move(request.root);
+            prepared.revision = std::move(request.revision);
+            prepared.before = request.before;
+            auto probe = formats::probe_local_media(prepared.raw_path, cancellation_);
+            if (!probe || !probe->best_audio_stream) {
+                prepared.failed = true;
+            } else {
+                prepared.technicals = technicals_from(*probe);
+                const auto read = metadata::read_local_metadata(prepared.raw_path, cancellation_);
+                if (read) {
+                    prepared.document = read->document;
+                }
+                for (const auto& tag : probe->tags) {
+                    const auto identity = metadata::resolve_text_property_identity(tag.name);
+                    if (!prepared.document.first_effective_value(identity.canonical_name)) {
+                        prepared.document.fields.push_back(
+                            {.canonical_name = identity.canonical_name,
+                             .native_name = tag.name,
+                             .values = {tag.value},
+                             .qualifier = {},
+                             .provenance = metadata::FieldProvenance::stream});
+                    }
+                }
+                prepared.tags = tags_from(prepared.document, prepared.raw_path);
+            }
+            {
+                const std::scoped_lock lock{mutex_};
+                results_.push_back(std::move(prepared));
+            }
+            result_ready_.notify_all();
+        }
+    }
+
+    core::CancellationToken cancellation_;
+    std::size_t capacity_;
+    std::mutex mutex_;
+    std::condition_variable request_ready_;
+    std::condition_variable request_taken_;
+    std::condition_variable result_ready_;
+    std::deque<ScanRequest> requests_;
+    std::deque<PreparedFile> results_;
+    std::size_t in_flight_{0U};
+    bool input_closed_{false};
+    bool abandoned_{false};
+    std::vector<std::thread> workers_;
+};
+
+[[nodiscard]] std::size_t scan_worker_count() {
+    const auto hardware = std::thread::hardware_concurrency();
+    return std::clamp<std::size_t>(hardware == 0U ? 2U : hardware / 2U, 2U, 8U);
+}
+
+} // namespace
+
 core::Result<LibraryScanResult> LocalLibrary::scan(const core::CancellationToken& cancellation,
                                                    LibraryScanProgress& progress) {
     return checked([&] {
@@ -1417,6 +1608,67 @@ core::Result<LibraryScanResult> LocalLibrary::scan(const core::CancellationToken
                 begin.next();
             }
             bool complete = true;
+            bool root_lost = false;
+            PreparationPipeline pipeline{scan_worker_count(), cancellation};
+            // Commits one prepared file in its own transaction with the
+            // unchanged guards: fresh revision, current root scan token.
+            const auto commit_prepared = [&](PreparedFile prepared) {
+                if (root_lost) {
+                    return;
+                }
+                if (prepared.failed) {
+                    ++progress.failed;
+                    complete = false;
+                    return;
+                }
+                Transaction transaction{db};
+                // The commit lock serializes this fresh revision check against
+                // metadata and relocation publication's dependent-state update.
+                const auto after = core::observe_local_source_revision(prepared.raw_path);
+                if (!after || prepared.before != *after) {
+                    ++progress.failed;
+                    complete = false;
+                    return;
+                }
+                Statement exists{
+                    db, "SELECT 1 FROM local_library_roots WHERE raw_path=? AND scan_token=?"};
+                exists.blob(1, prepared.root);
+                exists.text(2, generation);
+                if (!exists.next()) {
+                    root_lost = true;
+                    complete = false;
+                    return;
+                }
+                Statement upsert{
+                    db, "INSERT INTO "
+                        "local_library_tracks(raw_path,root,revision,title,artist,album,album_key,"
+                        "release_id,date,disc,track,search_track,search_album,available,seen,"
+                        "codec_name,sample_rate,bits,channels,duration_ms) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?) "
+                        "ON CONFLICT(raw_path) DO UPDATE SET "
+                        "root=excluded.root,revision=excluded.revision,title=excluded.title,artist="
+                        "excluded.artist,album=excluded.album,album_key=excluded.album_key,"
+                        "release_id=excluded.release_id,date=excluded.date,disc=excluded.disc,"
+                        "track=excluded.track,search_track=excluded.search_track,search_album="
+                        "excluded.search_album,available=1,seen=excluded.seen,"
+                        "codec_name=excluded.codec_name,sample_rate=excluded.sample_rate,"
+                        "bits=excluded.bits,channels=excluded.channels,"
+                        "duration_ms=excluded.duration_ms"};
+                upsert.blob(1, prepared.raw_path);
+                upsert.blob(2, prepared.root);
+                upsert.text(3, prepared.revision);
+                bind_tags(upsert, 4, prepared.tags, prepared.raw_path);
+                upsert.text(14, generation);
+                upsert.text(15, prepared.technicals.codec);
+                upsert.number(16, prepared.technicals.sample_rate);
+                upsert.number(17, prepared.technicals.bits);
+                upsert.number(18, prepared.technicals.channels);
+                upsert.number(19, prepared.technicals.duration_ms);
+                upsert.next();
+                write_field_rows(db, prepared.raw_path, prepared.document);
+                ++progress.indexed;
+                transaction.commit();
+            };
             for (; iterator != std::filesystem::recursive_directory_iterator{};
                  iterator.increment(error)) {
                 if (error) {
@@ -1456,95 +1708,48 @@ core::Result<LibraryScanResult> LocalLibrary::scan(const core::CancellationToken
                     previous.blob(1, raw);
                     unchanged = previous.next() && previous.bytes(0) == revision;
                 }
-                std::optional<Tags> tags;
-                metadata::MetadataDocument document;
-                Technicals technicals;
-                if (!unchanged) {
-                    auto probe = formats::probe_local_media(raw, cancellation);
-                    if (!probe || !probe->best_audio_stream) {
+                if (unchanged) {
+                    Transaction transaction{db};
+                    const auto after = core::observe_local_source_revision(raw);
+                    if (!after || *before != *after) {
                         ++progress.failed;
                         complete = false;
                         continue;
                     }
-                    technicals = technicals_from(*probe);
-                    const auto read = metadata::read_local_metadata(raw, cancellation);
-                    if (read) {
-                        document = read->document;
+                    Statement exists{
+                        db, "SELECT 1 FROM local_library_roots WHERE raw_path=? AND scan_token=?"};
+                    exists.blob(1, root.raw_path);
+                    exists.text(2, generation);
+                    if (!exists.next()) {
+                        complete = false;
+                        break;
                     }
-                    for (const auto& tag : probe->tags) {
-                        const auto identity = metadata::resolve_text_property_identity(tag.name);
-                        if (!document.first_effective_value(identity.canonical_name)) {
-                            document.fields.push_back(
-                                {.canonical_name = identity.canonical_name,
-                                 .native_name = tag.name,
-                                 .values = {tag.value},
-                                 .qualifier = {},
-                                 .provenance = metadata::FieldProvenance::stream});
-                        }
-                    }
-                    tags = tags_from(document, raw);
-                }
-                if (cancellation.is_cancellation_requested()) {
-                    result.cancelled = true;
-                    complete = false;
-                    break;
-                }
-                Transaction transaction{db};
-                // The commit lock serializes this fresh revision check against
-                // metadata and relocation publication's dependent-state update.
-                const auto after = core::observe_local_source_revision(raw);
-                if (!after || *before != *after) {
-                    ++progress.failed;
-                    complete = false;
-                    continue;
-                }
-                Statement exists{
-                    db, "SELECT 1 FROM local_library_roots WHERE raw_path=? AND scan_token=?"};
-                exists.blob(1, root.raw_path);
-                exists.text(2, generation);
-                if (!exists.next()) {
-                    complete = false;
-                    break;
-                }
-                if (tags) {
-                    Statement upsert{
-                        db,
-                        "INSERT INTO "
-                        "local_library_tracks(raw_path,root,revision,title,artist,album,album_key,"
-                        "release_id,date,disc,track,search_track,search_album,available,seen,"
-                        "codec_name,sample_rate,bits,channels,duration_ms) "
-                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?) "
-                        "ON CONFLICT(raw_path) DO UPDATE SET "
-                        "root=excluded.root,revision=excluded.revision,title=excluded.title,artist="
-                        "excluded.artist,album=excluded.album,album_key=excluded.album_key,"
-                        "release_id=excluded.release_id,date=excluded.date,disc=excluded.disc,"
-                        "track=excluded.track,search_track=excluded.search_track,search_album="
-                        "excluded.search_album,available=1,seen=excluded.seen,"
-                        "codec_name=excluded.codec_name,sample_rate=excluded.sample_rate,"
-                        "bits=excluded.bits,channels=excluded.channels,"
-                        "duration_ms=excluded.duration_ms"};
-                    upsert.blob(1, raw);
-                    upsert.blob(2, root.raw_path);
-                    upsert.text(3, revision);
-                    bind_tags(upsert, 4, *tags, raw);
-                    upsert.text(14, generation);
-                    upsert.text(15, technicals.codec);
-                    upsert.number(16, technicals.sample_rate);
-                    upsert.number(17, technicals.bits);
-                    upsert.number(18, technicals.channels);
-                    upsert.number(19, technicals.duration_ms);
-                    upsert.next();
-                    write_field_rows(db, raw, document);
-                    ++progress.indexed;
-                } else {
                     Statement touch{db, "UPDATE local_library_tracks SET available=1,seen=? WHERE "
                                         "raw_path=? AND revision=?"};
                     touch.text(1, generation);
                     touch.blob(2, raw);
                     touch.text(3, revision);
                     touch.next();
+                    transaction.commit();
+                } else if (!pipeline.submit({raw, root.raw_path, revision, *before})) {
+                    result.cancelled = true;
+                    complete = false;
+                    break;
                 }
-                transaction.commit();
+                // Drain finished preparations without stalling the walk.
+                while (auto prepared = pipeline.try_next()) {
+                    commit_prepared(std::move(*prepared));
+                }
+                if (root_lost) {
+                    break;
+                }
+            }
+            pipeline.finish_input();
+            while (auto prepared = pipeline.next()) {
+                commit_prepared(std::move(*prepared));
+            }
+            if (cancellation.is_cancellation_requested()) {
+                result.cancelled = true;
             }
             if (error || cancellation.is_cancellation_requested()) {
                 complete = false;

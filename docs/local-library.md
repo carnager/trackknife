@@ -52,9 +52,15 @@ Migration 28 adds library roots and file records to the existing SQLite store.
 Paths remain raw BLOBs and are escaped losslessly for presentation. The index
 is a cache of file metadata; it does not become the authority for tags.
 
-One worker traverses and probes files; a second serves queries and folder
-configuration. A scan compares device/inode/size/mtime revisions, probes changed
-files, and verifies the revision again under a short database write transaction.
+A scan walks and commits on one thread while a bounded worker pool
+(half the cores, two to eight) prepares changed files in parallel —
+probe, metadata read, tag and technical extraction (ADR-0151); a
+separate worker serves queries and folder configuration. The scan
+compares device/inode/size/mtime revisions, prepares only changed
+files, and verifies the revision again under a short per-file database
+write transaction; commits may land in any order. The library
+connection runs WAL with synchronous=NORMAL — a power loss can cost at
+most the final commit, which the next Refresh repairs.
 Only plausible audio extensions are probed; directory and file symlinks are
 skipped. Scans stop after one million visited entries and report incompleteness.
 Cancellation and incomplete traversal retain previously indexed entries.

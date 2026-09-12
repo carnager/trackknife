@@ -128,6 +128,7 @@ class LocalLibraryTest final : public QObject {
     void albumIdentityKeepsEditionsSeparate();
     void metadataAndMovesFollowTheListTransaction();
     void scanRetainsFieldRowsAndTechnicals();
+    void parallelScanIndexesManyFiles();
     void migrationRoundTrip();
     void scansOnlyOnRefresh_data();
     void scansOnlyOnRefresh();
@@ -537,6 +538,50 @@ void LocalLibraryTest::scanRetainsFieldRowsAndTechnicals() {
                   "ORDER BY position"),
              (QList<QByteArray>{"Jazz", "BEBOP"}));
     sqlite3_close(db);
+}
+
+// ADR-0151: preparation runs on a bounded worker pool while the walk
+// and every commit stay serial; ordering-free counters, incremental
+// rescans, and deletion handling hold across the pipeline.
+void LocalLibraryTest::parallelScanIndexesManyFiles() {
+    QTemporaryDir temporary;
+    const std::filesystem::path base{temporary.path().toStdString()};
+    const auto root = base / "music";
+    std::vector<std::string> paths;
+    for (int index = 0; index < 24; ++index) {
+        const auto name = QStringLiteral("%1.flac").arg(index, 2, 10, QLatin1Char('0'));
+        const auto title = QStringLiteral("Track %1").arg(index);
+        paths.push_back(fixture(root, name.toStdString(), title.toStdString(),
+                                index % 2 == 0 ? "Even album" : "Odd album"));
+        QVERIFY(!paths.back().empty());
+    }
+    auto library = persistence::LocalLibrary::open(base / "state.sqlite");
+    QVERIFY(library && library->add_root(root.native()));
+    persistence::LibraryScanProgress progress;
+    const auto scanned = library->scan({}, progress);
+    QVERIFY(scanned.has_value());
+    QVERIFY(!scanned->incomplete);
+    QCOMPARE(progress.indexed.load(), 24U);
+    QCOMPARE(progress.failed.load(), 0U);
+    QCOMPARE(library->paths(tracks())->size(), 24U);
+
+    // Unchanged files skip the pipeline entirely on the next pass.
+    persistence::LibraryScanProgress repeat;
+    QVERIFY(library->scan({}, repeat).has_value());
+    QCOMPARE(repeat.indexed.load(), 0U);
+
+    // Deletions and retags keep working through the parallel path.
+    std::error_code fs_error;
+    for (int index = 0; index < 3; ++index) {
+        QVERIFY(std::filesystem::remove(
+            std::filesystem::path{paths[static_cast<std::size_t>(index)]}, fs_error));
+    }
+    QCOMPARE(fixture(root, "03.flac", "Retitled"), paths[3]);
+    persistence::LibraryScanProgress changed;
+    QVERIFY(library->scan({}, changed).has_value());
+    QCOMPARE(changed.indexed.load(), 1U);
+    QCOMPARE(library->paths(tracks())->size(), 21U);
+    QCOMPARE(library->query(tracks("Retitled"))->entries.size(), 1U);
 }
 
 void LocalLibraryTest::migrationRoundTrip() {

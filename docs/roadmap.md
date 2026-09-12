@@ -95,6 +95,13 @@ References: [working lists and interchange](playback-library-conversion.md#worki
   library queries).
 - [ ] Custom library grouping and tree expressions.
 - [ ] Searchable CUE, chapter, and subsong titles in the index.
+- [x] Parallel scan preparation (ADR-0151): probe and metadata reads run
+  on a bounded worker pool while the walk and every guarded per-file
+  commit stay serial; the library connection drops to WAL
+  synchronous=NORMAL.
+- [ ] Idea: a headless scanner binary to run directly on the NAS that
+  hosts the library — build the same sqlite index locally without the
+  network bottleneck, then copy it into the workspace.
 
 Example views: Jazz released after 1990, albums missing ReplayGain, and files
 without MusicBrainz identifiers.
